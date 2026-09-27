@@ -1024,7 +1024,16 @@ enum NotificationType {
   VERIFICATION_VISIT_PROPOSED
   VERIFICATION_VISIT_CONFIRMED
   VERIFICATION_VISIT_RESCHEDULE_REQUESTED
+  /// The agent's answer to a reschedule request, back to the brand.
+  VERIFICATION_VISIT_RESCHEDULE_ACCEPTED
+  VERIFICATION_VISIT_RESCHEDULE_DECLINED
   VERIFICATION_VISIT_DECLINED
+  /// Ahead of a confirmed visit, to both sides.
+  VERIFICATION_VISIT_REMINDER
+  /// Somebody owes a reply and has not given one.
+  VERIFICATION_VISIT_RESPONSE_DUE
+  /// The slot passed with no outcome recorded.
+  VERIFICATION_VISIT_OVERDUE
   VERIFICATION_PHYSICAL_PASSED
   VERIFICATION_PHYSICAL_FAILED
   /// To the agent: this visit is yours.
@@ -2872,6 +2881,20 @@ model BrandPhysicalVerification {
   brandRespondedAt     DateTime?
   brandResponseNote    String?
   rescheduleCount      Int                                @default(0)
+
+  /// Reminder bookkeeping.
+  ///
+  /// The slot is already stored, so nobody should have to remember the visit
+  /// themselves. These are the "already sent" marks that keep the cron
+  /// idempotent — without them a job running every quarter hour would send the
+  /// same reminder until the appointment arrived.
+  reminderDayBeforeAt   DateTime?
+  reminderHourBeforeAt  DateTime?
+  /// Last nudge to whoever owes a reply (brand on a proposal, agent on a
+  /// reschedule request). One field, because only one side can owe at a time.
+  awaitingReplyNudgedAt DateTime?
+  /// The slot came and went with no outcome recorded.
+  overdueNudgedAt       DateTime?
 
   visitCompletedAt     DateTime?
   decidedAt            DateTime?
@@ -5015,6 +5038,9 @@ enum PhysicalVerificationStatus {
   VISIT_COMPLETED
   PASSED
   FAILED
+  /// The agent refused a reschedule and postponed with no new date. Not
+  /// terminal: the agent revives it by proposing times again.
+  ON_HOLD
   /// The brand refused the visit. Terminal, and it fails the whole attempt.
   DECLINED
 }

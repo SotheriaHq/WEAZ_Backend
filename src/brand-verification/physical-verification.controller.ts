@@ -26,6 +26,7 @@ import {
   BrandVisitReplyDto,
   DecidePhysicalVerificationDto,
   ProposeVisitDto,
+  RescheduleResponseDto,
 } from './dto/physical-verification.dto';
 
 type AuthedRequest = Request & { user?: { id?: string } };
@@ -102,6 +103,22 @@ export class PhysicalVerificationAdminController {
   ) {
     return this.service.proposeVisit(id, actorId(req), {
       slots: dto.slots,
+      note: dto.note,
+    });
+  }
+
+  @Post(':id/reschedule-response')
+  @RequirePermissions(ADMIN_PERMISSIONS.VERIFICATION_PHYSICAL_SCHEDULE)
+  @ApiOperation({
+    summary: 'Answer a reschedule request: accept it, or postpone with no date',
+  })
+  async respondToReschedule(
+    @Param('id') id: string,
+    @Body() dto: RescheduleResponseDto,
+    @Req() req: AuthedRequest,
+  ) {
+    return this.service.respondToReschedule(id, actorId(req), {
+      decision: dto.decision,
       note: dto.note,
     });
   }

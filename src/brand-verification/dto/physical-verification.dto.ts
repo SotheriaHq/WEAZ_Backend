@@ -52,6 +52,21 @@ export class BrandVisitReplyDto {
   note?: string;
 }
 
+export class RescheduleResponseDto {
+  /**
+   * ACCEPTED takes the slot the brand picked. DECLINED postpones with no date
+   * — the visit goes ON_HOLD and the agent revives it by proposing again.
+   * Offering a different date is `propose`, not this.
+   */
+  @IsEnum(['ACCEPTED', 'DECLINED'])
+  decision!: 'ACCEPTED' | 'DECLINED';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
 export class AddPhysicalVerificationProofDto {
   @IsOptional()
   @IsEnum(PhysicalVerificationProofKind)

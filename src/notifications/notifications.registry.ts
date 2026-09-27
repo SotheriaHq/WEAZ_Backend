@@ -35,6 +35,16 @@ const NT_VERIFICATION_VISIT_RESCHEDULE_REQUESTED =
   'VERIFICATION_VISIT_RESCHEDULE_REQUESTED' as NotificationType;
 const NT_VERIFICATION_VISIT_DECLINED =
   'VERIFICATION_VISIT_DECLINED' as NotificationType;
+const NT_VERIFICATION_VISIT_RESCHEDULE_ACCEPTED =
+  'VERIFICATION_VISIT_RESCHEDULE_ACCEPTED' as NotificationType;
+const NT_VERIFICATION_VISIT_RESCHEDULE_DECLINED =
+  'VERIFICATION_VISIT_RESCHEDULE_DECLINED' as NotificationType;
+const NT_VERIFICATION_VISIT_REMINDER =
+  'VERIFICATION_VISIT_REMINDER' as NotificationType;
+const NT_VERIFICATION_VISIT_RESPONSE_DUE =
+  'VERIFICATION_VISIT_RESPONSE_DUE' as NotificationType;
+const NT_VERIFICATION_VISIT_OVERDUE =
+  'VERIFICATION_VISIT_OVERDUE' as NotificationType;
 const NT_VERIFICATION_PHYSICAL_PASSED =
   'VERIFICATION_PHYSICAL_PASSED' as NotificationType;
 const NT_VERIFICATION_PHYSICAL_FAILED =
@@ -1197,6 +1207,89 @@ export class NotificationRegistry {
         n.payload?.brandName
           ? `${n.payload.brandName} asked for a different visit time`
           : 'The brand asked for a different visit time',
+    });
+
+    /*
+      The agent's answer to a reschedule request.
+
+      Asking for another time is a QUESTION, and before these the brand heard
+      nothing back — they asked and the screen went quiet. Accepting confirms
+      their pick; declining postpones with no date, which has to say so plainly
+      rather than leave a confirmed-looking appointment on the screen.
+    */
+    registry.register({
+      type: NT_VERIFICATION_VISIT_RESCHEDULE_ACCEPTED,
+      schema: Joi.object({
+        physicalVerificationId: Joi.string().required(),
+        brandId: Joi.string().required(),
+        selectedSlot: Joi.string().allow(null).optional(),
+        note: Joi.string().allow(null, '').optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: () => 'Your new verification visit time was accepted',
+    });
+
+    registry.register({
+      type: NT_VERIFICATION_VISIT_RESCHEDULE_DECLINED,
+      schema: Joi.object({
+        physicalVerificationId: Joi.string().required(),
+        brandId: Joi.string().required(),
+        selectedSlot: Joi.string().allow(null).optional(),
+        note: Joi.string().allow(null, '').optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.note
+          ? `Your verification visit is postponed: ${n.payload.note}`
+          : 'Your verification visit is postponed. New times will be offered.',
+    });
+
+    /*
+      Reminders. The slot is stored, so neither side has to remember it.
+      One payload serves both audiences; `targetUrl` is what differs.
+    */
+    registry.register({
+      type: NT_VERIFICATION_VISIT_REMINDER,
+      schema: Joi.object({
+        physicalVerificationId: Joi.string().required(),
+        brandId: Joi.string().required(),
+        brandName: Joi.string().allow(null, '').optional(),
+        scheduledFor: Joi.string().allow(null).optional(),
+        when: Joi.string().allow(null, '').optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.when
+          ? `Verification visit ${n.payload.when}`
+          : 'Your verification visit is coming up',
+    });
+
+    registry.register({
+      type: NT_VERIFICATION_VISIT_RESPONSE_DUE,
+      schema: Joi.object({
+        physicalVerificationId: Joi.string().required(),
+        brandId: Joi.string().required(),
+        brandName: Joi.string().allow(null, '').optional(),
+        owes: Joi.string().valid('BRAND', 'AGENT').optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.owes === 'AGENT'
+          ? `${n.payload?.brandName ?? 'A brand'} is waiting on your answer about a visit time`
+          : 'Your verification visit is waiting on your answer',
+    });
+
+    registry.register({
+      type: NT_VERIFICATION_VISIT_OVERDUE,
+      schema: Joi.object({
+        physicalVerificationId: Joi.string().required(),
+        brandId: Joi.string().required(),
+        brandName: Joi.string().allow(null, '').optional(),
+        scheduledFor: Joi.string().allow(null).optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        `The visit for ${n.payload?.brandName ?? 'a brand'} has passed with no outcome recorded`,
     });
 
     registry.register({

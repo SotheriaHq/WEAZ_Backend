@@ -4,6 +4,7 @@ import { NotificationsModule } from 'src/notifications/notifications.module';
 import { BrandVerificationService } from './brand-verification.service';
 import { BrandVerificationCronService } from './brand-verification-cron.service';
 import { PhysicalVerificationService } from './physical-verification.service';
+import { PhysicalVerificationCronService } from './physical-verification-cron.service';
 import {
   PhysicalVerificationAdminController,
   PhysicalVerificationBrandController,
@@ -22,6 +23,7 @@ import { AdminPermissionGuard } from 'src/admin/guards/admin-permission.guard';
     BrandVerificationService,
     BrandVerificationCronService,
     PhysicalVerificationService,
+    PhysicalVerificationCronService,
     BrandAccessService,
     BrandPermissionService,
     AdminPermissionGuard,

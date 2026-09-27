@@ -252,6 +252,95 @@ describe('PhysicalVerificationService', () => {
     expect(where.status).toBe(PhysicalVerificationStatus.PENDING_ASSIGNMENT);
   });
 
+  /*
+    The reschedule loop, closed.
+
+    A brand asking for another time is a question. Before these three, the
+    agent could only re-propose — there was no way to simply take the slot the
+    brand picked, and no way to postpone honestly — and either way the brand
+    heard nothing back.
+  */
+  describe('answering a reschedule request', () => {
+    const rescheduleRow = () => ({
+      id: 'pv_1',
+      brandId: 'brand_1',
+      status: PhysicalVerificationStatus.RESCHEDULE_REQUESTED,
+      assignedAgentId: 'agent_1',
+      selectedSlotAt: new Date(Date.now() + 3 * 86400000),
+      proposedSlots: [futureSlot(3), futureSlot(5)],
+      decisionNotes: null,
+    });
+
+    it('accepting takes the slot the brand picked and tells them', async () => {
+      const { service, prisma, notifications } = buildService();
+      prisma.brandPhysicalVerification.findUnique.mockResolvedValue(
+        rescheduleRow(),
+      );
+
+      await service.respondToReschedule('pv_1', 'agent_1', {
+        decision: 'ACCEPTED',
+      });
+
+      const data = prisma.brandPhysicalVerification.update.mock.calls[0][0].data;
+      expect(data.status).toBe(PhysicalVerificationStatus.SCHEDULE_CONFIRMED);
+      expect(notifications.create).toHaveBeenCalledWith(
+        'owner_1',
+        NotificationType.VERIFICATION_VISIT_RESCHEDULE_ACCEPTED,
+        expect.anything(),
+      );
+    });
+
+    it('declining postpones with NO date rather than leaving a fake appointment', async () => {
+      const { service, prisma, notifications } = buildService();
+      prisma.brandPhysicalVerification.findUnique.mockResolvedValue(
+        rescheduleRow(),
+      );
+
+      await service.respondToReschedule('pv_1', 'agent_1', {
+        decision: 'DECLINED',
+        note: 'Team travelling',
+      });
+
+      const data = prisma.brandPhysicalVerification.update.mock.calls[0][0].data;
+      expect(data.status).toBe(PhysicalVerificationStatus.ON_HOLD);
+      // Keeping the brand's pick here would show a confirmed appointment
+      // nobody is coming to.
+      expect(data.selectedSlotAt).toBeNull();
+      expect(notifications.create).toHaveBeenCalledWith(
+        'owner_1',
+        NotificationType.VERIFICATION_VISIT_RESCHEDULE_DECLINED,
+        expect.anything(),
+      );
+    });
+
+    it('only answers a request that is actually open', async () => {
+      const { service, prisma } = buildService();
+      prisma.brandPhysicalVerification.findUnique.mockResolvedValue({
+        ...rescheduleRow(),
+        status: PhysicalVerificationStatus.SCHEDULE_CONFIRMED,
+      });
+
+      await expect(
+        service.respondToReschedule('pv_1', 'agent_1', { decision: 'ACCEPTED' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('a postponed visit can be revived by proposing again', async () => {
+      const { service, prisma } = buildService();
+      prisma.brandPhysicalVerification.findUnique.mockResolvedValue({
+        id: 'pv_1',
+        status: PhysicalVerificationStatus.ON_HOLD,
+        assignedAgentId: 'agent_1',
+      });
+
+      await expect(
+        service.proposeVisit('pv_1', 'agent_1', {
+          slots: [futureSlot(6), futureSlot(7)],
+        }),
+      ).resolves.toBeDefined();
+    });
+  });
+
   it('offers must give the brand something to choose between', async () => {
     const { service, prisma } = buildService();
     prisma.brandPhysicalVerification.findUnique.mockResolvedValue({

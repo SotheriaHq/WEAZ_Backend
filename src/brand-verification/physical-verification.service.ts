@@ -260,6 +260,8 @@ export class PhysicalVerificationService {
       PhysicalVerificationStatus.SCHEDULE_PROPOSED,
       PhysicalVerificationStatus.RESCHEDULE_REQUESTED,
       PhysicalVerificationStatus.SCHEDULE_CONFIRMED,
+      // Reviving a postponed visit is proposing times again.
+      PhysicalVerificationStatus.ON_HOLD,
     ]);
     this.mustOwnVisit(current, agentId);
 
@@ -396,6 +398,70 @@ export class PhysicalVerificationService {
         },
       );
     }
+
+    return this.getDetail(id);
+  }
+
+  /**
+    The agent's answer to "can we do it another time?".
+   *
+   * A reschedule request is a QUESTION and it had no answer: the agent could
+   * re-propose times, but there was no way to simply ACCEPT the alternative the
+   * brand picked, and no way to say "not then, and I cannot say when yet"
+   * without leaving the visit looking scheduled. The brand heard nothing back
+   * either way, which is the worst version — they asked, and the screen went
+   * quiet.
+   *
+   * Three answers, and all three reach the brand:
+   *  - ACCEPTED       the brand's chosen slot stands; the visit is confirmed.
+   *  - DECLINED       postponed with no date. ON_HOLD, not terminal: the agent
+   *                   revives it by proposing times again.
+   *  - another date   is simply `proposeVisit` again, which already notifies.
+   */
+  async respondToReschedule(
+    id: string,
+    agentId: string,
+    input: { decision: 'ACCEPTED' | 'DECLINED'; note?: string },
+  ) {
+    const current = await this.mustBeInStatus(id, [
+      PhysicalVerificationStatus.RESCHEDULE_REQUESTED,
+    ]);
+    this.mustOwnVisit(current, agentId);
+
+    const accepted = input.decision === 'ACCEPTED';
+    const updated = await this.prisma.brandPhysicalVerification.update({
+      where: { id },
+      data: {
+        status: accepted
+          ? PhysicalVerificationStatus.SCHEDULE_CONFIRMED
+          : PhysicalVerificationStatus.ON_HOLD,
+        // A postponed visit has no date. Leaving the brand's pick in place
+        // would show a confirmed appointment nobody is coming to.
+        selectedSlotAt: accepted ? current.selectedSlotAt : null,
+        proposedSlots: accepted ? current.proposedSlots : Prisma.DbNull,
+        decisionNotes: input.note ?? current.decisionNotes,
+      },
+      include: { brand: { select: { id: true, name: true, ownerId: true } } },
+    });
+
+    await this.notifications.create(
+      updated.brand.ownerId,
+      accepted
+        ? NotificationType.VERIFICATION_VISIT_RESCHEDULE_ACCEPTED
+        : NotificationType.VERIFICATION_VISIT_RESCHEDULE_DECLINED,
+      {
+        actorId: agentId,
+        payload: {
+          physicalVerificationId: id,
+          brandId: updated.brandId,
+          selectedSlot: accepted
+            ? (current.selectedSlotAt?.toISOString() ?? null)
+            : null,
+          note: input.note ?? null,
+          targetUrl: '/studio/verification',
+        },
+      },
+    );
 
     return this.getDetail(id);
   }

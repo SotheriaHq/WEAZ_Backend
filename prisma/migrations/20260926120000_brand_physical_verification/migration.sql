@@ -146,3 +146,32 @@ ALTER TYPE "NotificationType" ADD VALUE IF NOT EXISTS 'VERIFICATION_VISIT_DECLIN
 ALTER TYPE "NotificationType" ADD VALUE IF NOT EXISTS 'VERIFICATION_PHYSICAL_PASSED';
 ALTER TYPE "NotificationType" ADD VALUE IF NOT EXISTS 'VERIFICATION_PHYSICAL_FAILED';
 ALTER TYPE "NotificationType" ADD VALUE IF NOT EXISTS 'VERIFICATION_VISIT_ASSIGNED';
+
+-- Closing the reschedule loop.
+--
+-- A brand asking for a different time is a QUESTION, and it had no answer: the
+-- agent could re-propose, but there was no way to simply accept the brand's
+-- pick, and no way to say "not then, and I cannot say when yet" without leaving
+-- the visit looking scheduled. ON_HOLD is that second answer — not terminal,
+-- the agent revives it by proposing times again — and the two notification
+-- types carry the answer back to the brand, which otherwise heard nothing after
+-- asking.
+ALTER TYPE "PhysicalVerificationStatus" ADD VALUE IF NOT EXISTS 'ON_HOLD';
+ALTER TYPE "NotificationType" ADD VALUE IF NOT EXISTS 'VERIFICATION_VISIT_RESCHEDULE_ACCEPTED';
+ALTER TYPE "NotificationType" ADD VALUE IF NOT EXISTS 'VERIFICATION_VISIT_RESCHEDULE_DECLINED';
+
+-- Reminders.
+--
+-- The appointment is already stored, so neither side should have to remember it
+-- themselves. These four columns are the "already sent" marks that keep the
+-- reminder cron idempotent: without them a job running every quarter hour would
+-- resend the same reminder until the appointment arrived.
+ALTER TABLE "BrandPhysicalVerification"
+  ADD COLUMN IF NOT EXISTS "reminderDayBeforeAt"   TIMESTAMP(3),
+  ADD COLUMN IF NOT EXISTS "reminderHourBeforeAt"  TIMESTAMP(3),
+  ADD COLUMN IF NOT EXISTS "awaitingReplyNudgedAt" TIMESTAMP(3),
+  ADD COLUMN IF NOT EXISTS "overdueNudgedAt"       TIMESTAMP(3);
+
+ALTER TYPE "NotificationType" ADD VALUE IF NOT EXISTS 'VERIFICATION_VISIT_REMINDER';
+ALTER TYPE "NotificationType" ADD VALUE IF NOT EXISTS 'VERIFICATION_VISIT_RESPONSE_DUE';
+ALTER TYPE "NotificationType" ADD VALUE IF NOT EXISTS 'VERIFICATION_VISIT_OVERDUE';
