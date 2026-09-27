@@ -1242,7 +1242,16 @@ export class SizeFitService {
           {
             target: { ...REMINDER_TARGET, id: profile.userId },
             payload: {
-              targetUrl: '/profile',
+              /*
+                The fittings sheet, not the profile it lives on.
+
+                This was `/profile`, which dropped the user on their own page
+                with the reminder's whole subject one more tap away and no
+                indication of which tap. `?tab=fits` is the same convention
+                `?tab=orders` already uses: the web profile opens the size-fit
+                sheet on it, and `mobileRouting` maps it to `/fittings`.
+              */
+              targetUrl: '/profile?tab=fits',
               message:
                 'Please update your custom size/fits profile. We recommend refreshing it every 2 weeks.',
             },
