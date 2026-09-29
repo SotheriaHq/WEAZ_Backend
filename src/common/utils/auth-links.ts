@@ -100,6 +100,9 @@ function encodeToken(token: string): string {
  * Raw custom-scheme deep link (e.g. `wiezmobile://verify-email?token=...`). Used
  * by the bridge page's redirect — NOT placed directly in emails.
  */
+/** Installed Android application id. The intent URL names it so the hand-off opens this app. */
+const ANDROID_APP_PACKAGE = 'com.wiez.wiez';
+
 export function buildMobileSchemeAuthLink(
   route: 'verify-email' | 'reset-password',
   token: string,
@@ -110,7 +113,15 @@ export function buildMobileSchemeAuthLink(
   const nextQuery = sanitizedNextPath
     ? `&next=${encodeURIComponent(sanitizedNextPath)}`
     : '';
-  return `${resolveMobileAuthLinkBaseUrl()}${route}?token=${encodeToken(token)}${nextQuery}`;
+  const query = `token=${encodeToken(token)}${nextQuery}`;
+  const base = resolveMobileAuthLinkBaseUrl();
+  // Chrome's intent parser drops a query string that sits before `#Intent`,
+  // so a custom-scheme hand-off also carries the token in the path. An https
+  // universal link keeps the query only — that URL is a website route.
+  if (!/^https?:\/\//i.test(base)) {
+    return `${base}${route}/${encodeToken(token)}?${query}`;
+  }
+  return `${base}${route}?${query}`;
 }
 
 export function sanitizeAuthNextPath(nextPath?: string | null): string | null {
@@ -233,7 +244,7 @@ function buildAndroidIntentUrl(schemeUrl: string, fallbackUrl: string): string {
   const withoutScheme = schemeUrl.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
   const scheme = (schemeUrl.match(/^([a-z][a-z0-9+.-]*):\/\//i)?.[1] ??
     'wiezmobile') as string;
-  return `intent://${withoutScheme}#Intent;scheme=${scheme};S.browser_fallback_url=${encodeURIComponent(
+  return `intent://${withoutScheme}#Intent;scheme=${scheme};package=${ANDROID_APP_PACKAGE};S.browser_fallback_url=${encodeURIComponent(
     fallbackUrl,
   )};end`;
 }

@@ -1,6 +1,7 @@
 ﻿import {
   BadRequestException,
   Controller,
+  Logger,
   Get,
   Post,
   Body,
@@ -75,6 +76,8 @@ import {
 @Controller('auth')
 @UseGuards(ThrottlerGuard)
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
+
   constructor(
     private readonly authService: AuthService,
     private readonly tokenService: TokenService,
@@ -608,6 +611,25 @@ export class AuthController {
     @Query('next') next: string,
     @Res() res: Response,
   ) {
+    // The mail client always loads this page. The app hand-off that follows
+    // often arrives without the token (Chrome drops the query on an intent
+    // URL, and a warm app just resumes on the profile). Recording the
+    // confirmation here is what a later profile refresh can see. Same trust
+    // as GET /auth/verify-email: possession of the link is the proof.
+    const verificationToken = String(token ?? '').trim();
+    if (verificationToken) {
+      try {
+        await this.authService.verifyEmailByToken(verificationToken);
+      } catch (error) {
+        if (!(error instanceof BadRequestException)) {
+          this.logger.warn(
+            `Verify-email bridge could not record the confirmation: ${
+              error instanceof Error ? error.message : 'unknown error'
+            }`,
+          );
+        }
+      }
+    }
     res
       .type('html')
       .send(buildAppLinkBridgeHtml('verify-email', { token, next }));

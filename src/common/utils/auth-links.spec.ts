@@ -186,9 +186,10 @@ describe('auth link builders', () => {
     it('hands off to the app through script, with an Android intent URL', () => {
       const html = buildAppLinkBridgeHtml('reset-password', { token: 'tok' });
 
-      expect(html).toContain('wiezmobile://reset-password?token=tok');
-      expect(html).toContain('intent://reset-password?token=tok#Intent');
+      expect(html).toContain('wiezmobile://reset-password/tok?token=tok');
+      expect(html).toContain('intent://reset-password/tok?token=tok#Intent');
       expect(html).toContain('scheme=wiezmobile');
+      expect(html).toContain('package=com.wiez.wiez');
       expect(html).toContain('S.browser_fallback_url=');
       // …and still leaves a working https button behind.
       expect(html).toContain('href="https://app.wiez.test/reset-password?token=tok"');
