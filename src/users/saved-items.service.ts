@@ -183,6 +183,22 @@ export class SavedItemsService {
               maxPrice: collection.maxPrice,
               price: collection.minPrice,
               brand: this.mapSavedBrand(collection.owner),
+              /*
+                A clipped DESIGN is stored as a COLLECTION row — see
+                `mapCatalogTargetForLegacyApi` on both clients. So `targetType`
+                alone cannot say whether opening this clip should land on the
+                design content view or a store collection, and the client was
+                guessing: it sent every COLLECTION clip to `/collections/:id`,
+                which probes the API twice and then redirects design clips into
+                `/market?openDesign=` — a different screen from the one the
+                shopper clipped from.
+
+                These two fields are the distinction the client is missing.
+                `domain` is the collection's own kind; `isAvailableInStore`
+                matches the predicate `CollectionRouter` already uses.
+              */
+              domain: collection.domain,
+              isAvailableInStore: collection.isAvailableInStore,
             };
           }
         } else if (item.targetType === SavedItemTypeDto.COLLECTION_MEDIA) {
