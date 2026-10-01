@@ -417,6 +417,182 @@ describe('CustomOrderAdminService', () => {
     );
   });
 
+  it('names the buyer, the transaction, and the expected conclusion on admin detail', async () => {
+    prisma.customOrder.findUnique.mockResolvedValue({
+      id: 'co_1',
+      brandId: 'brand_1',
+      buyerId: 'buyer_1',
+      status: CustomOrderStatus.IN_PRODUCTION,
+      paymentStatus: PaymentStatus.PAID,
+      paymentMethod: 'CARD',
+      paymentReference: 'wiez_ref_1',
+      currency: 'NGN',
+      sourceType: 'DESIGN',
+      sourceId: 'design_1',
+      sourceTitleSnapshot: 'Agbada set',
+      sourceBrandNameSnapshot: 'WIEZ Atelier',
+      sourcePrimaryMediaUrlSnapshot: null,
+      configurationId: 'config_1',
+      configurationVersionId: 'config_v1',
+      matchedFabricRuleId: 'rule_1',
+      unifiedCheckoutSessionId: 'session_1',
+      checkoutIntentId: 'intent_1',
+      idempotencyKey: 'idem_1',
+      internalPriceBreakdownJson: { chartLock: { chartVersionId: 'chart_v1' } },
+      buyerPriceSummaryJson: { grandTotal: 48000, currency: 'NGN' },
+      measurementSnapshotJson: { chest: 101 },
+      productionLeadDaysSnapshot: 7,
+      deliveryMinDaysSnapshot: 2,
+      deliveryMaxDaysSnapshot: 5,
+      rushSelected: false,
+      promisedDeliveryAt: new Date('2026-10-20T00:00:00.000Z'),
+      buyerAcceptanceWindowEndsAt: null,
+      completedAt: null,
+      createdAt: new Date('2026-10-01T09:00:00.000Z'),
+      updatedAt: new Date('2026-10-02T09:00:00.000Z'),
+      // The checkout snapshot disagrees with the account on purpose: the account
+      // is identity, the snapshot is the delivery contact.
+      contactInfoJson: {
+        customerName: 'A. Shopper',
+        email: 'checkout@example.com',
+        phone: '+2348010000000',
+      },
+      buyer: {
+        id: 'buyer_1',
+        email: 'account@example.com',
+        username: 'ada',
+        status: 'ACTIVE',
+        createdAt: new Date('2026-01-04T09:00:00.000Z'),
+        userProfile: {
+          firstName: 'Ada',
+          lastName: 'Okafor',
+          phoneNumber: '+2348020000000',
+          city: 'Ikeja',
+          state: 'Lagos',
+          country: 'Nigeria',
+        },
+      },
+      progressEvents: [],
+      extensionRequests: [],
+      timelineEvents: [],
+      issues: [],
+      disputes: [],
+      ledgerAllocations: [],
+    });
+    prisma.paymentAttempt.findMany.mockResolvedValue([
+      {
+        id: 'attempt_2',
+        reference: 'wiez_ref_1',
+        status: 'SUCCESS',
+        provider: 'PAYSTACK',
+        amount: 48000,
+        currency: 'NGN',
+        confirmedAt: new Date('2026-10-01T09:05:00.000Z'),
+        lastVerifiedAt: new Date('2026-10-01T09:06:00.000Z'),
+        failureMessage: null,
+        createdAt: new Date('2026-10-01T09:04:00.000Z'),
+      },
+      {
+        id: 'attempt_1',
+        reference: 'wiez_ref_0',
+        status: 'FAILED',
+        provider: 'PAYSTACK',
+        amount: 48000,
+        currency: 'NGN',
+        confirmedAt: null,
+        lastVerifiedAt: null,
+        failureMessage: 'Declined',
+        createdAt: new Date('2026-10-01T09:01:00.000Z'),
+      },
+    ]);
+
+    const result = await service.getOrder('co_1');
+
+    // Identity comes from the account, not from whatever was typed at checkout.
+    expect(result.data.buyer).toEqual(
+      expect.objectContaining({
+        id: 'buyer_1',
+        name: 'Ada Okafor',
+        username: 'ada',
+        email: 'account@example.com',
+        phone: '+2348020000000',
+        location: 'Ikeja, Lagos, Nigeria',
+        accountStatus: 'ACTIVE',
+      }),
+    );
+    // The checkout snapshot survives untouched beside it.
+    expect(result.data.buyer.checkoutContact).toEqual({
+      name: 'A. Shopper',
+      email: 'checkout@example.com',
+      phone: '+2348010000000',
+    });
+    // Posted = the FIRST attempt, cleared = the one that actually confirmed.
+    expect(result.data.payment).toEqual(
+      expect.objectContaining({
+        status: PaymentStatus.PAID,
+        method: 'CARD',
+        provider: 'PAYSTACK',
+        amount: 48000,
+        attemptCount: 2,
+        postedAt: new Date('2026-10-01T09:01:00.000Z'),
+        confirmedAt: new Date('2026-10-01T09:05:00.000Z'),
+      }),
+    );
+    // Not concluded yet, so the answer is the date it is still expected by.
+    expect(result.data.lifecycle.expectedConclusionAt).toEqual(
+      new Date('2026-10-20T00:00:00.000Z'),
+    );
+    // The uuids leave the pricing blob and arrive as named references.
+    expect(result.data.references).toEqual(
+      expect.objectContaining({
+        checkoutSessionId: 'session_1',
+        checkoutIntentId: 'intent_1',
+        chartVersionId: 'chart_v1',
+        matchedFabricRuleId: 'rule_1',
+      }),
+    );
+  });
+
+  it('falls back to the checkout contact when the buyer account is gone', async () => {
+    prisma.customOrder.findUnique.mockResolvedValue({
+      id: 'co_2',
+      brandId: 'brand_1',
+      buyerId: 'buyer_2',
+      status: CustomOrderStatus.COMPLETED,
+      paymentStatus: PaymentStatus.PAID,
+      currency: 'NGN',
+      internalPriceBreakdownJson: {},
+      buyerPriceSummaryJson: { grandTotal: 1000 },
+      measurementSnapshotJson: {},
+      contactInfoJson: { customerName: 'A. Shopper', email: 'a@example.com' },
+      buyer: null,
+      completedAt: new Date('2026-09-30T00:00:00.000Z'),
+      promisedDeliveryAt: new Date('2026-09-20T00:00:00.000Z'),
+      createdAt: new Date('2026-09-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-09-30T00:00:00.000Z'),
+      progressEvents: [],
+      extensionRequests: [],
+      timelineEvents: [],
+      issues: [],
+      disputes: [],
+      ledgerAllocations: [],
+    });
+    prisma.paymentAttempt.findMany.mockResolvedValue([]);
+
+    const result = await service.getOrder('co_2');
+
+    expect(result.data.buyer.name).toBe('A. Shopper');
+    expect(result.data.buyer.email).toBe('a@example.com');
+    expect(result.data.buyer.accountStatus).toBeNull();
+    expect(result.data.payment.attemptCount).toBe(0);
+    expect(result.data.payment.confirmedAt).toBeNull();
+    // Once it is finished, the conclusion is the completion date — not a promise
+    // that is now in the past.
+    expect(result.data.lifecycle.expectedConclusionAt).toEqual(
+      new Date('2026-09-30T00:00:00.000Z'),
+    );
+  });
+
   it('lists ledger allocations with payout linkage for reconciliation', async () => {
     prisma.$transaction.mockResolvedValue([
       [

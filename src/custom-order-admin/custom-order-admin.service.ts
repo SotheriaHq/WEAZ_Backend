@@ -16,6 +16,13 @@ import {
   PaymentStatus,
   Prisma,
 } from '@prisma/client';
+import {
+  canonicalUserProfileSelect,
+  composeLocationLine,
+  resolveNullableProfileField,
+  resolveProfileImage,
+  resolveRequiredProfileField,
+} from 'src/common/user-profile-source.helper';
 import { CustomOrderRefundService } from 'src/custom-orders/custom-order-refund.service';
 import { CustomOrderSideEffectsService } from 'src/custom-orders/custom-order-side-effects.service';
 import { CustomOrdersService } from 'src/custom-orders/custom-orders.service';
@@ -1387,10 +1394,35 @@ export class CustomOrderAdminService {
   }
 
   async getOrder(id: string) {
-    const order = await this.prisma.customOrder.findUnique({
-      where: { id },
-      include: this.detailInclude,
-    });
+    // The attempts are keyed by customOrderId, so they do not need the order
+    // row first — issuing both together keeps the detail page at one round trip
+    // instead of two sequential ones.
+    const [order, paymentAttempts] = await Promise.all([
+      this.prisma.customOrder.findUnique({
+        where: { id },
+        include: this.detailInclude,
+      }),
+      this.prisma.paymentAttempt.findMany({
+        where: { customOrderId: id },
+        orderBy: { createdAt: 'desc' },
+        // Capped: an admin needs the money trail, not an unbounded history.
+        take: 10,
+        // Never the request/response snapshots — they carry provider payloads
+        // this screen has no use for.
+        select: {
+          id: true,
+          reference: true,
+          status: true,
+          provider: true,
+          amount: true,
+          currency: true,
+          confirmedAt: true,
+          lastVerifiedAt: true,
+          failureMessage: true,
+          createdAt: true,
+        },
+      }),
+    ]);
     if (!order) {
       throw new NotFoundException('Custom order not found');
     }
@@ -1401,7 +1433,7 @@ export class CustomOrderAdminService {
     return {
       statusCode: 200,
       message: 'Custom-order admin detail retrieved',
-      data: this.mapAdminOrderDetail(hydrated),
+      data: this.mapAdminOrderDetail(hydrated, paymentAttempts),
     };
   }
 
@@ -1412,7 +1444,7 @@ export class CustomOrderAdminService {
    * Prisma row, so the detail screen showed "Source type: Unknown" / "No
    * breakdown available" and a generic title.
    */
-  private mapAdminOrderDetail(order: any) {
+  private mapAdminOrderDetail(order: any, paymentAttempts: any[] = []) {
     const asRecord = (value: unknown): Record<string, unknown> =>
       value && typeof value === 'object' && !Array.isArray(value)
         ? (value as Record<string, unknown>)
@@ -1489,6 +1521,54 @@ export class CustomOrderAdminService {
           : (order.adminAttentionReason ?? null),
       brandId: order.brandId,
       buyerId: order.buyerId,
+      buyer: this.mapDetailBuyer(order),
+      payment: this.mapDetailPayment(order, paymentAttempts),
+      lifecycle: {
+        placedAt: order.createdAt,
+        measurementConfirmedAt: order.measurementConfirmedAt,
+        acceptedAt: order.acceptedAt,
+        rejectedAt: order.rejectedAt,
+        promisedProductionAt: order.promisedProductionAt,
+        promisedDispatchAt: order.promisedDispatchAt,
+        promisedDeliveryAt: order.promisedDeliveryAt,
+        deliveredAt: order.deliveredAt,
+        issueReportedAt: order.issueReportedAt,
+        buyerAcceptedAt: order.buyerAcceptedAt,
+        completedAt: order.completedAt,
+        // What the admin actually asked for: when is this expected to be DONE.
+        // Once it is finished the answer is the real completion date, not the
+        // promise that is now in the past.
+        expectedConclusionAt:
+          order.completedAt ??
+          order.buyerAcceptanceWindowEndsAt ??
+          order.promisedDeliveryAt ??
+          null,
+        stageEnteredAt: order.currentProgressStageEnteredAt,
+        lastBrandProgressUpdateAt: order.lastBrandProgressUpdateAt,
+      },
+      leadTimes: {
+        productionLeadDays: order.productionLeadDaysSnapshot ?? null,
+        deliveryMinDays: order.deliveryMinDaysSnapshot ?? null,
+        deliveryMaxDays: order.deliveryMaxDaysSnapshot ?? null,
+        rushSelected: Boolean(order.rushSelected),
+      },
+      // Every technical id this order hangs off, in ONE place. They used to
+      // reach the screen scattered through the raw pricing JSON, where a chart
+      // version uuid sat beside a money line as if they were the same kind of
+      // fact.
+      references: {
+        orderId: order.id,
+        checkoutSessionId: order.unifiedCheckoutSessionId ?? null,
+        checkoutIntentId: order.checkoutIntentId ?? null,
+        configurationId: order.configurationId ?? null,
+        configurationVersionId: order.configurationVersionId ?? null,
+        chartVersionId: (chartLock?.chartVersionId as string | undefined) ?? null,
+        matchedFabricRuleId: order.matchedFabricRuleId ?? null,
+        paymentReference: order.paymentReference ?? null,
+        idempotencyKey: order.idempotencyKey ?? null,
+        brandId: order.brandId,
+        buyerId: order.buyerId,
+      },
       progressEvents: order.progressEvents,
       extensionRequests: order.extensionRequests,
       issues: order.issues,
@@ -1497,6 +1577,123 @@ export class CustomOrderAdminService {
       timelineEvents: order.timelineEvents,
       createdAt: order.createdAt,
       updatedAt: order.updatedAt,
+    };
+  }
+
+  /**
+   * Who placed this order, as an admin needs to read it.
+   *
+   * Two sources exist and they disagree: the ACCOUNT (profile + email, current)
+   * and the CONTACT SNAPSHOT the shopper typed at checkout (historical, and the
+   * only thing the list endpoint has ever shown). The account wins for identity
+   * because it is the row an admin can act on; the snapshot is returned beside
+   * it, unmerged, because a delivery phone that differs from the profile phone
+   * is information, not noise.
+   *
+   * Anonymized orders keep `buyerId` but the profile is gone — the caller gets
+   * nulls and the screen says so, rather than inventing "Customer".
+   */
+  private mapDetailBuyer(order: any) {
+    const contact =
+      order.contactInfoJson &&
+      typeof order.contactInfoJson === 'object' &&
+      !Array.isArray(order.contactInfoJson)
+        ? (order.contactInfoJson as Record<string, unknown>)
+        : {};
+    const readContact = (key: string) => {
+      const value = contact[key];
+      return typeof value === 'string' && value.trim() ? value.trim() : null;
+    };
+
+    const buyer = order.buyer ?? null;
+    const profileSource = buyer ? { userProfile: buyer.userProfile } : null;
+    const accountName = profileSource
+      ? [
+          resolveRequiredProfileField(profileSource as any, 'firstName'),
+          resolveRequiredProfileField(profileSource as any, 'lastName'),
+        ]
+          .map((part) => part.trim())
+          .filter((part) => part.length > 0)
+          .join(' ')
+      : '';
+    const profileImage = profileSource
+      ? resolveProfileImage(profileSource as any)
+      : { url: null, fileId: null };
+
+    const snapshot = {
+      name: readContact('customerName'),
+      email: readContact('email'),
+      phone: readContact('phone'),
+    };
+
+    return {
+      id: buyer?.id ?? order.buyerId ?? null,
+      // Account name first, checkout name second — never a hardcoded fallback.
+      name: accountName || snapshot.name,
+      username: buyer?.username ?? null,
+      email: buyer?.email ?? snapshot.email,
+      phone: profileSource
+        ? (resolveNullableProfileField(profileSource as any, 'phoneNumber') ??
+          snapshot.phone)
+        : snapshot.phone,
+      location: profileSource
+        ? composeLocationLine({
+            city: resolveNullableProfileField(profileSource as any, 'city'),
+            state: resolveNullableProfileField(profileSource as any, 'state'),
+            country: resolveNullableProfileField(profileSource as any, 'country'),
+          })
+        : null,
+      accountStatus: buyer?.status ?? null,
+      joinedAt: buyer?.createdAt ?? null,
+      profileImage: profileImage.url ?? null,
+      profileImageId: profileImage.fileId ?? null,
+      /** Exactly what the shopper typed at checkout, for the delivery contact. */
+      checkoutContact: snapshot,
+    };
+  }
+
+  /**
+   * The money side as a transaction, not as two enum columns.
+   *
+   * `paymentStatus` alone never answered "when was this posted and did it go
+   * through" — that lives on PaymentAttempt. The newest attempt is the headline;
+   * the rest stay as a list so a retried card is visible instead of implied.
+   */
+  private mapDetailPayment(order: any, paymentAttempts: any[]) {
+    const attempts = (Array.isArray(paymentAttempts) ? paymentAttempts : []).map(
+      (attempt) => ({
+        id: attempt.id,
+        reference: attempt.reference,
+        status: attempt.status,
+        provider: attempt.provider,
+        amount: Number(attempt.amount ?? 0),
+        currency: attempt.currency,
+        confirmedAt: attempt.confirmedAt ?? null,
+        lastVerifiedAt: attempt.lastVerifiedAt ?? null,
+        failureMessage: attempt.failureMessage ?? null,
+        createdAt: attempt.createdAt,
+      }),
+    );
+    const latest = attempts[0] ?? null;
+    // Confirmation is the date money actually moved; attempts are newest-first
+    // so the first confirmed one is the successful charge.
+    const confirmed = attempts.find((attempt) => attempt.confirmedAt != null) ?? null;
+
+    return {
+      status: order.paymentStatus,
+      method: order.paymentMethod ?? null,
+      reference: order.paymentReference ?? latest?.reference ?? null,
+      provider: latest?.provider ?? null,
+      amount: confirmed?.amount ?? latest?.amount ?? null,
+      currency: confirmed?.currency ?? latest?.currency ?? order.currency ?? 'NGN',
+      /** When the transaction was first posted (the attempt was opened). */
+      postedAt: attempts.length > 0 ? attempts[attempts.length - 1].createdAt : null,
+      /** When it actually cleared. Null means it never did. */
+      confirmedAt: confirmed?.confirmedAt ?? null,
+      lastVerifiedAt: latest?.lastVerifiedAt ?? null,
+      failureMessage: latest?.failureMessage ?? null,
+      attemptCount: attempts.length,
+      attempts,
     };
   }
 
@@ -2333,6 +2530,21 @@ export class CustomOrderAdminService {
     // Frontend uses ledgerAllocations from this payload (no second fetch).
     return {
       brand: { select: { id: true, name: true, ownerId: true } },
+      // The admin opening an order has to be able to say WHO placed it. The
+      // order only stores a contact snapshot, which is whatever the shopper
+      // typed at checkout and is absent on older rows — so read the account
+      // through the canonical profile select and keep the snapshot as the
+      // fallback, never the other way round.
+      buyer: {
+        select: {
+          id: true,
+          email: true,
+          username: true,
+          status: true,
+          createdAt: true,
+          userProfile: { select: canonicalUserProfileSelect },
+        },
+      },
       progressEvents: {
         orderBy: { changedAt: 'desc' as const },
         take: 50,
