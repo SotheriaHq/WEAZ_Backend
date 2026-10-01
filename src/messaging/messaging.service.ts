@@ -3217,6 +3217,9 @@ export class MessagingService {
           message: {
             ...existing,
             sender: this.mapUserDisplay(existing.sender),
+            // See the note on the non-replay return below: the send response
+            // has to carry a delivery status or the sender's bubble has no tick.
+            deliveryStatus: 'SENT' as const,
           },
           replay: true,
         };
@@ -3376,6 +3379,24 @@ export class MessagingService {
         message: {
           ...message,
           sender: this.mapUserDisplay(message.sender),
+          /*
+            A sent message is SENT.
+
+            This endpoint returned the raw row, which has no `deliveryStatus` —
+            that field is computed in `messaging-query.service` from the receipt
+            table, and only on the LIST query. Clients render a tick only when
+            the field is present, so a freshly sent message had no tick at all
+            until something re-fetched the thread. The mobile client used to do
+            exactly that after every send, which hid the gap; when that refetch
+            was removed (it was re-rendering the whole list under the composer)
+            the missing field became the visible "ticks are gone" regression.
+
+            SENT is the correct and only honest value here: the row exists on
+            the server, and no delivery receipt can have been written yet —
+            `markDeliveredToConnectedRecipients` runs after this returns and
+            pushes DELIVERED/READ over the socket.
+          */
+          deliveryStatus: 'SENT' as const,
         },
         replay: false,
       };
