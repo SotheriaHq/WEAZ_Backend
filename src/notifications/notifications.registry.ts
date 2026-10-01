@@ -1591,35 +1591,64 @@ export class NotificationRegistry {
 
     registry.register({
       type: NT_CUSTOM_ORDER_EXTENSION_REQUESTED,
+      // Payloads are validated with `stripUnknown`, so anything the clients need
+      // to route on has to be declared here or it is silently dropped. The
+      // request id is what lets a tap land on the decision screen.
       schema: Joi.object({
         customOrderId: Joi.string().required(),
+        requestId: Joi.string().optional(),
         requestedExtraDays: Joi.number().optional(),
+        targetType: Joi.string().optional(),
+        respondByAt: Joi.string().optional(),
+        sequence: Joi.number().optional(),
         targetUrl: Joi.string().optional(),
         message: Joi.string().optional(),
       }),
-      formatter: (n: any) =>
-        n.payload?.message ||
-        `An extension was requested for ${formatCustomOrderCode(n.payload?.customOrderId)}`,
+      formatter: (n: any) => {
+        if (n.payload?.message) return n.payload.message;
+        const code = formatCustomOrderCode(n.payload?.customOrderId);
+        const days = Number(n.payload?.requestedExtraDays ?? 0);
+        return days > 0
+          ? `Your maker needs ${days} more day${days === 1 ? '' : 's'} on ${code}. Tap to accept or decline.`
+          : `Your maker asked for more time on ${code}. Tap to accept or decline.`;
+      },
     });
 
     registry.register({
       type: NT_CUSTOM_ORDER_EXTENSION_RESOLVED,
       schema: Joi.object({
         customOrderId: Joi.string().required(),
+        requestId: Joi.string().optional(),
         response: Joi.string().optional(),
+        grantedDays: Joi.number().optional(),
+        newDeadlineAt: Joi.string().optional(),
         targetUrl: Joi.string().optional(),
         message: Joi.string().optional(),
       }),
-      formatter: (n: any) =>
-        n.payload?.message ||
-        `The extension request for ${formatCustomOrderCode(n.payload?.customOrderId)} was ${String(n.payload?.response || 'resolved').toLowerCase()}`,
+      formatter: (n: any) => {
+        if (n.payload?.message) return n.payload.message;
+        const code = formatCustomOrderCode(n.payload?.customOrderId);
+        const response = String(n.payload?.response || '').toUpperCase();
+        const days = Number(n.payload?.grantedDays ?? 0);
+        if (response === 'ACCEPTED') {
+          return days > 0
+            ? `${code}: ${days} extra day${days === 1 ? '' : 's'} granted. The new deadline is live.`
+            : `${code}: the extension was granted.`;
+        }
+        if (response === 'REJECTED') {
+          return `${code}: the extension was declined and WIEZ is now reviewing the order.`;
+        }
+        return `The extension request for ${code} was ${response.toLowerCase() || 'resolved'}`;
+      },
     });
 
     registry.register({
       type: NT_CUSTOM_ORDER_BUYER_COUNTERED,
       schema: Joi.object({
         customOrderId: Joi.string().required(),
+        requestId: Joi.string().optional(),
         counterDays: Joi.number().optional(),
+        buyerNote: Joi.string().allow('').optional(),
         targetUrl: Joi.string().optional(),
         message: Joi.string().optional(),
       }),
@@ -1632,12 +1661,14 @@ export class NotificationRegistry {
       type: NT_CUSTOM_ORDER_BUYER_REJECTED_EXTENSION,
       schema: Joi.object({
         customOrderId: Joi.string().required(),
+        requestId: Joi.string().optional(),
+        buyerNote: Joi.string().allow('').optional(),
         targetUrl: Joi.string().optional(),
         message: Joi.string().optional(),
       }),
       formatter: (n: any) =>
         n.payload?.message ||
-        `The buyer rejected the extension request for ${formatCustomOrderCode(n.payload?.customOrderId)}`,
+        `The shopper declined more time on ${formatCustomOrderCode(n.payload?.customOrderId)}. WIEZ is reviewing the order — keep producing unless told otherwise.`,
     });
 
     registry.register({
@@ -1707,6 +1738,11 @@ export class NotificationRegistry {
       type: NT_CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
       schema: Joi.object({
         customOrderId: Joi.string().required(),
+        // The formatter has always read `reason`, but it was not declared, so
+        // `stripUnknown` removed it and every one of these read as the generic
+        // sentence.
+        reason: Joi.string().optional(),
+        requestId: Joi.string().optional(),
         targetUrl: Joi.string().optional(),
         message: Joi.string().optional(),
       }),

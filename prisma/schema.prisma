@@ -597,6 +597,8 @@ enum CustomOrderExtensionResponseStatus {
   COUNTERED
   REJECTED
   EXPIRED
+  /// The stage it was buying time for was reached before the shopper answered.
+  VOIDED
 }
 
 enum CustomOrderActorType {
@@ -617,6 +619,17 @@ enum CustomOrderTimelineEventType {
   PROGRESS_STAGE_CHANGED
   EXTENSION_REQUESTED
   EXTENSION_RESOLVED
+  /// The brand was told its production deadline is close enough to act on.
+  EXTENSION_DEADLINE_WARNED
+  /// The shopper never answered; nothing was granted and an admin was called.
+  EXTENSION_EXPIRED
+  /// The stage it was buying time for was reached before it was answered.
+  EXTENSION_VOIDED
+  /// An admin stepped in, or stepped back out, on this order.
+  ADMIN_INTERVENTION_OPENED
+  ADMIN_INTERVENTION_RESOLVED
+  /// An admin wrote privately to one party (read-only for the recipient).
+  ADMIN_NOTICE_SENT
   DELIVERED
   BUYER_CONFIRMED_DELIVERY
   DELIVERY_ISSUE_REPORTED
@@ -3351,6 +3364,16 @@ model CustomOrder {
   promisedProductionAt          DateTime?
   promisedDispatchAt            DateTime?
   promisedDeliveryAt            DateTime?
+  /// The promises as they stood when the buyer paid, kept so an accepted
+  /// extension cannot erase what the brand originally committed to. Null until
+  /// the first extension is granted: before that `promised*` IS the original.
+  originalPromisedProductionAt  DateTime?
+  originalPromisedDispatchAt    DateTime?
+  originalPromisedDeliveryAt    DateTime?
+  /// Extension budget, counted in DAYS GRANTED rather than requests — two
+  /// requests of three days is still six days the shopper did not sign up for.
+  totalExtensionDaysGranted     Int                                  @default(0)
+  approvedExtensionCount        Int                                  @default(0)
   currentProgressStage          CustomOrderProgressStage             @default(ORDER_PLACED)
   currentProgressStageEnteredAt DateTime                             @default(now())
   lastBrandProgressUpdateAt     DateTime?
@@ -3374,6 +3397,17 @@ model CustomOrder {
   adminAttentionClearedById     String?                              @db.Uuid
   brandAdminNoticeAt            DateTime?
   brandAdminNoticeAckAt         DateTime?
+  /// The shopper's half of the one-way admin notice channel the brand already
+  /// had. Admin writes, the shopper reads and acknowledges — never a reply.
+  buyerAdminNoticeAt            DateTime?
+  buyerAdminNoticeAckAt         DateTime?
+  /// A lighter signal than `DISPUTED`: an order an admin has to steer, raised
+  /// alongside the dispute so a rejected extension cannot fall through the gap
+  /// between "a dispute exists" and "somebody is actually on it".
+  adminInterventionAt           DateTime?
+  adminInterventionReason       String?
+  adminInterventionResolvedAt   DateTime?
+  adminInterventionResolvedById String?                              @db.Uuid
   createdAt                     DateTime                             @default(now())
   updatedAt                     DateTime                             @updatedAt
   progressEvents                CustomOrderProgressEvent[]
@@ -3402,6 +3436,9 @@ model CustomOrder {
   @@index([currentProgressStage, lastBrandProgressUpdateAt])
   @@index([measurementRetentionUntil, retentionHoldUntil, anonymizedAt])
   @@index([adminAttentionRequiredAt])
+  @@index([adminInterventionAt])
+  // The deadline sweeps read production/delivery promises on live orders only.
+  @@index([status, promisedProductionAt])
   // Partial composite for the active attention queue is applied in migration
   // 20260722140000_custom_order_attention_partial_index (Prisma cannot express
   // partial WHERE clauses in schema indexes).
@@ -3746,11 +3783,31 @@ model CustomOrderExtensionRequest {
   reason              String
   buyerResponseStatus CustomOrderExtensionResponseStatus @default(OPEN)
   buyerCounterDays    Int?
+  /// Optional note the shopper leaves when accepting or rejecting. Optional by
+  /// design — requiring a reason to say no is a way of discouraging no.
+  buyerNote           String?
+  /// Optional note the brand leaves when answering a counter.
+  brandNote           String?
+  /// The deadline for the shopper to answer. Silence past it EXPIRES the
+  /// request and escalates to an admin; it never counts as consent.
+  respondByAt         DateTime?
+  /// Days actually granted, which is the counter value when one was accepted.
+  /// Kept separately from `requestedExtraDays` so the budget is auditable.
+  appliedExtraDays    Int?
+  expiredAt           DateTime?
+  /// Set when the stage this request was buying time for has already been
+  /// reached, so a stale request stops asking the shopper for nothing.
+  voidedAt            DateTime?
+  /// 1 for the order's first request, 2 for the second. Only approved requests
+  /// consume the budget, so this is a label, not the counter.
+  sequence            Int                                @default(1)
   resolvedAt          DateTime?
   createdAt           DateTime                           @default(now())
   updatedAt           DateTime                           @updatedAt
 
   @@index([customOrderId, buyerResponseStatus])
+  // The expiry sweep reads open requests by deadline across all orders.
+  @@index([buyerResponseStatus, respondByAt])
 }
 
 model CustomOrderTimelineEvent {

@@ -437,6 +437,8 @@ describe('CustomOrdersService', () => {
   });
 
   it('creates a dispute and marks the order disputed when a buyer rejects an extension request', async () => {
+    // The brand owner has to resolve for the brand-side notification to be sent.
+    prisma.brand.findUnique.mockResolvedValue({ ownerId: 'owner_1' });
     prisma.customOrder.findFirst.mockResolvedValue(
       buildOrder({
         status: CustomOrderStatus.IN_PRODUCTION,
@@ -515,6 +517,10 @@ describe('CustomOrdersService', () => {
       data: {
         buyerResponseStatus: CustomOrderExtensionResponseStatus.REJECTED,
         buyerCounterDays: null,
+        // Declining without a comment is allowed — the note is optional.
+        buyerNote: null,
+        // Nothing was granted, so nothing is charged against the day budget.
+        appliedExtraDays: null,
         resolvedAt: expect.any(Date),
       },
     });
@@ -532,6 +538,12 @@ describe('CustomOrdersService', () => {
         status: CustomOrderStatus.DISPUTED,
         // Flags the brand's queue so the dispute surfaces as an admin notice.
         brandAdminNoticeAt: expect.any(Date),
+        // The dispute is the fact; the intervention is the job somebody owns.
+        // Both are raised so a declined extension cannot fall between them.
+        adminInterventionAt: expect.any(Date),
+        adminInterventionReason: 'EXTENSION_REJECTED',
+        adminInterventionResolvedAt: null,
+        adminInterventionResolvedById: null,
       },
     });
     expect(tx.customOrder.update).toHaveBeenNthCalledWith(2, {
@@ -546,6 +558,8 @@ describe('CustomOrdersService', () => {
               requestId: 'extension_1',
               response: CustomOrderExtensionResponseStatus.REJECTED,
               counterDays: null,
+              grantedDays: null,
+              note: null,
             },
           },
         },
@@ -555,6 +569,23 @@ describe('CustomOrdersService', () => {
     expect(result.statusCode).toBe(200);
     expect(result.data.status).toBe(CustomOrderStatus.DISPUTED);
     expect(result.data.disputes).toHaveLength(1);
+
+    // The brand is told, which it previously never was: before this, a buyer's
+    // answer notified nobody and the brand found out by noticing its own dates.
+    expect(sideEffects.enqueueNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notificationType: 'CUSTOM_ORDER_BUYER_REJECTED_EXTENSION',
+      }),
+    );
+    // And the shopper gets it in writing that declining did not cancel anything.
+    expect(sideEffects.enqueueNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notificationType: 'CUSTOM_ORDER_EXTENSION_RESOLVED',
+        payload: expect.objectContaining({
+          message: expect.stringContaining('not cancelled'),
+        }),
+      }),
+    );
   });
 
   it('reports a buyer issue, opens a dispute, and forfeits the final allocation', async () => {
@@ -777,7 +808,7 @@ describe('CustomOrdersService', () => {
     ).rejects.toThrow('Dispute evidence must include at least one photo');
   });
 
-  it('allows only one extension request per order', async () => {
+  it('blocks a second extension request while one is still outstanding', async () => {
     prisma.brand.findUnique.mockResolvedValue({ id: 'brand_1' });
     prisma.customOrder.findFirst.mockResolvedValue(
       buildOrder({
@@ -785,7 +816,7 @@ describe('CustomOrdersService', () => {
         extensionRequests: [
           {
             id: 'ext_1',
-            buyerResponseStatus: CustomOrderExtensionResponseStatus.ACCEPTED,
+            buyerResponseStatus: CustomOrderExtensionResponseStatus.OPEN,
           },
         ],
       }),
@@ -797,7 +828,180 @@ describe('CustomOrdersService', () => {
         requestedExtraDays: 2,
         reason: 'Unexpected tailoring complexity.',
       }),
-    ).rejects.toThrow('Only one extension request is allowed per order');
+    ).rejects.toThrow('CUSTOM_ORDER_EXTENSION_ALREADY_OUTSTANDING');
+  });
+
+  it('allows a second request after the first was granted, and refuses a third', async () => {
+    prisma.brand.findUnique.mockResolvedValue({ id: 'brand_1' });
+    // One granted extension: asking again is allowed. The old rule counted every
+    // row and locked the brand out for the life of the order.
+    prisma.customOrder.findFirst.mockResolvedValue(
+      buildOrder({
+        status: CustomOrderStatus.IN_PRODUCTION,
+        approvedExtensionCount: 1,
+        totalExtensionDaysGranted: 3,
+        extensionRequests: [
+          {
+            id: 'ext_1',
+            buyerResponseStatus: CustomOrderExtensionResponseStatus.ACCEPTED,
+            appliedExtraDays: 3,
+          },
+        ],
+      }),
+    );
+    prisma.customOrder.update.mockResolvedValue(
+      buildOrder({
+        extensionRequests: [
+          {
+            id: 'ext_2',
+            buyerResponseStatus: CustomOrderExtensionResponseStatus.OPEN,
+          },
+        ],
+      }),
+    );
+
+    await expect(
+      service.createExtensionRequest('owner_1', 'brand_1', 'co_1', {
+        targetType: 'DELIVERY' as any,
+        requestedExtraDays: 3,
+        reason: 'Fabric delivery slipped at the mill.',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({ statusCode: 201 }),
+    );
+
+    // Two granted: the shopper has been asked twice and that is the cap.
+    prisma.customOrder.findFirst.mockResolvedValue(
+      buildOrder({
+        status: CustomOrderStatus.IN_PRODUCTION,
+        approvedExtensionCount: 2,
+        totalExtensionDaysGranted: 6,
+        extensionRequests: [],
+      }),
+    );
+
+    await expect(
+      service.createExtensionRequest('owner_1', 'brand_1', 'co_1', {
+        targetType: 'DELIVERY' as any,
+        requestedExtraDays: 1,
+        reason: 'One more delay at the mill.',
+      }),
+    ).rejects.toThrow('CUSTOM_ORDER_EXTENSION_LIMIT_REACHED');
+  });
+
+  it('refuses days beyond the six-day budget even when a request is still available', async () => {
+    prisma.brand.findUnique.mockResolvedValue({ id: 'brand_1' });
+    prisma.customOrder.findFirst.mockResolvedValue(
+      buildOrder({
+        status: CustomOrderStatus.IN_PRODUCTION,
+        approvedExtensionCount: 1,
+        totalExtensionDaysGranted: 5,
+        extensionRequests: [],
+      }),
+    );
+
+    await expect(
+      service.createExtensionRequest('owner_1', 'brand_1', 'co_1', {
+        targetType: 'DELIVERY' as any,
+        requestedExtraDays: 3,
+        reason: 'Needs three more days of finishing.',
+      }),
+    ).rejects.toThrow('CUSTOM_ORDER_EXTENSION_EXCEEDS_REMAINING_DAYS');
+  });
+
+  it('never grants an extension on an order the shopper paid a rush fee on', async () => {
+    prisma.brand.findUnique.mockResolvedValue({ id: 'brand_1' });
+    // There is no honest version of "we charged you for speed and now need
+    // longer", so the request is refused before anything else is considered.
+    prisma.customOrder.findFirst.mockResolvedValue(
+      buildOrder({
+        status: CustomOrderStatus.IN_PRODUCTION,
+        rushSelected: true,
+        rushFeeSnapshot: 2500,
+        extensionRequests: [],
+      }),
+    );
+
+    await expect(
+      service.createExtensionRequest('owner_1', 'brand_1', 'co_1', {
+        targetType: 'PRODUCTION' as any,
+        requestedExtraDays: 1,
+        reason: 'Running slightly behind on the rush order.',
+      }),
+    ).rejects.toThrow('CUSTOM_ORDER_EXTENSION_BLOCKED_BY_RUSH_FEE');
+  });
+
+  it('records the original promise and the granted days when a buyer accepts', async () => {
+    const originalDelivery = new Date('2026-04-10T10:00:00.000Z');
+    prisma.customOrder.findFirst.mockResolvedValue(
+      buildOrder({
+        status: CustomOrderStatus.IN_PRODUCTION,
+        promisedProductionAt: new Date('2026-04-05T10:00:00.000Z'),
+        promisedDeliveryAt: originalDelivery,
+        extensionRequests: [
+          {
+            id: 'extension_1',
+            requestedExtraDays: 3,
+            targetType: 'PRODUCTION',
+            buyerResponseStatus: CustomOrderExtensionResponseStatus.OPEN,
+          },
+        ],
+      }),
+    );
+
+    const tx = {
+      customOrderExtensionRequest: { update: jest.fn() },
+      customOrderDispute: { create: jest.fn() },
+      customOrder: {
+        // applyExtensionDays re-reads the order inside the transaction.
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'co_1',
+          promisedProductionAt: new Date('2026-04-05T10:00:00.000Z'),
+          promisedDispatchAt: null,
+          promisedDeliveryAt: originalDelivery,
+          buyerAcceptanceWindowEndsAt: new Date('2026-04-17T10:00:00.000Z'),
+          measurementRetentionUntil: new Date('2026-05-10T10:00:00.000Z'),
+          originalPromisedDeliveryAt: null,
+        }),
+        update: jest
+          .fn()
+          .mockResolvedValueOnce(undefined)
+          .mockResolvedValueOnce(buildOrder({ status: CustomOrderStatus.IN_PRODUCTION })),
+      },
+    };
+    prisma.$transaction.mockImplementation(
+      async (callback: (innerTx: typeof tx) => Promise<unknown>) => callback(tx),
+    );
+
+    await service.respondToExtension('buyer_1', 'co_1', 'extension_1', {
+      response: CustomOrderExtensionResponseStatus.ACCEPTED,
+      note: 'Fine, take the time.',
+    });
+
+    expect(tx.customOrderExtensionRequest.update).toHaveBeenCalledWith({
+      where: { id: 'extension_1' },
+      data: expect.objectContaining({
+        buyerResponseStatus: CustomOrderExtensionResponseStatus.ACCEPTED,
+        buyerNote: 'Fine, take the time.',
+        appliedExtraDays: 3,
+      }),
+    });
+
+    const grantUpdate = tx.customOrder.update.mock.calls[0][0];
+    // The commitment is snapshotted before the shift lands, and the downstream
+    // clocks move with it so payout cannot release while production continues.
+    expect(grantUpdate.data.originalPromisedDeliveryAt).toEqual(originalDelivery);
+    expect(grantUpdate.data.promisedDeliveryAt).toEqual(
+      new Date('2026-04-13T10:00:00.000Z'),
+    );
+    expect(grantUpdate.data.buyerAcceptanceWindowEndsAt).toEqual(
+      new Date('2026-04-20T10:00:00.000Z'),
+    );
+    expect(grantUpdate.data.measurementRetentionUntil).toEqual(
+      new Date('2026-05-13T10:00:00.000Z'),
+    );
+    expect(grantUpdate.data.totalExtensionDaysGranted).toEqual({ increment: 3 });
+    expect(grantUpdate.data.approvedExtensionCount).toEqual({ increment: 1 });
   });
 
   it('updates buyer measurements before acceptance when revalidated total is unchanged', async () => {

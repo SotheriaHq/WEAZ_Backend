@@ -21,12 +21,14 @@ import { RequirePermissions } from 'src/admin/decorators/require-permissions.dec
 import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 import { CustomOrderAdminService } from './custom-order-admin.service';
 import {
+  AdminCustomOrderNoticeDto,
   AdminCustomOrderReminderDto,
   CancelPaidCustomOrderDto,
   CreateAdminCustomFabricRuleBasisDto,
   EscalateCustomOrderRefundReviewDto,
   QueryAdminCustomFabricRuleBasesDto,
   FlagCustomOrderRiskDto,
+  ResolveCustomOrderInterventionDto,
   QueryAdminCustomOrdersDto,
   QueryCustomOrderDisputesDto,
   QueryCustomOrderExceptionReviewsDto,
@@ -217,6 +219,44 @@ export class CustomOrderAdminController {
     dto: AdminCustomOrderReminderDto,
   ) {
     return this.service.remindBrand(id, dto, req.user.id);
+  }
+
+  /** A private, read-only note to the shopper, the brand, or each of them. */
+  @Post('custom-orders/:id/notices')
+  @RequirePermissions(
+    ADMIN_PERMISSIONS.MODERATION_WRITE,
+    ADMIN_PERMISSIONS.NOTIFICATIONS_SEND,
+  )
+  async sendOrderNotice(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string } },
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: AdminCustomOrderNoticeDto,
+  ) {
+    return this.service.sendOrderNotice(id, dto, req.user.id);
+  }
+
+  @Post('custom-orders/:id/resolve-intervention')
+  @RequirePermissions(ADMIN_PERMISSIONS.MODERATION_WRITE)
+  async resolveIntervention(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string } },
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: ResolveCustomOrderInterventionDto,
+  ) {
+    return this.service.resolveIntervention(id, dto, req.user.id);
   }
 
   @Post('custom-orders/:id/flag-risk')

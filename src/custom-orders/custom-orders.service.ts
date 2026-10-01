@@ -53,6 +53,17 @@ import {
   resolveGarmentMeasurementTemplate,
   resolveSourceMeasurementGender,
 } from './custom-order-measurement-contract.util';
+// Extension policy: the rush-fee block, the day budget, and the response
+// deadline all live in one module so the brand, buyer and cron paths agree.
+import {
+  assertExtensionGrantAllowed,
+  assertExtensionRequestAllowed,
+  EXTENSION_POLICY,
+  isRushOrder,
+  readExtensionBudget,
+  resolveExtensionTargetDate,
+  resolveRespondByAt,
+} from './custom-order-extension.policy';
 import {
   AcceptCustomOrderDto,
   BrandRespondToCustomOrderExtensionCounterDto,
@@ -443,6 +454,20 @@ const hasUnreadBrandAdminNotice = (order: {
   const noticeAt = new Date(order.brandAdminNoticeAt).getTime();
   if (!order.brandAdminNoticeAckAt) return true;
   return new Date(order.brandAdminNoticeAckAt).getTime() < noticeAt;
+};
+
+/**
+ * The shopper's equivalent of the brand flag above. Same shape, same rule: a
+ * notice newer than the last acknowledgement re-raises it.
+ */
+const hasUnreadBuyerAdminNotice = (order: {
+  buyerAdminNoticeAt?: Date | string | null;
+  buyerAdminNoticeAckAt?: Date | string | null;
+}): boolean => {
+  if (!order.buyerAdminNoticeAt) return false;
+  const noticeAt = new Date(order.buyerAdminNoticeAt).getTime();
+  if (!order.buyerAdminNoticeAckAt) return true;
+  return new Date(order.buyerAdminNoticeAckAt).getTime() < noticeAt;
 };
 
 const hasEphemeralMediaSignature = (value: unknown) => {
@@ -2255,6 +2280,7 @@ export class CustomOrdersService {
 
     const response = dto.response;
     const counterDays = dto.counterDays;
+    const buyerNote = dto.note?.trim() ? dto.note.trim() : null;
     if (
       response === CustomOrderExtensionResponseStatus.COUNTERED &&
       !counterDays
@@ -2276,8 +2302,20 @@ export class CustomOrdersService {
           'Only one extension counter is allowed per order',
         );
       }
+      // A counter is an offer of a DIFFERENT number of days, so it is checked
+      // against the budget on its own terms — the figure validated when the
+      // request was raised is not the figure being offered now.
+      assertExtensionGrantAllowed({ order, days: counterDays as number });
     }
 
+    // Re-checked at the moment of granting: the request may have sat open while
+    // a second one was granted, and a rush fee may have been added since.
+    const grantedDays = extensionRequest.requestedExtraDays;
+    if (response === CustomOrderExtensionResponseStatus.ACCEPTED) {
+      assertExtensionGrantAllowed({ order, days: grantedDays });
+    }
+
+    const resolvedAt = new Date();
     const updated = await this.prisma.$transaction(async (tx) => {
       await tx.customOrderExtensionRequest.update({
         where: { id: requestId },
@@ -2287,10 +2325,15 @@ export class CustomOrdersService {
             response === CustomOrderExtensionResponseStatus.COUNTERED
               ? counterDays
               : null,
+          buyerNote,
+          appliedExtraDays:
+            response === CustomOrderExtensionResponseStatus.ACCEPTED
+              ? grantedDays
+              : null,
           resolvedAt:
             response === CustomOrderExtensionResponseStatus.ACCEPTED ||
             response === CustomOrderExtensionResponseStatus.REJECTED
-              ? new Date()
+              ? resolvedAt
               : null,
         },
       });
@@ -2299,7 +2342,7 @@ export class CustomOrdersService {
         await this.applyExtensionDays(
           tx,
           order.id,
-          extensionRequest.requestedExtraDays,
+          grantedDays,
           extensionRequest.targetType,
         );
       }
@@ -2310,7 +2353,8 @@ export class CustomOrdersService {
             customOrderId,
             openedById: userId,
             reasonType: CustomOrderIssueType.UNREASONABLE_DELAY,
-            buyerStatement: 'Buyer rejected brand extension request',
+            buyerStatement:
+              buyerNote ?? 'Buyer rejected brand extension request',
           },
         });
 
@@ -2320,6 +2364,13 @@ export class CustomOrdersService {
             status: CustomOrderStatus.DISPUTED,
             // Flag the brand's queue for the newly opened dispute.
             brandAdminNoticeAt: new Date(),
+            // A dispute is a fact about the order; an intervention is a job
+            // somebody owns. Raising both means a declined extension cannot sit
+            // in the gap between the two.
+            adminInterventionAt: resolvedAt,
+            adminInterventionReason: 'EXTENSION_REJECTED',
+            adminInterventionResolvedAt: null,
+            adminInterventionResolvedById: null,
           },
         });
       }
@@ -2336,6 +2387,11 @@ export class CustomOrdersService {
                 requestId,
                 response,
                 counterDays: counterDays ?? null,
+                grantedDays:
+                  response === CustomOrderExtensionResponseStatus.ACCEPTED
+                    ? grantedDays
+                    : null,
+                note: buyerNote,
               },
             },
           },
@@ -2346,7 +2402,55 @@ export class CustomOrdersService {
       return next;
     });
 
+    // Every party hears about it. Before this, a buyer's answer notified nobody:
+    // the brand found out by noticing its own dates had moved, or did not.
+    if (response === CustomOrderExtensionResponseStatus.ACCEPTED) {
+      await this.queueBrandNotification(
+        order.brandId,
+        'CUSTOM_ORDER_EXTENSION_RESOLVED' as NotificationType,
+        customOrderId,
+        {
+          requestId,
+          response,
+          grantedDays,
+          newDeadlineAt: updated.promisedDeliveryAt?.toISOString(),
+        },
+        userId,
+      );
+    }
+
+    if (response === CustomOrderExtensionResponseStatus.COUNTERED) {
+      await this.queueBrandNotification(
+        order.brandId,
+        'CUSTOM_ORDER_BUYER_COUNTERED' as NotificationType,
+        customOrderId,
+        { requestId, counterDays, buyerNote: buyerNote ?? '' },
+        userId,
+      );
+    }
+
     if (response === CustomOrderExtensionResponseStatus.REJECTED) {
+      await this.queueBrandNotification(
+        order.brandId,
+        'CUSTOM_ORDER_BUYER_REJECTED_EXTENSION' as NotificationType,
+        customOrderId,
+        { requestId, buyerNote: buyerNote ?? '' },
+        userId,
+      );
+      // The shopper gets written confirmation of what declining actually did —
+      // the single most common misreading is that it cancels the order.
+      await this.queueBuyerNotification(
+        order.buyerId,
+        'CUSTOM_ORDER_EXTENSION_RESOLVED' as NotificationType,
+        customOrderId,
+        {
+          requestId,
+          response,
+          message:
+            'You declined the extra time. Your order is not cancelled — WIEZ is now reviewing it with the maker and will be in touch.',
+        },
+        userId,
+      );
       await this.flagOrderForAdminAttention(customOrderId, 'DISPUTE_OPENED', {
         reasonType: CustomOrderIssueType.UNREASONABLE_DELAY,
         source: 'EXTENSION_REJECTED',
@@ -2406,11 +2510,25 @@ export class CustomOrdersService {
       );
     }
 
+    // The counter is the figure being granted, so the budget is checked against
+    // it — not against what the brand originally asked for.
+    if (dto.response === CustomOrderExtensionResponseStatus.ACCEPTED) {
+      assertExtensionGrantAllowed({
+        order,
+        days: extensionRequest.buyerCounterDays,
+      });
+    }
+
     const updated = await this.prisma.$transaction(async (tx) => {
       await tx.customOrderExtensionRequest.update({
         where: { id: requestId },
         data: {
           buyerResponseStatus: dto.response,
+          brandNote: dto.note?.trim() ? dto.note.trim() : null,
+          appliedExtraDays:
+            dto.response === CustomOrderExtensionResponseStatus.ACCEPTED
+              ? extensionRequest.buyerCounterDays
+              : null,
           resolvedAt: new Date(),
         },
       });
@@ -2450,8 +2568,13 @@ export class CustomOrdersService {
       'CUSTOM_ORDER_EXTENSION_RESOLVED' as NotificationType,
       customOrderId,
       {
+        requestId,
         response: dto.response,
-        counterDays: extensionRequest.buyerCounterDays,
+        grantedDays:
+          dto.response === CustomOrderExtensionResponseStatus.ACCEPTED
+            ? extensionRequest.buyerCounterDays
+            : undefined,
+        newDeadlineAt: updated.promisedDeliveryAt?.toISOString(),
       },
       ownerUserId,
     );
@@ -2459,6 +2582,37 @@ export class CustomOrdersService {
     return {
       statusCode: 200,
       message: 'Buyer counter response recorded',
+      data: this.mapDetail(updated),
+    };
+  }
+
+  /**
+   * The shopper's half of the one-way admin notice channel.
+   *
+   * The brand has had this since admin reminders shipped (`brandAdminNotice*`):
+   * an admin writes, the other side reads and marks it seen, and nobody replies
+   * in it. The shopper had no equivalent, so the only way an admin could reach
+   * them was the shared buyer-brand thread — which is the opposite of a private
+   * word with one party.
+   */
+  async ackBuyerAdminNotices(userId: string, customOrderId: string) {
+    const order = await this.prisma.customOrder.findFirst({
+      where: { id: customOrderId, buyerId: userId },
+      select: { id: true, buyerAdminNoticeAt: true },
+    });
+    if (!order) {
+      throw new NotFoundException('Custom order not found');
+    }
+
+    const updated = await this.prisma.customOrder.update({
+      where: { id: customOrderId },
+      data: { buyerAdminNoticeAckAt: new Date() },
+      include: this.detailIncludes,
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Admin notices acknowledged',
       data: this.mapDetail(updated),
     };
   }
@@ -2988,16 +3142,24 @@ export class CustomOrdersService {
       throw new NotFoundException('Custom order not found');
     }
 
-    if (order.extensionRequests.length > 0) {
-      throw new BadRequestException(
-        'Only one extension request is allowed per order',
-      );
-    }
     if (!this.isExtensionRequestAllowed(order.status, dto.targetType)) {
       throw new BadRequestException(
         'CUSTOM_ORDER_EXTENSION_NOT_ALLOWED_FOR_STATE',
       );
     }
+    // Rush fee, outstanding request, extension count and day budget — one place,
+    // shared with the acceptance path so the two cannot drift.
+    const { sequence } = assertExtensionRequestAllowed({
+      order,
+      requests: order.extensionRequests,
+      requestedExtraDays: dto.requestedExtraDays,
+    });
+
+    const now = new Date();
+    const respondByAt = resolveRespondByAt({
+      now,
+      dueAt: resolveExtensionTargetDate(order, dto.targetType),
+    });
 
     const updated = await this.prisma.customOrder.update({
       where: { id: customOrderId },
@@ -3008,6 +3170,8 @@ export class CustomOrdersService {
             targetType: dto.targetType,
             requestedExtraDays: dto.requestedExtraDays,
             reason: dto.reason.trim(),
+            respondByAt,
+            sequence,
           },
         },
         timelineEvents: {
@@ -3019,6 +3183,8 @@ export class CustomOrdersService {
               targetType: dto.targetType,
               requestedExtraDays: dto.requestedExtraDays,
               reason: dto.reason,
+              sequence,
+              respondByAt: respondByAt.toISOString(),
             },
           },
         },
@@ -3026,13 +3192,28 @@ export class CustomOrdersService {
       include: this.detailIncludes,
     });
 
+    const createdRequest = updated.extensionRequests.find(
+      (entry) =>
+        entry.buyerResponseStatus === CustomOrderExtensionResponseStatus.OPEN,
+    );
+
     await this.queueBuyerNotification(
       order.buyerId,
       'CUSTOM_ORDER_EXTENSION_REQUESTED' as NotificationType,
       customOrderId,
       {
+        requestId: createdRequest?.id,
         requestedExtraDays: dto.requestedExtraDays,
         targetType: dto.targetType,
+        sequence,
+        respondByAt: respondByAt.toISOString(),
+        // The deep link carries the request, so a tap lands ON the decision
+        // instead of on an order screen the shopper then has to search.
+        ...(createdRequest
+          ? {
+              targetUrl: `/custom-orders/${customOrderId}/extensions/${createdRequest.id}`,
+            }
+          : {}),
       },
       ownerUserId,
     );
@@ -5181,10 +5362,27 @@ export class CustomOrdersService {
     return transitions[currentStatus]?.includes(nextStatus) ?? false;
   }
 
+  /**
+   * Move the promises an accepted extension bought, and record what it cost.
+   *
+   * Three things were wrong with doing this as a bare date bump:
+   *
+   * 1. The original promise was overwritten, so after one extension nobody could
+   *    say what the brand had committed to. `original*` is written once, on the
+   *    first extension, and never touched again.
+   * 2. The payout and auto-complete crons key off `buyerAcceptanceWindowEndsAt`
+   *    and the delivery promise. Extending delivery without moving the window
+   *    meant an order could auto-complete and release the brand's money while it
+   *    was still in production. The window and the measurement retention clock
+   *    move with the deadline they were derived from.
+   * 3. Nothing counted. The budget (two extensions, six days) is only
+   *    enforceable if every grant increments it in the same transaction that
+   *    moves the dates.
+   */
   private async applyExtensionDays(
     tx: Prisma.TransactionClient,
     customOrderId: string,
-    requestedExtraDays: number,
+    grantedExtraDays: number,
     targetType: string,
   ) {
     const order = await tx.customOrder.findUnique({
@@ -5194,25 +5392,37 @@ export class CustomOrdersService {
       throw new NotFoundException('Custom order not found');
     }
 
-    const dayMs = requestedExtraDays * 24 * 60 * 60 * 1000;
+    const dayMs = grantedExtraDays * 24 * 60 * 60 * 1000;
+    const shift = (value: Date | null) =>
+      value ? new Date(value.getTime() + dayMs) : null;
+    const movesProduction = targetType === 'PRODUCTION' || targetType === 'BOTH';
+    const isFirstExtension = order.originalPromisedDeliveryAt == null;
+
     await tx.customOrder.update({
       where: { id: customOrderId },
       data: {
-        promisedProductionAt:
-          targetType === 'PRODUCTION' || targetType === 'BOTH'
-            ? order.promisedProductionAt
-              ? new Date(order.promisedProductionAt.getTime() + dayMs)
-              : null
-            : order.promisedProductionAt,
-        promisedDispatchAt:
-          targetType === 'PRODUCTION' || targetType === 'BOTH'
-            ? order.promisedDispatchAt
-              ? new Date(order.promisedDispatchAt.getTime() + dayMs)
-              : null
-            : order.promisedDispatchAt,
-        promisedDeliveryAt: order.promisedDeliveryAt
-          ? new Date(order.promisedDeliveryAt.getTime() + dayMs)
-          : null,
+        // Snapshot the commitment once, before the first shift lands.
+        ...(isFirstExtension
+          ? {
+              originalPromisedProductionAt: order.promisedProductionAt,
+              originalPromisedDispatchAt: order.promisedDispatchAt,
+              originalPromisedDeliveryAt: order.promisedDeliveryAt,
+            }
+          : {}),
+        promisedProductionAt: movesProduction
+          ? shift(order.promisedProductionAt)
+          : order.promisedProductionAt,
+        promisedDispatchAt: movesProduction
+          ? shift(order.promisedDispatchAt)
+          : order.promisedDispatchAt,
+        // Delivery always moves: time added anywhere upstream arrives late.
+        promisedDeliveryAt: shift(order.promisedDeliveryAt),
+        // Keep the downstream clocks in step with the promise they came from.
+        buyerAcceptanceWindowEndsAt: shift(order.buyerAcceptanceWindowEndsAt),
+        measurementRetentionUntil: shift(order.measurementRetentionUntil),
+        totalExtensionDaysGranted:
+          { increment: grantedExtraDays },
+        approvedExtensionCount: { increment: 1 },
       },
     });
   }
@@ -5383,6 +5593,29 @@ export class CustomOrdersService {
       brandAdminNoticeAt: order.brandAdminNoticeAt ?? null,
       brandAdminNoticeAckAt: order.brandAdminNoticeAckAt ?? null,
       hasUnreadAdminNotice: hasUnreadBrandAdminNotice(order),
+      // The shopper's half of the same channel.
+      buyerAdminNoticeAt: order.buyerAdminNoticeAt ?? null,
+      buyerAdminNoticeAckAt: order.buyerAdminNoticeAckAt ?? null,
+      hasUnreadBuyerAdminNotice: hasUnreadBuyerAdminNotice(order),
+      // What the brand committed to before any extension moved it, so both
+      // sides can see the original promise beside the current one.
+      originalPromisedProductionAt: order.originalPromisedProductionAt ?? null,
+      originalPromisedDispatchAt: order.originalPromisedDispatchAt ?? null,
+      originalPromisedDeliveryAt: order.originalPromisedDeliveryAt ?? null,
+      /**
+       * The extension budget, resolved server-side so no client re-derives the
+       * policy. `rushBlocked` is why a brand may see no request control at all.
+       */
+      extensionPolicy: {
+        ...readExtensionBudget(order),
+        maxDaysPerRequest: EXTENSION_POLICY.maxDaysPerRequest,
+        maxApprovedExtensions: EXTENSION_POLICY.maxApprovedExtensions,
+        maxTotalDays: EXTENSION_POLICY.maxTotalDays,
+        rushBlocked: isRushOrder(order),
+      },
+      adminInterventionAt: order.adminInterventionAt ?? null,
+      adminInterventionReason: order.adminInterventionReason ?? null,
+      adminInterventionResolvedAt: order.adminInterventionResolvedAt ?? null,
       createdAt: order.createdAt,
       updatedAt: order.updatedAt,
     };

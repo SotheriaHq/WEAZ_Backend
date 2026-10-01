@@ -22,6 +22,10 @@ import {
   markAdminAttentionMany,
   type AdminAttentionReason,
 } from 'src/custom-orders/custom-order-admin-attention';
+import {
+  EXTENSION_POLICY,
+  readExtensionBudget,
+} from 'src/custom-orders/custom-order-extension.policy';
 import { LedgerService } from 'src/finance/ledger.service';
 import { PaymentRuntimeHealthService } from 'src/payment/payment-runtime-health.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -1034,6 +1038,299 @@ export class CustomOrderOpsCronService {
     } catch (error) {
       this.logger.warn(
         `Custom-order payout queue cron failed: ${this.formatError(error)}`,
+      );
+    }
+  }
+
+  /**
+   * Tell the brand its production deadline is coming, while asking is still an
+   * option.
+   *
+   * The whole extension flow could only ever start if a brand remembered to
+   * start it — nothing watched `promisedProductionAt`, so the common path was a
+   * deadline passing in silence and the order escalating as a delay instead. Two
+   * nudges (24h and 12h out) because one is easy to miss, and each one is sent at
+   * most once thanks to the timeline event it writes.
+   *
+   * Orders carrying a rush fee are skipped: they cannot be extended at all, so
+   * telling that brand to "ask for time" would be advice the API refuses.
+   */
+  @Cron(CronExpression.EVERY_HOUR)
+  async remindBrandBeforeProductionDeadline(): Promise<void> {
+    const now = new Date();
+    const widestWindowHours = Math.max(
+      ...EXTENSION_POLICY.brandDeadlineWarningHours,
+    );
+    const horizon = new Date(now.getTime() + widestWindowHours * 60 * 60 * 1000);
+
+    try {
+      const orders = await this.prisma.customOrder.findMany({
+        where: {
+          status: {
+            in: [CustomOrderStatus.ACCEPTED, CustomOrderStatus.IN_PRODUCTION],
+          },
+          promisedProductionAt: { gt: now, lte: horizon },
+          rushSelected: false,
+          anonymizedAt: null,
+        },
+        select: {
+          id: true,
+          brandId: true,
+          promisedProductionAt: true,
+          approvedExtensionCount: true,
+          totalExtensionDaysGranted: true,
+          timelineEvents: {
+            where: { eventType: 'EXTENSION_DEADLINE_WARNED' },
+            select: { payloadJson: true },
+          },
+          extensionRequests: {
+            where: { buyerResponseStatus: { in: ['OPEN', 'COUNTERED'] } },
+            select: { id: true },
+          },
+        },
+        take: 200,
+      });
+
+      await mapPool(orders, CRON_NOTIFY_CONCURRENCY, async (order) => {
+        // A request already in flight is the thing the nudge would have asked
+        // for — saying it again is noise.
+        if (order.extensionRequests.length > 0) return;
+        if (!order.promisedProductionAt) return;
+
+        const hoursLeft =
+          (order.promisedProductionAt.getTime() - now.getTime()) /
+          (60 * 60 * 1000);
+        // Pick the tightest threshold this order has crossed.
+        const threshold = [...EXTENSION_POLICY.brandDeadlineWarningHours]
+          .sort((left, right) => left - right)
+          .find((hours) => hoursLeft <= hours);
+        if (threshold == null) return;
+
+        const alreadyWarned = order.timelineEvents.some((event) => {
+          const payload = (event.payloadJson ?? {}) as Record<string, unknown>;
+          return Number(payload.thresholdHours) === threshold;
+        });
+        if (alreadyWarned) return;
+
+        const budget = readExtensionBudget(order);
+
+        await this.prisma.customOrderTimelineEvent.create({
+          data: {
+            customOrderId: order.id,
+            actorType: CustomOrderActorType.SYSTEM,
+            eventType: 'EXTENSION_DEADLINE_WARNED',
+            payloadJson: {
+              thresholdHours: threshold,
+              promisedProductionAt: order.promisedProductionAt.toISOString(),
+              remainingExtensions: budget.remainingExtensions,
+            } as Prisma.InputJsonValue,
+          },
+        });
+
+        await this.notifyBrandOwner(order.brandId, order.id, {
+          notificationType: NotificationType.CUSTOM_ORDER_STALE_STAGE_WARNING,
+          payload: {
+            customOrderId: order.id,
+            message: budget.exhausted
+              ? `Production is due in about ${threshold} hours and this order has no extension allowance left. Deliver on time or contact WIEZ.`
+              : `Production is due in about ${threshold} hours. If you need longer, ask the shopper now — you can request up to ${budget.maxRequestableDays} day${budget.maxRequestableDays === 1 ? '' : 's'}.`,
+          },
+          target: this.studioCustomOrderTarget(order.id),
+          dedupeMs: 60 * 60 * 1000,
+        });
+      });
+    } catch (error) {
+      this.logger.warn(
+        `remindBrandBeforeProductionDeadline failed: ${this.formatError(error)}`,
+      );
+    }
+  }
+
+  /**
+   * A request nobody answered expires, and an admin picks it up.
+   *
+   * `EXPIRED` has been in the enum since the feature shipped and nothing ever
+   * set it, so an ignored request stayed OPEN for ever: the brand waited, the
+   * deadline passed, and the order went quietly overdue.
+   *
+   * Silence is NOT consent. Auto-accepting on behalf of a shopper who never
+   * answered is the version of this that loses a chargeback, so expiry escalates
+   * to an admin and leaves the dates alone.
+   */
+  @Cron(CronExpression.EVERY_HOUR)
+  async expireOpenExtensionRequests(): Promise<void> {
+    const now = new Date();
+
+    try {
+      const requests = await this.prisma.customOrderExtensionRequest.findMany({
+        where: {
+          buyerResponseStatus: 'OPEN',
+          respondByAt: { not: null, lte: now },
+        },
+        select: {
+          id: true,
+          customOrderId: true,
+          requestedExtraDays: true,
+          customOrder: {
+            select: { id: true, brandId: true, buyerId: true, anonymizedAt: true },
+          },
+        },
+        take: 200,
+      });
+
+      await mapPool(requests, CRON_NOTIFY_CONCURRENCY, async (request) => {
+        if (request.customOrder.anonymizedAt) return;
+
+        await this.prisma.$transaction(async (tx) => {
+          // Guarded on OPEN so a shopper answering in the same minute wins.
+          const claimed = await tx.customOrderExtensionRequest.updateMany({
+            where: { id: request.id, buyerResponseStatus: 'OPEN' },
+            data: {
+              buyerResponseStatus: 'EXPIRED',
+              expiredAt: now,
+              resolvedAt: now,
+            },
+          });
+          if (claimed.count === 0) return;
+
+          await tx.customOrder.update({
+            where: { id: request.customOrderId },
+            data: {
+              adminInterventionAt: now,
+              adminInterventionReason: 'EXTENSION_UNANSWERED',
+              adminInterventionResolvedAt: null,
+              adminInterventionResolvedById: null,
+            },
+          });
+
+          await tx.customOrderTimelineEvent.create({
+            data: {
+              customOrderId: request.customOrderId,
+              actorType: CustomOrderActorType.SYSTEM,
+              eventType: 'EXTENSION_EXPIRED',
+              payloadJson: {
+                requestId: request.id,
+                requestedExtraDays: request.requestedExtraDays,
+                reason: 'NO_BUYER_RESPONSE',
+              } as Prisma.InputJsonValue,
+            },
+          });
+        });
+
+        await this.markAdminAttention(request.customOrderId, 'STALE_STAGE');
+
+        await this.notifyBrandOwner(request.customOrder.brandId, request.customOrderId, {
+          notificationType: NotificationType.CUSTOM_ORDER_EXTENSION_RESOLVED,
+          payload: {
+            customOrderId: request.customOrderId,
+            requestId: request.id,
+            response: 'EXPIRED',
+            message:
+              'The shopper did not answer your extension request in time. WIEZ is reviewing the order — keep producing unless told otherwise.',
+          },
+          target: this.studioCustomOrderTarget(request.customOrderId),
+          dedupeMs: 60 * 60 * 1000,
+        });
+
+        await this.sideEffects.enqueueNotification({
+          customOrderId: request.customOrderId,
+          recipientIds: [request.customOrder.buyerId],
+          notificationType: NotificationType.CUSTOM_ORDER_EXTENSION_RESOLVED,
+          payload: {
+            customOrderId: request.customOrderId,
+            requestId: request.id,
+            response: 'EXPIRED',
+            message:
+              'The request for extra time on your order expired without an answer. Nothing was granted and WIEZ is looking into it.',
+          },
+          target: this.customOrderTarget(request.customOrderId),
+          dedupeMs: 60 * 60 * 1000,
+        });
+
+        const adminIds = await this.getActiveAdminIds();
+        if (adminIds.length > 0) {
+          await this.sideEffects.enqueueNotification({
+            customOrderId: request.customOrderId,
+            recipientIds: adminIds,
+            notificationType: NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
+            payload: {
+              customOrderId: request.customOrderId,
+              requestId: request.id,
+              reason: 'EXTENSION_UNANSWERED',
+            },
+            target: this.adminCustomOrderTarget(request.customOrderId),
+            dedupeMs: 60 * 60 * 1000,
+          });
+        }
+      });
+    } catch (error) {
+      this.logger.warn(
+        `expireOpenExtensionRequests failed: ${this.formatError(error)}`,
+      );
+    }
+  }
+
+  /**
+   * Stop asking for time the order no longer needs.
+   *
+   * A brand can hit READY_FOR_DISPATCH, or deliver, while its request is still
+   * open — at which point the shopper is being asked to grant days for work that
+   * is finished. The request is voided rather than left to expire, because
+   * expiry escalates to an admin and there is nothing here to escalate.
+   */
+  @Cron(CronExpression.EVERY_HOUR)
+  async voidSupersededExtensionRequests(): Promise<void> {
+    const now = new Date();
+
+    try {
+      const requests = await this.prisma.customOrderExtensionRequest.findMany({
+        where: {
+          buyerResponseStatus: { in: ['OPEN', 'COUNTERED'] },
+          customOrder: {
+            status: {
+              in: [
+                CustomOrderStatus.READY_FOR_DISPATCH,
+                CustomOrderStatus.IN_TRANSIT,
+                CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION,
+                CustomOrderStatus.COMPLETED,
+                CustomOrderStatus.CLOSED,
+              ],
+            },
+          },
+        },
+        select: { id: true, customOrderId: true, buyerResponseStatus: true },
+        take: 200,
+      });
+
+      await mapPool(requests, CRON_NOTIFY_CONCURRENCY, async (request) => {
+        const claimed = await this.prisma.customOrderExtensionRequest.updateMany({
+          where: {
+            id: request.id,
+            buyerResponseStatus: request.buyerResponseStatus as never,
+          },
+          data: {
+            buyerResponseStatus: 'VOIDED',
+            voidedAt: now,
+            resolvedAt: now,
+          },
+        });
+        if (claimed.count === 0) return;
+
+        await this.prisma.customOrderTimelineEvent.create({
+          data: {
+            customOrderId: request.customOrderId,
+            actorType: CustomOrderActorType.SYSTEM,
+            eventType: 'EXTENSION_VOIDED',
+            payloadJson: {
+              requestId: request.id,
+              reason: 'STAGE_ALREADY_REACHED',
+            } as Prisma.InputJsonValue,
+          },
+        });
+      });
+    } catch (error) {
+      this.logger.warn(
+        `voidSupersededExtensionRequests failed: ${this.formatError(error)}`,
       );
     }
   }

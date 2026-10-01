@@ -271,4 +271,16 @@ export class CustomOrdersBuyerController {
       dto,
     );
   }
+
+  /**
+   * Mark admin notices on this order as seen. Read-only channel: the shopper
+   * acknowledges, never replies — the same contract the brand side has.
+   */
+  @Post(':id/admin-notices/ack')
+  async ackAdminNotices(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    return this.ordersService.ackBuyerAdminNotices(req.user.id, id);
+  }
 }

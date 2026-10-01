@@ -17,6 +17,11 @@ import {
   Prisma,
 } from '@prisma/client';
 import {
+  EXTENSION_POLICY,
+  isRushOrder,
+  readExtensionBudget,
+} from 'src/custom-orders/custom-order-extension.policy';
+import {
   canonicalUserProfileSelect,
   composeLocationLine,
   resolveNullableProfileField,
@@ -34,6 +39,7 @@ import {
   TERMINAL_CUSTOM_ORDER_STATUSES,
 } from 'src/custom-orders/custom-order-admin-attention';
 import {
+  AdminCustomOrderNoticeDto,
   AdminCustomOrderReminderDto,
   CancelPaidCustomOrderDto,
   CreateAdminCustomFabricRuleBasisDto,
@@ -48,6 +54,7 @@ import {
   QueryCustomOrderRefundReviewsDto,
   QueryCustomOrderRiskDashboardDto,
   ReleaseCustomOrderLedgerAllocationsDto,
+  ResolveCustomOrderInterventionDto,
   QueryStaleCustomOrdersDto,
   ReviewCustomFabricRuleBasisDto,
   UpdateAdminCustomFabricRuleBasisDto,
@@ -1523,6 +1530,33 @@ export class CustomOrderAdminService {
       buyerId: order.buyerId,
       buyer: this.mapDetailBuyer(order),
       payment: this.mapDetailPayment(order, paymentAttempts),
+      // What the brand promised before any extension moved it, so an admin can
+      // answer "was this late?" without reconstructing it from the timeline.
+      originalPromisedProductionAt: order.originalPromisedProductionAt ?? null,
+      originalPromisedDispatchAt: order.originalPromisedDispatchAt ?? null,
+      originalPromisedDeliveryAt: order.originalPromisedDeliveryAt ?? null,
+      extensionPolicy: {
+        ...readExtensionBudget(order),
+        maxDaysPerRequest: EXTENSION_POLICY.maxDaysPerRequest,
+        maxApprovedExtensions: EXTENSION_POLICY.maxApprovedExtensions,
+        maxTotalDays: EXTENSION_POLICY.maxTotalDays,
+        rushBlocked: isRushOrder(order),
+      },
+      intervention: {
+        openedAt: order.adminInterventionAt ?? null,
+        reason: order.adminInterventionReason ?? null,
+        resolvedAt: order.adminInterventionResolvedAt ?? null,
+        resolvedById: order.adminInterventionResolvedById ?? null,
+        isOpen: Boolean(
+          order.adminInterventionAt && !order.adminInterventionResolvedAt,
+        ),
+      },
+      notices: {
+        buyerNoticeAt: order.buyerAdminNoticeAt ?? null,
+        buyerNoticeAckAt: order.buyerAdminNoticeAckAt ?? null,
+        brandNoticeAt: order.brandAdminNoticeAt ?? null,
+        brandNoticeAckAt: order.brandAdminNoticeAckAt ?? null,
+      },
       lifecycle: {
         placedAt: order.createdAt,
         measurementConfirmedAt: order.measurementConfirmedAt,
@@ -2162,6 +2196,167 @@ export class CustomOrderAdminService {
       statusCode: 200,
       message: 'Brand reminder queued',
       data: { customOrderId: order.id, brandId: order.brandId },
+    };
+  }
+
+  /**
+   * Write privately to the shopper, the brand, or each of them.
+   *
+   * The brand has had a read-only notice channel since admin reminders shipped;
+   * the shopper had nothing, so the only way to reach them was the shared thread
+   * they share with the brand — which is the opposite of a private word. This
+   * gives both sides the same shape: an ADMIN-authored timeline event the
+   * recipient reads and acknowledges, and never replies to.
+   *
+   * `BOTH` sends the SAME sentence to each, which is correct for "we are looking
+   * into this" and wrong for anything negotiated — hence one call per audience
+   * when the wording needs to differ.
+   */
+  async sendOrderNotice(
+    id: string,
+    dto: AdminCustomOrderNoticeDto,
+    adminUserId: string,
+  ) {
+    const order = await this.prisma.customOrder.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        buyerId: true,
+        brandId: true,
+        brand: { select: { ownerId: true } },
+      },
+    });
+    if (!order) {
+      throw new NotFoundException('Custom order not found');
+    }
+
+    const message = dto.message.trim();
+    const now = new Date();
+    const toBuyer = dto.audience === 'BUYER' || dto.audience === 'BOTH';
+    const toBrand = dto.audience === 'BRAND' || dto.audience === 'BOTH';
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.customOrderTimelineEvent.create({
+        data: {
+          customOrderId: id,
+          actorType: CustomOrderActorType.ADMIN,
+          actorId: adminUserId,
+          eventType: 'ADMIN_NOTICE_SENT',
+          payloadJson: {
+            audience: dto.audience,
+            note: message,
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      // Raising the notice timestamp is what un-acknowledges the channel, so a
+      // new notice re-raises the badge even if the last one was already read.
+      await tx.customOrder.update({
+        where: { id },
+        data: {
+          ...(toBuyer ? { buyerAdminNoticeAt: now } : {}),
+          ...(toBrand ? { brandAdminNoticeAt: now } : {}),
+        },
+      });
+    });
+
+    if (toBuyer) {
+      await this.sideEffects.enqueueNotification({
+        customOrderId: id,
+        recipientIds: [order.buyerId],
+        notificationType: NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
+        actorId: adminUserId,
+        payload: {
+          customOrderId: id,
+          reason: 'ADMIN_NOTICE',
+          message,
+          targetUrl: `/custom-orders/${id}`,
+        },
+        dedupeMs: 60 * 1000,
+      });
+    }
+
+    if (toBrand && order.brand?.ownerId) {
+      await this.sideEffects.enqueueNotification({
+        customOrderId: id,
+        recipientIds: [order.brand.ownerId],
+        notificationType: NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED,
+        target: this.brandTarget(id),
+        actorId: adminUserId,
+        payload: {
+          customOrderId: id,
+          note: message,
+          reason: 'ADMIN_NOTICE',
+        },
+        dedupeMs: 60 * 1000,
+      });
+    }
+
+    return {
+      statusCode: 200,
+      message: 'Admin notice sent',
+      data: { customOrderId: id, audience: dto.audience },
+    };
+  }
+
+  /**
+   * Close an intervention once an admin has actually steered the order.
+   *
+   * Separate from clearing the attention flag: attention says "look at this",
+   * the intervention says "somebody owns this until it is settled". Resolving it
+   * leaves any dispute exactly as it is — a dispute is closed on the dispute, not
+   * by walking away from the intervention.
+   */
+  async resolveIntervention(
+    id: string,
+    dto: ResolveCustomOrderInterventionDto,
+    adminUserId: string,
+  ) {
+    const order = await this.prisma.customOrder.findUnique({
+      where: { id },
+      select: { id: true, adminInterventionAt: true },
+    });
+    if (!order) {
+      throw new NotFoundException('Custom order not found');
+    }
+    if (!order.adminInterventionAt) {
+      throw new BadRequestException('This order has no open admin intervention');
+    }
+
+    const now = new Date();
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.customOrderTimelineEvent.create({
+        data: {
+          customOrderId: id,
+          actorType: CustomOrderActorType.ADMIN,
+          actorId: adminUserId,
+          eventType: 'ADMIN_INTERVENTION_RESOLVED',
+          payloadJson: {
+            note: dto.note?.trim() || null,
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      return tx.customOrder.update({
+        where: { id },
+        data: {
+          adminInterventionResolvedAt: now,
+          adminInterventionResolvedById: adminUserId,
+        },
+        select: {
+          id: true,
+          adminInterventionAt: true,
+          adminInterventionResolvedAt: true,
+        },
+      });
+    });
+
+    await this.clearAdminAttention(id, adminUserId);
+
+    return {
+      statusCode: 200,
+      message: 'Admin intervention resolved',
+      data: updated,
     };
   }
 

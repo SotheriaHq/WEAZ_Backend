@@ -192,8 +192,18 @@ export class RespondToCustomOrderExtensionDto {
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(7)
+  // Policy cap: no single grant exceeds three days (EXTENSION_POLICY).
+  @Max(3)
   counterDays?: number;
+
+  /**
+   * Optional on purpose. Requiring a reason to decline is a way of discouraging
+   * declining, and the shopper already has the harder job in this exchange.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
 }
 
 export class AcceptCustomOrderDto {
@@ -219,7 +229,9 @@ export class CreateCustomOrderExtensionRequestDto {
 
   @IsInt()
   @Min(1)
-  @Max(7)
+  // Policy cap: three days per request, six per order, two requests maximum.
+  // The remaining budget is re-checked in `assertExtensionRequestAllowed`.
+  @Max(3)
   requestedExtraDays: number;
 
   @IsString()

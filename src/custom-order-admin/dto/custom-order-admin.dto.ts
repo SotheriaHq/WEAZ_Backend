@@ -305,6 +305,32 @@ export class AdminCustomOrderReminderDto {
   note?: string;
 }
 
+/**
+ * A private word from an admin to one side of an order.
+ *
+ * Deliberately NOT a message in the shared buyer-brand thread: an intervention
+ * usually needs a different sentence for each party, and saying both out loud in
+ * front of the other is how a mediation turns into an argument. The recipient
+ * reads and acknowledges; there is no reply path, which is the same contract the
+ * brand notice channel has always had.
+ */
+export class AdminCustomOrderNoticeDto {
+  @IsIn(['BUYER', 'BRAND', 'BOTH'])
+  audience: 'BUYER' | 'BRAND' | 'BOTH';
+
+  @IsString()
+  @MinLength(3)
+  @MaxLength(1000)
+  message: string;
+}
+
+export class ResolveCustomOrderInterventionDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
 export class FlagCustomOrderRiskDto {
   @IsString()
   @MinLength(3)
