@@ -206,6 +206,14 @@ export class RespondToCustomOrderExtensionDto {
   note?: string;
 }
 
+export class CloseCustomOrderDisputeDto {
+  /** Optional. "It arrived, I'm happy" does not need to be justified. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
 export class AcceptCustomOrderDto {
   @IsOptional()
   @IsString()

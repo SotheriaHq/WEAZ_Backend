@@ -3303,6 +3303,17 @@ export class CustomOrdersService {
         data: {
           status: CustomOrderStatus.ACCEPTED,
           acceptedAt: now,
+          /*
+            Stamped only when there was something to acknowledge, and stamped
+            WITH the amount: the debt moves as later orders pay it down, so a
+            bare timestamp could not reproduce the notice the brand agreed to.
+          */
+          ...(debt.inDebt
+            ? {
+                brandDebtAckAt: now,
+                brandDebtAckAmount: new Prisma.Decimal(debt.outstanding),
+              }
+            : {}),
           promisedProductionAt,
           promisedDispatchAt,
           promisedDeliveryAt,
@@ -5950,6 +5961,26 @@ export class CustomOrdersService {
       adminInterventionAt: order.adminInterventionAt ?? null,
       adminInterventionReason: order.adminInterventionReason ?? null,
       adminInterventionResolvedAt: order.adminInterventionResolvedAt ?? null,
+      /**
+       * Whether this order can be escalated for lateness, decided server-side.
+       *
+       * Both clients would otherwise have to re-implement the grace period, the
+       * which-promise-is-missed precedence and the one-open-dispute rule, and
+       * the first time they disagreed with the API a shopper would be shown a
+       * button that fails. The clients render the verdict and the copy; they do
+       * not compute it.
+       */
+      delayDispute: resolveDelayEligibility({
+        status: order.status,
+        promisedProductionAt: order.promisedProductionAt ?? null,
+        promisedDeliveryAt: order.promisedDeliveryAt ?? null,
+        currentProgressStage: order.currentProgressStage ?? null,
+        hasOpenDispute: Array.isArray(order.disputes)
+          ? order.disputes.some((entry: { status: string }) =>
+              (OPEN_DISPUTE_STATUSES as readonly string[]).includes(entry.status),
+            )
+          : false,
+      }),
       createdAt: order.createdAt,
       updatedAt: order.updatedAt,
     };

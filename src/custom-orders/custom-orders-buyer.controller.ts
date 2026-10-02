@@ -20,6 +20,7 @@ import { IdempotencyInterceptor } from 'src/common/interceptors/idempotency.inte
 import { CustomOrdersPaymentsService } from './custom-orders-payments.service';
 import { CustomOrdersService } from './custom-orders.service';
 import {
+  CloseCustomOrderDisputeDto,
   ConfirmCustomOrderDeliveryDto,
   CreateCustomOrderDto,
   CustomOrderPricePreviewDto,
@@ -276,6 +277,33 @@ export class CustomOrdersBuyerController {
    * Mark admin notices on this order as seen. Read-only channel: the shopper
    * acknowledges, never replies — the same contract the brand side has.
    */
+  /**
+   * The shopper ends their own delay dispute — usually because the piece
+   * finally arrived and they would rather have it than argue. Only their own
+   * delay-class disputes, and only before an admin has taken it over.
+   */
+  @Post(':id/disputes/:disputeId/close')
+  async closeDelayDispute(
+    @Param('id') id: string,
+    @Param('disputeId') disputeId: string,
+    @Req() req: Request & { user: { id: string } },
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: CloseCustomOrderDisputeDto,
+  ) {
+    return this.ordersService.closeDelayDispute(
+      req.user.id,
+      id,
+      disputeId,
+      dto.note,
+    );
+  }
+
   @Post(':id/admin-notices/ack')
   async ackAdminNotices(
     @Param('id') id: string,
