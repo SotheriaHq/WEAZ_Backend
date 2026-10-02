@@ -16,6 +16,7 @@ import {
   PaymentStatus,
   Prisma,
 } from '@prisma/client';
+import { BrandBalanceService } from 'src/finance/brand-balance.service';
 import {
   EXTENSION_POLICY,
   isRushOrder,
@@ -69,6 +70,7 @@ export class CustomOrderAdminService {
     private readonly sideEffects: CustomOrderSideEffectsService,
     private readonly refundService: CustomOrderRefundService,
     private readonly customOrdersService: CustomOrdersService,
+    private readonly brandBalance: BrandBalanceService,
   ) {}
 
   async getPendingBases() {
@@ -1934,19 +1936,46 @@ export class CustomOrderAdminService {
     }
 
     let releasedBatches = 0;
+    let recoveredTotal = 0;
     for (const group of grouped.values()) {
       await this.prisma.$transaction(async (tx) => {
-        const payoutId = uuidv4();
-        await tx.payout.create({
-          data: {
-            id: payoutId,
+        /*
+          Debt comes off the top, before anything becomes payable.
+
+          This is the "deducted from subsequent orders" half of the refund
+          policy: WIEZ pays a refunded shopper immediately, the brand carries
+          the shortfall, and the brand's next earnings settle it — oldest debt
+          first. Doing it here rather than at approval time means the payout row
+          is created for what the brand is ACTUALLY owed, so an approver is
+          never looking at a figure that is about to change.
+
+          A batch fully consumed by debt creates no payout at all; a zero-value
+          payout row is a thing somebody has to explain.
+        */
+        const { recovered, remaining } = await this.brandBalance.applyEarningsToDebt(
+          tx,
+          {
             brandId: group.brandId,
-            amount: new Prisma.Decimal(group.totalAmount.toFixed(2)),
-            currency: group.currency,
-            status: 'PENDING_APPROVAL',
-            reference: `CO-${group.brandId.slice(0, 8)}-${now.getTime()}`,
+            amount: group.totalAmount,
+            customOrderId: Array.from(new Set(group.customOrderIds))[0] ?? null,
+            note: 'Applied from a custom-order payout release',
           },
-        });
+        );
+        recoveredTotal += recovered;
+
+        const payoutId = uuidv4();
+        if (remaining > 0) {
+          await tx.payout.create({
+            data: {
+              id: payoutId,
+              brandId: group.brandId,
+              amount: new Prisma.Decimal(remaining.toFixed(2)),
+              currency: group.currency,
+              status: 'PENDING_APPROVAL',
+              reference: `CO-${group.brandId.slice(0, 8)}-${now.getTime()}`,
+            },
+          });
+        }
 
         const reserved = await tx.customOrderLedgerAllocation.updateMany({
           where: {
@@ -1955,9 +1984,19 @@ export class CustomOrderAdminService {
             paidOutAt: null,
             payoutId: null,
           },
-          data: {
-            payoutId,
-          },
+          data:
+            remaining > 0
+              ? { payoutId }
+              : {
+                  /*
+                    Fully consumed by debt. The allocation is settled — the money
+                    went to the platform rather than to the brand — so it is
+                    closed out here. Leaving it PAYOUT_ELIGIBLE would hand the
+                    same earnings to the next sweep and pay the debt down twice.
+                  */
+                  status: CustomOrderLedgerAllocationStatus.PAID_OUT,
+                  paidOutAt: now,
+                },
         });
 
         if (reserved.count !== group.allocationIds.length) {
@@ -1975,9 +2014,12 @@ export class CustomOrderAdminService {
             eventType: 'ADMIN_ESCALATED',
             payloadJson: {
               action: 'MANUAL_PAYOUT_RELEASE_QUEUED',
-              payoutId,
+              payoutId: remaining > 0 ? payoutId : null,
               allocationCount: group.allocationIds.length,
               queuedNetAmount: Number(group.totalAmount.toFixed(2)),
+              // What the brand actually receives, and what went to its debt.
+              appliedToDebt: Number(recovered.toFixed(2)),
+              payableAmount: Number(remaining.toFixed(2)),
             } as Prisma.InputJsonValue,
           })),
         });
@@ -2008,6 +2050,8 @@ export class CustomOrderAdminService {
           (sum, item) => sum + Number(item.netBrandAmount ?? 0),
           0,
         ),
+        // How much of that never reached a brand because it settled a debt.
+        appliedToBrandDebt: Number(recoveredTotal.toFixed(2)),
       },
     };
   }

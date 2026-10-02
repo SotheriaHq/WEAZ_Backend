@@ -11,6 +11,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { LedgerService } from './ledger.service';
 import { SettlementCalculatorService } from './settlement-calculator.service';
 import { SettlementSnapshotService } from './settlement-snapshot.service';
+import { BrandBalanceService } from './brand-balance.service';
 import { StandardOrderEscrowService } from './standard-order-escrow.service';
 
 const now = new Date('2026-05-05T10:00:00.000Z');
@@ -389,12 +390,20 @@ function buildHarness(mode: 'HOLD' | 'SPLIT' = 'HOLD') {
     ),
   };
 
+  const brandBalanceService = {
+    raiseAdjustment: jest.fn(async () => ({ id: 'adjustment_1' })),
+    applyEarningsToDebt: jest.fn(async () => ({ recovered: 0, remaining: 0 })),
+  };
+
   const service = new StandardOrderEscrowService(
     prisma as PrismaService,
     systemConfigService as unknown as SystemConfigService,
     ledgerService as unknown as LedgerService,
     calculatorService as unknown as SettlementCalculatorService,
     snapshotService as unknown as SettlementSnapshotService,
+    // A refund on an order the brand was already paid for now records what it
+    // owes back, so later earnings can settle it.
+    brandBalanceService as unknown as BrandBalanceService,
   );
 
   return {

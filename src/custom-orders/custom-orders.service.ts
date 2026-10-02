@@ -35,6 +35,7 @@ import {
   isBrandStoreVerified,
 } from 'src/brand-verification/verification-truth.util';
 import { CustomOrderPricingService } from 'src/custom-order-pricing/custom-order-pricing.service';
+import { BrandBalanceService } from 'src/finance/brand-balance.service';
 import { LedgerService } from 'src/finance/ledger.service';
 import { resolveWebAppBaseUrl } from 'src/common/utils/web-app-url';
 import { CustomOrderRefundService } from './custom-order-refund.service';
@@ -64,6 +65,14 @@ import {
   resolveExtensionTargetDate,
   resolveRespondByAt,
 } from './custom-order-extension.policy';
+// Dispute policy: which complaints need a photograph, and when an order is late
+// enough to escalate at all.
+import {
+  DISPUTE_POLICY,
+  isDelayClassIssue,
+  OPEN_DISPUTE_STATUSES,
+  resolveDelayEligibility,
+} from './custom-order-dispute.policy';
 import {
   AcceptCustomOrderDto,
   BrandRespondToCustomOrderExtensionCounterDto,
@@ -557,6 +566,7 @@ export class CustomOrdersService {
     private readonly ledgerService: LedgerService,
     private readonly customOrderAccessService: CustomOrderAccessService,
     private readonly bagValidationService: BagValidationService,
+    private readonly brandBalance: BrandBalanceService,
     @Optional()
     private readonly reviewEligibilityService?: ReviewEligibilityService,
     @Optional()
@@ -2136,6 +2146,25 @@ export class CustomOrdersService {
       throw new BadRequestException('CUSTOM_ORDER_DISPUTE_WINDOW_CLOSED');
     }
 
+    /*
+      A complaint about lateness is not a complaint about a garment.
+
+      Everything below this was written for something that arrived and is wrong:
+      it demands a photograph, flips the order to DELIVERY_ISSUE_REPORTED, and
+      forfeits the final payout tranche. Applied to an order still in production
+      that is simply overdue, the photograph is impossible (there is nothing to
+      photograph), the status is a lie, and stopping the maker is the opposite
+      of what the shopper wants — they want the thing they paid for.
+
+      So delay-class takes its own path: the order keeps its status and the brand
+      keeps working, while the dispute and the admin intervention are raised
+      around it.
+    */
+    const delayClass = isDelayClassIssue(dto.issueType);
+    if (delayClass) {
+      return this.openDelayDispute(userId, order, dto, now);
+    }
+
     const normalizedEvidence = this.validateAndNormalizeIssueEvidence(
       dto.evidenceJson,
     );
@@ -2254,6 +2283,297 @@ export class CustomOrdersService {
     return {
       statusCode: 200,
       message: 'Custom order issue reported',
+      data: this.mapDetail(updated),
+    };
+  }
+
+  /**
+   * A dispute about an order that is simply late.
+   *
+   * Three things make it different from the delivery-issue path. The order KEEPS
+   * its status, because production has not stopped and the shopper's remedy is
+   * still the garment. No photograph is required, because there is nothing to
+   * photograph. And an open extension request is voided on the way in: a brand
+   * asking for more time while the shopper is formally objecting to the time
+   * already taken is two processes asking opposite questions at once.
+   *
+   * The payout freeze needs no code here — `queueEligibleCustomOrderPayouts` and
+   * `autoCompleteExpiredAcceptanceWindows` already exclude orders carrying an
+   * open dispute, so raising one stops the money by itself.
+   */
+  private async openDelayDispute(
+    userId: string,
+    // Structural, not the Prisma payload type: this only reads a handful of
+    // scalars plus the disputes relation, and naming the full include here ties
+    // the method to whatever `detailIncludes` happens to select today.
+    order: {
+      id: string;
+      brandId: string;
+      buyerId: string;
+      status: CustomOrderStatus;
+      promisedProductionAt?: Date | null;
+      promisedDeliveryAt?: Date | null;
+      currentProgressStage?: string | null;
+      retentionHoldType?: unknown;
+      disputes?: Array<{ status: string; resolvedAt?: Date | null }>;
+    },
+    dto: ReportCustomOrderIssueDto,
+    now: Date,
+  ) {
+    const existingDisputes = Array.isArray((order as any).disputes)
+      ? ((order as any).disputes as Array<{ status: string; resolvedAt?: Date | null }>)
+      : [];
+    const hasOpenDispute = existingDisputes.some((entry) =>
+      (OPEN_DISPUTE_STATUSES as readonly string[]).includes(entry.status),
+    );
+
+    const eligibility = resolveDelayEligibility({
+      status: order.status,
+      promisedProductionAt: (order as any).promisedProductionAt ?? null,
+      promisedDeliveryAt: (order as any).promisedDeliveryAt ?? null,
+      currentProgressStage: (order as any).currentProgressStage ?? null,
+      hasOpenDispute,
+      now,
+    });
+    if (!eligibility.eligible) {
+      throw new BadRequestException(
+        `CUSTOM_ORDER_DELAY_DISPUTE_${eligibility.reason}`,
+      );
+    }
+
+    // Raising the same complaint the morning after a resolution is how one
+    // disagreement becomes a standing queue item.
+    const lastResolved = existingDisputes
+      .map((entry) => entry.resolvedAt)
+      .filter((value): value is Date => Boolean(value))
+      .sort((left, right) => right.getTime() - left.getTime())[0];
+    if (
+      lastResolved &&
+      now.getTime() - lastResolved.getTime() <
+        DISPUTE_POLICY.reDisputeCooldownHours * 60 * 60 * 1000
+    ) {
+      throw new BadRequestException('CUSTOM_ORDER_DELAY_DISPUTE_COOLDOWN');
+    }
+
+    const statement = dto.description.trim();
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.customOrderIssue.create({
+        data: {
+          customOrderId: order.id,
+          issueType: dto.issueType,
+          description: statement,
+          evidenceJson: { photos: [], files: [], basis: eligibility.basis } as Prisma.InputJsonValue,
+          openedById: userId,
+        },
+      });
+
+      await tx.customOrderDispute.create({
+        data: {
+          customOrderId: order.id,
+          openedById: userId,
+          reasonType: dto.issueType,
+          buyerStatement: statement,
+          // The brand owes an answer, and the clock is visible to both sides.
+          brandRespondByAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+        },
+      });
+
+      // One of the two processes has to stop. The dispute is the louder one.
+      await tx.customOrderExtensionRequest.updateMany({
+        where: {
+          customOrderId: order.id,
+          buyerResponseStatus: { in: ['OPEN', 'COUNTERED'] },
+        },
+        data: {
+          buyerResponseStatus: 'VOIDED',
+          voidedAt: now,
+          resolvedAt: now,
+        },
+      });
+
+      return tx.customOrder.update({
+        where: { id: order.id },
+        data: {
+          // Status is deliberately untouched: the maker keeps making.
+          brandAdminNoticeAt: now,
+          adminInterventionAt: now,
+          adminInterventionReason:
+            eligibility.basis === 'DELIVERY' ? 'DELIVERY_OVERDUE' : 'PRODUCTION_OVERDUE',
+          adminInterventionResolvedAt: null,
+          adminInterventionResolvedById: null,
+          /*
+            Hold the measurements for the duration.
+
+            Anonymization runs daily off `measurementRetentionUntil`, and a
+            dispute that outlives it destroys the record it would be argued
+            from. A support hold is the mechanism that already exists for this;
+            it is applied automatically here because remembering to set one by
+            hand, on every dispute, is not a plan.
+          */
+          ...((order as any).retentionHoldType
+            ? {}
+            : {
+                retentionHoldType: 'SUPPORT' as const,
+                retentionHoldReason: 'Open delay dispute',
+                retentionHoldSetAt: now,
+              }),
+          timelineEvents: {
+            create: [
+              {
+                actorType: CustomOrderActorType.BUYER,
+                actorId: userId,
+                eventType: 'DISPUTE_CREATED',
+                payloadJson: {
+                  issueType: dto.issueType,
+                  basis: eligibility.basis,
+                  disputeClass: 'DELAY',
+                },
+              },
+              {
+                actorType: CustomOrderActorType.SYSTEM,
+                eventType: 'ADMIN_INTERVENTION_OPENED',
+                payloadJson: {
+                  reason:
+                    eligibility.basis === 'DELIVERY'
+                      ? 'DELIVERY_OVERDUE'
+                      : 'PRODUCTION_OVERDUE',
+                },
+              },
+            ],
+          },
+        },
+        include: this.detailIncludes,
+      });
+    });
+
+    await this.queueBrandNotification(
+      order.brandId,
+      'CUSTOM_ORDER_ISSUE_REPORTED' as NotificationType,
+      order.id,
+      {
+        issueType: dto.issueType,
+        message:
+          'The shopper has raised a delay dispute on this order. Answer it in your studio — and keep producing unless WIEZ tells you otherwise.',
+      },
+      userId,
+    );
+    await this.queueBuyerNotification(
+      order.buyerId,
+      'CUSTOM_ORDER_DISPUTE_CREATED' as NotificationType,
+      order.id,
+      {
+        message:
+          'We have logged your delay report. Your order is still live — WIEZ is now reviewing it with your maker.',
+      },
+      userId,
+    );
+    await this.flagOrderForAdminAttention(order.id, 'DISPUTE_OPENED', {
+      reasonType: dto.issueType,
+      source: eligibility.basis === 'DELIVERY' ? 'DELIVERY_OVERDUE' : 'PRODUCTION_OVERDUE',
+    });
+
+    return {
+      statusCode: 201,
+      message: 'Delay dispute opened',
+      data: this.mapDetail(updated),
+    };
+  }
+
+  /**
+   * The shopper closes their own delay dispute.
+   *
+   * Usually because the garment finally turned up and they would rather have it
+   * than argue — "accept it late". Letting them end it themselves is the
+   * difference between a dispute that resolves and one that sits open because
+   * nobody with the authority to close it has looked at it this week.
+   *
+   * Only the buyer's own DELAY disputes, and only ones an admin has not already
+   * taken over: once it is in ADMIN_REVIEW there is money or a refund in play
+   * and the shopper withdrawing does not settle that by itself.
+   */
+  async closeDelayDispute(
+    userId: string,
+    customOrderId: string,
+    disputeId: string,
+    note?: string,
+  ) {
+    const order = await this.requireBuyerOrder(userId, customOrderId);
+    const dispute = await this.prisma.customOrderDispute.findFirst({
+      where: { id: disputeId, customOrderId },
+    });
+    if (!dispute) {
+      throw new NotFoundException('Dispute not found');
+    }
+    if (dispute.openedById !== userId) {
+      throw new BadRequestException('CUSTOM_ORDER_DISPUTE_NOT_YOURS');
+    }
+    if (!isDelayClassIssue(dispute.reasonType)) {
+      throw new BadRequestException('CUSTOM_ORDER_DISPUTE_NOT_CLOSEABLE');
+    }
+    if (dispute.status === 'RESOLVED' || dispute.status === 'CLOSED') {
+      throw new BadRequestException('CUSTOM_ORDER_DISPUTE_ALREADY_SETTLED');
+    }
+    if (dispute.status === 'ADMIN_REVIEW') {
+      throw new BadRequestException('CUSTOM_ORDER_DISPUTE_WITH_ADMIN');
+    }
+
+    const now = new Date();
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.customOrderDispute.update({
+        where: { id: disputeId },
+        data: {
+          status: 'CLOSED',
+          resolvedAt: now,
+          resolution: 'NO_ACTION' as const,
+          adminNotes: note?.trim()
+            ? `Closed by buyer: ${note.trim()}`
+            : 'Closed by buyer',
+        },
+      });
+
+      return tx.customOrder.update({
+        where: { id: customOrderId },
+        data: {
+          // The intervention closes with it: there is nothing left to steer.
+          adminInterventionResolvedAt: now,
+          // And the measurements go back on their normal retention clock.
+          ...(order.retentionHoldReason === 'Open delay dispute'
+            ? {
+                retentionHoldType: null,
+                retentionHoldReason: null,
+                retentionHoldUntil: null,
+              }
+            : {}),
+          timelineEvents: {
+            create: {
+              actorType: CustomOrderActorType.BUYER,
+              actorId: userId,
+              eventType: 'ADMIN_INTERVENTION_RESOLVED',
+              payloadJson: {
+                note: note?.trim() || 'Buyer accepted the order late',
+                closedBy: 'BUYER',
+              },
+            },
+          },
+        },
+        include: this.detailIncludes,
+      });
+    });
+
+    await this.queueBrandNotification(
+      order.brandId,
+      'CUSTOM_ORDER_DISPUTE_CREATED' as NotificationType,
+      customOrderId,
+      {
+        message: 'The shopper has withdrawn their delay dispute on this order.',
+      },
+      userId,
+    );
+    await clearAdminAttention(this.prisma, customOrderId, userId).catch(() => undefined);
+
+    return {
+      statusCode: 200,
+      message: 'Dispute closed',
       data: this.mapDetail(updated),
     };
   }
@@ -2951,6 +3271,20 @@ export class CustomOrdersService {
       order.paymentStatus !== 'PAID'
     ) {
       throw new BadRequestException('CUSTOM_ORDER_INVALID_STATE');
+    }
+
+    /*
+      A brand carrying a debt has to say so before it takes the work on.
+
+      The shopper has already paid, and the brand is about to commit weeks to
+      this. If the earnings then vanish into a clawback nobody mentioned, that is
+      a second dispute of our own making. The brand must acknowledge the amount
+      it owes — and the amount is written onto the order with the timestamp, so
+      the notice they agreed to can be reproduced after the balance has moved.
+    */
+    const debt = await this.brandBalance.getDebtSnapshot(resolvedBrandId);
+    if (debt.inDebt && !dto.acknowledgeDebt) {
+      throw new BadRequestException('CUSTOM_ORDER_BRAND_DEBT_ACK_REQUIRED');
     }
 
     const now = new Date();

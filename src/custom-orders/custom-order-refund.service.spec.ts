@@ -11,6 +11,7 @@ describe('CustomOrderRefundService', () => {
   let tx: any;
   let prisma: any;
   let ledgerService: any;
+  let brandBalance: any;
 
   beforeEach(() => {
     prisma = {
@@ -24,7 +25,12 @@ describe('CustomOrderRefundService', () => {
     ledgerService = {
       postCustomOrderRefund: jest.fn().mockResolvedValue(undefined),
     };
-    service = new CustomOrderRefundService(prisma, ledgerService);
+    // A refund now also records what the brand owes back, where it had already
+    // been credited for the order being refunded.
+    brandBalance = {
+      raiseAdjustment: jest.fn().mockResolvedValue({ id: 'adj_1' }),
+    };
+    service = new CustomOrderRefundService(prisma, ledgerService, brandBalance);
     tx = {
       customOrder: {
         findUnique: jest.fn(),

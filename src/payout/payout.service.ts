@@ -21,6 +21,7 @@ import * as emailTemplates from 'src/email/email.templates';
 import { CommissionService } from 'src/finance/commission.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
+import { BrandBalanceService } from 'src/finance/brand-balance.service';
 import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-sync.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdminAuditService } from 'src/admin/services/admin-audit.service';
@@ -64,6 +65,7 @@ export class PayoutService {
     private readonly customOrderFinanceSyncService: CustomOrderFinanceSyncService,
     private readonly passwordService: PasswordService,
     private readonly emailService: EmailService,
+    private readonly brandBalanceService: BrandBalanceService,
     @Optional()
     private readonly adminAuditService?: AdminAuditService,
   ) {}
@@ -505,6 +507,7 @@ export class PayoutService {
       customOrderStats,
       activeEscrowHolds,
       queuedCustomAllocations,
+      debt,
     ] = await Promise.all([
       this.prisma.order.aggregate({
         where: { brandId, paymentStatus: 'PAID' },
@@ -528,6 +531,7 @@ export class PayoutService {
           payoutId: null,
         },
       }),
+      this.brandBalanceService.getDebtSnapshot(brandId),
     ]);
 
     return {
@@ -542,6 +546,18 @@ export class PayoutService {
       activeEscrowHolds,
       queuedCustomAllocations,
       negativeBalance: availableBalance < 0,
+      /*
+        The debt, as a figure a brand can be shown and argue with.
+
+        `negativeBalance` above is only ever a sign bit on an arithmetic result;
+        it cannot say what is owed, why, or what has been paid off it. This is
+        the recorded obligation — the thing the acceptance notice quotes, and
+        the thing later earnings are applied to.
+      */
+      outstandingDebt: debt.outstanding,
+      inDebt: debt.inDebt,
+      debtCount: debt.count,
+      debtOldestAt: debt.oldestAt,
     };
   }
 

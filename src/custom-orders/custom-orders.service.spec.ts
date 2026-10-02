@@ -9,6 +9,7 @@ import {
   CustomOrderStatus,
   PaymentStatus,
 } from '@prisma/client';
+import { BrandBalanceService } from 'src/finance/brand-balance.service';
 import { LedgerService } from 'src/finance/ledger.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CustomOrderPricingService } from 'src/custom-order-pricing/custom-order-pricing.service';
@@ -27,6 +28,7 @@ describe('CustomOrdersService', () => {
   let pricingService: any;
   let ledgerService: any;
   let customOrderAccessService: any;
+  let brandBalance: any;
 
   const buildOrder = (overrides: Record<string, unknown> = {}) => ({
     id: 'co_1',
@@ -147,6 +149,22 @@ describe('CustomOrdersService', () => {
         .mockImplementation(async (brandId: string) => brandId),
     };
 
+    // Default: the brand owes nothing, so acceptance is unaffected. Tests that
+    // care about the debt gate override this.
+    brandBalance = {
+      getDebtSnapshot: jest.fn().mockResolvedValue({
+        outstanding: 0,
+        currency: 'NGN',
+        count: 0,
+        oldestAt: null,
+        inDebt: false,
+      }),
+      raiseAdjustment: jest.fn().mockResolvedValue({ id: 'adj_1' }),
+      applyEarningsToDebt: jest
+        .fn()
+        .mockResolvedValue({ recovered: 0, remaining: 0 }),
+    };
+
     prisma.product.findUnique.mockResolvedValue({
       customMeasurementKeys: ['WOMEN_WAIST'],
       customFreeformPointIds: [],
@@ -187,6 +205,12 @@ describe('CustomOrdersService', () => {
           useValue: customOrderAccessService,
         },
         BagValidationService,
+        {
+          // Accepting a custom order now checks whether the brand owes WIEZ
+          // money, because a brand in debt has to acknowledge it first.
+          provide: BrandBalanceService,
+          useValue: brandBalance,
+        },
       ],
     }).compile();
 
@@ -792,20 +816,81 @@ describe('CustomOrdersService', () => {
     ).rejects.toThrow('CUSTOM_ORDER_DISPUTE_WINDOW_CLOSED');
   });
 
-  it('enforces at least one photo in dispute evidence', async () => {
+  it('enforces at least one photo on a complaint about the garment', async () => {
+    prisma.customOrder.findFirst.mockResolvedValue(
+      buildOrder({
+        status: CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION,
+        buyerAcceptanceWindowEndsAt: new Date(Date.now() + 60 * 60 * 1000),
+      }),
+    );
+
+    await expect(
+      service.reportIssue('buyer_1', 'co_1', {
+        issueType: CustomOrderIssueType.WRONG_ITEM,
+        description: 'The delivered piece is not what I ordered.',
+        evidenceJson: {},
+      }),
+    ).rejects.toThrow('Dispute evidence must include at least one photo');
+  });
+
+  it('takes a delay dispute with no photo once the promise has actually been missed', async () => {
+    prisma.brand.findUnique.mockResolvedValue({ ownerId: 'owner_1' });
+    // Overdue by a day and a half: past the production promise AND past the
+    // 24-hour grace that exists so a maker running an afternoon late is not
+    // escalated for it.
+    const order = buildOrder({
+      status: CustomOrderStatus.IN_PRODUCTION,
+      promisedProductionAt: new Date(Date.now() - 36 * 60 * 60 * 1000),
+      promisedDeliveryAt: new Date(Date.now() + 48 * 60 * 60 * 1000),
+      disputes: [],
+    });
+    prisma.customOrder.findFirst.mockResolvedValue(order);
+
+    const tx = {
+      customOrderIssue: { create: jest.fn() },
+      customOrderDispute: { create: jest.fn() },
+      customOrderExtensionRequest: { updateMany: jest.fn() },
+      customOrder: { update: jest.fn().mockResolvedValue(order) },
+    };
+    prisma.$transaction.mockImplementation(
+      async (callback: (innerTx: typeof tx) => Promise<unknown>) => callback(tx),
+    );
+
+    const result = await service.reportIssue('buyer_1', 'co_1', {
+      issueType: CustomOrderIssueType.UNREASONABLE_DELAY,
+      description: 'This is nearly two days past the date I was given.',
+      evidenceJson: {},
+    });
+
+    expect(result.statusCode).toBe(201);
+    // The maker keeps making: the remedy a late shopper wants is the garment.
+    const updateArgs = tx.customOrder.update.mock.calls[0][0];
+    expect(updateArgs.data.status).toBeUndefined();
+    // An admin owns it from here, and the measurements are held for the record.
+    expect(updateArgs.data.adminInterventionReason).toBe('PRODUCTION_OVERDUE');
+    expect(updateArgs.data.retentionHoldType).toBe('SUPPORT');
+    // Any extension request still sitting with the shopper is voided: two
+    // processes cannot ask them opposite things at once.
+    expect(tx.customOrderExtensionRequest.updateMany).toHaveBeenCalled();
+  });
+
+  it('refuses a delay dispute while the order is merely approaching its date', async () => {
     prisma.customOrder.findFirst.mockResolvedValue(
       buildOrder({
         status: CustomOrderStatus.IN_PRODUCTION,
+        promisedProductionAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        promisedDeliveryAt: new Date(Date.now() + 72 * 60 * 60 * 1000),
+        disputes: [],
       }),
     );
 
     await expect(
       service.reportIssue('buyer_1', 'co_1', {
         issueType: CustomOrderIssueType.UNREASONABLE_DELAY,
-        description: 'Production timeline has exceeded agreed dates.',
+        description: 'I think this is going to be late.',
         evidenceJson: {},
       }),
-    ).rejects.toThrow('Dispute evidence must include at least one photo');
+    ).rejects.toThrow('CUSTOM_ORDER_DELAY_DISPUTE_NOT_LATE_YET');
   });
 
   it('blocks a second extension request while one is still outstanding', async () => {

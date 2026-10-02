@@ -3,11 +3,13 @@ import { PayoutController } from './payout.controller';
 import { PayoutService } from './payout.service';
 import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
 import { BRAND_PERMISSIONS } from 'src/brands/permissions/brand-permissions';
+import { BrandBalanceService } from 'src/finance/brand-balance.service';
 
 describe('PayoutController', () => {
   let controller: PayoutController;
   let payoutService: any;
   let brandPermissionService: any;
+  let brandBalanceService: any;
 
   beforeEach(async () => {
     payoutService = {
@@ -21,11 +23,18 @@ describe('PayoutController', () => {
     brandPermissionService = {
       assertPermission: jest.fn(),
     };
+    // The brand's debt statement is served from this controller, so the
+    // balance service is now one of its dependencies.
+    brandBalanceService = {
+      getStatement: jest.fn(),
+      getDebtSnapshot: jest.fn(),
+    };
     const module: TestingModule = await Test.createTestingModule({
       controllers: [PayoutController],
       providers: [
         { provide: PayoutService, useValue: payoutService },
         { provide: BrandPermissionService, useValue: brandPermissionService },
+        { provide: BrandBalanceService, useValue: brandBalanceService },
       ],
     }).compile();
 

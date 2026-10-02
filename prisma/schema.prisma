@@ -983,6 +983,10 @@ enum NotificationType {
   BRAND_PATCH_REQUEST
   BRAND_PATCH_ACCEPTED
   BRAND_PATCH_REJECTED
+  /// A debt was raised against the brand (a refund WIEZ paid on its behalf),
+  /// or earnings were applied to one. A brand must never discover either by
+  /// noticing its balance is short.
+  BRAND_BALANCE_ADJUSTED
 
   // Orders
   ORDER_PLACED
@@ -2734,9 +2738,82 @@ model Brand {
   reviewPrompts             ReviewPrompt[]             @relation("ReviewPromptBrand")
   members                   BrandMember[]
   staffInvites              BrandStaffInvite[]
+  balanceAdjustments        BrandBalanceAdjustment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+/// A debt a brand owes the platform, and what has been recovered against it.
+///
+/// WIEZ refunds the shopper immediately — the shopper is not made to wait for a
+/// brand to have the money. Where the brand had already been paid for that
+/// order, the platform is out of pocket, and the difference becomes a recorded
+/// debt rather than an invisible arithmetic shortfall in a balance view.
+///
+/// Recovery comes out of what the brand earns next: each later release is
+/// applied to the oldest outstanding adjustment first, which is why
+/// `recoveredAmount` is kept here rather than inferred from a balance that
+/// nobody can explain afterwards.
+model BrandBalanceAdjustment {
+  id              String                       @id @default(uuid()) @db.Uuid
+  brandId         String                       @db.Uuid
+  brand           Brand                        @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  type            BrandBalanceAdjustmentType
+  status          BrandBalanceAdjustmentStatus @default(OUTSTANDING)
+  /// Always positive. `type` says which way it moves the brand's balance.
+  amount          Decimal                      @db.Decimal(18, 2)
+  recoveredAmount Decimal                      @default(0) @db.Decimal(18, 2)
+  currency        String                       @default("NGN")
+  reason          String
+  /// The order that caused it, and the order that paid it down.
+  customOrderId   String?                      @db.Uuid
+  orderId         String?                      @db.Uuid
+  /// Who raised it: an admin id for a manual adjustment, null for the system.
+  createdById     String?                      @db.Uuid
+  settledAt       DateTime?
+  createdAt       DateTime                     @default(now())
+  updatedAt       DateTime                     @updatedAt
+
+  recoveries BrandBalanceRecovery[]
+
+  @@index([brandId, status])
+  @@index([brandId, createdAt])
+}
+
+/// One payment against one debt, so the history reads as a statement.
+model BrandBalanceRecovery {
+  id           String                 @id @default(uuid()) @db.Uuid
+  adjustmentId String                 @db.Uuid
+  adjustment   BrandBalanceAdjustment @relation(fields: [adjustmentId], references: [id], onDelete: Cascade)
+  amount       Decimal                @db.Decimal(18, 2)
+  currency     String                 @default("NGN")
+  /// The order whose earnings paid this down.
+  customOrderId String?               @db.Uuid
+  orderId       String?               @db.Uuid
+  note          String?
+  createdAt     DateTime               @default(now())
+
+  @@index([adjustmentId, createdAt])
+}
+
+enum BrandBalanceAdjustmentType {
+  /// The platform refunded a shopper money the brand had already been paid.
+  REFUND_CLAWBACK
+  /// A chargeback the platform absorbed on the brand's behalf.
+  CHARGEBACK
+  /// An admin-entered correction.
+  MANUAL_DEBIT
+  /// An admin-entered credit (reduces or cancels a debt).
+  MANUAL_CREDIT
+}
+
+enum BrandBalanceAdjustmentStatus {
+  OUTSTANDING
+  PARTIALLY_RECOVERED
+  RECOVERED
+  /// Written off by an admin; no longer recovered from earnings.
+  WAIVED
 }
 
 model BrandMember {
@@ -3408,6 +3485,14 @@ model CustomOrder {
   adminInterventionReason       String?
   adminInterventionResolvedAt   DateTime?
   adminInterventionResolvedById String?                              @db.Uuid
+  /// A brand carrying a debt must say, in words, that it understands this
+  /// order's earnings will be applied to that debt before it can accept the
+  /// work. Recorded here rather than inferred, because "they knew" is exactly
+  /// the thing that gets argued about afterwards.
+  brandDebtAckAt                DateTime?
+  /// What was owed at the moment they acknowledged, so the notice they agreed
+  /// to can be reproduced even after the debt has moved.
+  brandDebtAckAmount            Decimal?                             @db.Decimal(18, 2)
   createdAt                     DateTime                             @default(now())
   updatedAt                     DateTime                             @updatedAt
   progressEvents                CustomOrderProgressEvent[]

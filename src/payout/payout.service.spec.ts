@@ -8,6 +8,7 @@ import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-fina
 import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-sync.service';
 import { PasswordService } from 'src/auth/helper/password.service';
 import { EmailService } from 'src/email/email.service';
+import { BrandBalanceService } from 'src/finance/brand-balance.service';
 
 const BRAND_ID = 'brand-1';
 const USER_ID = 'user-1';
@@ -63,6 +64,23 @@ describe('PayoutService', () => {
         },
         { provide: PasswordService, useValue: passwordService },
         { provide: EmailService, useValue: emailService },
+        {
+          // The overview now reports the brand's recorded debt alongside the
+          // balance arithmetic, so the service needs the balance ledger.
+          provide: BrandBalanceService,
+          useValue: {
+            getDebtSnapshot: jest.fn().mockResolvedValue({
+              outstanding: 0,
+              currency: 'NGN',
+              count: 0,
+              oldestAt: null,
+              inDebt: false,
+            }),
+            applyEarningsToDebt: jest
+              .fn()
+              .mockResolvedValue({ recovered: 0, remaining: 0 }),
+          },
+        },
       ],
     }).compile();
 

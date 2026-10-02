@@ -10,6 +10,7 @@ import { CustomOrderRefundService } from 'src/custom-orders/custom-order-refund.
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CustomOrderSideEffectsService } from 'src/custom-orders/custom-order-side-effects.service';
 import { CustomOrdersService } from 'src/custom-orders/custom-orders.service';
+import { BrandBalanceService } from 'src/finance/brand-balance.service';
 import { CustomOrderAdminService } from './custom-order-admin.service';
 
 describe('CustomOrderAdminService', () => {
@@ -18,6 +19,7 @@ describe('CustomOrderAdminService', () => {
   let sideEffects: any;
   let refundService: any;
   let customOrdersService: any;
+  let brandBalance: any;
 
   beforeEach(async () => {
     prisma = {
@@ -79,6 +81,24 @@ describe('CustomOrderAdminService', () => {
       initiateRefund: jest.fn(),
     };
 
+    // Default: the brand owes nothing, so a release pays out in full.
+    brandBalance = {
+      getDebtSnapshot: jest.fn().mockResolvedValue({
+        outstanding: 0,
+        currency: 'NGN',
+        count: 0,
+        oldestAt: null,
+        inDebt: false,
+      }),
+      raiseAdjustment: jest.fn().mockResolvedValue({ id: 'adj_1' }),
+      applyEarningsToDebt: jest
+        .fn()
+        .mockImplementation(async (_tx: unknown, params: { amount: number }) => ({
+          recovered: 0,
+          remaining: params.amount,
+        })),
+    };
+
     // Title hydration is a passthrough in tests (returns rows unchanged).
     customOrdersService = {
       hydrateAdminOrderSnapshots: jest.fn(async (items: unknown[]) => items),
@@ -92,6 +112,12 @@ describe('CustomOrderAdminService', () => {
         { provide: CustomOrderSideEffectsService, useValue: sideEffects },
         { provide: CustomOrderRefundService, useValue: refundService },
         { provide: CustomOrdersService, useValue: customOrdersService },
+        {
+          // Releasing payout-eligible allocations now settles any debt the
+          // brand carries before anything becomes payable.
+          provide: BrandBalanceService,
+          useValue: brandBalance,
+        },
       ],
     }).compile();
 
@@ -639,10 +665,14 @@ describe('CustomOrderAdminService', () => {
   });
 
   it('releases payout-eligible allocations into payout batches through admin action', async () => {
+    // `netBrandAmount` is what the production query selects and what the batch
+    // is totalled from; without it the batch sums to zero and no payout should
+    // be written at all.
     prisma.customOrderLedgerAllocation.findMany.mockResolvedValue([
       {
         id: 'alloc_1',
         amount: 600,
+        netBrandAmount: 540,
         currency: 'NGN',
         customOrderId: 'co_1',
         customOrder: { brandId: 'brand_1' },
@@ -650,6 +680,7 @@ describe('CustomOrderAdminService', () => {
       {
         id: 'alloc_2',
         amount: 400,
+        netBrandAmount: 360,
         currency: 'NGN',
         customOrderId: 'co_1',
         customOrder: { brandId: 'brand_1' },
@@ -678,6 +709,11 @@ describe('CustomOrderAdminService', () => {
     );
 
     expect(tx.payout.create).toHaveBeenCalledTimes(1);
+    // Debt is checked before anything is written, every time.
+    expect(brandBalance.applyEarningsToDebt).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({ brandId: 'brand_1', amount: 900 }),
+    );
     expect(tx.customOrderLedgerAllocation.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -697,6 +733,60 @@ describe('CustomOrderAdminService', () => {
         }),
       }),
     );
+  });
+
+  it('pays a brand debt off the top and writes no payout when it swallows the batch', async () => {
+    /*
+      The recovery half of the refund policy: WIEZ refunds a shopper straight
+      away, the brand carries the shortfall, and its next earnings settle it
+      before anything is payable. A batch entirely consumed by debt must leave
+      no payout row behind — a zero-value payout is something an approver then
+      has to work out the meaning of — and the allocations must be closed, or
+      the next sweep hands the same earnings to the debt a second time.
+    */
+    prisma.customOrderLedgerAllocation.findMany.mockResolvedValue([
+      {
+        id: 'alloc_9',
+        amount: 500,
+        netBrandAmount: 450,
+        currency: 'NGN',
+        customOrderId: 'co_9',
+        customOrder: { brandId: 'brand_9' },
+      },
+    ]);
+    brandBalance.applyEarningsToDebt.mockResolvedValue({
+      recovered: 450,
+      remaining: 0,
+    });
+
+    const tx = {
+      payout: { create: jest.fn() },
+      customOrderLedgerAllocation: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      customOrderTimelineEvent: {
+        createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    prisma.$transaction.mockImplementation(
+      async (callback: (innerTx: typeof tx) => Promise<unknown>) => callback(tx),
+    );
+
+    const result = await service.releaseEligibleLedgerAllocations(
+      { customOrderId: 'co_9' },
+      'admin_1',
+    );
+
+    expect(tx.payout.create).not.toHaveBeenCalled();
+    expect(tx.customOrderLedgerAllocation.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: 'PAID_OUT',
+          paidOutAt: expect.any(Date),
+        }),
+      }),
+    );
+    expect(result.data.appliedToBrandDebt).toBe(450);
   });
 
   it('lists orders with server-side attention filter and attentionTotal', async () => {

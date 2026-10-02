@@ -900,6 +900,39 @@ export class NotificationRegistry {
       },
     });
 
+    /*
+      BRAND_BALANCE_ADJUSTED
+
+      Raised when WIEZ refunds a shopper money the brand had already been paid,
+      and again when later earnings pay that debt down. Both directions are
+      announced: a brand discovering either by noticing its balance is short is
+      the failure this exists to prevent.
+    */
+    registry.register({
+      type: NotificationType.BRAND_BALANCE_ADJUSTED,
+      schema: Joi.object({
+        direction: Joi.string().valid('DEBIT', 'RECOVERY').required(),
+        amount: Joi.number().required(),
+        currency: Joi.string().optional(),
+        outstanding: Joi.number().optional(),
+        reason: Joi.string().optional(),
+        customOrderId: Joi.string().optional(),
+        orderId: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        if (n.payload?.message) return n.payload.message;
+        const currency = n.payload?.currency || 'NGN';
+        const amount = Number(n.payload?.amount ?? 0).toLocaleString();
+        const outstanding = Number(n.payload?.outstanding ?? 0).toLocaleString();
+        if (n.payload?.direction === 'RECOVERY') {
+          return `${currency} ${amount} of your earnings was applied to your outstanding balance. ${currency} ${outstanding} remains.`;
+        }
+        return `A refund of ${currency} ${amount} was issued to a shopper on your behalf. It will be recovered from your upcoming earnings — ${currency} ${outstanding} outstanding.`;
+      },
+    });
+
     // CONTRIBUTION_REQUEST
     registry.register({
       type: NotificationType.CONTRIBUTION_REQUEST,

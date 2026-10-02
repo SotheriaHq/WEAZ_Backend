@@ -12,6 +12,7 @@ import { SettlementCalculatorService } from './settlement-calculator.service';
 import { SettlementSnapshotService } from './settlement-snapshot.service';
 import { SettlementBackfillService } from './settlement-backfill.service';
 import { CustomOrderFinanceSyncService } from './custom-order-finance-sync.service';
+import { BrandBalanceService } from './brand-balance.service';
 
 @Module({
   imports: [PrismaModule, SystemConfigModule],

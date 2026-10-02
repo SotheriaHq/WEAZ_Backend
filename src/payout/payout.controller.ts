@@ -12,6 +12,7 @@ import {
 import { Throttle } from '@nestjs/throttler';
 import { PayoutService } from './payout.service';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
+import { BrandBalanceService } from 'src/finance/brand-balance.service';
 import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
 import { BRAND_PERMISSIONS } from 'src/brands/permissions/brand-permissions';
 
@@ -22,6 +23,7 @@ export class PayoutController {
   constructor(
     private readonly payoutService: PayoutService,
     private readonly brandPermissionService: BrandPermissionService,
+    private readonly brandBalanceService: BrandBalanceService,
   ) {}
 
   @Get()
@@ -52,6 +54,28 @@ export class PayoutController {
       BRAND_PERMISSIONS.PAYOUTS_READ,
     );
     return this.payoutService.getOverview(brandId);
+  }
+
+  /**
+   * The brand's debt statement: what is owed, why, and what each later order
+   * has paid down. A single negative balance figure is not something a brand
+   * can act on or dispute — this is the account behind it.
+   */
+  @Get('balance-adjustments')
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
+  async getBalanceAdjustments(
+    @Param('brandId') brandId: string,
+    @Req() req: any,
+    @Query('limit') limit?: string,
+  ) {
+    await this.brandPermissionService.assertPermission(
+      req.user.id,
+      brandId,
+      BRAND_PERMISSIONS.PAYOUTS_READ,
+    );
+    return this.brandBalanceService.getStatement(brandId, {
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
   }
 
   @Get('incoming')

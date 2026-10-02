@@ -5,12 +5,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  BrandBalanceAdjustmentType,
   CustomOrderActorType,
   CustomOrderLedgerAllocationStatus,
   PaymentStatus,
   PaymentSubjectType,
   Prisma,
 } from '@prisma/client';
+import { BrandBalanceService } from 'src/finance/brand-balance.service';
 import { LedgerService } from 'src/finance/ledger.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 
@@ -38,6 +40,7 @@ export class CustomOrderRefundService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly ledgerService: LedgerService,
+    private readonly brandBalance: BrandBalanceService,
   ) {}
 
   private async executeGatewayRefundIfNeeded(attempt: RefundAttemptSnapshot) {
@@ -336,6 +339,30 @@ export class CustomOrderRefundService {
       releasedNet,
       unreleasedGross,
     });
+
+    /*
+      Money the brand had already been credited is now a debt.
+
+      `releasedNet` is exactly the part of this order the brand had been given —
+      eligible or paid out. The shopper has just been refunded all of it by the
+      platform, so that amount is owed back. Recording it as an adjustment
+      rather than leaving the balance arithmetic to go quietly negative is what
+      lets the brand be shown WHAT they owe and WHY, and lets recovery be
+      applied order by order with a history behind it.
+
+      Unreleased money needs nothing: it was never the brand's.
+    */
+    if (releasedNet > 0) {
+      await this.brandBalance.raiseAdjustment(tx, {
+        brandId: order.brandId,
+        type: BrandBalanceAdjustmentType.REFUND_CLAWBACK,
+        amount: releasedNet,
+        currency: order.currency,
+        reason: `Refund issued to the shopper on a paid custom order (${params.reason})`,
+        customOrderId: params.customOrderId,
+        createdById: params.actorId ?? null,
+      });
+    }
 
     return {
       customOrderId: order.id,

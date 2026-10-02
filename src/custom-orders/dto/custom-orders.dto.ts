@@ -211,6 +211,18 @@ export class AcceptCustomOrderDto {
   @IsString()
   @MaxLength(500)
   note?: string;
+
+  /**
+   * Required only when the brand owes WIEZ money.
+   *
+   * Accepting then means agreeing that this order's earnings are applied to the
+   * debt before anything becomes payable. The API refuses the acceptance
+   * without it (`CUSTOM_ORDER_BRAND_DEBT_ACK_REQUIRED`), so a client that
+   * forgets to show the notice cannot quietly skip the agreement.
+   */
+  @IsOptional()
+  @IsBoolean()
+  acknowledgeDebt?: boolean;
 }
 
 export class UpdateCustomOrderProgressStageDto {

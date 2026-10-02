@@ -1,11 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import {
+  BrandBalanceAdjustmentType,
   EscrowHoldStatus,
   EscrowReleaseCondition,
   Prisma,
   SettlementOrderType,
   SettlementReleaseMode,
 } from '@prisma/client';
+import { BrandBalanceService } from './brand-balance.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { SystemConfigService } from 'src/admin/system-config/system-config.service';
 import { LedgerService } from './ledger.service';
@@ -30,6 +32,7 @@ export class StandardOrderEscrowService {
     private readonly ledgerService: LedgerService,
     private readonly settlementCalculatorService: SettlementCalculatorService,
     private readonly settlementSnapshotService: SettlementSnapshotService,
+    private readonly brandBalance: BrandBalanceService,
   ) {}
 
   async ensureHoldsForPaidOrders(
@@ -374,6 +377,31 @@ export class StandardOrderEscrowService {
     });
 
     await this.ledgerService.postStandardOrderRefund(tx, hold);
+
+    /*
+      Standard orders settle the other way round — the goods reach the shopper
+      before the brand is paid out — but the same shortfall is possible: the
+      first release fires on dispatch, and a refund after that is money the
+      brand has already been credited.
+
+      Whatever had been released becomes a debt, recovered from later earnings,
+      exactly as on the custom side. `raiseAdjustment` is keyed on the order, so
+      a refund retried or a webhook delivered twice bills it once.
+    */
+    const releasedToBrand =
+      Number(hold.firstReleasedAt ? hold.firstReleaseNetAmount ?? 0 : 0) +
+      Number(hold.secondReleasedAt ? hold.secondReleaseNetAmount ?? 0 : 0);
+    if (releasedToBrand > 0) {
+      await this.brandBalance.raiseAdjustment(tx, {
+        brandId: hold.brandId,
+        type: BrandBalanceAdjustmentType.REFUND_CLAWBACK,
+        amount: releasedToBrand,
+        currency: hold.currency,
+        reason: `Refund issued to the shopper on a released standard order (${reason.trim().slice(0, 120)})`,
+        orderId,
+      });
+    }
+
     return updated;
   }
 
