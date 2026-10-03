@@ -74,6 +74,10 @@ import {
   resolveDelayEligibility,
 } from './custom-order-dispute.policy';
 import {
+  resolveOrderSchedule,
+  serializeOrderSchedule,
+} from './custom-order-schedule.policy';
+import {
   AcceptCustomOrderDto,
   BrandRespondToCustomOrderExtensionCounterDto,
   ConfirmCustomOrderDeliveryDto,
@@ -5835,6 +5839,28 @@ export class CustomOrdersService {
       measurementCount: Object.keys(measurementSnapshot).length,
       currentProgressStage: order.currentProgressStage,
       promisedDeliveryAt: order.promisedDeliveryAt,
+      /**
+       * The countdown, on the LIST payload.
+       *
+       * A shopper had to open an order to discover it was running late — the
+       * row showed the date it was placed and nothing about the date it is due.
+       * Resolved server-side so a row and the screen it opens can never
+       * disagree, and so a client never has to know the lead-time rules.
+       */
+      schedule: serializeOrderSchedule(
+        resolveOrderSchedule({
+          status: order.status,
+          promisedProductionAt: order.promisedProductionAt ?? null,
+          promisedDeliveryAt: order.promisedDeliveryAt ?? null,
+          acceptedAt: order.acceptedAt ?? null,
+          measurementConfirmedAt: order.measurementConfirmedAt ?? null,
+          createdAt: order.createdAt,
+          productionLeadDaysSnapshot: order.productionLeadDaysSnapshot ?? null,
+          deliveryMaxDaysSnapshot: order.deliveryMaxDaysSnapshot ?? null,
+          totalExtensionDaysGranted: order.totalExtensionDaysGranted ?? 0,
+          deliveredAt: order.deliveredAt ?? null,
+        }),
+      ),
       // Read-only admin-notice flag for the brand queue (📣 until acknowledged).
       hasUnreadAdminNotice: hasUnreadBrandAdminNotice(order),
       createdAt: order.createdAt,
@@ -5843,6 +5869,20 @@ export class CustomOrdersService {
   }
 
   private mapDetail(order: any, options?: { sourceMediaUrls?: string[] }) {
+    // Resolved once: the dispute gate and the countdown must not disagree about
+    // when this order is due, which is what happened when each worked it out.
+    const detailSchedule = resolveOrderSchedule({
+      status: order.status,
+      promisedProductionAt: order.promisedProductionAt ?? null,
+      promisedDeliveryAt: order.promisedDeliveryAt ?? null,
+      acceptedAt: order.acceptedAt ?? null,
+      measurementConfirmedAt: order.measurementConfirmedAt ?? null,
+      createdAt: order.createdAt,
+      productionLeadDaysSnapshot: order.productionLeadDaysSnapshot ?? null,
+      deliveryMaxDaysSnapshot: order.deliveryMaxDaysSnapshot ?? null,
+      totalExtensionDaysGranted: order.totalExtensionDaysGranted ?? 0,
+      deliveredAt: order.deliveredAt ?? null,
+    });
     const breakdown = (order.internalPriceBreakdownJson ?? {}) as Record<
       string,
       unknown
@@ -5972,8 +6012,18 @@ export class CustomOrdersService {
        */
       delayDispute: resolveDelayEligibility({
         status: order.status,
-        promisedProductionAt: order.promisedProductionAt ?? null,
-        promisedDeliveryAt: order.promisedDeliveryAt ?? null,
+        /*
+          The EXPECTED dates, not the recorded ones.
+
+          `promised*` is only written at payment confirmation, so an order
+          accepted by any other path carries nulls and this resolver answered
+          `NO_PROMISE_RECORDED` — no button, however late the order ran. The
+          schedule falls back to the lead times the brand published at store
+          setup, which are snapshotted on every order, so lateness is now
+          measurable on all of them. See `custom-order-schedule.policy.ts`.
+        */
+        promisedProductionAt: detailSchedule.expectedProductionAt,
+        promisedDeliveryAt: detailSchedule.expectedDeliveryAt,
         currentProgressStage: order.currentProgressStage ?? null,
         hasOpenDispute: Array.isArray(order.disputes)
           ? order.disputes.some((entry: { status: string }) =>
@@ -5981,6 +6031,8 @@ export class CustomOrdersService {
             )
           : false,
       }),
+      /** The countdown both clients render, resolved once here. */
+      schedule: serializeOrderSchedule(detailSchedule),
       createdAt: order.createdAt,
       updatedAt: order.updatedAt,
     };
