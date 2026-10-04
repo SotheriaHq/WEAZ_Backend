@@ -77,6 +77,7 @@ import {
   resolveOrderSchedule,
   serializeOrderSchedule,
 } from './custom-order-schedule.policy';
+import { resolveClaimDueAt } from './custom-order-dispute-resolution.policy';
 import {
   AcceptCustomOrderDto,
   BrandRespondToCustomOrderExtensionCounterDto,
@@ -2200,6 +2201,10 @@ export class CustomOrdersService {
             openedById: userId,
             reasonType: dto.issueType,
             buyerStatement: dto.description.trim(),
+            // Start the claim clock. A dispute nobody owns is a dispute nobody
+            // answers for, so it enters the admin queue with a deadline rather
+            // than waiting to be noticed.
+            claimDueAt: resolveClaimDueAt(new Date()),
           },
         });
       }
@@ -2379,6 +2384,9 @@ export class CustomOrdersService {
           buyerStatement: statement,
           // The brand owes an answer, and the clock is visible to both sides.
           brandRespondByAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+          // WIEZ owes one too: the dispute enters the admin queue with its own
+          // claim deadline rather than waiting to be noticed.
+          claimDueAt: resolveClaimDueAt(now),
         },
       });
 
@@ -2679,6 +2687,9 @@ export class CustomOrdersService {
             reasonType: CustomOrderIssueType.UNREASONABLE_DELAY,
             buyerStatement:
               buyerNote ?? 'Buyer rejected brand extension request',
+            // This is the dispute Emmanuel's rejection raised and nobody ever
+            // saw. It now carries a claim deadline into the admin queue.
+            claimDueAt: resolveClaimDueAt(resolvedAt),
           },
         });
 

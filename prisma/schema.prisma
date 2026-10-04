@@ -362,19 +362,19 @@ model AuthIdentity {
 }
 
 model EmailLoginCode {
-  id        String           @id @default(uuid()) @db.Uuid
-  userId    String           @db.Uuid
-  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  purpose   LoginCodePurpose
-  codeHash  String
+  id           String           @id @default(uuid()) @db.Uuid
+  userId       String           @db.Uuid
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose      LoginCodePurpose
+  codeHash     String
   /// The value this code authorises, when the purpose carries one (the new
   /// phone number for PHONE_CHANGE). Held here rather than on User so an
   /// unconfirmed value never sits on the account record.
   pendingValue String?
-  expiresAt DateTime
-  usedAt    DateTime?
-  attempts  Int              @default(0)
-  createdAt DateTime         @default(now())
+  expiresAt    DateTime
+  usedAt       DateTime?
+  attempts     Int              @default(0)
+  createdAt    DateTime         @default(now())
 
   @@index([userId, purpose, expiresAt])
   @@index([codeHash])
@@ -654,8 +654,19 @@ enum CustomOrderDisputeStatus {
   OPEN
   BRAND_RESPONDED
   ADMIN_REVIEW
+  /// An admin has put a resolution to the parties and is waiting on consent.
+  /// Distinct from ADMIN_REVIEW because the ball is no longer in admin's court,
+  /// and a queue that cannot tell those apart cannot be triaged.
+  AWAITING_PARTY_CONSENT
   RESOLVED
   CLOSED
+}
+
+/// Whose agreement a proposed resolution needs before it can be applied.
+enum DisputeConsentParty {
+  BUYER
+  BRAND
+  BOTH
 }
 
 enum CustomOrderDisputeResolution {
@@ -664,6 +675,16 @@ enum CustomOrderDisputeResolution {
   REMAKE
   NO_ACTION
   ESCALATED
+  /// The shopper agrees to more time after all. Goes through the extension
+  /// flow and is audited against the same budget — a dispute must not become
+  /// an unlimited-time back door, which is the rule
+  /// `DISPUTE_RESPONSE_CANNOT_MOVE_DATES` already states.
+  MEDIATED_EXTENSION
+  /// Order ends and the buyer is made whole. Distinct from FULL_REFUND, which
+  /// says what happened to the money but not what happened to the order.
+  CANCEL_AND_REFUND
+  /// The delay was reasonable or already settled; the order carries on unchanged.
+  UPHOLD_BRAND
 }
 
 enum CustomOrderLedgerAllocationType {
@@ -1088,6 +1109,19 @@ enum NotificationType {
   CUSTOM_ORDER_ACCEPTANCE_WINDOW_REMINDER
   CUSTOM_ORDER_ISSUE_REPORTED
   CUSTOM_ORDER_DISPUTE_CREATED
+  /// A dispute passed its claim deadline with no admin owning it. Goes to
+  /// SuperAdmins, and repeats while it stays unowned — one unread alert is
+  /// indistinguishable from no alert.
+  CUSTOM_ORDER_DISPUTE_UNCLAIMED
+  /// An admin claimed a dispute. Tells the shopper and the brand that a named
+  /// human now holds it, which is the point of requiring a claim at all.
+  CUSTOM_ORDER_DISPUTE_CLAIMED
+  /// An admin has put a resolution to a party and is waiting on their answer.
+  CUSTOM_ORDER_DISPUTE_PROPOSAL
+  /// The dispute reached an outcome.
+  CUSTOM_ORDER_DISPUTE_RESOLVED
+  /// An admin asked to hand a dispute on; a SuperAdmin must decide.
+  CUSTOM_ORDER_DISPUTE_HANDOVER_REQUESTED
   CUSTOM_ORDER_STALE_STAGE_WARNING
   CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED
   CUSTOM_ORDER_ACCEPTANCE_SLA_RISK
@@ -1353,7 +1387,6 @@ model Collection {
   @@index([lastActivityAt])
 }
 
-
 model StoreCollection {
   id                     String                   @id @map("_id") @db.Uuid
   ownerId                String                   @db.Uuid
@@ -1446,7 +1479,6 @@ model CollectionDraftSession {
   @@index([ownerId])
   @@index([expiresAt])
 }
-
 
 model CollectionBulkUploadJob {
   id            String           @id @map("_id") @db.Uuid
@@ -1772,7 +1804,6 @@ model CollectionMedia {
   @@index([collectionId, viewSlot])
   @@index([reviewStatus])
 }
-
 
 model CollectionReaction {
   id            String       @id @map("_id") @db.Uuid
@@ -2594,31 +2625,29 @@ model Brand {
   owner                  User      @relation("BrandOwner", fields: [ownerId], references: [id])
 
   // Store profile fields (store-centric)
-  description     String?
-  tagline         String?
-  searchVector    Unsupported("tsvector")? @map("search_vector")
-  logo            String?
-  banner          String?
-  tags            String[]                 @default([])
-  country         String?
-  state           String?
-  city            String?
-  businessType    String?
-  companyLocation String?
-  contactEmail    String?
+  description        String?
+  tagline            String?
+  searchVector       Unsupported("tsvector")? @map("search_vector")
+  logo               String?
+  banner             String?
+  tags               String[]                 @default([])
+  country            String?
+  state              String?
+  city               String?
+  businessType       String?
+  companyLocation    String?
+  contactEmail       String?
   /**
    * Whether `contactEmail` may be shown to people who are not the owner.
-   *
    * Defaults to FALSE, and that default is the point: an address a brand
    * entered for WIEZ to reach them with is not consent to publish it to every
    * visitor and scraper. Publication has to be a decision the brand makes, and
    * only the brand can make it — no admin flow sets this.
-   *
    * Note this governs `contactEmail`, never `User.email`. The account email is
    * a credential and is owner-only regardless of this flag.
    */
-  contactEmailPublic Boolean               @default(false)
-  responseTimeSla String                   @default("24h")
+  contactEmailPublic Boolean                  @default(false)
+  responseTimeSla    String                   @default("24h")
 
   // Social links
   socialInstagram String?
@@ -2636,7 +2665,7 @@ model Brand {
   industriNumber String? @unique
 
   // Store state
-  isStoreOpen Boolean @default(false)
+  isStoreOpen      Boolean   @default(false)
   // Set ONCE when the owner presses Publish (openStore). Studio/setup gating
   // keys on this, never on data-completeness: verified bank details alone must
   // NEVER unlock the studio, and pausing (isStoreOpen=false) must not re-lock it.
@@ -2654,48 +2683,48 @@ model Brand {
   businessHoursConfiguredAt DateTime?
 
   // Verification (MVP — test phase)
-  verificationStatus              BrandVerificationStatus @default(NOT_SUBMITTED)
-  verificationSubmittedAt         DateTime?
-  verificationReviewedAt          DateTime?
-  verificationReviewedById        String?                 @db.Uuid
-  verificationReviewStartedAt     DateTime?
-  verificationCancelledAt         DateTime?
-  verificationRejectionReason     String?
-  verificationRejectionReasons    Json?
-  verificationPhoto1Key           String?
-  verificationPhoto2Key           String?
-  verificationNinKey              String?
-  verificationCacKey              String?
-  verificationAddress             String?
-  verificationClientEstimate      String?
-  verificationAttemptNumber       Int                     @default(0)
-  verificationRejectionCount      Int                     @default(0)
-  verificationCancellationCount   Int                     @default(0)
-  verificationCooldownExpiresAt   DateTime?
-  verificationInfoRequestedAt     DateTime?
-  verificationInfoRequestedItems  Json?
-  verificationInfoRequestMessage  String?
+  verificationStatus                BrandVerificationStatus      @default(NOT_SUBMITTED)
+  verificationSubmittedAt           DateTime?
+  verificationReviewedAt            DateTime?
+  verificationReviewedById          String?                      @db.Uuid
+  verificationReviewStartedAt       DateTime?
+  verificationCancelledAt           DateTime?
+  verificationRejectionReason       String?
+  verificationRejectionReasons      Json?
+  verificationPhoto1Key             String?
+  verificationPhoto2Key             String?
+  verificationNinKey                String?
+  verificationCacKey                String?
+  verificationAddress               String?
+  verificationClientEstimate        String?
+  verificationAttemptNumber         Int                          @default(0)
+  verificationRejectionCount        Int                          @default(0)
+  verificationCancellationCount     Int                          @default(0)
+  verificationCooldownExpiresAt     DateTime?
+  verificationInfoRequestedAt       DateTime?
+  verificationInfoRequestedItems    Json?
+  verificationInfoRequestMessage    String?
   // Set when the brand answers an admin's info request, cleared when a new
   // request goes out. The queue needs an UNAMBIGUOUS "this brand replied to
   // you" marker: after a resubmission the row just returns to IN_REVIEW, which
   // looks identical to every other in-review brand, and `attemptNumber >= 2`
   // cannot stand in for it because a fresh application after a rejection also
   // increments that counter.
-  verificationInfoRespondedAt     DateTime?
-  verificationDraftData           String?
-  verificationDraftUpdatedAt      DateTime?
-  verificationNudgeOptOut         Boolean                 @default(false)
-  verificationLastNudgedAt        DateTime?
-  verificationNudgeCount          Int                     @default(0)
-  verificationBrandNameAtApproval String?
-  verificationLetterKey           String?
-  verificationLetterHash          String?
-  verificationLetterVersion       Int?
+  verificationInfoRespondedAt       DateTime?
+  verificationDraftData             String?
+  verificationDraftUpdatedAt        DateTime?
+  verificationNudgeOptOut           Boolean                      @default(false)
+  verificationLastNudgedAt          DateTime?
+  verificationNudgeCount            Int                          @default(0)
+  verificationBrandNameAtApproval   String?
+  verificationLetterKey             String?
+  verificationLetterHash            String?
+  verificationLetterVersion         Int?
   // Staged at signing time so `submit` can copy them onto the attempt. Without
   // these the attempt's letterSignedAt/signatureMethod were never written and
   // admin review showed "Signature method: Not recorded / Signed at: Not
   // recorded" for every brand.
-  verificationLetterSignedAt      DateTime?
+  verificationLetterSignedAt        DateTime?
   verificationLetterSignatureMethod VerificationSignatureMethod?
 
   // Featured system
@@ -2727,15 +2756,15 @@ model Brand {
   sizeCharts                SizeChart[]
   sizingTemplates           SizingTemplate[]
   payouts                   Payout[]
-  products                  Product[]                  @relation("Brand_to_Products")
-  productMedias             ProductMedia[]             @relation("BrandProductMedias")
+  products                  Product[]                   @relation("Brand_to_Products")
+  productMedias             ProductMedia[]              @relation("BrandProductMedias")
   featuredItems             FeaturedItem[]
   verificationAttempts      BrandVerificationAttempt[]
   verificationNotes         BrandVerificationNote[]
   physicalVerifications     BrandPhysicalVerification[]
-  reviews                   ProductReview[]            @relation("BrandProductReviews")
-  lifecycleReviews          Review[]                   @relation("ReviewBrand")
-  reviewPrompts             ReviewPrompt[]             @relation("ReviewPromptBrand")
+  reviews                   ProductReview[]             @relation("BrandProductReviews")
+  lifecycleReviews          Review[]                    @relation("ReviewBrand")
+  reviewPrompts             ReviewPrompt[]              @relation("ReviewPromptBrand")
   members                   BrandMember[]
   staffInvites              BrandStaffInvite[]
   balanceAdjustments        BrandBalanceAdjustment[]
@@ -2783,14 +2812,14 @@ model BrandBalanceAdjustment {
 
 /// One payment against one debt, so the history reads as a statement.
 model BrandBalanceRecovery {
-  id           String                 @id @default(uuid()) @db.Uuid
-  adjustmentId String                 @db.Uuid
-  adjustment   BrandBalanceAdjustment @relation(fields: [adjustmentId], references: [id], onDelete: Cascade)
-  amount       Decimal                @db.Decimal(18, 2)
-  currency     String                 @default("NGN")
+  id            String                 @id @default(uuid()) @db.Uuid
+  adjustmentId  String                 @db.Uuid
+  adjustment    BrandBalanceAdjustment @relation(fields: [adjustmentId], references: [id], onDelete: Cascade)
+  amount        Decimal                @db.Decimal(18, 2)
+  currency      String                 @default("NGN")
   /// The order whose earnings paid this down.
-  customOrderId String?               @db.Uuid
-  orderId       String?               @db.Uuid
+  customOrderId String?                @db.Uuid
+  orderId       String?                @db.Uuid
   note          String?
   createdAt     DateTime               @default(now())
 
@@ -2925,7 +2954,7 @@ model BrandVerificationAttempt {
   createdAt                 DateTime                     @default(now())
   updatedAt                 DateTime                     @updatedAt
 
-  physicalVerification      BrandPhysicalVerification?
+  physicalVerification BrandPhysicalVerification?
 
   @@unique([brandId, attemptNumber])
   @@index([brandId, submittedAt])
@@ -2945,32 +2974,32 @@ model BrandVerificationAttempt {
 /// One per attempt: re-verifying means a new attempt, not a second visit
 /// stapled to the old one.
 model BrandPhysicalVerification {
-  id                   String                             @id @map("_id") @db.Uuid
-  attemptId            String                             @unique @db.Uuid
-  attempt              BrandVerificationAttempt           @relation(fields: [attemptId], references: [id], onDelete: Cascade)
-  brandId              String                             @db.Uuid
-  brand                Brand                              @relation(fields: [brandId], references: [id], onDelete: Cascade)
-  status               PhysicalVerificationStatus         @default(PENDING_ASSIGNMENT)
+  id        String                     @id @map("_id") @db.Uuid
+  attemptId String                     @unique @db.Uuid
+  attempt   BrandVerificationAttempt   @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  brandId   String                     @db.Uuid
+  brand     Brand                      @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  status    PhysicalVerificationStatus @default(PENDING_ASSIGNMENT)
 
   /// Who is doing the visit. Set by a SuperAdmin assigning it, or by an agent
   /// claiming it off the queue — `assignedById` distinguishes the two.
-  assignedAgentId      String?                            @db.Uuid
-  assignedById         String?                            @db.Uuid
-  assignedAt           DateTime?
-  claimedAt            DateTime?
+  assignedAgentId String?   @db.Uuid
+  assignedById    String?   @db.Uuid
+  assignedAt      DateTime?
+  claimedAt       DateTime?
 
   /// The slots the agent offered, as ISO strings. The brand may only pick one
   /// of these, which is what keeps the negotiation bounded.
   proposedSlots        Json?
   scheduleProposedAt   DateTime?
-  scheduleProposedById String?                            @db.Uuid
+  scheduleProposedById String?   @db.Uuid
   /// The slot currently agreed. Null until the brand accepts one.
   selectedSlotAt       DateTime?
 
-  brandResponse        PhysicalVerificationBrandResponse?
-  brandRespondedAt     DateTime?
-  brandResponseNote    String?
-  rescheduleCount      Int                                @default(0)
+  brandResponse     PhysicalVerificationBrandResponse?
+  brandRespondedAt  DateTime?
+  brandResponseNote String?
+  rescheduleCount   Int                                @default(0)
 
   /// Reminder bookkeeping.
   ///
@@ -2986,16 +3015,16 @@ model BrandPhysicalVerification {
   /// The slot came and went with no outcome recorded.
   overdueNudgedAt       DateTime?
 
-  visitCompletedAt     DateTime?
-  decidedAt            DateTime?
-  decidedById          String?                            @db.Uuid
-  decisionNotes        String?
-  failureReason        String?
-  declineReason        String?
+  visitCompletedAt DateTime?
+  decidedAt        DateTime?
+  decidedById      String?   @db.Uuid
+  decisionNotes    String?
+  failureReason    String?
+  declineReason    String?
 
-  proofs               PhysicalVerificationProof[]
-  createdAt            DateTime                           @default(now())
-  updatedAt            DateTime                           @updatedAt
+  proofs    PhysicalVerificationProof[]
+  createdAt DateTime                    @default(now())
+  updatedAt DateTime                    @updatedAt
 
   /// The unassigned queue, ordered oldest first.
   @@index([status, createdAt])
@@ -3510,6 +3539,9 @@ model CustomOrder {
   measurementContributions      CustomOrderMeasurementContribution[]
   lifecycleReviews              Review[]                             @relation("ReviewCustomOrder")
   reviewPrompts                 ReviewPrompt[]                       @relation("ReviewPromptCustomOrder")
+  // Partial composite for the active attention queue is applied in migration
+  // 20260722140000_custom_order_attention_partial_index (Prisma cannot express
+  // partial WHERE clauses in schema indexes).
 
   @@unique([checkoutIntentId])
   @@unique([buyerId, idempotencyKey])
@@ -3524,9 +3556,6 @@ model CustomOrder {
   @@index([adminInterventionAt])
   // The deadline sweeps read production/delivery promises on live orders only.
   @@index([status, promisedProductionAt])
-  // Partial composite for the active attention queue is applied in migration
-  // 20260722140000_custom_order_attention_partial_index (Prisma cannot express
-  // partial WHERE clauses in schema indexes).
 }
 
 model MessageThread {
@@ -3982,8 +4011,59 @@ model CustomOrderDispute {
   createdAt        DateTime                      @default(now())
   updatedAt        DateTime                      @updatedAt
 
+  /// ── Ownership ──────────────────────────────────────────────────────────
+  /// Who is actually working this dispute. `assignedAdminId` existed but was
+  /// never written by anything and had no endpoint behind it, so every dispute
+  /// the platform raised sat ownerless. A dispute nobody owns is a dispute
+  /// nobody answers for.
+  claimedByAdminId String?   @db.Uuid
+  claimedAt        DateTime?
+  /// When it must be claimed by. Set at open; the sweep escalates past this.
+  claimDueAt       DateTime?
+  /// When a SuperAdmin was last told this is still sitting unclaimed.
+  escalatedAt      DateTime?
+  escalationCount  Int       @default(0)
+
+  /// ── Handover ───────────────────────────────────────────────────────────
+  /// Ownership cannot simply be dropped. An admin who wants out must name a
+  /// successor and have a SuperAdmin approve the move, so a dispute can never
+  /// be quietly abandoned back into the queue it was claimed from.
+  handoverToAdminId    String?   @db.Uuid
+  handoverRequestedAt  DateTime?
+  handoverReason       String?
+  handoverApprovedById String?   @db.Uuid
+  handoverApprovedAt   DateTime?
+  handoverRejectedAt   DateTime?
+  handoverRejectReason String?
+
+  /// ── Mediation ──────────────────────────────────────────────────────────
+  /// An admin does not simply rule; they can broker. A proposal that moves a
+  /// date or moves money is put TO the parties and applied only once whoever
+  /// it binds has agreed — which is what makes "admin got the shopper to allow
+  /// the extension" a real state rather than an admin overriding consent.
+  proposedResolution   CustomOrderDisputeResolution?
+  proposedByAdminId    String?                       @db.Uuid
+  proposedAt           DateTime?
+  proposalNote         String?
+  /// Only for MEDIATED_EXTENSION. Audited against the same extension budget.
+  proposalExtraDays    Int?
+  /// Only for PARTIAL_REFUND.
+  proposalRefundAmount Decimal?                      @db.Decimal(10, 2)
+  proposalConsentBy    DisputeConsentParty?
+  proposalRespondByAt  DateTime?
+  buyerConsentAt       DateTime?
+  buyerDeclinedAt      DateTime?
+  brandConsentAt       DateTime?
+  brandDeclinedAt      DateTime?
+  /// Which admin actually signed the outcome, as distinct from who held it.
+  resolvedByAdminId    String?                       @db.Uuid
+
   @@index([customOrderId, status])
   @@index([status, openedAt])
+  /// The unclaimed-escalation sweep: everything still unowned past its due time.
+  @@index([claimedByAdminId, claimDueAt])
+  /// A dispute admin's own queue.
+  @@index([claimedByAdminId, status])
 }
 
 model CustomOrderLedgerAllocation {

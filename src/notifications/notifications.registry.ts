@@ -92,6 +92,16 @@ const NT_CUSTOM_ORDER_ISSUE_REPORTED =
   'CUSTOM_ORDER_ISSUE_REPORTED' as NotificationType;
 const NT_CUSTOM_ORDER_DISPUTE_CREATED =
   'CUSTOM_ORDER_DISPUTE_CREATED' as NotificationType;
+const NT_CUSTOM_ORDER_DISPUTE_UNCLAIMED =
+  'CUSTOM_ORDER_DISPUTE_UNCLAIMED' as NotificationType;
+const NT_CUSTOM_ORDER_DISPUTE_CLAIMED =
+  'CUSTOM_ORDER_DISPUTE_CLAIMED' as NotificationType;
+const NT_CUSTOM_ORDER_DISPUTE_PROPOSAL =
+  'CUSTOM_ORDER_DISPUTE_PROPOSAL' as NotificationType;
+const NT_CUSTOM_ORDER_DISPUTE_RESOLVED =
+  'CUSTOM_ORDER_DISPUTE_RESOLVED' as NotificationType;
+const NT_CUSTOM_ORDER_DISPUTE_HANDOVER_REQUESTED =
+  'CUSTOM_ORDER_DISPUTE_HANDOVER_REQUESTED' as NotificationType;
 const NT_CUSTOM_ORDER_STALE_STAGE_WARNING =
   'CUSTOM_ORDER_STALE_STAGE_WARNING' as NotificationType;
 const NT_CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED =
@@ -1752,6 +1762,93 @@ export class NotificationRegistry {
       formatter: (n: any) =>
         n.payload?.message ||
         `A dispute was opened on ${formatCustomOrderCode(n.payload?.customOrderId)} — let's get it sorted.`,
+    });
+
+    /*
+      The dispute queue's own notifications.
+
+      Every key a formatter reads has to be DECLARED here: payloads are
+      validated with `stripUnknown`, so an undeclared field is silently dropped
+      and the message falls back to its generic sentence. That is exactly what
+      happened to `CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED`'s `reason` above.
+    */
+    registry.register({
+      type: NT_CUSTOM_ORDER_DISPUTE_UNCLAIMED,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        disputeId: Joi.string().optional(),
+        reasonType: Joi.string().optional(),
+        hoursWaiting: Joi.number().optional(),
+        escalationCount: Joi.number().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        if (n.payload?.message) return n.payload.message;
+        const code = formatCustomOrderCode(n.payload?.customOrderId);
+        const hours = Number(n.payload?.hoursWaiting ?? 0);
+        const repeat = Number(n.payload?.escalationCount ?? 1);
+        const again = repeat > 1 ? ' (still unassigned)' : '';
+        return `No one has claimed the dispute on ${code}${again} — ${hours}h since it was opened. Assign someone.`;
+      },
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_DISPUTE_CLAIMED,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        disputeId: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message ||
+        `Someone at WIEZ has taken on the dispute for ${formatCustomOrderCode(n.payload?.customOrderId)}. You'll hear from us here.`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_DISPUTE_PROPOSAL,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        disputeId: Joi.string().optional(),
+        resolution: Joi.string().optional(),
+        extraDays: Joi.number().optional(),
+        respondByAt: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message ||
+        `WIEZ has suggested a way to settle ${formatCustomOrderCode(n.payload?.customOrderId)}. Have a look and tell us if you agree.`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_DISPUTE_RESOLVED,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        disputeId: Joi.string().optional(),
+        resolution: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message ||
+        `The dispute on ${formatCustomOrderCode(n.payload?.customOrderId)} has been settled. Tap to see what was decided.`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_DISPUTE_HANDOVER_REQUESTED,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        disputeId: Joi.string().optional(),
+        successorAdminId: Joi.string().optional(),
+        reason: Joi.string().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.message ||
+        `An admin wants to hand over the dispute on ${formatCustomOrderCode(n.payload?.customOrderId)}. Your approval is needed.`,
     });
 
     registry.register({

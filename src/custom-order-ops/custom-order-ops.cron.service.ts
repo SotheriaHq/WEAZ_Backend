@@ -26,6 +26,10 @@ import {
   EXTENSION_POLICY,
   readExtensionBudget,
 } from 'src/custom-orders/custom-order-extension.policy';
+import {
+  ACTIVE_DISPUTE_STATUSES,
+  DISPUTE_CLAIM_POLICY,
+} from 'src/custom-orders/custom-order-dispute-resolution.policy';
 import { LedgerService } from 'src/finance/ledger.service';
 import { PaymentRuntimeHealthService } from 'src/payment/payment-runtime-health.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -1433,6 +1437,107 @@ export class CustomOrderOpsCronService {
 
   private async getActiveAdminIds(): Promise<string[]> {
     return getCachedActiveAdminIds(this.prisma);
+  }
+
+  /**
+   * Disputes nobody has claimed past their deadline.
+   *
+   * The claim requirement is only worth having if something happens when it is
+   * missed. Five hours after a dispute opens, if no admin has taken it, the
+   * SuperAdmins are told — and told again every four hours while it stays
+   * unowned, because a single unread alert is indistinguishable from no alert
+   * and this is the queue a shopper with an overdue order is waiting behind.
+   *
+   * Deliberately not auto-assigning. Handing an unclaimed case to an arbitrary
+   * admin produces an owner who does not know they own it, which is worse than
+   * an obviously unowned case: it looks handled.
+   */
+  @Cron(CronExpression.EVERY_HOUR)
+  async escalateUnclaimedDisputes(): Promise<void> {
+    const now = new Date();
+    const repeatBefore = new Date(
+      now.getTime() -
+        DISPUTE_CLAIM_POLICY.escalationRepeatHours * 60 * 60 * 1000,
+    );
+
+    try {
+      const disputes = await this.prisma.customOrderDispute.findMany({
+        where: {
+          claimedByAdminId: null,
+          claimDueAt: { lte: now },
+          status: { in: [...ACTIVE_DISPUTE_STATUSES] },
+          // Either never escalated, or last escalated long enough ago to say so
+          // again. Without this the sweep would re-notify every hour.
+          OR: [{ escalatedAt: null }, { escalatedAt: { lte: repeatBefore } }],
+        },
+        select: {
+          id: true,
+          customOrderId: true,
+          reasonType: true,
+          openedAt: true,
+          claimDueAt: true,
+          escalationCount: true,
+        },
+        take: 100,
+      });
+
+      if (disputes.length === 0) return;
+
+      const superAdmins = await this.prisma.user.findMany({
+        where: { role: Role.SuperAdmin, status: UserStatus.ACTIVE },
+        select: { id: true },
+      });
+      const recipientIds = superAdmins.map((admin) => admin.id);
+      if (recipientIds.length === 0) {
+        this.logger.warn(
+          `${disputes.length} dispute(s) past their claim deadline and no active SuperAdmin to tell`,
+        );
+        return;
+      }
+
+      for (const dispute of disputes) {
+        const hoursWaiting = Math.round(
+          (now.getTime() - dispute.openedAt.getTime()) / (60 * 60 * 1000),
+        );
+
+        await this.sideEffects.enqueueNotification({
+          customOrderId: dispute.customOrderId,
+          recipientIds,
+          notificationType: NotificationType.CUSTOM_ORDER_DISPUTE_UNCLAIMED,
+          // The ADMIN target: a SuperAdmin told a dispute is unclaimed needs
+          // the console, not the shopper's own order screen. Sending them
+          // somewhere they cannot act is how an alert becomes noise.
+          target: this.adminCustomOrderTarget(dispute.customOrderId),
+          payload: {
+            customOrderId: dispute.customOrderId,
+            disputeId: dispute.id,
+            reasonType: dispute.reasonType,
+            hoursWaiting,
+            escalationCount: dispute.escalationCount + 1,
+          },
+          // Shorter than the repeat interval so the dedupe window never
+          // swallows a legitimate re-escalation.
+          dedupeMs:
+            (DISPUTE_CLAIM_POLICY.escalationRepeatHours - 1) * 60 * 60 * 1000,
+        });
+
+        await this.prisma.customOrderDispute.update({
+          where: { id: dispute.id },
+          data: {
+            escalatedAt: now,
+            escalationCount: { increment: 1 },
+          },
+        });
+      }
+
+      this.logger.warn(
+        `Escalated ${disputes.length} unclaimed dispute(s) to ${recipientIds.length} SuperAdmin(s)`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Unclaimed dispute escalation cron failed: ${this.formatError(error)}`,
+      );
+    }
   }
 
   private formatError(error: unknown): string {

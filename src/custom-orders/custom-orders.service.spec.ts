@@ -554,6 +554,10 @@ describe('CustomOrdersService', () => {
         openedById: 'buyer_1',
         reasonType: CustomOrderIssueType.UNREASONABLE_DELAY,
         buyerStatement: 'Buyer rejected brand extension request',
+        // This is the dispute a rejection raises, and it must enter the admin
+        // queue with a deadline — the whole reason these were invisible before
+        // is that nothing ever had to own one.
+        claimDueAt: expect.any(Date),
       },
     });
     expect(tx.customOrder.update).toHaveBeenNthCalledWith(1, {
@@ -683,6 +687,8 @@ describe('CustomOrdersService', () => {
         openedById: 'buyer_1',
         reasonType: CustomOrderIssueType.MEASUREMENT_NON_COMPLIANCE,
         buyerStatement: 'The jacket sleeves are too short.',
+        // Every dispute enters the queue owing someone an owner.
+        claimDueAt: expect.any(Date),
       },
     });
     expect(tx.customOrderLedgerAllocation.updateMany).toHaveBeenCalledWith({

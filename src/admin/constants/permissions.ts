@@ -72,9 +72,35 @@ export const ADMIN_PERMISSIONS = {
   PAYMENTS_SIMULATE: 'payments.simulate',
   PAYMENTS_RUNTIME_READ: 'payments.runtime_read',
 
-  // Disputes
+  /*
+    Disputes.
+
+    Split so an account can be a dispute HANDLER and nothing else — the same
+    shape as the verification-agent split above. Someone who works the dispute
+    queue needs to read it, take ownership and broker an outcome; they do not
+    need the brand console, the payout runner, or the ability to move money as
+    a side effect of closing a case. `disputes.resolve` used to imply all of
+    that because it was the only code behind every dispute route.
+  */
   DISPUTES_READ: 'disputes.read',
+  /** Take ownership of an unclaimed dispute. Triage without deciding outcomes. */
+  DISPUTES_CLAIM: 'disputes.claim',
+  /** Decide the outcome of a dispute you hold. */
   DISPUTES_RESOLVE: 'disputes.resolve',
+  /**
+   * Move money as a resolution: refunds, partial refunds, cancel-and-refund.
+   * Separate because mediating a dispute and authorising a payment out are
+   * different jobs, and only one of them should be grantable to a new handler.
+   */
+  DISPUTES_REFUND: 'disputes.refund',
+  /** Ask to hand a dispute you hold to a named colleague. */
+  DISPUTES_HANDOVER_REQUEST: 'disputes.handover.request',
+  /**
+   * Approve or refuse a handover, and take a dispute off an admin who has gone
+   * quiet. SuperAdmin-only: ownership exists so that someone answers for a
+   * case, and an owner who can reassign themselves freely is not an owner.
+   */
+  DISPUTES_HANDOVER_APPROVE: 'disputes.handover.approve',
 
   // Moderation
   MODERATION_READ: 'moderation.read',
@@ -126,6 +152,9 @@ export const SUPERADMIN_ONLY_PERMISSIONS: AdminPermissionCode[] = [
   ADMIN_PERMISSIONS.SYSTEM_DATA_RETENTION_WRITE,
   ADMIN_PERMISSIONS.SYSTEM_FEATURE_FLAGS_WRITE,
   ADMIN_PERMISSIONS.PERMISSIONS_MANAGE,
+  // Letting an admin out of a dispute they claimed is a decision about someone
+  // else's accountability, so it sits with the same people who assign work.
+  ADMIN_PERMISSIONS.DISPUTES_HANDOVER_APPROVE,
 ];
 
 /** Default permissions granted to new Admin accounts (all except SuperAdmin-only) */

@@ -267,6 +267,23 @@ export class CustomOrderAdminService {
     adminAttentionReason: true,
     anonymizedAt: true,
     brand: { select: { id: true, name: true, ownerId: true } },
+    /**
+     * Open disputes on the row, so the table can tag one.
+     *
+     * The status column is NOT enough. A delay dispute deliberately leaves the
+     * order's status alone — the maker keeps making — so an order can be in
+     * dispute while reading IN_PRODUCTION, and the admin table showed nothing
+     * at all. Filtering by the DISPUTED status finds only the subset that
+     * happens to change status.
+     */
+    disputes: {
+      where: {
+        status: {
+          in: ['OPEN', 'BRAND_RESPONDED', 'ADMIN_REVIEW', 'AWAITING_PARTY_CONSENT'],
+        },
+      },
+      select: { id: true, reasonType: true, claimedByAdminId: true, claimDueAt: true },
+    },
   } satisfies Prisma.CustomOrderSelect;
 
   async listOrders(query: QueryAdminCustomOrdersDto) {
@@ -278,6 +295,23 @@ export class CustomOrderAdminService {
 
     const baseWhere: Prisma.CustomOrderWhereInput = {
       ...(query.status ? { status: query.status } : {}),
+      // Any order carrying a live dispute, regardless of what its status says.
+      ...(query.disputed
+        ? {
+            disputes: {
+              some: {
+                status: {
+                  in: [
+                    'OPEN',
+                    'BRAND_RESPONDED',
+                    'ADMIN_REVIEW',
+                    'AWAITING_PARTY_CONSENT',
+                  ] as const,
+                },
+              },
+            },
+          }
+        : {}),
       ...(query.stage ? { currentProgressStage: query.stage } : {}),
       ...(query.brandId ? { brandId: query.brandId } : {}),
       ...this.buildAdminListSearchWhere(query.q),
@@ -2734,6 +2768,35 @@ export class CustomOrderAdminService {
             ownerId: order.brand.ownerId,
           }
         : undefined,
+      /**
+       * Live disputes on this row, so the table can tag one.
+       *
+       * Separate from `status` on purpose: a delay dispute leaves the order's
+       * status untouched so the maker keeps working, which means a disputed
+       * order routinely reads IN_PRODUCTION. Showing only the status badge hid
+       * exactly the cases an admin most needs to find.
+       */
+      openDisputes: Array.isArray((order as { disputes?: unknown }).disputes)
+        ? (
+            order as unknown as {
+              disputes: Array<{
+                id: string;
+                reasonType: string;
+                claimedByAdminId: string | null;
+                claimDueAt: Date | null;
+              }>;
+            }
+          ).disputes.map((dispute) => ({
+            id: dispute.id,
+            reasonType: dispute.reasonType,
+            claimed: Boolean(dispute.claimedByAdminId),
+            // Unowned past its deadline — the row the queue is shouting about.
+            overdue:
+              !dispute.claimedByAdminId &&
+              dispute.claimDueAt != null &&
+              dispute.claimDueAt.getTime() < Date.now(),
+          }))
+        : [],
     };
   }
 

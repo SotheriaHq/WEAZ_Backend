@@ -19,6 +19,8 @@ import { UserTypeGuard } from 'src/auth/guard/user-type.guard';
 import { IdempotencyInterceptor } from 'src/common/interceptors/idempotency.interceptor';
 import { CustomOrdersPaymentsService } from './custom-orders-payments.service';
 import { CustomOrdersService } from './custom-orders.service';
+import { CustomOrderDisputeService } from './custom-order-dispute.service';
+import { RespondToDisputeProposalDto } from 'src/custom-order-admin/dto/custom-order-dispute-admin.dto';
 import {
   CloseCustomOrderDisputeDto,
   ConfirmCustomOrderDeliveryDto,
@@ -38,6 +40,7 @@ export class CustomOrdersBuyerController {
   constructor(
     private readonly ordersService: CustomOrdersService,
     private readonly paymentsService: CustomOrdersPaymentsService,
+    private readonly disputes: CustomOrderDisputeService,
   ) {}
 
   @Post('price-preview')
@@ -310,5 +313,35 @@ export class CustomOrdersBuyerController {
     @Req() req: Request & { user: { id: string } },
   ) {
     return this.ordersService.ackBuyerAdminNotices(req.user.id, id);
+  }
+
+  /**
+   * The shopper's answer to a resolution WIEZ has proposed.
+   *
+   * This is the half of mediation that is not an admin's to press. The whole
+   * reason a mediated extension is a proposal rather than a ruling is that the
+   * shopper already refused more time once; applying it over their head would
+   * make that refusal — and the entire extension flow — meaningless.
+   */
+  @Post(':id/disputes/:disputeId/proposal/respond')
+  async respondToDisputeProposal(
+    @Param('id') id: string,
+    @Param('disputeId') disputeId: string,
+    @Req() req: Request & { user: { id: string } },
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: RespondToDisputeProposalDto,
+  ) {
+    return this.disputes.recordConsent(
+      disputeId,
+      'BUYER',
+      dto.accept,
+      req.user.id,
+    );
   }
 }

@@ -43,12 +43,22 @@ import {
   UpdateAdminCustomFabricRuleBasisDto,
   UpdateCustomOrderDisputeDto,
 } from './dto/custom-order-admin.dto';
+import {
+  DecideDisputeHandoverDto,
+  ProposeDisputeResolutionDto,
+  QueryDisputeQueueDto,
+  RequestDisputeHandoverDto,
+} from './dto/custom-order-dispute-admin.dto';
+import { CustomOrderDisputeService } from 'src/custom-orders/custom-order-dispute.service';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
 @Roles(Role.SuperAdmin, Role.Admin)
 export class CustomOrderAdminController {
-  constructor(private readonly service: CustomOrderAdminService) {}
+  constructor(
+    private readonly service: CustomOrderAdminService,
+    private readonly disputes: CustomOrderDisputeService,
+  ) {}
 
   @Get('custom-fabric-rule-bases/pending')
   @RequirePermissions(ADMIN_PERMISSIONS.MEASUREMENTS_REVIEW)
@@ -318,6 +328,111 @@ export class CustomOrderAdminController {
     query: QueryCustomOrderDisputesDto,
   ) {
     return this.service.listDisputes(query);
+  }
+
+  /*
+    ── The dispute queue ───────────────────────────────────────────────────
+
+    Every dispute this platform raises lands in `CustomOrderDispute`, and until
+    now none of them were reachable from the console: `/admin/disputes` reads
+    the unrelated generic `Dispute` table, and the endpoint above had no caller
+    anywhere in the web app. These are the routes behind a queue that actually
+    shows them and takes them to an outcome.
+  */
+
+  @Get('dispute-queue')
+  @RequirePermissions(ADMIN_PERMISSIONS.DISPUTES_READ)
+  async listDisputeQueue(
+    @Req() req: Request & { user: { id: string } },
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: QueryDisputeQueueDto,
+  ) {
+    return this.disputes.listQueue(query, req.user.id);
+  }
+
+  @Get('dispute-queue/:id')
+  @RequirePermissions(ADMIN_PERMISSIONS.DISPUTES_READ)
+  async getQueuedDispute(@Param('id') id: string) {
+    return this.disputes.getDispute(id);
+  }
+
+  @Post('dispute-queue/:id/claim')
+  @RequirePermissions(ADMIN_PERMISSIONS.DISPUTES_CLAIM)
+  async claimDispute(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    return this.disputes.claim(id, req.user.id);
+  }
+
+  /** Ask to hand this on. Needs a named successor and a SuperAdmin's approval. */
+  @Post('dispute-queue/:id/handover')
+  @RequirePermissions(ADMIN_PERMISSIONS.DISPUTES_HANDOVER_REQUEST)
+  async requestDisputeHandover(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string } },
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: RequestDisputeHandoverDto,
+  ) {
+    return this.disputes.requestHandover(
+      id,
+      req.user.id,
+      dto.successorAdminId,
+      dto.reason,
+    );
+  }
+
+  @Post('dispute-queue/:id/handover/decide')
+  @RequirePermissions(ADMIN_PERMISSIONS.DISPUTES_HANDOVER_APPROVE)
+  async decideDisputeHandover(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string } },
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: DecideDisputeHandoverDto,
+  ) {
+    return this.disputes.decideHandover(id, req.user.id, dto);
+  }
+
+  /**
+   * Put a resolution to the parties, or apply it.
+   *
+   * Which of the two happens is decided by the remedy, not by the admin — see
+   * `custom-order-dispute-resolution.policy.ts`. The refund permission is
+   * passed through rather than enforced by a second decorator because only
+   * SOME resolutions move money, and a blanket requirement here would stop a
+   * handler closing a dispute that costs nothing.
+   */
+  @Post('dispute-queue/:id/resolution')
+  @RequirePermissions(ADMIN_PERMISSIONS.DISPUTES_RESOLVE)
+  async proposeDisputeResolution(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string; permissions?: string[] } },
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: ProposeDisputeResolutionDto,
+  ) {
+    return this.disputes.proposeResolution(id, req.user.id, dto, {
+      canRefund: Boolean(
+        req.user.permissions?.includes(ADMIN_PERMISSIONS.DISPUTES_REFUND),
+      ),
+    });
   }
 
   @Get('custom-order-ledger-allocations')

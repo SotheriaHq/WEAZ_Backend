@@ -101,6 +101,18 @@ export class QueryAdminCustomOrdersDto {
   @IsEnum(CustomOrderStatus)
   status?: CustomOrderStatus;
 
+  /**
+   * Orders with an OPEN dispute, whatever their status.
+   *
+   * Distinct from `status=DISPUTED`, which only catches the subset where the
+   * dispute changed the status. A delay dispute deliberately does not, so
+   * filtering on status alone hides exactly the cases that are running late.
+   */
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  disputed?: boolean;
+
   @IsOptional()
   @IsEnum(CustomOrderProgressStage)
   stage?: CustomOrderProgressStage;
