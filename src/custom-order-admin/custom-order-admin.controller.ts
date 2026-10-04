@@ -388,6 +388,35 @@ export class CustomOrderAdminController {
     );
   }
 
+  /**
+   * Take a dispute off an admin who has gone quiet.
+   *
+   * Same permission as approving a handover: both decide another admin's
+   * accountability. Without this the stale-claim alert would tell a SuperAdmin
+   * to do something the API gave them no way to do.
+   */
+  @Post('dispute-queue/:id/reassign')
+  @RequirePermissions(ADMIN_PERMISSIONS.DISPUTES_HANDOVER_APPROVE)
+  async reassignDispute(
+    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string } },
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    dto: RequestDisputeHandoverDto,
+  ) {
+    return this.disputes.reassign(
+      id,
+      req.user.id,
+      dto.successorAdminId,
+      dto.reason,
+    );
+  }
+
   @Post('dispute-queue/:id/handover/decide')
   @RequirePermissions(ADMIN_PERMISSIONS.DISPUTES_HANDOVER_APPROVE)
   async decideDisputeHandover(

@@ -1540,6 +1540,104 @@ export class CustomOrderOpsCronService {
     }
   }
 
+  /**
+   * Disputes that were claimed and then went quiet.
+   *
+   * The claim requirement closes one hole and opens another. Before it, a
+   * dispute could sit in a queue belonging to nobody; after it, a dispute can
+   * sit belonging to someone who has stopped working on it — and that is worse,
+   * because the unclaimed sweep no longer looks at it and the row reads as
+   * handled. Claiming is not the same as handling.
+   *
+   * So: owned, still active, and nothing has changed on it in two days. The
+   * SuperAdmins are told, and they are the ones who can reassign it, since
+   * taking a case off a colleague is the same decision as approving a handover.
+   *
+   * `updatedAt` is the right clock here rather than `claimedAt`: an admin who
+   * is corresponding with the parties, proposing a remedy, or recording notes
+   * is moving the row, and a long dispute that is actively being worked should
+   * not be reported as abandoned.
+   */
+  @Cron(CronExpression.EVERY_6_HOURS)
+  async reportStaleClaimedDisputes(): Promise<void> {
+    const now = new Date();
+    const staleBefore = new Date(
+      now.getTime() - DISPUTE_CLAIM_POLICY.staleClaimHours * 60 * 60 * 1000,
+    );
+
+    try {
+      const disputes = await this.prisma.customOrderDispute.findMany({
+        where: {
+          claimedByAdminId: { not: null },
+          status: { in: [...ACTIVE_DISPUTE_STATUSES] },
+          updatedAt: { lte: staleBefore },
+          /*
+            A proposal still inside its own response window is not stale — the
+            admin has acted and is waiting on a party, which is exactly the
+            state `AWAITING_PARTY_CONSENT` exists to record. Reporting it would
+            punish the handler for doing the right thing.
+          */
+          OR: [
+            { proposalRespondByAt: null },
+            { proposalRespondByAt: { lte: now } },
+          ],
+        },
+        select: {
+          id: true,
+          customOrderId: true,
+          claimedByAdminId: true,
+          claimedAt: true,
+          updatedAt: true,
+        },
+        take: 100,
+      });
+
+      if (disputes.length === 0) return;
+
+      const superAdmins = await this.prisma.user.findMany({
+        where: { role: Role.SuperAdmin, status: UserStatus.ACTIVE },
+        select: { id: true },
+      });
+      const recipientIds = superAdmins.map((admin) => admin.id);
+      if (recipientIds.length === 0) {
+        this.logger.warn(
+          `${disputes.length} claimed dispute(s) have gone quiet and there is no active SuperAdmin to tell`,
+        );
+        return;
+      }
+
+      for (const dispute of disputes) {
+        const hoursSilent = Math.round(
+          (now.getTime() - dispute.updatedAt.getTime()) / (60 * 60 * 1000),
+        );
+
+        await this.sideEffects.enqueueNotification({
+          customOrderId: dispute.customOrderId,
+          recipientIds,
+          notificationType: NotificationType.CUSTOM_ORDER_DISPUTE_STALE_CLAIM,
+          target: this.adminCustomOrderTarget(dispute.customOrderId),
+          payload: {
+            customOrderId: dispute.customOrderId,
+            disputeId: dispute.id,
+            claimedByAdminId: dispute.claimedByAdminId ?? undefined,
+            hoursSilent,
+          },
+          // Once a day at most. A dispute that is genuinely stuck should be a
+          // daily nag, not a six-hourly one.
+          dedupeMs: 23 * 60 * 60 * 1000,
+        });
+      }
+
+      this.logger.warn(
+        `Reported ${disputes.length} stale claimed dispute(s) to ${recipientIds.length} SuperAdmin(s)`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Stale dispute claim cron failed: ${this.formatError(error)}`,
+      );
+    }
+  }
+
   private formatError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
   }

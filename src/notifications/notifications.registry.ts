@@ -102,6 +102,8 @@ const NT_CUSTOM_ORDER_DISPUTE_RESOLVED =
   'CUSTOM_ORDER_DISPUTE_RESOLVED' as NotificationType;
 const NT_CUSTOM_ORDER_DISPUTE_HANDOVER_REQUESTED =
   'CUSTOM_ORDER_DISPUTE_HANDOVER_REQUESTED' as NotificationType;
+const NT_CUSTOM_ORDER_DISPUTE_STALE_CLAIM =
+  'CUSTOM_ORDER_DISPUTE_STALE_CLAIM' as NotificationType;
 const NT_CUSTOM_ORDER_STALE_STAGE_WARNING =
   'CUSTOM_ORDER_STALE_STAGE_WARNING' as NotificationType;
 const NT_CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED =
@@ -1849,6 +1851,25 @@ export class NotificationRegistry {
       formatter: (n: any) =>
         n.payload?.message ||
         `An admin wants to hand over the dispute on ${formatCustomOrderCode(n.payload?.customOrderId)}. Your approval is needed.`,
+    });
+
+    registry.register({
+      type: NT_CUSTOM_ORDER_DISPUTE_STALE_CLAIM,
+      schema: Joi.object({
+        customOrderId: Joi.string().required(),
+        disputeId: Joi.string().optional(),
+        claimedByAdminId: Joi.string().optional(),
+        hoursSilent: Joi.number().optional(),
+        targetUrl: Joi.string().optional(),
+        message: Joi.string().optional(),
+      }),
+      formatter: (n: any) => {
+        if (n.payload?.message) return n.payload.message;
+        const code = formatCustomOrderCode(n.payload?.customOrderId);
+        const hours = Number(n.payload?.hoursSilent ?? 0);
+        const days = Math.max(1, Math.round(hours / 24));
+        return `The dispute on ${code} is claimed but hasn't moved in ${days} day${days === 1 ? '' : 's'}. Check in or reassign it.`;
+      },
     });
 
     registry.register({

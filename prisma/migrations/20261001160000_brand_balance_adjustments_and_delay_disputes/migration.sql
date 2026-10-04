@@ -18,21 +18,33 @@
 -- timestamp so the notice they agreed to can be reproduced after the balance
 -- has moved on.
 
-CREATE TYPE "BrandBalanceAdjustmentType" AS ENUM (
-  'REFUND_CLAWBACK',
-  'CHARGEBACK',
-  'MANUAL_DEBIT',
-  'MANUAL_CREDIT'
-);
+-- Every statement below is written to be safely re-runnable.
+--
+-- Prisma does not wrap this migration in a single transaction, because an
+-- `ALTER TYPE ... ADD VALUE` cannot run inside one. So a statement failing
+-- part-way leaves everything before it committed, and the retry — which is
+-- what `migrate deploy` does after `migrate resolve --rolled-back` — then dies
+-- on "type already exists" instead of getting past the original fault. Guarding
+-- each object makes the retry do the right thing rather than compound the mess.
+DO $$ BEGIN
+  CREATE TYPE "BrandBalanceAdjustmentType" AS ENUM (
+    'REFUND_CLAWBACK',
+    'CHARGEBACK',
+    'MANUAL_DEBIT',
+    'MANUAL_CREDIT'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE "BrandBalanceAdjustmentStatus" AS ENUM (
-  'OUTSTANDING',
-  'PARTIALLY_RECOVERED',
-  'RECOVERED',
-  'WAIVED'
-);
+DO $$ BEGIN
+  CREATE TYPE "BrandBalanceAdjustmentStatus" AS ENUM (
+    'OUTSTANDING',
+    'PARTIALLY_RECOVERED',
+    'RECOVERED',
+    'WAIVED'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TABLE "BrandBalanceAdjustment" (
+CREATE TABLE IF NOT EXISTS "BrandBalanceAdjustment" (
   "id"              UUID NOT NULL DEFAULT gen_random_uuid(),
   "brandId"         UUID NOT NULL,
   "type"            "BrandBalanceAdjustmentType" NOT NULL,
@@ -50,7 +62,7 @@ CREATE TABLE "BrandBalanceAdjustment" (
   CONSTRAINT "BrandBalanceAdjustment_pkey" PRIMARY KEY ("id")
 );
 
-CREATE TABLE "BrandBalanceRecovery" (
+CREATE TABLE IF NOT EXISTS "BrandBalanceRecovery" (
   "id"            UUID NOT NULL DEFAULT gen_random_uuid(),
   "adjustmentId"  UUID NOT NULL,
   "amount"        DECIMAL(18,2) NOT NULL,
@@ -62,26 +74,39 @@ CREATE TABLE "BrandBalanceRecovery" (
   CONSTRAINT "BrandBalanceRecovery_pkey" PRIMARY KEY ("id")
 );
 
-ALTER TABLE "BrandBalanceAdjustment"
-  ADD CONSTRAINT "BrandBalanceAdjustment_brandId_fkey"
-  FOREIGN KEY ("brandId") REFERENCES "Brand"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- `Brand`'s primary key column is `_id`, not `id`.
+--
+-- 94 models in this schema carry `@id @map("_id")`, a holdover from the
+-- Mongo-era column naming, and Prisma hides that behind the `id` field name.
+-- Hand-written SQL does not get that translation: referencing `Brand("id")`
+-- here failed with 42703 the first time this migration was run. Models added
+-- since — `BrandBalanceAdjustment` below among them — use a plain `id`, so the
+-- two styles sit side by side and each FK has to be checked against the model
+-- it actually points at.
+DO $$ BEGIN
+  ALTER TABLE "BrandBalanceAdjustment"
+    ADD CONSTRAINT "BrandBalanceAdjustment_brandId_fkey"
+    FOREIGN KEY ("brandId") REFERENCES "Brand"("_id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-ALTER TABLE "BrandBalanceRecovery"
-  ADD CONSTRAINT "BrandBalanceRecovery_adjustmentId_fkey"
-  FOREIGN KEY ("adjustmentId") REFERENCES "BrandBalanceAdjustment"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "BrandBalanceRecovery"
+    ADD CONSTRAINT "BrandBalanceRecovery_adjustmentId_fkey"
+    FOREIGN KEY ("adjustmentId") REFERENCES "BrandBalanceAdjustment"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- The outstanding-debt lookup runs on every payout check and on every custom
 -- order a brand is asked to accept, so it is indexed on both access paths.
-CREATE INDEX "BrandBalanceAdjustment_brandId_status_idx"
+CREATE INDEX IF NOT EXISTS "BrandBalanceAdjustment_brandId_status_idx"
   ON "BrandBalanceAdjustment" ("brandId", "status");
-CREATE INDEX "BrandBalanceAdjustment_brandId_createdAt_idx"
+CREATE INDEX IF NOT EXISTS "BrandBalanceAdjustment_brandId_createdAt_idx"
   ON "BrandBalanceAdjustment" ("brandId", "createdAt");
-CREATE INDEX "BrandBalanceRecovery_adjustmentId_createdAt_idx"
+CREATE INDEX IF NOT EXISTS "BrandBalanceRecovery_adjustmentId_createdAt_idx"
   ON "BrandBalanceRecovery" ("adjustmentId", "createdAt");
 
 ALTER TABLE "CustomOrder"
-  ADD COLUMN "brandDebtAckAt" TIMESTAMP(3),
-  ADD COLUMN "brandDebtAckAmount" DECIMAL(18,2);
+  ADD COLUMN IF NOT EXISTS "brandDebtAckAt" TIMESTAMP(3),
+  ADD COLUMN IF NOT EXISTS "brandDebtAckAmount" DECIMAL(18,2);
 
 -- A brand must never discover a debt by noticing its balance is short.
 ALTER TYPE "NotificationType" ADD VALUE IF NOT EXISTS 'BRAND_BALANCE_ADJUSTED';

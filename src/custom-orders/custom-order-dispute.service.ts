@@ -591,6 +591,86 @@ export class CustomOrderDisputeService {
   }
 
   /**
+   * Take a dispute off an admin and give it to another.
+   *
+   * The counterpart to the stale-claim sweep: telling a SuperAdmin that a case
+   * has gone quiet is only useful if they can do something about it. This is
+   * deliberately NOT a release — the dispute moves directly to a named
+   * successor, because the whole point of the ownership rules is that a case
+   * always belongs to someone.
+   *
+   * Gated on the same permission as approving a handover: both are decisions
+   * about another admin's accountability, and neither belongs to the person
+   * being relieved.
+   */
+  async reassign(
+    disputeId: string,
+    actingAdminId: string,
+    successorAdminId: string,
+    reason: string,
+  ) {
+    const dispute = await this.prisma.customOrderDispute.findUnique({
+      where: { id: disputeId },
+    });
+    if (!dispute) throw new NotFoundException('Dispute not found');
+
+    if (!ACTIVE_DISPUTE_STATUSES.has(dispute.status)) {
+      throw new BadRequestException('CUSTOM_ORDER_DISPUTE_NOT_ACTIVE');
+    }
+    if (dispute.claimedByAdminId === successorAdminId) {
+      throw new BadRequestException('CUSTOM_ORDER_DISPUTE_ALREADY_THEIRS');
+    }
+
+    const successor = await this.prisma.user.findUnique({
+      where: { id: successorAdminId },
+      select: { id: true, role: true },
+    });
+    if (!successor || !String(successor.role).toUpperCase().includes('ADMIN')) {
+      throw new BadRequestException(
+        'CUSTOM_ORDER_DISPUTE_HANDOVER_INVALID_SUCCESSOR',
+      );
+    }
+
+    const now = new Date();
+    await this.prisma.customOrderDispute.update({
+      where: { id: disputeId },
+      data: {
+        claimedByAdminId: successorAdminId,
+        assignedAdminId: successorAdminId,
+        // The successor's clock starts now — they have not read it yet.
+        claimedAt: now,
+        handoverApprovedById: actingAdminId,
+        handoverApprovedAt: now,
+        handoverReason: reason,
+        handoverToAdminId: null,
+        handoverRequestedAt: null,
+        // A reassigned dispute has been looked at by a SuperAdmin, so the
+        // unclaimed escalation counter starts again rather than carrying the
+        // previous owner's silence forward.
+        escalatedAt: null,
+      },
+    });
+
+    const order = await this.prisma.customOrder.findUnique({
+      where: { id: dispute.customOrderId },
+      select: { id: true, buyerId: true, brandId: true },
+    });
+    if (order) {
+      const brandOwner = await this.brandOwnerId(order.brandId);
+      await this.notify({
+        customOrderId: order.id,
+        recipientIds: [order.buyerId, brandOwner].filter(
+          (id): id is string => Boolean(id),
+        ),
+        notificationType: NotificationType.CUSTOM_ORDER_DISPUTE_CLAIMED,
+        payload: { customOrderId: order.id, disputeId },
+      });
+    }
+
+    return this.getDispute(disputeId);
+  }
+
+  /**
    * Put a resolution to the parties, or apply it directly.
    *
    * Which of the two happens is not the admin's choice — it is a property of

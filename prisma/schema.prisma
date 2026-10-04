@@ -1122,6 +1122,9 @@ enum NotificationType {
   CUSTOM_ORDER_DISPUTE_RESOLVED
   /// An admin asked to hand a dispute on; a SuperAdmin must decide.
   CUSTOM_ORDER_DISPUTE_HANDOVER_REQUESTED
+  /// A claimed dispute has not moved in days. Claiming is not handling, and an
+  /// owner who has gone quiet is the failure the claim requirement hides.
+  CUSTOM_ORDER_DISPUTE_STALE_CLAIM
   CUSTOM_ORDER_STALE_STAGE_WARNING
   CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED
   CUSTOM_ORDER_ACCEPTANCE_SLA_RISK
