@@ -18,6 +18,12 @@ import { BrandBalanceService } from './brand-balance.service';
   imports: [PrismaModule, SystemConfigModule],
   providers: [
     StandardOrderEscrowService,
+    // The brand debt ledger. It was imported into this file and injected in six
+    // places across four modules, and listed as a provider by nobody — so the
+    // API could not construct `StandardOrderEscrowService` and crash-looped on
+    // boot. `tsc` cannot see this and the unit tests all pass, because each
+    // spec supplies its own mock; only a real Nest bootstrap catches it.
+    BrandBalanceService,
     LedgerService,
     CommissionService,
     ReconciliationService,
@@ -31,6 +37,7 @@ import { BrandBalanceService } from './brand-balance.service';
   ],
   exports: [
     StandardOrderEscrowService,
+    BrandBalanceService,
     LedgerService,
     CommissionService,
     ReconciliationService,

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { CustomOrdersModule } from 'src/custom-orders/custom-orders.module';
 import { PrismaModule } from 'src/prisma/prisma.module';
+import { FinanceModule } from 'src/finance/finance.module';
 import { CustomOrderAdminController } from './custom-order-admin.controller';
 import { CustomOrderAdminService } from './custom-order-admin.service';
 
@@ -14,7 +15,11 @@ import { CustomOrderAdminService } from './custom-order-admin.service';
  * service whose dependencies all sit on the other side of it.
  */
 @Module({
-  imports: [PrismaModule, CustomOrdersModule],
+  // `FinanceModule` for `BrandBalanceService`: the admin service reads a
+  // brand's outstanding debt when deciding a dispute, and importing
+  // `CustomOrdersModule` does not bring it along — that module consumes it too,
+  // but a Nest module only re-exports what it names in `exports`.
+  imports: [PrismaModule, CustomOrdersModule, FinanceModule],
   controllers: [CustomOrderAdminController],
   providers: [CustomOrderAdminService],
 })
