@@ -60,19 +60,48 @@ export class ImageProcessingProcessor extends WorkerHost {
       job.name === IMAGE_REPROCESS_JOB
     ) {
       const data = job.data as ImageProcessSingleJob;
-      await this.processOne(data.fileId, Boolean(data.force));
+      await this.processOne(
+        data.fileId,
+        Boolean(data.force),
+        Boolean(data.newVersion),
+      );
       return;
     }
 
     if (job.name === IMAGE_PROCESS_BATCH_JOB) {
       const data = job.data as ImageProcessBatchJob;
       for (const fileId of data.fileIds || []) {
-        await this.processOne(fileId, Boolean(data.force));
+        await this.processOne(
+          fileId,
+          Boolean(data.force),
+          Boolean(data.newVersion),
+        );
       }
     }
   }
 
-  private async processOne(fileId: string, force: boolean): Promise<void> {
+  /**
+   * `newVersion` re-encodes a file that already has variants, under the NEXT
+   * asset version, for when the encoder settings change.
+   *
+   * It cannot overwrite in place: variant objects are served with a year-long
+   * immutable Cache-Control through the Cloudflare edge, so rewritten bytes at
+   * the same key would never reach a client. The new version's objects and
+   * rows are written first, then the file is switched to it, then the older
+   * version's ROWS are removed — several readers pick a variant by kind and
+   * format without filtering on `assetVersion`, so leaving both would keep
+   * serving the old one. The older objects are left in the bucket, because
+   * clients still hold their URLs.
+   *
+   * A failure leaves a working photo exactly as it was: no FAILED status
+   * (that drops it from the feed) and no throw (a batch retry would re-run
+   * every file in the batch and bump the ones that had already succeeded).
+   */
+  private async processOne(
+    fileId: string,
+    force: boolean,
+    newVersion = false,
+  ): Promise<void> {
     const file = await this.prisma.fileUpload.findUnique({
       where: { id: fileId },
     });
@@ -91,11 +120,15 @@ export class ImageProcessingProcessor extends WorkerHost {
       return;
     }
 
+    const reencode = newVersion && (file as any).processingStatus === 'READY';
+
     try {
-      await this.prisma.fileUpload.update({
-        where: { id: fileId },
-        data: { processingError: null } as any,
-      } as any);
+      if (!reencode) {
+        await this.prisma.fileUpload.update({
+          where: { id: fileId },
+          data: { processingError: null } as any,
+        } as any);
+      }
 
       const originalBuffer = await this.uploadService.getObjectBufferByKey(
         file.s3Key,
@@ -108,7 +141,8 @@ export class ImageProcessingProcessor extends WorkerHost {
         },
       );
 
-      const nextVersion = Number((file as any).assetVersion || 1);
+      const currentVersion = Number((file as any).assetVersion || 1);
+      const nextVersion = reencode ? currentVersion + 1 : currentVersion;
       for (const variant of variants) {
         const key = this.uploadService.buildVariantS3Key({
           variantKind: variant.kind,
@@ -169,9 +203,22 @@ export class ImageProcessingProcessor extends WorkerHost {
           orientation: probe.orientation,
           colorSpace: probe.colorSpace,
           lastProcessedAt: new Date(),
+          ...(reencode ? { assetVersion: nextVersion } : {}),
         } as any,
       } as any);
+
+      if (reencode) {
+        await (this.prisma as any).fileVariant.deleteMany({
+          where: { fileUploadId: fileId, assetVersion: { lt: nextVersion } },
+        });
+      }
     } catch (error) {
+      if (reencode) {
+        this.logger.warn(
+          `Image re-encode skipped for ${fileId}; current version kept: ${String(error)}`,
+        );
+        return;
+      }
       this.logger.error(
         `Image processing failed for ${fileId}: ${String(error)}`,
       );

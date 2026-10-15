@@ -11,11 +11,15 @@ import {
 export interface ImageProcessSingleJob {
   fileId: string;
   force?: boolean;
+  /** Re-encode into the next asset version — see `processOne`. */
+  newVersion?: boolean;
 }
 
 export interface ImageProcessBatchJob {
   fileIds: string[];
   force?: boolean;
+  /** Re-encode into the next asset version — see `processOne`. */
+  newVersion?: boolean;
 }
 
 @Injectable()
