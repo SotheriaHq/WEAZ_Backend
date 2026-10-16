@@ -563,14 +563,29 @@ export class ContentIntegrityService {
       },
     });
 
+    const publishDisabled =
+      reviewMode === BrandContentReviewMode.PUBLISH_DISABLED;
+    /*
+      Every listing is reviewed before it goes live. The trust tier is still
+      derived and recorded above, but a DERIVED tier no longer skips review:
+      NORMAL mapped to POST_REVIEW_ALLOWED, which published immediately and
+      never created a submission, so "review later" meant "never reviewed".
+      (Found on SIT: a NORMAL brand's design went live with zero submissions.)
+      Only an explicit admin override on the brand may publish without review.
+    */
+    const adminAllowsUnreviewedPublish =
+      brand.contentReviewModeOverride ===
+        BrandContentReviewMode.AUTO_PUBLISH_ALLOWED ||
+      brand.contentReviewModeOverride ===
+        BrandContentReviewMode.POST_REVIEW_ALLOWED;
+
     return {
       brandId,
       tier,
       reviewMode,
       approvedListingCount,
-      requiresPreReview:
-        reviewMode === BrandContentReviewMode.PRE_REVIEW_REQUIRED,
-      publishDisabled: reviewMode === BrandContentReviewMode.PUBLISH_DISABLED,
+      requiresPreReview: !publishDisabled && !adminAllowsUnreviewedPublish,
+      publishDisabled,
     };
   }
 
@@ -607,11 +622,13 @@ export class ContentIntegrityService {
 
   async resolvePublicationDecision(brandId?: string | null) {
     if (!brandId) {
+      // No brand resolved is not a reason to skip review — it used to publish
+      // outright, which made any caller that failed to find the brand a bypass.
       return {
-        publicationStatus: CollectionStatus.PUBLISHED,
-        isActive: true,
+        publicationStatus: CollectionStatus.IN_REVIEW,
+        isActive: false,
         reviewMode: null,
-        requiresPreReview: false,
+        requiresPreReview: true,
         publishDisabled: false,
       };
     }
@@ -823,7 +840,8 @@ export class ContentIntegrityService {
 
   /** Narrow a stored `Json` column back to a snapshot, tolerating old rows. */
   private readSnapshot(value: unknown): ReviewableSnapshot | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      return null;
     const candidate = value as Partial<ReviewableSnapshot>;
     if (!Array.isArray(candidate.mediaIds)) return null;
     return {
@@ -998,14 +1016,9 @@ export class ContentIntegrityService {
       where: {
         OR: [
           ...(productId ? [{ productId }] : []),
-          ...(designId
-            ? [{ designId }, { legacyCollectionId: designId }]
-            : []),
+          ...(designId ? [{ designId }, { legacyCollectionId: designId }] : []),
           ...(legacyCollectionId
-            ? [
-                { legacyCollectionId },
-                { designId: legacyCollectionId },
-              ]
+            ? [{ legacyCollectionId }, { designId: legacyCollectionId }]
             : []),
         ],
       },
@@ -1478,7 +1491,9 @@ export class ContentIntegrityService {
       new Set<string>(
         previewRows
           .map((row: any) => row?.fileUploadId)
-          .filter((id: unknown): id is string => typeof id === 'string' && !!id),
+          .filter(
+            (id: unknown): id is string => typeof id === 'string' && !!id,
+          ),
       ),
     );
     const [thumbUrls, cardUrls] = await Promise.all([
@@ -1542,11 +1557,7 @@ export class ContentIntegrityService {
   }
 
   private async getReviewMediaPreviewUrl(file?: any): Promise<string | null> {
-    if (
-      !file ||
-      file.originalDeletedAt ||
-      file.processingStatus !== 'READY'
-    ) {
+    if (!file || file.originalDeletedAt || file.processingStatus !== 'READY') {
       return null;
     }
 
@@ -1650,8 +1661,7 @@ export class ContentIntegrityService {
       latestTrustEvent: latestEvent?.eventType ?? null,
       latestTrustEventAt: latestEvent?.createdAt ?? null,
       verificationStatus: brand.verificationStatus ?? null,
-      isVerified:
-        brand.verificationStatus === BrandVerificationStatus.APPROVED,
+      isVerified: brand.verificationStatus === BrandVerificationStatus.APPROVED,
       emailVerified: Boolean(brand.owner?.isEmailVerified),
     };
   }
@@ -1710,10 +1720,15 @@ export class ContentIntegrityService {
       new Set<string>(
         rows
           .map((row: any) => row.reviewedById)
-          .filter((id: unknown): id is string => typeof id === 'string' && !!id),
+          .filter(
+            (id: unknown): id is string => typeof id === 'string' && !!id,
+          ),
       ),
     );
-    const reviewers = new Map<string, { id: string; username: string | null }>();
+    const reviewers = new Map<
+      string,
+      { id: string; username: string | null }
+    >();
     await Promise.all(
       reviewerIds.map(async (id) => {
         const snapshot = await this.getUserSnapshot(id);
@@ -2353,7 +2368,8 @@ export class ContentIntegrityService {
   ): Promise<string | null> {
     const fromPayload =
       (typeof payload.title === 'string' && payload.title.trim()) ||
-      (typeof payload.contentTitle === 'string' && payload.contentTitle.trim()) ||
+      (typeof payload.contentTitle === 'string' &&
+        payload.contentTitle.trim()) ||
       (typeof payload.productName === 'string' && payload.productName.trim()) ||
       (typeof payload.collectionTitle === 'string' &&
         payload.collectionTitle.trim()) ||
@@ -2399,16 +2415,15 @@ export class ContentIntegrityService {
   ) {
     const title = await this.resolveContentTitleForNotification(payload);
     const when = this.formatUserFacingTime();
-    const entityLabel =
-      String(payload.entityType ?? payload.contentType ?? '')
-        .toUpperCase()
-        .includes('PRODUCT')
-        ? 'product'
-        : String(payload.entityType ?? '')
-              .toUpperCase()
-              .includes('COLLECTION')
-          ? 'collection'
-          : 'design';
+    const entityLabel = String(payload.entityType ?? payload.contentType ?? '')
+      .toUpperCase()
+      .includes('PRODUCT')
+      ? 'product'
+      : String(payload.entityType ?? '')
+            .toUpperCase()
+            .includes('COLLECTION')
+        ? 'collection'
+        : 'design';
     const message = title
       ? `Your ${entityLabel} "${title}" was submitted for review on ${when} and is pending approval. We'll notify you as soon as the review is complete.`
       : `Your ${entityLabel} was submitted for review on ${when} and is pending approval. We'll notify you as soon as the review is complete.`;
@@ -2455,7 +2470,9 @@ export class ContentIntegrityService {
   ) {
     const contentRef = title?.trim() ? `"${title.trim()}"` : 'your content';
     const when = this.formatUserFacingTime();
-    const greeting = recipientName?.trim() ? `Hi ${recipientName.trim()} — ` : '';
+    const greeting = recipientName?.trim()
+      ? `Hi ${recipientName.trim()} — `
+      : '';
     if (action === 'approve') {
       return `${greeting}great news! ${contentRef} was approved on ${when} and is now live. Shoppers can discover it on the Runway and place orders right away. Share it with your customers and friends to get more eyes on it.`;
     }

@@ -165,6 +165,59 @@ describe('ContentIntegrityService', () => {
     expect(gate.requiresPreReview).toBe(true);
   });
 
+  const establishedBrand = (overrides: Record<string, unknown> = {}) => ({
+    id: 'brand-1',
+    ownerId: 'owner-1',
+    createdAt: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000),
+    verificationStatus: BrandVerificationStatus.APPROVED,
+    contentMediaPolicyAcknowledgedAt: new Date(),
+    contentTrustTierOverride: null,
+    contentReviewModeOverride: null,
+    ...overrides,
+  });
+
+  it('still requires review for an established NORMAL-tier brand', async () => {
+    // Regression: NORMAL mapped to POST_REVIEW_ALLOWED, which published at once
+    // and never created a submission — a design went live unreviewed on SIT.
+    const { prisma, service } = createService();
+    prisma.brand.findUnique.mockResolvedValue(establishedBrand());
+    prisma.product.count.mockResolvedValue(5);
+    prisma.collection.count.mockResolvedValue(5);
+
+    const gate = await service.evaluateBrandGate('brand-1');
+    const decision = await service.resolvePublicationDecision('brand-1');
+
+    expect(gate.tier).toBe(BrandTrustTier.NORMAL);
+    expect(gate.requiresPreReview).toBe(true);
+    expect(decision.publicationStatus).toBe(CollectionStatus.IN_REVIEW);
+    expect(decision.requiresPreReview).toBe(true);
+  });
+
+  it('publishes without review only when an admin override allows it', async () => {
+    const { prisma, service } = createService();
+    prisma.brand.findUnique.mockResolvedValue(
+      establishedBrand({
+        contentReviewModeOverride: BrandContentReviewMode.AUTO_PUBLISH_ALLOWED,
+      }),
+    );
+    prisma.product.count.mockResolvedValue(5);
+    prisma.collection.count.mockResolvedValue(5);
+
+    const decision = await service.resolvePublicationDecision('brand-1');
+
+    expect(decision.publicationStatus).toBe(CollectionStatus.PUBLISHED);
+    expect(decision.requiresPreReview).toBe(false);
+  });
+
+  it('sends content with no resolvable brand to review instead of publishing it', async () => {
+    const { service } = createService();
+
+    const decision = await service.resolvePublicationDecision(null);
+
+    expect(decision.publicationStatus).toBe(CollectionStatus.IN_REVIEW);
+    expect(decision.requiresPreReview).toBe(true);
+  });
+
   it('requires a reason code when rejecting a submission', async () => {
     const { prisma, service } = createService();
     prisma.contentSubmission.findUnique.mockResolvedValue({
