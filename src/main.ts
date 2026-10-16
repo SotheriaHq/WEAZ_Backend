@@ -29,7 +29,10 @@ import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { requestLoggerMiddleware } from './common/middleware/request-logger.middleware';
 import { InputSanitizationPipe } from './common/pipes/input-sanitization.pipe';
-import { formatValidationErrors } from './common/utils/validation-error-redaction';
+import {
+  formatPrimaryValidationMessage,
+  formatValidationErrors,
+} from './common/utils/validation-error-redaction';
 import { sanitizeErrorForLog } from './common/utils/sensitive-log';
 import { MonitoringService } from './monitoring/monitoring.service';
 import * as express from 'express';
@@ -280,6 +283,7 @@ async function bootstrap() {
         exceptionFactory: (errors) => {
           try {
             const formattedErrors = formatValidationErrors(errors);
+            const primaryMessage = formatPrimaryValidationMessage(formattedErrors);
 
             try {
               logger.warn(
@@ -291,7 +295,7 @@ async function bootstrap() {
             }
 
             return new BadRequestException({
-              message: 'Validation failed',
+              message: primaryMessage,
               errors: formattedErrors,
               statusCode: 400,
             });
@@ -300,7 +304,9 @@ async function bootstrap() {
               'Validation exception factory failed:',
               sanitizeErrorForLog(factoryError),
             );
-            return new BadRequestException('Validation failed');
+            return new BadRequestException(
+              'Please check your information and try again.',
+            );
           }
         },
       }),
