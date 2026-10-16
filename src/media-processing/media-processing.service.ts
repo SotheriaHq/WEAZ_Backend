@@ -231,9 +231,13 @@ export class MediaProcessingService {
           ext: 'avif',
           mimeType: 'image/avif',
         });
+        // The WebP is what every client actually displays (variant URLs pick
+        // WEBP over AVIF), so it gets the profile's full quality. It used to be
+        // `quality - 4`, on the theory that AVIF was primary — which meant the
+        // image people saw was quietly a notch below the setting.
         const webp = await resized
           .webp({
-            quality: Math.max(68, quality - 4),
+            quality,
             effort: WEBP_ENCODER_EFFORT,
             smartSubsample: true,
           })
@@ -243,7 +247,7 @@ export class MediaProcessingService {
           format: 'WEBP',
           width: webp.info.width,
           height: webp.info.height,
-          quality: Math.max(68, quality - 4),
+          quality,
           buffer: webp.data,
           ext: 'webp',
           mimeType: 'image/webp',

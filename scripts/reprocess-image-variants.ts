@@ -57,6 +57,10 @@ async function main() {
   const limit = getPositiveInt('--limit');
   const batchSize = getPositiveInt('--batch-size', 10)!;
   const maxQuality = getPositiveInt('--max-quality', 80)!;
+  // --min-quality=N selects the opposite: DETAIL WebPs encoded BELOW N, to
+  // re-encode them UP after the quality setting was raised. When given, it
+  // replaces the --max-quality filter.
+  const minQuality = getPositiveInt('--min-quality');
   if (batchSize > 100) throw new Error('--batch-size must be 1..100.');
 
   const scriptPrisma = createScriptPrismaClient();
@@ -73,7 +77,7 @@ async function main() {
         some: {
           variantKind: 'DETAIL',
           format: 'WEBP',
-          quality: { gt: maxQuality },
+          quality: minQuality ? { lt: minQuality } : { gt: maxQuality },
         },
       },
     },
@@ -86,7 +90,7 @@ async function main() {
     JSON.stringify({
       at: new Date().toISOString(),
       mode: apply ? 'apply' : 'dry-run',
-      maxQuality,
+      ...(minQuality ? { minQuality } : { maxQuality }),
       candidates: candidates.length,
       byFileType: candidates.reduce((acc: Record<string, number>, row: any) => {
         acc[row.fileType] = (acc[row.fileType] ?? 0) + 1;
