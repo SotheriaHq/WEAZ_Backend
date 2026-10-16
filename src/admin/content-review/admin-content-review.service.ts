@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ContentIntegrityService } from 'src/content-integrity/content-integrity.service';
 import {
+  BrandAutoPublishDto,
   BrandTrustOverrideDto,
   ContentReportQueryDto,
   ContentReportResolutionDto,
@@ -118,6 +119,26 @@ export class AdminContentReviewService {
       adminUserId,
       trustTier: dto.trustTier,
       reviewMode: dto.reviewMode,
+      reason: dto.reason,
+      ipAddress: req?.ip,
+      userAgent: req?.headers?.['user-agent'],
+    });
+  }
+
+  getBrandAutoPublish(brandId: string) {
+    return this.contentIntegrity.getBrandAutoPublish(brandId);
+  }
+
+  setBrandAutoPublish(
+    brandId: string,
+    adminUserId: string,
+    dto: BrandAutoPublishDto,
+    req: any,
+  ) {
+    return this.contentIntegrity.setBrandAutoPublish({
+      brandId,
+      adminUserId,
+      enabled: dto.enabled,
       reason: dto.reason,
       ipAddress: req?.ip,
       userAgent: req?.headers?.['user-agent'],

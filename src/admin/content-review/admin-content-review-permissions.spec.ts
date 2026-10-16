@@ -51,4 +51,13 @@ describe('AdminContentReviewController permissions', () => {
       ADMIN_PERMISSIONS.CONTENT_REVIEW_MANAGE,
     ]);
   });
+
+  it('needs the dedicated grant to change auto-publish, and only read to view it', () => {
+    expect(getRequiredPermissions('setBrandAutoPublish')).toEqual([
+      ADMIN_PERMISSIONS.CONTENT_AUTO_PUBLISH_MANAGE,
+    ]);
+    expect(getRequiredPermissions('getBrandAutoPublish')).toEqual([
+      ADMIN_PERMISSIONS.CONTENT_REVIEW_READ,
+    ]);
+  });
 });

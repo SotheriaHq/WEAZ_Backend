@@ -51,6 +51,10 @@ export const ADMIN_PERMISSIONS = {
   COLLECTIONS_MODERATE: 'collections.moderate',
   CONTENT_REVIEW_READ: 'contentReview.read',
   CONTENT_REVIEW_MANAGE: 'contentReview.manage',
+  // Turning auto-publish on lets a brand's listings skip review entirely, so
+  // it is its own grant rather than part of contentReview.manage. Not in the
+  // baseline: a SuperAdmin (who bypasses every check) grants it explicitly.
+  CONTENT_AUTO_PUBLISH_MANAGE: 'contentReview.autoPublish.manage',
 
   // Featured
   FEATURED_MANAGE: 'featured.manage',

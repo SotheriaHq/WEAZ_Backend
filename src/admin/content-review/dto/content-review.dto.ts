@@ -10,6 +10,7 @@ import {
 } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
+  IsBoolean,
   IsDateString,
   IsEnum,
   IsInt,
@@ -18,6 +19,7 @@ import {
   IsUUID,
   Max,
   MaxLength,
+  MinLength,
   Min,
   ValidateIf,
 } from 'class-validator';
@@ -145,6 +147,16 @@ export class ContentReportResolutionDto {
   @MaxLength(1000)
   @ValidateIf((dto) => dto.status !== ContentReportStatus.DISMISSED)
   resolution?: string;
+}
+
+export class BrandAutoPublishDto {
+  @IsBoolean()
+  enabled!: boolean;
+
+  @IsString()
+  @MinLength(3)
+  @MaxLength(1000)
+  reason!: string;
 }
 
 export class BrandTrustOverrideDto {

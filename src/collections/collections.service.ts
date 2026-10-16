@@ -6771,6 +6771,7 @@ export class CollectionsService {
     // Collect file IDs for batch signing
     const fileIds = new Set<string>();
     const logoFileIds = new Set<string>();
+    const coverFileIdByCollection = new Map<string, string>();
     data.forEach((c) => {
       // Cover image (prefer coverMediaId)
       const preferredCover = c.coverMediaId
@@ -6778,6 +6779,7 @@ export class CollectionsService {
         : c.medias?.[0];
       if (preferredCover?.file?.id) {
         fileIds.add(preferredCover.file.id);
+        coverFileIdByCollection.set(c.id, preferredCover.file.id);
       }
       // Brand logo
       const owner = this.mapCollectionOwner(c.owner);
@@ -6799,17 +6801,37 @@ export class CollectionsService {
     );
     // Card avatars render tiny: prefer the 256px AVATAR variant over the
     // original upload; the signed original stays as fallback.
-    const avatarUrlMap =
+    //
+    // Covers get the same treatment with the 640px CARD variant. The card is
+    // ~180dp wide, yet it was loading the signed ORIGINAL upload — full size,
+    // and under a signature that changes on every response, so the phone's
+    // image cache never matched and every catalogue visit re-downloaded every
+    // cover. The CARD URL is small and stable (edge- and device-cacheable).
+    // Only IDs already in the authorized batch are asked for, so access
+    // checks still come from that batch.
+    const [avatarUrlMap, coverCardUrlMap] =
       typeof this.uploadService.getBatchVariantDisplayUrls === 'function'
-        ? await this.uploadService.getBatchVariantDisplayUrls(
-            Array.from(logoFileIds),
-            'AVATAR',
-          )
-        : new Map<string, string>();
+        ? await Promise.all([
+            this.uploadService.getBatchVariantDisplayUrls(
+              Array.from(logoFileIds),
+              'AVATAR',
+            ),
+            this.uploadService.getBatchVariantDisplayUrls(
+              Array.from(new Set(coverFileIdByCollection.values())).filter(
+                (id) => signedUrlMap.has(id),
+              ),
+              'CARD',
+            ),
+          ])
+        : [new Map<string, string>(), new Map<string, string>()];
 
     return {
       items: data.map((c) => {
         const { collectionCollabsCount, threadsCount, ...rest } = c as any;
+        const coverFileId = coverFileIdByCollection.get(c.id);
+        const coverCardUrl = coverFileId
+          ? coverCardUrlMap.get(coverFileId)
+          : undefined;
         // Inject signed URLs
         const mappedMedias = c.medias.map((m) => {
           if (m.file && signedUrlMap.has(m.file.id)) {
@@ -6849,6 +6871,9 @@ export class CollectionsService {
           medias: mappedMedias,
           owner: ownerWithSignedUrl,
           isThreaded: requesterId ? !!isThreadedMap[c.id] : false,
+          // Read first by clients' cover resolution; absent until the file has
+          // a CARD variant, in which case they fall back to the media URL.
+          ...(coverCardUrl ? { coverImage: coverCardUrl } : {}),
         };
       }),
       hasNextPage: hasNext,

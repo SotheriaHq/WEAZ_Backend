@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import {
   BrandContentReviewMode,
   BrandTrustTier,
@@ -216,6 +216,116 @@ describe('ContentIntegrityService', () => {
 
     expect(decision.publicationStatus).toBe(CollectionStatus.IN_REVIEW);
     expect(decision.requiresPreReview).toBe(true);
+  });
+
+  describe('brand auto-publish', () => {
+    const auditCreate = () => ({ adminAuditLog: { create: jest.fn() } });
+
+    it('turns auto-publish on with an audited reason', async () => {
+      const { prisma, service } = createService(auditCreate());
+      prisma.brand.findUnique.mockResolvedValue({
+        id: 'brand-1',
+        name: 'Brand',
+        contentReviewModeOverride: null,
+        contentTrustTierOverride: null,
+      });
+
+      const result = await service.setBrandAutoPublish({
+        brandId: 'brand-1',
+        adminUserId: 'admin-1',
+        enabled: true,
+        reason: 'Long-standing verified brand',
+      });
+
+      expect(result.enabled).toBe(true);
+      expect(prisma.brand.update).toHaveBeenCalledWith({
+        where: { id: 'brand-1' },
+        data: {
+          contentReviewModeOverride: BrandContentReviewMode.AUTO_PUBLISH_ALLOWED,
+        },
+      });
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            previousState: expect.objectContaining({ autoPublish: false }),
+            newState: expect.objectContaining({
+              autoPublish: true,
+              reason: 'Long-standing verified brand',
+            }),
+          }),
+        }),
+      );
+    });
+
+    it('refuses a change without a reason', async () => {
+      const { prisma, service } = createService(auditCreate());
+
+      await expect(
+        service.setBrandAutoPublish({
+          brandId: 'brand-1',
+          adminUserId: 'admin-1',
+          enabled: true,
+          reason: '   ',
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.brand.update).not.toHaveBeenCalled();
+    });
+
+    it('does not let the general trust override turn auto-publish on', async () => {
+      const { prisma, service } = createService(auditCreate());
+
+      await expect(
+        service.setBrandTrustOverride({
+          brandId: 'brand-1',
+          adminUserId: 'admin-1',
+          reviewMode: BrandContentReviewMode.AUTO_PUBLISH_ALLOWED,
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.brand.update).not.toHaveBeenCalled();
+    });
+
+    it('keeps an existing auto-publish when the trust override leaves review mode out', async () => {
+      const { prisma, service } = createService(auditCreate());
+      prisma.brand.findUnique.mockResolvedValue({
+        contentReviewModeOverride: BrandContentReviewMode.AUTO_PUBLISH_ALLOWED,
+      });
+      prisma.brand.update.mockResolvedValue({
+        id: 'brand-1',
+        contentTrustTierOverride: BrandTrustTier.NORMAL,
+        contentReviewModeOverride: BrandContentReviewMode.AUTO_PUBLISH_ALLOWED,
+      });
+
+      await service.setBrandTrustOverride({
+        brandId: 'brand-1',
+        adminUserId: 'admin-1',
+        trustTier: BrandTrustTier.NORMAL,
+      });
+
+      expect(prisma.brand.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            contentReviewModeOverride:
+              BrandContentReviewMode.AUTO_PUBLISH_ALLOWED,
+          }),
+        }),
+      );
+    });
+
+    it('refuses to change review mode over an active auto-publish from the trust override', async () => {
+      const { prisma, service } = createService(auditCreate());
+      prisma.brand.findUnique.mockResolvedValue({
+        contentReviewModeOverride: BrandContentReviewMode.AUTO_PUBLISH_ALLOWED,
+      });
+
+      await expect(
+        service.setBrandTrustOverride({
+          brandId: 'brand-1',
+          adminUserId: 'admin-1',
+          reviewMode: BrandContentReviewMode.PRE_REVIEW_REQUIRED,
+        }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.brand.update).not.toHaveBeenCalled();
+    });
   });
 
   it('requires a reason code when rejecting a submission', async () => {

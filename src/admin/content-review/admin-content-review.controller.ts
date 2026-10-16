@@ -4,6 +4,7 @@ import {
   Get,
   Param,
   Patch,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -18,6 +19,7 @@ import { RequirePermissions } from '../decorators/require-permissions.decorator'
 import { AdminPermissionGuard } from '../guards/admin-permission.guard';
 import { AdminContentReviewService } from './admin-content-review.service';
 import {
+  BrandAutoPublishDto,
   BrandTrustOverrideDto,
   ContentReportQueryDto,
   ContentReportResolutionDto,
@@ -116,5 +118,23 @@ export class AdminContentReviewController {
   ) {
     const actorId = (req as any).user.sub;
     return this.reviewService.setBrandTrustOverride(brandId, actorId, dto, req);
+  }
+
+  @Get('brands/:brandId/auto-publish')
+  @RequirePermissions(ADMIN_PERMISSIONS.CONTENT_REVIEW_READ)
+  getBrandAutoPublish(@Param('brandId') brandId: string) {
+    return this.reviewService.getBrandAutoPublish(brandId);
+  }
+
+  /** On: the brand's listings go live without review. SuperAdmin always may. */
+  @Put('brands/:brandId/auto-publish')
+  @RequirePermissions(ADMIN_PERMISSIONS.CONTENT_AUTO_PUBLISH_MANAGE)
+  setBrandAutoPublish(
+    @Param('brandId') brandId: string,
+    @Body() dto: BrandAutoPublishDto,
+    @Req() req: Request,
+  ) {
+    const actorId = (req as any).user.sub;
+    return this.reviewService.setBrandAutoPublish(brandId, actorId, dto, req);
   }
 }

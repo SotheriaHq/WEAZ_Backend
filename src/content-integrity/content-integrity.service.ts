@@ -2275,11 +2275,43 @@ export class ContentIntegrityService {
     ipAddress?: string | null;
     userAgent?: string | null;
   }) {
+    /*
+      Auto-publish is NOT set here. This endpoint needs only
+      contentReview.manage, and an unreviewed-publish mode lets a brand skip
+      review entirely, so it has its own grant and its own control
+      (`setBrandAutoPublish`). That cuts both ways: this path may neither turn
+      auto-publish on nor silently clear one that is on — leaving
+      `reviewMode` out used to null it.
+    */
+    if (args.reviewMode && this.isUnreviewedPublishMode(args.reviewMode)) {
+      throw new BadRequestException(
+        'Auto-publish is set from the brand auto-publish control, which needs its own permission.',
+      );
+    }
+    const current = await this.prisma.brand.findUnique({
+      where: { id: args.brandId },
+      select: { contentReviewModeOverride: true },
+    });
+    if (!current) {
+      throw new NotFoundException('Brand not found');
+    }
+    const autoPublishOn = this.isUnreviewedPublishMode(
+      current.contentReviewModeOverride,
+    );
+    if (autoPublishOn && args.reviewMode) {
+      throw new ForbiddenException(
+        'This brand has auto-publish on. Turn it off from the auto-publish control first.',
+      );
+    }
+    const nextReviewMode = autoPublishOn
+      ? current.contentReviewModeOverride
+      : args.reviewMode || null;
+
     const brand = await this.prisma.brand.update({
       where: { id: args.brandId },
       data: {
         contentTrustTierOverride: args.trustTier || null,
-        contentReviewModeOverride: args.reviewMode || null,
+        contentReviewModeOverride: nextReviewMode,
       } as any,
       select: {
         id: true,
@@ -2318,6 +2350,118 @@ export class ContentIntegrityService {
     });
 
     return brand;
+  }
+
+  private isUnreviewedPublishMode(mode: unknown): boolean {
+    return (
+      mode === BrandContentReviewMode.AUTO_PUBLISH_ALLOWED ||
+      mode === BrandContentReviewMode.POST_REVIEW_ALLOWED
+    );
+  }
+
+  async getBrandAutoPublish(brandId: string) {
+    const brand = await this.prisma.brand.findUnique({
+      where: { id: brandId },
+      select: { id: true, name: true, contentReviewModeOverride: true },
+    });
+    if (!brand) {
+      throw new NotFoundException('Brand not found');
+    }
+    return {
+      brandId: brand.id,
+      brandName: brand.name,
+      enabled: this.isUnreviewedPublishMode(brand.contentReviewModeOverride),
+    };
+  }
+
+  /**
+   * Turn auto-publish on or off for one brand. With it on, the brand's designs
+   * and products go live without review (see `evaluateBrandGate`). Guarded by
+   * contentReview.autoPublish.manage at the route; every change needs a reason
+   * and is written to the admin audit log and the brand trust history.
+   */
+  async setBrandAutoPublish(args: {
+    brandId: string;
+    adminUserId: string;
+    enabled: boolean;
+    reason: string;
+    ipAddress?: string | null;
+    userAgent?: string | null;
+  }) {
+    const reason = args.reason?.trim();
+    if (!reason) {
+      throw new BadRequestException(
+        'Give a reason for changing auto-publish.',
+      );
+    }
+    const current = await this.prisma.brand.findUnique({
+      where: { id: args.brandId },
+      select: {
+        id: true,
+        name: true,
+        contentReviewModeOverride: true,
+        contentTrustTierOverride: true,
+      },
+    });
+    if (!current) {
+      throw new NotFoundException('Brand not found');
+    }
+    const wasEnabled = this.isUnreviewedPublishMode(
+      current.contentReviewModeOverride,
+    );
+    if (wasEnabled === args.enabled) {
+      return {
+        brandId: current.id,
+        brandName: current.name,
+        enabled: wasEnabled,
+      };
+    }
+
+    const nextReviewMode = args.enabled
+      ? BrandContentReviewMode.AUTO_PUBLISH_ALLOWED
+      : null;
+    await this.prisma.brand.update({
+      where: { id: args.brandId },
+      data: { contentReviewModeOverride: nextReviewMode } as any,
+    });
+
+    await (this.prisma as any).adminAuditLog.create({
+      data: {
+        id: uuidv4(),
+        actorUserId: args.adminUserId,
+        action: 'ADMIN_BRAND_TRUST_OVERRIDE',
+        targetType: 'Brand',
+        targetId: args.brandId,
+        previousState: {
+          autoPublish: wasEnabled,
+          reviewMode: current.contentReviewModeOverride,
+        },
+        newState: {
+          autoPublish: args.enabled,
+          reviewMode: nextReviewMode,
+          reason,
+        },
+        ipAddress: args.ipAddress ?? null,
+        userAgent: args.userAgent ?? null,
+      },
+    });
+
+    await this.recordBrandTrustEvent({
+      brandId: args.brandId,
+      actorUserId: args.adminUserId,
+      eventType: args.enabled
+        ? BrandTrustEventType.TRUST_OVERRIDE_SET
+        : BrandTrustEventType.TRUST_OVERRIDE_CLEARED,
+      tier: (current.contentTrustTierOverride as BrandTrustTier) ?? null,
+      reviewMode: nextReviewMode,
+      reason,
+    });
+
+    return {
+      brandId: current.id,
+      brandName: current.name,
+      enabled: args.enabled,
+    };
   }
 
   async recordBrandTrustEvent(args: {
