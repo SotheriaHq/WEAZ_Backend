@@ -34,7 +34,7 @@ import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../auth/guard/email-verified.guard';
 import { UserTypeGuard } from '../auth/guard/user-type.guard';
 import { OptionalJwtAuthGuard } from '../auth/guard/optional-jwt-auth.guard';
-import { UserType } from '@prisma/client';
+import { CollectionStatus, UserType } from '@prisma/client';
 import { Throttle } from '@nestjs/throttler';
 import { readDeviceId } from '../view-counting/device-id';
 import { IdempotencyInterceptor } from '../common/interceptors/idempotency.interceptor';
@@ -457,8 +457,19 @@ export class StoreController {
     @Query('search') search?: string,
     @Query('includeDeleted') includeDeleted?: string,
     @Query('onlyDeleted') onlyDeleted?: string,
+    @Query('publicationStatus') publicationStatus?: string,
   ) {
     const resolvedSortBy = sortBy ?? sort;
+    // Allow-listed: an unknown value is ignored rather than passed to Prisma.
+    const requestedPublicationStatus =
+      typeof publicationStatus === 'string'
+        ? publicationStatus.trim().toUpperCase()
+        : '';
+    const resolvedPublicationStatus = (
+      Object.values(CollectionStatus) as string[]
+    ).includes(requestedPublicationStatus)
+      ? (requestedPublicationStatus as CollectionStatus)
+      : undefined;
     const resolvedOnSale =
       this.parseBoolParam(onSale) ?? this.parseBoolParam(isOnSale);
     const resolvedIsFeatured = this.parseBoolParam(isFeatured);
@@ -484,6 +495,7 @@ export class StoreController {
       search: resolveSearchQuery(q, search),
       includeDeleted: resolvedIncludeDeleted,
       onlyDeleted: resolvedOnlyDeleted,
+      publicationStatus: resolvedPublicationStatus,
       requesterId: req.user?.id,
     });
   }

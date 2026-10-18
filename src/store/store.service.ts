@@ -5264,6 +5264,8 @@ export class StoreService {
       requesterId?: string;
       includeDeleted?: boolean;
       onlyDeleted?: boolean;
+      /** Owner-only. A Studio status tab, matched on the field the tab shows. */
+      publicationStatus?: CollectionStatus;
     } = {},
   ) {
     const {
@@ -5272,6 +5274,7 @@ export class StoreService {
       cursor,
       collectionId,
       isActive,
+      publicationStatus,
       category,
       gender,
       minPrice,
@@ -5332,7 +5335,16 @@ export class StoreService {
           collections: { some: { collectionId } },
         });
       }
-      if (typeof isActive === 'boolean') {
+      /*
+        Studio's Drafts tab used to ask for `isActive=false`, but the tab shows
+        what `publicationStatus` says. A row can disagree — a DRAFT left with
+        `isActive=true` exists on SIT — and that draft flashed from the "All"
+        list, then vanished when the Drafts query excluded it. Filter on the
+        field the tab is about.
+      */
+      if (publicationStatus) {
+        where.publicationStatus = publicationStatus;
+      } else if (typeof isActive === 'boolean') {
         where.isActive = isActive;
       }
       if (onlyDeleted) {
