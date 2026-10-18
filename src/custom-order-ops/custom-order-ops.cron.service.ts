@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { CustomOrderQueueService } from 'src/custom-orders/queue/custom-order-queue.service';
 import {
   CustomOrderActorType,
   CustomOrderCheckoutStatus,
@@ -56,6 +57,7 @@ export class CustomOrderOpsCronService {
     private readonly customOrdersPaymentsService: CustomOrdersPaymentsService,
     private readonly paymentRuntimeHealthService: PaymentRuntimeHealthService,
     private readonly ledgerService: LedgerService,
+    @Optional() private readonly queue?: CustomOrderQueueService,
   ) {}
 
   @Cron(CronExpression.EVERY_MINUTE)
@@ -562,6 +564,7 @@ export class CustomOrderOpsCronService {
 
       for (const order of orders) {
         await this.prisma.$transaction(async (tx) => {
+          if (this.queue) await this.queue.lockBrand(tx, order.brandId);
           const updated = await tx.customOrder.updateMany({
             where: {
               id: order.id,
@@ -569,12 +572,18 @@ export class CustomOrderOpsCronService {
             },
             data: {
               status: CustomOrderStatus.COMPLETED,
+              lane: 'TERMINAL',
+              orderRevision: { increment: 1 },
               buyerAcceptedAt: now,
               completedAt: now,
             },
           });
           if (updated.count === 0) {
             return;
+          }
+          if (this.queue) {
+            await this.queue.drain(tx, order.brandId, now);
+            if (!(await this.queue.capacity(tx, order.brandId, now)).safetyAllowed) return;
           }
 
           await tx.customOrderTimelineEvent.create({

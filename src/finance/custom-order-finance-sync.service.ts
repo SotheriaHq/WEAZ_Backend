@@ -29,6 +29,12 @@ export type CustomOrderSettlementApplyParams = {
   currency: string;
   effectiveAt: Date;
   releaseEligibleAt: Date;
+  /**
+   * Paid, but still Pending or Up Next. Record the capture in escrow and do
+   * not create the brand's 60% or 40% rows. Those are written when the order
+   * becomes Active.
+   */
+  queueHold?: boolean;
 };
 
 /**
@@ -52,7 +58,13 @@ export class CustomOrderFinanceSyncService {
     tx: Prisma.TransactionClient,
     params: CustomOrderSettlementApplyParams,
   ) {
-    const grossAmount = this.roundMoney(Number(params.grossAmount));
+    const persisted = await tx.customOrder.findUnique({
+      where: { id: params.customOrderId },
+      select: { lane: true, queuePolicyVersion: true, activatedAt: true, cancelledAt: true, buyerPriceSummaryJson: true, jumpFeeAmount: true, brand: { select: { owner: { select: { status: true } } } } },
+    });
+    const summary = persisted?.buyerPriceSummaryJson && typeof persisted.buyerPriceSummaryJson === 'object' && !Array.isArray(persisted.buyerPriceSummaryJson) ? persisted.buyerPriceSummaryJson as Record<string, unknown> : {};
+    const captureAmount = this.roundMoney(Number(summary.grandTotal ?? params.grossAmount));
+    const grossAmount = this.roundMoney(persisted?.queuePolicyVersion ? captureAmount - Number(persisted.jumpFeeAmount) : Number(params.grossAmount));
     if (!Number.isFinite(grossAmount) || grossAmount <= 0) {
       this.logger.warn(
         `Skipping custom-order settlement for ${params.customOrderId}: invalid grossAmount=${params.grossAmount}`,
@@ -80,6 +92,37 @@ export class CustomOrderFinanceSyncService {
     const existingAllocationTypes = new Set(
       existingAllocations.map((allocation) => allocation.allocationType),
     );
+
+    // Eligibility is read from persisted state, including repair/read-triggered
+    // settlement. A caller cannot override the hold with a stale boolean.
+    const queueHold = Boolean(params.queueHold || persisted?.queuePolicyVersion && (!persisted.activatedAt || persisted.cancelledAt) || persisted?.lane === 'PENDING' || persisted?.lane === 'UP_NEXT');
+    if (queueHold) {
+      if (
+        !existingAllocationTypes.has(
+          CustomOrderLedgerAllocationType.PLACEMENT_CAPTURE,
+        )
+      ) {
+        await tx.customOrderLedgerAllocation.create({
+          data: {
+            customOrderId: params.customOrderId,
+            allocationType: CustomOrderLedgerAllocationType.PLACEMENT_CAPTURE,
+            amount: new Prisma.Decimal(captureAmount),
+            commissionRate: new Prisma.Decimal(0),
+            commissionAmount: new Prisma.Decimal(0),
+            netBrandAmount: new Prisma.Decimal(0),
+            currency: params.currency,
+            status: CustomOrderLedgerAllocationStatus.HELD,
+          },
+        });
+      }
+      await this.ledgerService.postCustomOrderPaymentReceived(tx, {
+        customOrderId: params.customOrderId,
+        totalAmount: captureAmount,
+        currency: params.currency,
+      });
+      return snapshot;
+    }
+
     const missingAllocations = [
       {
         customOrderId: params.customOrderId,
@@ -115,11 +158,11 @@ export class CustomOrderFinanceSyncService {
 
     await this.ledgerService.postCustomOrderPaymentReceived(tx, {
       customOrderId: params.customOrderId,
-      totalAmount: Number(snapshot.grossAmount),
+      totalAmount: captureAmount,
       currency: params.currency,
     });
 
-    if (this.shouldReleaseCustomOrderUpfront(snapshot)) {
+    if (this.shouldReleaseCustomOrderUpfront(snapshot) && (!persisted?.brand || persisted.brand.owner.status === 'ACTIVE')) {
       await tx.customOrderLedgerAllocation.updateMany({
         where: {
           customOrderId: params.customOrderId,
@@ -185,6 +228,8 @@ export class CustomOrderFinanceSyncService {
       where: {
         id: { in: normalized },
         paymentStatus: PaymentStatus.PAID,
+        cancelledAt: null,
+        ...this.needsSettlementWhere(),
       },
       select: {
         id: true,
@@ -233,6 +278,7 @@ export class CustomOrderFinanceSyncService {
       where: {
         ...(params.brandId ? { brandId: params.brandId } : {}),
         paymentStatus: PaymentStatus.PAID,
+        cancelledAt: null,
         ledgerAllocations: { none: {} },
       },
       orderBy: { createdAt: 'asc' },
@@ -259,6 +305,8 @@ export class CustomOrderFinanceSyncService {
       where: {
         ...(params.brandId ? { brandId: params.brandId } : {}),
         paymentStatus: PaymentStatus.PAID,
+        cancelledAt: null,
+        ...this.needsSettlementWhere(),
         id: already.size ? { notIn: [...already] } : undefined,
         ledgerAllocations: { some: {} },
       },
@@ -294,6 +342,16 @@ export class CustomOrderFinanceSyncService {
       .map(({ ledgerAllocations: _ignored, ...order }) => order);
 
     return [...withoutAllocations, ...partialNeeds];
+  }
+
+  private needsSettlementWhere(): Prisma.CustomOrderWhereInput {
+    return { OR: [
+      { lane: { in: ['PENDING', 'UP_NEXT'] }, ledgerAllocations: { none: { allocationType: 'PLACEMENT_CAPTURE' } } },
+      { AND: [
+        { OR: [{ queuePolicyVersion: null }, { activatedAt: { not: null } }] },
+        { OR: [{ ledgerAllocations: { none: { allocationType: 'BRAND_ACCEPTANCE_PORTION' } } }, { ledgerAllocations: { none: { allocationType: 'FINAL_COMPLETION_PORTION' } } }] },
+      ] },
+    ] };
   }
 
   private async settleCandidates(

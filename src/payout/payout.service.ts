@@ -508,6 +508,8 @@ export class PayoutService {
       activeEscrowHolds,
       queuedCustomAllocations,
       debt,
+      queuedCaptures,
+      pendingRefunds,
     ] = await Promise.all([
       this.prisma.order.aggregate({
         where: { brandId, paymentStatus: 'PAID' },
@@ -532,6 +534,8 @@ export class PayoutService {
         },
       }),
       this.brandBalanceService.getDebtSnapshot(brandId),
+      this.prisma.customOrderLedgerAllocation.aggregate({ where: { customOrder: { brandId, lane: { in: ['PENDING', 'UP_NEXT'] } }, allocationType: 'PLACEMENT_CAPTURE', status: 'HELD' }, _sum: { amount: true }, _count: true }),
+      this.prisma.customOrderQueueRefund.aggregate({ where: { customOrder: { brandId }, status: { not: 'SETTLED' } }, _sum: { amount: true } }),
     ]);
 
     return {
@@ -545,6 +549,9 @@ export class PayoutService {
         (orderStats._count?.id ?? 0) + (customOrderStats._count?.id ?? 0),
       activeEscrowHolds,
       queuedCustomAllocations,
+      queuedCustomHeldAmount: Number(queuedCaptures._sum.amount ?? 0),
+      queuedCustomOrderCount: queuedCaptures._count,
+      pendingRefundAmount: Number(pendingRefunds._sum.amount ?? 0),
       negativeBalance: availableBalance < 0,
       /*
         The debt, as a figure a brand can be shown and argue with.
@@ -938,7 +945,7 @@ export class PayoutService {
     const safeLimit = Math.min(100, Math.max(1, Number(limit) || 20));
     const skip = (safePage - 1) * safeLimit;
 
-    const [standardHolds, customHeldAllocations, customAcceptanceAllocations] =
+    const [standardHolds, customHeldAllocations, customAcceptanceAllocations, queueCaptures] =
       await Promise.all([
         this.prisma.escrowHold.findMany({
           where: {
@@ -1022,6 +1029,7 @@ export class PayoutService {
             status: true,
           },
         }),
+        this.prisma.customOrderLedgerAllocation.findMany({ where: { customOrder: { brandId, lane: { in: ['PENDING', 'UP_NEXT'] } }, allocationType: 'PLACEMENT_CAPTURE', status: 'HELD' }, orderBy: { createdAt: 'desc' }, take: Math.min(1000, skip + safeLimit), include: { customOrder: { select: { lane: true, jumpFeeAmount: true, sourceTitleSnapshot: true, buyer: { select: { userProfile: { select: canonicalUserProfileSelect }, username: true } } } } } }),
       ]);
 
     const acceptanceAllocationByCustomOrderId = new Map<
@@ -1038,6 +1046,16 @@ export class PayoutService {
     }
 
     const items = [
+      ...queueCaptures.map(allocation => ({
+        id: allocation.id, holdType: 'CUSTOM_ORDER', referenceId: allocation.customOrderId,
+        title: allocation.customOrder.sourceTitleSnapshot || 'Custom order',
+        counterparty: allocation.customOrder.buyer.username || 'Buyer', currency: allocation.currency,
+        grossAmount: Number(allocation.amount), commissionAmount: 0, netBrandAmount: 0,
+        releasedGrossAmount: 0, releasedNetAmount: 0, heldGrossAmount: Number(allocation.amount), heldNetAmount: 0,
+        status: 'HELD', nextReleaseAt: null, releaseCondition: 'QUEUE_ACTIVATION', frozenReason: null,
+        canRequestManualRelease: false, createdAt: allocation.createdAt,
+        queueLane: allocation.customOrder.lane, queueJumpHeldAmount: Number(allocation.customOrder.jumpFeeAmount),
+      })),
       ...standardHolds.map((hold) => ({
         id: hold.id,
         holdType: 'STANDARD_ORDER',

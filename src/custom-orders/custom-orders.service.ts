@@ -28,6 +28,7 @@ import {
 } from '@prisma/client';
 import { createHash, randomUUID } from 'crypto';
 import { validate as isUuid } from 'uuid';
+import { CustomOrderQueueService } from './queue/custom-order-queue.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import {
   BRAND_ORDER_VERIFICATION_MESSAGE,
@@ -394,6 +395,7 @@ function stableStringify(value: unknown): string {
 }
 
 type CustomOrderRequestSnapshot = {
+  queueJumpSelected: boolean;
   measurementValues: Record<string, number>;
   rushSelected: boolean;
   shippingAddress: Record<string, unknown> | null;
@@ -436,6 +438,8 @@ type CheckoutBagLine = {
   rushSelected: boolean;
   measurementCount: number;
   buyerPriceSummary: {
+    queueJumpFee: number;
+    vatAmount: number;
     fabricCharge: number;
     subtotal: number;
     shippingFee: number;
@@ -576,6 +580,8 @@ export class CustomOrdersService {
     private readonly reviewEligibilityService?: ReviewEligibilityService,
     @Optional()
     private readonly notifications?: NotificationsService,
+    @Optional()
+    private readonly queue?: CustomOrderQueueService,
   ) {}
 
   private async notifyBuyerCustomOrderBagged(args: {
@@ -684,6 +690,8 @@ export class CustomOrdersService {
     );
     this.assertCustomOrderDuplicateAllowsNewCustomFlow(duplicateContext);
 
+    if (this.queue) await this.queue.assertIntake(userId, configuration.brandId);
+
     const requiredMeasurementKeys = await this.resolveRequiredMeasurementKeys(
       configuration.requiredMeasurementKeys,
       configuration.requiredFreeformPointIds,
@@ -763,12 +771,19 @@ export class CustomOrdersService {
         rule.isFallback === preview.matchedRule.isFallback,
     );
 
+    const queueSummary = this.queue ? await this.queue.summary(configuration.brandId, userId) : null;
+    if (dto.queueJumpSelected && !queueSummary?.jumpAvailable) throw new BadRequestException('CUSTOM_ORDER_QUEUE_JUMP_UNAVAILABLE');
+    const jumpFee = dto.queueJumpSelected ? Math.round(Number(preview.buyerPriceSummary.outfitTotal) * 20) / 100 : 0;
+    preview.buyerPriceSummary.queueJumpFee = jumpFee.toFixed(2);
+    preview.buyerPriceSummary.grandTotal = (Number(preview.buyerPriceSummary.grandTotal) + jumpFee).toFixed(2);
+
     const requestSnapshot = this.buildCheckoutIntentRequestSnapshot(
       submittedMeasurementValues,
       dto.rushSelected,
       dto.shippingAddress,
       matchedRuleRecord?.id ?? null,
       chartEvaluation,
+      Boolean(dto.queueJumpSelected),
     );
     const previewHash = createHash('sha256')
       .update(
@@ -818,7 +833,11 @@ export class CustomOrdersService {
         configurationId: configuration.id,
         configurationVersionId: configuration.version.id,
         currency: configuration.brand.currency,
+        brandId: configuration.brandId,
+        queueSummary,
         buyerPriceSummary: {
+          queueJumpFee: jumpFee,
+          vatAmount: Number(preview.buyerPriceSummary.vatAmount ?? 0),
           fabricCharge: Number(preview.buyerPriceSummary.fabricCharge),
           subtotal: Number(preview.buyerPriceSummary.outfitTotal),
           shippingFee: Number(preview.buyerPriceSummary.delivery),
@@ -917,6 +936,7 @@ export class CustomOrdersService {
       dto.shippingAddress,
       intentSnapshot.matchedFabricRuleId,
       intentSnapshot.chartLock,
+      Boolean(dto.queueJumpSelected),
     );
     if (
       stableStringify(intentSnapshot) !== stableStringify(submittedSnapshot)
@@ -945,6 +965,7 @@ export class CustomOrdersService {
       intent.configurationId,
       intent.configurationVersionId,
     );
+    if (this.queue) await this.queue.assertIntake(userId, configuration.configuration.brandId);
     if (
       !isBrandStoreVerified(configuration.configuration.brand?.verificationStatus)
     ) {
@@ -1472,7 +1493,7 @@ export class CustomOrdersService {
     return {
       statusCode: 200,
       message: 'Custom order retrieved',
-      data: this.mapDetail(hydratedOrder, { sourceMediaUrls }),
+      data: { ...this.mapDetail(hydratedOrder, { sourceMediaUrls }), queue: this.queue ? (await this.queue.present([customOrderId]))[customOrderId] : undefined },
     };
   }
 
@@ -1880,6 +1901,11 @@ export class CustomOrdersService {
 
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 30 * 60 * 1000);
+    const queueSummary = this.queue ? await this.queue.summary(configuration.configuration.brandId, userId) : null;
+    if (intentSnapshot.queueJumpSelected && !queueSummary?.jumpAvailable) throw new BadRequestException('CUSTOM_ORDER_QUEUE_JUMP_UNAVAILABLE');
+    const jumpFee = intentSnapshot.queueJumpSelected ? Math.round(Number(preview.buyerPriceSummary.outfitTotal) * 20) / 100 : 0;
+    preview.buyerPriceSummary.queueJumpFee = jumpFee.toFixed(2);
+    preview.buyerPriceSummary.grandTotal = (Number(preview.buyerPriceSummary.grandTotal) + jumpFee).toFixed(2);
     const requestSnapshot = this.buildCheckoutIntentRequestSnapshot(
       intentSnapshot.measurementValues,
       intentSnapshot.rushSelected,
@@ -1895,6 +1921,7 @@ export class CustomOrdersService {
         conversionGuidance: intentSnapshot.chartLock.conversionGuidance,
         quoteStatus: intentSnapshot.chartLock.quoteStatus,
       },
+      intentSnapshot.queueJumpSelected,
     );
 
     const finalSnapshot =
@@ -1954,6 +1981,8 @@ export class CustomOrdersService {
               configurationVersionId: configuration.version.id,
               requestSnapshotJson: finalSnapshot as Prisma.InputJsonValue,
               buyerPriceSummaryJson: {
+                queueJumpFee: jumpFee,
+                vatAmount: 0,
                 fabricCharge: Number(preview.buyerPriceSummary.fabricCharge),
                 subtotal: Number(preview.buyerPriceSummary.outfitTotal),
                 shippingFee: Number(preview.buyerPriceSummary.delivery),
@@ -1971,6 +2000,8 @@ export class CustomOrdersService {
               previewHash,
               requestSnapshotJson: finalSnapshot as Prisma.InputJsonValue,
               buyerPriceSummaryJson: {
+                queueJumpFee: jumpFee,
+                vatAmount: 0,
                 fabricCharge: Number(preview.buyerPriceSummary.fabricCharge),
                 subtotal: Number(preview.buyerPriceSummary.outfitTotal),
                 shippingFee: Number(preview.buyerPriceSummary.delivery),
@@ -2050,11 +2081,16 @@ export class CustomOrdersService {
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
-      const confirmedAt = new Date();
+      const confirmedAt = this.queue ? await this.queue.lockBrand(tx, order.brandId) : new Date();
+      const current = await tx.customOrder.findUniqueOrThrow({ where: { id: customOrderId } });
+      if (current.status !== CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION) throw new BadRequestException('CUSTOM_ORDER_INVALID_STATE');
+      const canRelease = !this.queue || (await this.queue.capacity(tx, order.brandId, confirmedAt)).safetyAllowed;
       const next = await tx.customOrder.update({
         where: { id: customOrderId },
         data: {
           status: CustomOrderStatus.COMPLETED,
+          lane: 'TERMINAL',
+          orderRevision: { increment: 1 },
           buyerAcceptedAt: confirmedAt,
           completedAt: confirmedAt,
           timelineEvents: {
@@ -2069,7 +2105,7 @@ export class CustomOrdersService {
         include: this.detailIncludes,
       });
 
-      await tx.customOrderLedgerAllocation.updateMany({
+      if (canRelease) await tx.customOrderLedgerAllocation.updateMany({
         where: {
           customOrderId,
           allocationType:
@@ -2096,7 +2132,7 @@ export class CustomOrdersService {
         },
       });
 
-      if (finalAllocation) {
+      if (finalAllocation && canRelease) {
         await this.ledgerService.postCustomOrderFinalRelease(tx, {
           customOrderId,
           brandId: order.brandId,
@@ -2107,6 +2143,7 @@ export class CustomOrdersService {
         });
       }
 
+      if (this.queue) await this.queue.drain(tx, order.brandId, confirmedAt);
       return next;
     });
 
@@ -3134,7 +3171,7 @@ export class CustomOrdersService {
     return {
       statusCode: 200,
       message: 'Custom order retrieved',
-      data: this.mapDetail(hydratedOrder, { sourceMediaUrls }),
+      data: { ...this.mapDetail(hydratedOrder, { sourceMediaUrls }), queue: this.queue ? (await this.queue.present([customOrderId]))[customOrderId] : undefined },
     };
   }
 
@@ -3617,11 +3654,23 @@ export class CustomOrdersService {
       throw new BadRequestException('CUSTOM_ORDER_INVALID_STATE_TRANSITION');
     }
 
-    const now = new Date();
-    const updated = await this.prisma.customOrder.update({
+    const updated = await this.prisma.$transaction(async tx => {
+      const now = this.queue ? await this.queue.lockBrand(tx, resolvedBrandId) : new Date();
+      const current = await tx.customOrder.findUniqueOrThrow({ where: { id: customOrderId } });
+      if (!this.isLifecycleTransitionAllowed(current.status, dto.status)) throw new BadRequestException('CUSTOM_ORDER_INVALID_STATE_TRANSITION');
+      const dispatching = (dto.status === CustomOrderStatus.IN_TRANSIT || dto.status === CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION) && current.lane !== 'IN_DELIVERY';
+      if (this.queue && dispatching) {
+        const cap = await this.queue.capacity(tx, resolvedBrandId, now);
+        if (!cap.safetyAllowed) throw new BadRequestException('CUSTOM_ORDER_SAFETY_HOLD');
+        const delivering = await tx.customOrder.count({ where: { brandId: resolvedBrandId, lane: 'IN_DELIVERY' } });
+        if (cap.inDelivery !== null && delivering >= cap.inDelivery) throw new BadRequestException('CUSTOM_ORDER_DELIVERY_CAP_REACHED');
+      }
+      const next = await tx.customOrder.update({
       where: { id: customOrderId },
       data: {
         status: dto.status,
+        lane: dto.status === CustomOrderStatus.CLOSED ? 'TERMINAL' : dto.status === CustomOrderStatus.IN_TRANSIT || dto.status === CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION ? 'IN_DELIVERY' : current.lane,
+        orderRevision: { increment: 1 },
         lastBrandProgressUpdateAt: now,
         deliveredAt:
           dto.status === CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION
@@ -3650,6 +3699,9 @@ export class CustomOrdersService {
         },
       },
       include: this.detailIncludes,
+      });
+      if (this.queue) await this.queue.drain(tx, resolvedBrandId, now);
+      return next;
     });
 
     if (dto.status === CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION) {
@@ -3968,6 +4020,8 @@ export class CustomOrdersService {
     const searchQuery = query.q?.trim();
     const finalWhere: Prisma.CustomOrderWhereInput = {
       ...where,
+      ...(query.queueLane ? { lane: query.queueLane } : {}),
+      ...(query.cancelled === true ? { cancelledAt: { not: null } } : query.cancelled === false ? { cancelledAt: null } : {}),
       ...(query.status ? { status: query.status } : {}),
       ...(query.stage ? { currentProgressStage: query.stage } : {}),
       ...(searchQuery
@@ -3991,24 +4045,39 @@ export class CustomOrdersService {
         : {}),
     };
 
+    let orderedIds: string[] | null = null;
+    if (query.sort === 'queue') {
+      const scope = typeof where.buyerId === 'string' ? Prisma.sql`o."buyerId" = ${where.buyerId}::uuid` : typeof where.brandId === 'string' ? Prisma.sql`o."brandId" = ${where.brandId}::uuid` : null;
+      if (!scope) throw new BadRequestException('Custom-order list requires an account scope');
+      const filters = [scope];
+      if (query.queueLane) filters.push(Prisma.sql`o."lane" = ${query.queueLane}::"CustomOrderLane"`);
+      if (query.status) filters.push(Prisma.sql`o."status" = ${query.status}::"CustomOrderStatus"`);
+      if (query.stage) filters.push(Prisma.sql`o."currentProgressStage" = ${query.stage}::"CustomOrderProgressStage"`);
+      if (query.cancelled !== undefined) filters.push(query.cancelled ? Prisma.sql`o."cancelledAt" IS NOT NULL` : Prisma.sql`o."cancelledAt" IS NULL`);
+      if (searchQuery) filters.push(Prisma.sql`(o."id"::text = ${searchQuery} OR position(lower(${searchQuery}) in lower(o."sourceTitleSnapshot")) > 0 OR position(lower(${searchQuery}) in lower(o."sourceBrandNameSnapshot")) > 0)`);
+      const rows = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`SELECT o."id" FROM "CustomOrder" o WHERE ${Prisma.join(filters, ' AND ')} ORDER BY CASE o."lane" WHEN 'UP_NEXT' THEN 0 WHEN 'PENDING' THEN 1 WHEN 'ACTIVE' THEN 2 WHEN 'IN_DELIVERY' THEN 3 WHEN 'TERMINAL' THEN 4 ELSE 5 END, o."queuePriority" DESC, o."queuePosition" ASC NULLS LAST, o."createdAt" ASC, o."id" ASC LIMIT ${take} OFFSET ${(page - 1) * take}`);
+      orderedIds = rows.map(row => row.id);
+    }
     const [items, total] = await this.prisma.$transaction([
       this.prisma.customOrder.findMany({
-        where: finalWhere,
-        orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * take,
+        where: orderedIds ? { AND: [finalWhere, { id: { in: orderedIds } }] } : finalWhere,
+        orderBy: { createdAt: query.sort === 'oldest' ? 'asc' : 'desc' },
+        ...(orderedIds ? {} : { skip: (page - 1) * take }),
         take,
       }),
       this.prisma.customOrder.count({ where: finalWhere }),
     ]);
 
-    const hydratedItems = await this.hydrateListOrderSnapshots(items);
+    const orderedItems = orderedIds ? items.sort((a, b) => orderedIds!.indexOf(a.id) - orderedIds!.indexOf(b.id)) : items;
+    const hydratedItems = await this.hydrateListOrderSnapshots(orderedItems);
     const visibleItems = this.collapseVisibleDuplicateOrders(hydratedItems);
+    const queuePresentations = this.queue ? await this.queue.present(visibleItems.map(item => item.id)) : {};
 
     return {
       statusCode: 200,
       message: 'Custom orders retrieved',
       data: {
-        items: visibleItems.map((item) => this.mapListItem(item)),
+        items: visibleItems.map((item) => ({ ...this.mapListItem(item), queue: queuePresentations[item.id] })),
         page,
         limit: take,
         total,
@@ -4425,8 +4494,10 @@ export class CustomOrdersService {
     shippingAddress: Record<string, unknown> | null | undefined,
     matchedFabricRuleId: string | null,
     chartLock?: CustomOrderRequestSnapshot['chartLock'],
+    queueJumpSelected = false,
   ): CustomOrderRequestSnapshot {
     return {
+      queueJumpSelected,
       measurementValues,
       rushSelected: Boolean(rushSelected),
       shippingAddress: shippingAddress ?? null,
@@ -4511,6 +4582,7 @@ export class CustomOrdersService {
         ? value.matchedFabricRuleId
         : null,
       this.normalizeChartLock(value.chartLock),
+      Boolean(value.queueJumpSelected),
     );
   }
 
@@ -4692,6 +4764,8 @@ export class CustomOrdersService {
       rushSelected: requestSnapshot.rushSelected,
       measurementCount: Object.keys(requestSnapshot.measurementValues).length,
       buyerPriceSummary: {
+        queueJumpFee: Number(rawSummary.queueJumpFee ?? 0),
+        vatAmount: Number(rawSummary.vatAmount ?? rawSummary.vat ?? 0),
         fabricCharge: Number.isFinite(fabricCharge) ? fabricCharge : 0,
         subtotal: Number.isFinite(subtotal) ? subtotal : 0,
         shippingFee: Number.isFinite(shippingFee) ? shippingFee : 0,
@@ -5945,6 +6019,8 @@ export class CustomOrdersService {
         return {
           fabricCharge,
           subtotal,
+          queueJumpFee: Number(raw.queueJumpFee ?? 0),
+          vatAmount: Number(raw.vatAmount ?? raw.vat ?? 0),
           shippingFee: Number(raw.shippingFee ?? raw.delivery ?? 0),
           rushFee,
           productionCharge,

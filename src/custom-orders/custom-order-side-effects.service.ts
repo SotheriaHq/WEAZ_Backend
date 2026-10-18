@@ -155,6 +155,7 @@ export class CustomOrderSideEffectsService {
 
   private async dispatchNotificationEvent(event: {
     id: string;
+    customOrderId: string;
     recipientId: string;
     actorId: string | null;
     notificationType: NotificationType;
@@ -163,6 +164,14 @@ export class CustomOrderSideEffectsService {
     dedupeMs: number | null;
     status: CustomOrderOutboxStatus;
   }): Promise<boolean> {
+    const reminder = this.asRecord(event.payloadJson);
+    if (String(reminder?.stage ?? '').startsWith('QUEUE_EXPIRY_')) {
+      const current = await this.prisma.customOrder.findUnique({ where: { id: event.customOrderId }, select: { lane: true, queueExpiresAt: true } });
+      if (!current || !['PENDING', 'UP_NEXT'].includes(current.lane ?? '') || current.queueExpiresAt?.toISOString() !== reminder?.note || current.queueExpiresAt <= new Date()) {
+        await this.prisma.customOrderNotificationOutbox.updateMany({ where: { id: event.id, status: event.status }, data: { status: CustomOrderOutboxStatus.SKIPPED } });
+        return false;
+      }
+    }
     const claimed = await this.prisma.customOrderNotificationOutbox.updateMany({
       where: {
         id: event.id,

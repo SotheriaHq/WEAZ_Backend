@@ -23,6 +23,7 @@ import { FinancialDocumentsService } from 'src/finance/financial-documents.servi
 import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-sync.service';
 import { CustomOrderThreadBootstrapService } from 'src/messaging/custom-order-thread-bootstrap.service';
 import { VerifyCustomOrderPaymentDto } from './dto/custom-orders.dto';
+import { CustomOrderQueueService } from './queue/custom-order-queue.service';
 import {
   canonicalUserProfileSelect,
   resolveRequiredProfileField,
@@ -44,6 +45,7 @@ export class CustomOrdersPaymentsService {
     private readonly financialDocumentsService: FinancialDocumentsService,
     private readonly customOrderThreadBootstrap: CustomOrderThreadBootstrapService,
     private readonly customOrderFinanceSyncService: CustomOrderFinanceSyncService,
+    private readonly queue: CustomOrderQueueService,
   ) {}
 
   private buyerDisplayName(buyer: any): string {
@@ -803,7 +805,8 @@ export class CustomOrdersPaymentsService {
         return null;
       }
 
-      await tx.$queryRaw`SELECT "id" FROM "CustomOrder" WHERE "id" = ${resolvedCustomOrderId}::uuid FOR UPDATE`;
+      const queueBrand = await tx.customOrder.findUnique({ where: { id: resolvedCustomOrderId }, select: { brandId: true } });
+      if (queueBrand) await this.queue.lockBrand(tx, queueBrand.brandId);
 
       const order = await tx.customOrder.findUnique({
         where: { id: resolvedCustomOrderId },
@@ -826,6 +829,9 @@ export class CustomOrdersPaymentsService {
           currentProgressStage: true,
           currentProgressStageEnteredAt: true,
           lastBrandProgressUpdateAt: true,
+          queuePolicyVersion: true,
+          activatedAt: true,
+          cancelledAt: true,
           buyer: {
             select: {
               userProfile: { select: canonicalUserProfileSelect },
@@ -837,6 +843,17 @@ export class CustomOrdersPaymentsService {
       });
 
       if (!order) {
+        return null;
+      }
+
+      // A replay repairs finance without restarting production or reviving a cancelled order.
+      if (order.queuePolicyVersion) {
+        if (!order.cancelledAt) await this.applyPaidCustomOrderSettlement(tx, {
+          customOrderId: order.id, brandId: order.brandId,
+          grossAmount: Number((order.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ?? 0),
+          currency: order.currency, effectiveAt: order.createdAt,
+          releaseEligibleAt: order.activatedAt ?? order.createdAt,
+        });
         return null;
       }
 
@@ -1092,6 +1109,7 @@ export class CustomOrdersPaymentsService {
       releaseEligibleAt: Date;
     },
   ) {
+    await this.queue.admitPaid(tx, params.customOrderId);
     return this.customOrderFinanceSyncService.applyPaidSettlement(tx, params);
   }
 

@@ -1,8 +1,9 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   CustomOrderExtensionResponseStatus,
   CustomOrderExtensionTargetType,
   CustomOrderIssueType,
+  CustomOrderLane,
   CustomOrderProgressStage,
   CustomOrderStatus,
 } from '@prisma/client';
@@ -10,6 +11,7 @@ import {
   IsBoolean,
   IsEnum,
   IsInt,
+  IsIn,
   IsObject,
   IsOptional,
   IsString,
@@ -34,6 +36,9 @@ export type CustomOrderResolverPolicy =
   | 'WEIGHTED_AVERAGE_TO_NEAREST_BAND';
 
 export class CustomOrderPricePreviewDto {
+  @IsOptional()
+  @IsBoolean()
+  queueJumpSelected?: boolean;
   @IsUUID()
   configurationId: string;
 
@@ -71,6 +76,9 @@ export class CustomOrderPricePreviewDto {
 }
 
 export class CreateCustomOrderDto {
+  @IsOptional()
+  @IsBoolean()
+  queueJumpSelected?: boolean;
   @IsUUID()
   checkoutIntentId: string;
 
@@ -281,6 +289,17 @@ export class UpdateCustomOrderLifecycleStatusDto {
 }
 
 export class QueryCustomOrdersDto {
+  @IsOptional()
+  @IsIn(['queue', 'newest', 'oldest'])
+  sort?: 'queue' | 'newest' | 'oldest';
+  @IsOptional()
+  @Transform(({ value }) => value === undefined ? undefined : value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  cancelled?: boolean;
+
+  @IsOptional()
+  @IsEnum(CustomOrderLane)
+  queueLane?: CustomOrderLane;
   @IsOptional()
   @Type(() => Number)
   @IsInt()

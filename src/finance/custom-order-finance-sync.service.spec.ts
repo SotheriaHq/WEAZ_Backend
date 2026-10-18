@@ -19,6 +19,7 @@ describe('CustomOrderFinanceSyncService', () => {
       },
       $transaction: jest.fn(async (fn: (tx: any) => Promise<unknown>) => {
         const tx = {
+          customOrder: { findUnique: jest.fn().mockResolvedValue(null) },
           customOrderLedgerAllocation: {
             findMany: jest.fn().mockResolvedValue([]),
             createMany: jest.fn().mockResolvedValue({ count: 2 }),
@@ -95,6 +96,7 @@ describe('CustomOrderFinanceSyncService', () => {
 
   it('applies paid settlement with allocations and immediate release', async () => {
     const tx = {
+      customOrder: { findUnique: jest.fn().mockResolvedValue(null) },
       customOrderLedgerAllocation: {
         findMany: jest.fn().mockResolvedValue([]),
         createMany: jest.fn().mockResolvedValue({ count: 2 }),
@@ -136,6 +138,7 @@ describe('CustomOrderFinanceSyncService', () => {
 
   it('skips invalid gross amounts', async () => {
     const tx = {
+      customOrder: { findUnique: jest.fn().mockResolvedValue(null) },
       customOrderLedgerAllocation: {
         findMany: jest.fn(),
         createMany: jest.fn(),
@@ -174,5 +177,18 @@ describe('CustomOrderFinanceSyncService', () => {
     const repaired = await service.ensureSettlementsForBrand('brand_1', 10);
     expect(repaired).toBe(1);
     expect(prisma.$transaction).toHaveBeenCalled();
+  });
+
+  it.each(['PENDING', 'UP_NEXT'])('holds a persisted %s order even when a finance repair caller omits the hold flag', async lane => {
+    const tx = {
+      customOrder: { findUnique: jest.fn().mockResolvedValue({ lane, queuePolicyVersion: 1, activatedAt: null, cancelledAt: null, buyerPriceSummaryJson: { grandTotal: 1200 }, jumpFeeAmount: decimal(200) }) },
+      customOrderLedgerAllocation: { findMany: jest.fn().mockResolvedValue([]), create: jest.fn(), createMany: jest.fn(), updateMany: jest.fn() },
+    };
+    await service.applyPaidSettlement(tx as any, { customOrderId: 'co_waiting', brandId: 'brand_1', grossAmount: 1200, currency: 'NGN', effectiveAt: new Date(), releaseEligibleAt: new Date() });
+    expect(tx.customOrderLedgerAllocation.create).toHaveBeenCalledWith({ data: expect.objectContaining({ allocationType: 'PLACEMENT_CAPTURE', status: 'HELD', amount: decimal(1200) }) });
+    expect(tx.customOrderLedgerAllocation.createMany).not.toHaveBeenCalled();
+    expect(tx.customOrderLedgerAllocation.updateMany).not.toHaveBeenCalled();
+    expect(ledgerService.postCustomOrderImmediateRelease).not.toHaveBeenCalled();
+    expect(settlementCalculatorService.calculate).toHaveBeenCalledWith(expect.objectContaining({ grossAmount: 1000 }));
   });
 });

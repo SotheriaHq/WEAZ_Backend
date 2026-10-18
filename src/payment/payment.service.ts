@@ -49,6 +49,9 @@ import { v4 as uuidv4 } from 'uuid';
 import { FxRateService } from './fx-rate.service';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-sync.service';
+import { CustomOrderQueueService } from 'src/custom-orders/queue/custom-order-queue.service';
+import { CustomOrderQueueRefundsService } from 'src/custom-orders/queue/custom-order-queue-refunds.service';
+import { SubscriptionsService } from 'src/subscriptions/subscriptions.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import {
   WebhookEventsQueueService,
@@ -326,6 +329,12 @@ export class PaymentService implements OnModuleInit {
     private readonly monitoring?: MonitoringService,
     @Optional()
     private readonly legalService?: LegalService,
+    @Optional()
+    private readonly customOrderQueue?: CustomOrderQueueService,
+    @Optional()
+    private readonly subscriptions?: SubscriptionsService,
+    @Optional()
+    private readonly queueRefunds?: CustomOrderQueueRefundsService,
   ) {}
 
   onModuleInit(): void {
@@ -553,6 +562,12 @@ export class PaymentService implements OnModuleInit {
 
         const customLineDrafts = customLineResult.lines;
         const blockedCustomLines = customLineResult.blocked;
+        if (customLineDrafts.length) {
+          if (!this.customOrderQueue) throw new BadRequestException('Custom-order queue is unavailable');
+          const intents = await this.prisma.customOrderCheckoutIntent.findMany({ where: { id: { in: customLineDrafts.map(line => line.checkoutIntentId) }, buyerId: userId }, select: { configurationId: true } });
+          const configurations = await this.prisma.customOrderConfiguration.findMany({ where: { id: { in: intents.map(intent => intent.configurationId) } }, select: { brandId: true } });
+          for (const brandId of new Set(configurations.map(configuration => configuration.brandId))) await this.customOrderQueue.assertIntake(userId, brandId);
+        }
 
         if (standardLineDrafts.length === 0 && customLineDrafts.length === 0) {
           throw new BadRequestException(
@@ -2375,7 +2390,15 @@ export class PaymentService implements OnModuleInit {
       return null;
     }
 
+    // These handlers run only after signature verification. Their references
+    // belong to separate durable records, never a whole checkout refund.
+    const eventType = this.extractWebhookEvent(normalizedGateway, payload);
+    if ((normalizedGateway === 'PAYSTACK' || normalizedGateway === 'FLUTTERWAVE') && this.queueRefunds && await this.queueRefunds.handleWebhook(normalizedGateway, payload)) return null;
     const reference = this.extractWebhookReference(normalizedGateway, payload);
+    if (normalizedGateway === 'PAYSTACK' && reference?.startsWith('wzsub-') && eventType === 'charge.success' && this.subscriptions) {
+      await this.subscriptions.handleProviderCharge(reference);
+      return null;
+    }
     if (!reference) {
       await this.recordWebhookIngressRejection({
         provider: normalizedGateway,
@@ -2392,6 +2415,14 @@ export class PaymentService implements OnModuleInit {
     const attempt = await this.prisma.paymentAttempt.findUnique({
       where: { reference },
     });
+
+    if (attempt && String(eventType).toLowerCase().includes('refund')) {
+      const queuedCapture = await this.prisma.customOrder.findFirst({ where: { paymentReference: reference, queuePolicyVersion: { not: null } }, select: { id: true } });
+      if (queuedCapture) {
+        this.logger.warn(`Refund webhook for queued capture ${attempt.id} requires per-order reconciliation`);
+        return null;
+      }
+    }
 
     if (!attempt) {
       await this.recordWebhookIngressRejection({
@@ -9007,6 +9038,9 @@ export class PaymentService implements OnModuleInit {
           versions.map((version) => [version.id, version]),
         );
 
+        if (customPendingLines.length && !this.customOrderQueue) throw new Error('Custom-order queue module is unavailable');
+        for (const brandId of [...new Set(configurations.map(configuration => configuration.brandId))].sort()) await this.customOrderQueue!.lockBrand(tx, brandId);
+
         for (const line of customPendingLines) {
           const checkoutIntentId = String(line.checkoutIntentId ?? '').trim();
           if (!checkoutIntentId) {
@@ -9088,6 +9122,8 @@ export class PaymentService implements OnModuleInit {
           }
 
           existingOrderByIntentId.set(checkoutIntentId, customOrderId);
+          if (!this.customOrderQueue) throw new Error('Custom-order queue module is unavailable');
+          await this.customOrderQueue.admitPaid(tx, customOrderId);
 
           await tx.checkoutSessionLine.update({
             where: { id: line.id },

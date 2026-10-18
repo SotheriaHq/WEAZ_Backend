@@ -34,6 +34,7 @@ import { CustomOrderConfigurationsModule } from './custom-order-configurations/c
 import { CustomOrdersModule } from './custom-orders/custom-orders.module';
 import { CustomOrderAdminModule } from './custom-order-admin/custom-order-admin.module';
 import { CustomOrderOpsModule } from './custom-order-ops/custom-order-ops.module';
+import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { MessagingModule } from './messaging/messaging.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { SizingModule } from './sizing/sizing.module';
@@ -107,6 +108,7 @@ const isHardProduction =
     CustomOrdersModule,
     CustomOrderAdminModule,
     CustomOrderOpsModule,
+    SubscriptionsModule,
     MessagingModule,
     WebhooksModule,
     SizingModule,

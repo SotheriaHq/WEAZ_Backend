@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   BrandBalanceAdjustmentType,
@@ -15,6 +16,7 @@ import {
 import { BrandBalanceService } from 'src/finance/brand-balance.service';
 import { LedgerService } from 'src/finance/ledger.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { CustomOrderQueueService } from './queue/custom-order-queue.service';
 
 interface InitiateCustomOrderRefundParams {
   customOrderId: string;
@@ -41,6 +43,7 @@ export class CustomOrderRefundService {
     private readonly prisma: PrismaService,
     private readonly ledgerService: LedgerService,
     private readonly brandBalance: BrandBalanceService,
+    @Optional() private readonly queue?: CustomOrderQueueService,
   ) {}
 
   private async executeGatewayRefundIfNeeded(attempt: RefundAttemptSnapshot) {
@@ -115,11 +118,19 @@ export class CustomOrderRefundService {
         currency: true,
         paymentReference: true,
         paymentStatus: true,
+        queuePolicyVersion: true,
+        activatedAt: true,
       },
     });
 
     if (!order) {
       throw new NotFoundException('Custom order not found');
+    }
+
+    if (order.queuePolicyVersion && !order.activatedAt) {
+      if (!this.queue) throw new BadRequestException('Queue refund processing is unavailable');
+      const refund = await this.queue.requestCancellationInTransaction(tx, order.id, params.reason, params.actorType, params.actorId);
+      return { customOrderId: order.id, paymentAttemptId: refund.paymentAttemptId, reference: order.paymentReference, alreadyRefunded: refund.status === 'SETTLED', refundId: refund.id };
     }
 
     const attempt = order.paymentReference

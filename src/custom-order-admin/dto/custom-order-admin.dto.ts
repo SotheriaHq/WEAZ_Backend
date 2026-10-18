@@ -6,6 +6,7 @@ import {
   CustomOrderDisputeStatus,
   CustomOrderProgressStage,
   CustomOrderStatus,
+  CustomOrderLane,
   Gender,
 } from '@prisma/client';
 import {
@@ -84,6 +85,15 @@ export class UpdateAdminCustomFabricRuleBasisDto {
 }
 
 export class QueryAdminCustomOrdersDto {
+  @IsOptional()
+  @IsEnum(CustomOrderLane)
+  queueLane?: CustomOrderLane;
+
+  @IsOptional()
+  @Transform(toQueryBoolean)
+  @IsBoolean()
+  cancelled?: boolean;
+
   @IsOptional()
   @Type(() => Number)
   @IsInt()

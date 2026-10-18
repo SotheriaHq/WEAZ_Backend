@@ -4,6 +4,7 @@ import { PrismaModule } from 'src/prisma/prisma.module';
 import { FinanceModule } from 'src/finance/finance.module';
 import { CustomOrderAdminController } from './custom-order-admin.controller';
 import { CustomOrderAdminService } from './custom-order-admin.service';
+import { CustomOrderQueueModule } from 'src/custom-orders/queue/custom-order-queue.module';
 
 /**
  * `CustomOrderDisputeService` is provided by `CustomOrdersModule`, not here.
@@ -19,7 +20,7 @@ import { CustomOrderAdminService } from './custom-order-admin.service';
   // brand's outstanding debt when deciding a dispute, and importing
   // `CustomOrdersModule` does not bring it along — that module consumes it too,
   // but a Nest module only re-exports what it names in `exports`.
-  imports: [PrismaModule, CustomOrdersModule, FinanceModule],
+  imports: [PrismaModule, CustomOrdersModule, FinanceModule, CustomOrderQueueModule],
   controllers: [CustomOrderAdminController],
   providers: [CustomOrderAdminService],
 })

@@ -9,6 +9,8 @@ import { QueueModule } from 'src/queue/queue.module';
 import { PaymentOpsCronService } from './payment-ops.cron.service';
 import { PaymentRuntimeHealthService } from './payment-runtime-health.service';
 import { LegalModule } from 'src/legal/legal.module';
+import { CustomOrderQueueModule } from 'src/custom-orders/queue/custom-order-queue.module';
+import { SubscriptionsModule } from 'src/subscriptions/subscriptions.module';
 
 @Module({
   imports: [
@@ -17,6 +19,8 @@ import { LegalModule } from 'src/legal/legal.module';
     NotificationsModule,
     QueueModule,
     LegalModule,
+    CustomOrderQueueModule,
+    SubscriptionsModule,
   ],
   controllers: [PaymentController],
   providers: [

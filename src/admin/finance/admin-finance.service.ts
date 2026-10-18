@@ -138,6 +138,8 @@ export class AdminFinanceService {
       pendingPayouts,
       activeEscrowHolds,
       settlementState,
+      queueCaptures,
+      queueRefunds,
     ] = await Promise.all([
       this.prisma.paymentAttempt.aggregate({
         where: { status: 'PAID' },
@@ -195,6 +197,8 @@ export class AdminFinanceService {
         },
       }),
       this.getSettlementStateSummary(),
+      this.prisma.customOrderLedgerAllocation.aggregate({ where: { allocationType: 'PLACEMENT_CAPTURE', status: 'HELD', customOrder: { lane: { in: ['PENDING', 'UP_NEXT'] } } }, _sum: { amount: true }, _count: true }),
+      this.prisma.customOrderQueueRefund.aggregate({ where: { status: { not: 'SETTLED' } }, _sum: { amount: true } }),
     ]);
 
     const totalCommissions = this.roundMoney(
@@ -223,6 +227,9 @@ export class AdminFinanceService {
       pendingPayouts,
       activeEscrowHolds,
       settlementState,
+      queuedCustomHeldAmount: Number(queueCaptures._sum.amount ?? 0),
+      queuedCustomOrderCount: queueCaptures._count,
+      pendingRefundAmount: Number(queueRefunds._sum.amount ?? 0),
       recentRuns,
       recentDocuments,
     };

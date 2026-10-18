@@ -2,9 +2,11 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { CustomOrderQueueService } from 'src/custom-orders/queue/custom-order-queue.service';
 import {
   CustomOrderActorType,
   CustomOrderDisputeStatus,
@@ -71,6 +73,7 @@ export class CustomOrderAdminService {
     private readonly refundService: CustomOrderRefundService,
     private readonly customOrdersService: CustomOrdersService,
     private readonly brandBalance: BrandBalanceService,
+    @Optional() private readonly queue?: CustomOrderQueueService,
   ) {}
 
   async getPendingBases() {
@@ -294,6 +297,8 @@ export class CustomOrderAdminService {
     const cursorPayload = this.decodeListCursor(query.cursor);
 
     const baseWhere: Prisma.CustomOrderWhereInput = {
+      ...(query.queueLane ? { lane: query.queueLane } : {}),
+      ...(query.cancelled === true ? { cancelledAt: { not: null } } : query.cancelled === false ? { cancelledAt: null } : {}),
       ...(query.status ? { status: query.status } : {}),
       // Any order carrying a live dispute, regardless of what its status says.
       ...(query.disputed
@@ -372,12 +377,13 @@ export class CustomOrderAdminService {
     // generic "Custom order configuration" — same hydration the buyer/brand use.
     const hydratedItems =
       await this.customOrdersService.hydrateAdminOrderSnapshots(pageItems);
+    const queues = this.queue ? await this.queue.present(hydratedItems.map(item => item.id)) : {};
 
     return {
       statusCode: 200,
       message: 'Admin custom-order queue retrieved',
       data: {
-        items: hydratedItems.map((item) => this.mapOrderListItem(item)),
+        items: hydratedItems.map((item) => ({ ...this.mapOrderListItem(item), queue: queues[item.id] ?? null })),
         page: cursorPayload ? undefined : page,
         limit: take,
         total,
@@ -1476,7 +1482,7 @@ export class CustomOrderAdminService {
     return {
       statusCode: 200,
       message: 'Custom-order admin detail retrieved',
-      data: this.mapAdminOrderDetail(hydrated, paymentAttempts),
+      data: { ...this.mapAdminOrderDetail(hydrated, paymentAttempts), queue: this.queue ? (await this.queue.present([id]))[id] : null },
     };
   }
 
@@ -2584,6 +2590,7 @@ export class CustomOrderAdminService {
         brandId: true,
         status: true,
         paymentStatus: true,
+        lane: true,
         sourceBrandNameSnapshot: true,
         brand: {
           select: {
@@ -2594,6 +2601,11 @@ export class CustomOrderAdminService {
     });
     if (!order) {
       throw new NotFoundException('Custom order not found');
+    }
+    if (order.lane === 'PENDING' || order.lane === 'UP_NEXT') {
+      if (!this.queue) throw new BadRequestException('Queue cancellation is unavailable');
+      await this.queue.cancel(adminUserId, id, dto.reason.trim(), undefined, 'ADMIN');
+      return this.getOrder(id);
     }
     if (order.paymentStatus !== PaymentStatus.PAID) {
       throw new BadRequestException(

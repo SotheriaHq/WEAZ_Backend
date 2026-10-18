@@ -6,6 +6,8 @@ import {
 } from './custom-order-rule-validator.service';
 
 export interface CustomOrderPriceSummary {
+  queueJumpFee?: string;
+  vatAmount?: string;
   outfitTotal: string;
   delivery: string;
   rush: string;

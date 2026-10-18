@@ -18,10 +18,12 @@ import { CustomOrdersPaymentsService } from './custom-orders-payments.service';
 import { CustomOrderRefundService } from './custom-order-refund.service';
 import { CustomOrderSideEffectsService } from './custom-order-side-effects.service';
 import { CustomOrdersService } from './custom-orders.service';
+import { CustomOrderQueueModule } from './queue/custom-order-queue.module';
 
 @Module({
   imports: [
     PrismaModule,
+    CustomOrderQueueModule,
     PaymentModule,
     QueueModule,
     CustomOrderPricingModule,

@@ -260,6 +260,8 @@ describe('CustomOrderOpsCronService', () => {
       },
       data: {
         status: CustomOrderStatus.COMPLETED,
+        lane: 'TERMINAL',
+        orderRevision: { increment: 1 },
         buyerAcceptedAt: fixedNow,
         completedAt: fixedNow,
       },
