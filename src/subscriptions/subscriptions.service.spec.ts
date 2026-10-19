@@ -26,6 +26,7 @@ describe('SubscriptionsService boundary and payment invariants', () => {
     prisma = {
       $transaction: jest.fn((callback) => callback(prisma)),
       $queryRaw: jest.fn(),
+      $executeRaw: jest.fn(),
       brandSubscription: {
         findFirst: jest.fn().mockResolvedValue(current()),
         findUnique: jest.fn().mockResolvedValue(null),

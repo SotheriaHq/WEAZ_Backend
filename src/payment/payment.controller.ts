@@ -14,6 +14,8 @@ import {
   UseInterceptors,
   ValidationPipe,
   Logger,
+  Patch,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { IsPublic } from 'src/auth/decorator/is-public.decorator';
@@ -41,6 +43,7 @@ import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 import { RequirePermissions } from 'src/admin/decorators/require-permissions.decorator';
 import { AdminPermissionGuard } from 'src/admin/guards/admin-permission.guard';
 import { RecordSavedCardDto } from './dto/record-saved-card.dto';
+import { SavedCardNicknameDto } from '../subscriptions/subscription-checkout.dto';
 
 @Controller('payment')
 export class PaymentController {
@@ -221,6 +224,23 @@ export class PaymentController {
   ): Promise<SavedPaymentMethodMutationResult> {
     const userId = (req as any).user?.id ?? (req as any).user?.sub;
     return this.paymentService.removeSavedPaymentCard(savedCardId, userId);
+  }
+
+  @Patch('saved-cards/:savedCardId')
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  renameSavedCard(
+    @Param('savedCardId', new ParseUUIDPipe()) savedCardId: string,
+    @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    dto: SavedCardNicknameDto,
+    @Req() req: Request,
+  ) {
+    const userId = (req as any).user?.id ?? (req as any).user?.sub;
+    return this.paymentService.renameSavedPaymentCard(
+      userId,
+      savedCardId,
+      dto.nickname,
+    );
   }
 
   @Post('saved-cards/:savedCardId/default')

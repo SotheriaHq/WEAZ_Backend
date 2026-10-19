@@ -428,6 +428,7 @@ export interface PaymentAttemptSummary {
 }
 
 export interface SavedPaymentCardSummary {
+  nickname?: string | null;
   id: string;
   gateway: 'PAYSTACK';
   brand: string | null;

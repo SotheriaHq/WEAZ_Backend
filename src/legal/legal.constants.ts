@@ -11,7 +11,7 @@ export type LegalDocumentDefinition = {
   requiresCounselReview: boolean;
 };
 
-export const LEGAL_VERSION = '2026.10.19-v1.4';
+export const LEGAL_VERSION = '2026.10.19-v1.5';
 export const LEGAL_EFFECTIVE_DATE = 'October 19, 2026';
 
 export const LEGAL_DOCUMENTS: Record<

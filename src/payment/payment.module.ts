@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { PrismaModule } from 'src/prisma/prisma.module';
 import { PaymentService } from './payment.service';
 import { PaymentController } from './payment.controller';
@@ -20,7 +20,7 @@ import { SubscriptionsModule } from 'src/subscriptions/subscriptions.module';
     QueueModule,
     LegalModule,
     CustomOrderQueueModule,
-    SubscriptionsModule,
+    forwardRef(() => SubscriptionsModule),
   ],
   controllers: [PaymentController],
   providers: [

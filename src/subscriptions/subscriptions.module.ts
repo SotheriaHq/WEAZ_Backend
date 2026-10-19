@@ -1,4 +1,5 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
+import { PaymentModule } from '../payment/payment.module';
 import { BrandAccessService } from '../brands/brand-access.service';
 import { BrandPermissionService } from '../brands/permissions/brand-permission.service';
 import { LegalModule } from '../legal/legal.module';
@@ -9,7 +10,7 @@ import { SubscriptionsService } from './subscriptions.service';
 import { AdminSubscriptionsController } from './admin-subscriptions.controller';
 
 @Module({
-  imports: [PrismaModule, LegalModule],
+  imports: [PrismaModule, LegalModule, forwardRef(() => PaymentModule)],
   controllers: [SubscriptionsController, AdminSubscriptionsController],
   providers: [
     BrandAccessService,

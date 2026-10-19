@@ -6,6 +6,7 @@ import {
   ParseUUIDPipe,
   Post,
   Req,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
@@ -15,6 +16,8 @@ import {
   PreviewSubscriptionDto,
   SubscriptionCheckoutDto,
   VerifySubscriptionDto,
+  SubscriptionHistoryQueryDto,
+  SubscriptionPaymentMethodDto,
 } from './subscription-checkout.dto';
 import { SubscriptionsService } from './subscriptions.service';
 
@@ -30,6 +33,56 @@ export class SubscriptionsController {
     @Req() req: Request & { user: { id: string } },
   ) {
     return this.subscriptions.getForOwner(req.user.id, brandId);
+  }
+
+  @Get('history')
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  history(
+    @Param('brandId', ParseUUIDPipe) brandId: string,
+    @Req() req: Request & { user: { id: string } },
+    @Query() query: SubscriptionHistoryQueryDto,
+  ) {
+    return this.subscriptions.historyForOwner(req.user.id, brandId, query);
+  }
+
+  @Post('notice')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  notice(
+    @Param('brandId', ParseUUIDPipe) brandId: string,
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    return this.subscriptions.claimNotice(req.user.id, brandId);
+  }
+
+  @Post('notice/dismiss')
+  dismissNotice(
+    @Param('brandId', ParseUUIDPipe) brandId: string,
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    return this.subscriptions.dismissNotice(req.user.id, brandId);
+  }
+
+  @Get('payment-methods')
+  cards(
+    @Param('brandId', ParseUUIDPipe) brandId: string,
+    @Req() req: Request & { user: { id: string } },
+  ) {
+    return this.subscriptions.paymentMethods(req.user.id, brandId);
+  }
+
+  @Post('payment-method')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  changeCard(
+    @Param('brandId', ParseUUIDPipe) brandId: string,
+    @Req() req: Request & { user: { id: string } },
+    @Body() dto: SubscriptionPaymentMethodDto,
+  ) {
+    return this.subscriptions.changePaymentMethod(
+      req.user.id,
+      brandId,
+      dto,
+      req,
+    );
   }
 
   @Post('checkout')

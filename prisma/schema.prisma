@@ -24,6 +24,7 @@ model User {
   createdAt                DateTime                      @default(now())
   updatedAt                DateTime                      @updatedAt
   refreshTokens            RefreshToken[]
+  subscriptionNoticeReceipts SubscriptionNoticeReceipt[]
   studioHandoffCodes       StudioHandoffCode[]
   fileUploads              FileUpload[]                  @relation("UserFiles")
   posts                    Post[]
@@ -2835,6 +2836,7 @@ model Brand {
   staffInvites              BrandStaffInvite[]
   balanceAdjustments        BrandBalanceAdjustment[]
   subscriptions             BrandSubscription[]
+  subscriptionNoticeReceipts SubscriptionNoticeReceipt[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -3011,6 +3013,8 @@ model BrandSubscription {
   providerAuthorizationCode String?
   providerCustomerEmail String?
   providerAuthorizationJson Json?
+    savedPaymentMethodId String? @db.Uuid
+    savedPaymentMethod SavedPaymentMethod? @relation(fields: [savedPaymentMethodId], references: [id], onDelete: Restrict)
   billingAnchorDay Int?
   recurringConsentAt DateTime?
   recurringPolicyVersion String?
@@ -3020,6 +3024,7 @@ model BrandSubscription {
 
   @@index([brandId, status])
   @@index([tierKey])
+  @@index([savedPaymentMethodId])
 }
 
 /// A temporary add or subtract applied to every tier's Active cap.
@@ -3038,6 +3043,16 @@ model CapacityCampaign {
   @@index([startsAt, endsAt])
 }
 
+model SubscriptionNoticeReceipt {
+  userId String @db.Uuid
+  brandId String @db.Uuid
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  lastShownAt DateTime
+  lastDismissedAt DateTime?
+  @@id([userId, brandId])
+}
+
 model BrandSubscriptionInvoice {
   id String @id @default(uuid()) @db.Uuid
   subscriptionId String @db.Uuid
@@ -3054,6 +3069,8 @@ model BrandSubscriptionInvoice {
   hostedAttemptReferences String[] @default([])
   providerTransactionId String?
   purpose String @default("RENEWAL")
+  payerEmail String?
+  paymentIdentityJson Json?
   previousSubscriptionId String? @db.Uuid
   lockedAt DateTime?
   attemptCount Int @default(0)
@@ -4513,6 +4530,8 @@ model SavedPaymentMethod {
   expMonth                           String?
   expYear                            String?
   holderName                         String?
+    nickname                           String?                 @db.VarChar(60)
+    subscriptions                      BrandSubscription[]
   providerAuthorizationCodeEncrypted String?
   providerAuthorizationSignature     String?
   providerAuthorizationMeta          Json?

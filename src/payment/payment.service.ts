@@ -7,6 +7,8 @@ import {
   NotFoundException,
   OnModuleInit,
   Optional,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import {
   createCipheriv,
@@ -52,6 +54,7 @@ import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-
 import { CustomOrderQueueService } from 'src/custom-orders/queue/custom-order-queue.service';
 import { CustomOrderQueueRefundsService } from 'src/custom-orders/queue/custom-order-queue-refunds.service';
 import { SubscriptionsService } from 'src/subscriptions/subscriptions.service';
+import { decryptSubscriptionAuthorization } from 'src/subscriptions/subscription-authorization.crypto';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import {
   WebhookEventsQueueService,
@@ -332,6 +335,7 @@ export class PaymentService implements OnModuleInit {
     @Optional()
     private readonly customOrderQueue?: CustomOrderQueueService,
     @Optional()
+    @Inject(forwardRef(() => SubscriptionsService))
     private readonly subscriptions?: SubscriptionsService,
     @Optional()
     private readonly queueRefunds?: CustomOrderQueueRefundsService,
@@ -563,10 +567,26 @@ export class PaymentService implements OnModuleInit {
         const customLineDrafts = customLineResult.lines;
         const blockedCustomLines = customLineResult.blocked;
         if (customLineDrafts.length) {
-          if (!this.customOrderQueue) throw new BadRequestException('Custom-order queue is unavailable');
-          const intents = await this.prisma.customOrderCheckoutIntent.findMany({ where: { id: { in: customLineDrafts.map(line => line.checkoutIntentId) }, buyerId: userId }, select: { configurationId: true } });
-          const configurations = await this.prisma.customOrderConfiguration.findMany({ where: { id: { in: intents.map(intent => intent.configurationId) } }, select: { brandId: true } });
-          for (const brandId of new Set(configurations.map(configuration => configuration.brandId))) await this.customOrderQueue.assertIntake(userId, brandId);
+          if (!this.customOrderQueue)
+            throw new BadRequestException('Custom-order queue is unavailable');
+          const intents = await this.prisma.customOrderCheckoutIntent.findMany({
+            where: {
+              id: { in: customLineDrafts.map((line) => line.checkoutIntentId) },
+              buyerId: userId,
+            },
+            select: { configurationId: true },
+          });
+          const configurations =
+            await this.prisma.customOrderConfiguration.findMany({
+              where: {
+                id: { in: intents.map((intent) => intent.configurationId) },
+              },
+              select: { brandId: true },
+            });
+          for (const brandId of new Set(
+            configurations.map((configuration) => configuration.brandId),
+          ))
+            await this.customOrderQueue.assertIntake(userId, brandId);
         }
 
         if (standardLineDrafts.length === 0 && customLineDrafts.length === 0) {
@@ -1062,6 +1082,11 @@ export class PaymentService implements OnModuleInit {
       if (canonicalCards.length > 0) {
         return canonicalCards;
       }
+      const deletedMethod = await this.getSavedPaymentMethodModel()?.findFirst({
+        where: { buyerId: userId, status: 'DISABLED' },
+        select: { id: true },
+      });
+      if (deletedMethod) return [];
 
       if (this.isSavedPaymentMethodBackfillEnabled()) {
         await this.backfillSavedPaymentMethodsFromAttempts(userId);
@@ -1070,6 +1095,124 @@ export class PaymentService implements OnModuleInit {
     }
 
     return this.listSavedPaymentCardsFromAttemptHistory(userId);
+  }
+
+  /** Server-only bridge: caller must obtain recurring consent before charging. */
+  async getSubscriptionSavedCard(userId: string, savedCardId: string) {
+    await this.backfillSavedPaymentMethodsFromAttempts(userId);
+    const authorization = await this.resolveSavedPaystackAuthorization(
+      userId,
+      savedCardId,
+    );
+    const canonicalId = await this.resolveCanonicalSavedPaymentMethodId(
+      userId,
+      savedCardId,
+    );
+    const card = canonicalId
+      ? await this.prisma.savedPaymentMethod.findFirst({
+          where: { id: canonicalId, buyerId: userId, status: 'ACTIVE' },
+        })
+      : null;
+    if (
+      card?.expYear &&
+      card.expMonth &&
+      new Date(Date.UTC(Number(card.expYear), Number(card.expMonth), 1)) <=
+        new Date()
+    ) {
+      throw new BadRequestException(
+        'This card has expired. Choose another card.',
+      );
+    }
+    if (!authorization.authorizationEmail)
+      throw new BadRequestException(
+        'Reauthorize this card through secure checkout before using it for subscriptions.',
+      );
+    return { ...authorization, savedPaymentMethodId: canonicalId };
+  }
+
+  /** Called only with the authorization from an amount/reference-verified capture. */
+  async saveVerifiedSubscriptionCard(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    authorization: Record<string, any>,
+    email: string,
+  ) {
+    const last4 = String(authorization.last4 ?? '');
+    const code = String(authorization.authorization_code ?? '');
+    if (authorization.reusable !== true || !code || !/^[0-9]{4}$/.test(last4))
+      return null;
+    const encrypted = this.encryptSavedPaymentMethodAuthorizationCode(code);
+    if (!encrypted)
+      throw new InternalServerErrorException(
+        'Secure payment-method storage is unavailable.',
+      );
+    const signature =
+      typeof authorization.signature === 'string' && authorization.signature
+        ? `sig:${authorization.signature}`
+        : `auth-sha256:${createHash('sha256').update(code).digest('hex')}`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'wiez-payment-methods-' + userId}))`;
+    const existingDefault = await tx.savedPaymentMethod.findFirst({
+      where: { buyerId: userId, status: 'ACTIVE', isDefault: true },
+      select: { id: true },
+    });
+    const fields = {
+      status: 'ACTIVE',
+      last4,
+      brand:
+        String(authorization.brand ?? authorization.card_type ?? '').slice(
+          0,
+          32,
+        ) || null,
+      bank: String(authorization.bank ?? '').slice(0, 64) || null,
+      expMonth: String(authorization.exp_month ?? '').slice(0, 2) || null,
+      expYear: String(authorization.exp_year ?? '').slice(0, 4) || null,
+      providerAuthorizationCodeEncrypted: encrypted,
+      providerAuthorizationMeta: { reusable: true, authorizationEmail: email },
+      lastUsedAt: new Date(),
+    };
+    return tx.savedPaymentMethod.upsert({
+      where: {
+        buyerId_providerAuthorizationSignature: {
+          buyerId: userId,
+          providerAuthorizationSignature: signature,
+        },
+      },
+      create: {
+        ...fields,
+        buyerId: userId,
+        provider: 'PAYSTACK',
+        paymentMethod: PaymentMethod.PAYSTACK,
+        providerAuthorizationSignature: signature,
+        isDefault: !existingDefault,
+      },
+      update: fields,
+    });
+  }
+
+  async renameSavedPaymentCard(
+    userId: string,
+    savedCardId: string,
+    nickname: string,
+  ) {
+    if (
+      typeof nickname !== 'string' ||
+      nickname.length > 60 ||
+      /(?:\d[\s-]*){12}/.test(nickname)
+    )
+      throw new BadRequestException(
+        'Use a short card nickname without a card number.',
+      );
+    const result = await this.prisma.savedPaymentMethod.updateMany({
+      where: { id: savedCardId, buyerId: userId, status: 'ACTIVE' },
+      data: { nickname: nickname.trim() || null },
+    });
+    if (!result.count) throw new NotFoundException('Saved card not found');
+    return { success: true };
+  }
+
+  async listSubscriptionPaymentCards(userId: string) {
+    await this.backfillSavedPaymentMethodsFromAttempts(userId);
+    return this.listCanonicalSavedPaymentCards(userId);
   }
 
   private async listSavedPaymentCardsFromAttemptHistory(
@@ -1471,12 +1614,63 @@ export class PaymentService implements OnModuleInit {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'wiez-payment-methods-' + userId}))`;
+      const activeAgreements = await tx.brandSubscription.findMany({
+        where: {
+          brand: { ownerId: userId },
+          status: { in: ['ACTIVE', 'PAST_DUE'] },
+          cancelAtPeriodEnd: false,
+        },
+        select: {
+          savedPaymentMethodId: true,
+          providerAuthorizationCode: true,
+          brandId: true,
+        },
+      });
+      const pendingCharge = await tx.brandSubscriptionInvoice.findFirst({
+        where: {
+          subscription: {
+            savedPaymentMethodId: normalizedId,
+            brand: { ownerId: userId },
+          },
+          OR: [
+            { lockedAt: { gt: new Date(Date.now() - 10 * 60_000) } },
+            { status: 'PROCESSING' },
+          ],
+        },
+        select: { id: true },
+      });
+      if (pendingCharge)
+        throw new ConflictException(
+          'A payment using this card is still processing. Verify its result before deleting the card.',
+        );
+      const deletedAuthorization =
+        this.decryptSavedPaymentMethodAuthorizationCode(
+          existing.providerAuthorizationCodeEncrypted,
+        );
+      if (
+        activeAgreements.some(
+          (agreement) =>
+            agreement.savedPaymentMethodId === normalizedId ||
+            (deletedAuthorization &&
+              decryptSubscriptionAuthorization(
+                agreement.providerAuthorizationCode,
+                agreement.brandId,
+              ) === deletedAuthorization),
+        )
+      ) {
+        throw new ConflictException(
+          'This card is used for subscription renewal. Choose a replacement renewal card or stop renewal before deleting it.',
+        );
+      }
       const model = (tx as any)['savedPaymentMethod'];
       await model.update({
         where: { id: normalizedId },
         data: {
           status: 'DISABLED',
           isDefault: false,
+          providerAuthorizationCodeEncrypted: null,
+          providerAuthorizationMeta: Prisma.JsonNull,
         },
       });
 
@@ -1521,6 +1715,7 @@ export class PaymentService implements OnModuleInit {
 
     const normalizedId = this.normalizeSavedCardIdentifier(savedCardId);
     const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'wiez-payment-methods-' + userId}))`;
       const model = (tx as any)['savedPaymentMethod'];
       const existing = await model.findFirst({
         where: {
@@ -2393,9 +2588,20 @@ export class PaymentService implements OnModuleInit {
     // These handlers run only after signature verification. Their references
     // belong to separate durable records, never a whole checkout refund.
     const eventType = this.extractWebhookEvent(normalizedGateway, payload);
-    if ((normalizedGateway === 'PAYSTACK' || normalizedGateway === 'FLUTTERWAVE') && this.queueRefunds && await this.queueRefunds.handleWebhook(normalizedGateway, payload)) return null;
+    if (
+      (normalizedGateway === 'PAYSTACK' ||
+        normalizedGateway === 'FLUTTERWAVE') &&
+      this.queueRefunds &&
+      (await this.queueRefunds.handleWebhook(normalizedGateway, payload))
+    )
+      return null;
     const reference = this.extractWebhookReference(normalizedGateway, payload);
-    if (normalizedGateway === 'PAYSTACK' && reference?.startsWith('wzsub-') && eventType === 'charge.success' && this.subscriptions) {
+    if (
+      normalizedGateway === 'PAYSTACK' &&
+      reference?.startsWith('wzsub-') &&
+      eventType === 'charge.success' &&
+      this.subscriptions
+    ) {
       await this.subscriptions.handleProviderCharge(reference);
       return null;
     }
@@ -2417,9 +2623,17 @@ export class PaymentService implements OnModuleInit {
     });
 
     if (attempt && String(eventType).toLowerCase().includes('refund')) {
-      const queuedCapture = await this.prisma.customOrder.findFirst({ where: { paymentReference: reference, queuePolicyVersion: { not: null } }, select: { id: true } });
+      const queuedCapture = await this.prisma.customOrder.findFirst({
+        where: {
+          paymentReference: reference,
+          queuePolicyVersion: { not: null },
+        },
+        select: { id: true },
+      });
       if (queuedCapture) {
-        this.logger.warn(`Refund webhook for queued capture ${attempt.id} requires per-order reconciliation`);
+        this.logger.warn(
+          `Refund webhook for queued capture ${attempt.id} requires per-order reconciliation`,
+        );
         return null;
       }
     }
@@ -3952,10 +4166,7 @@ export class PaymentService implements OnModuleInit {
 
       // System sources may run without a buyer JWT. User-facing sources must
       // always match attempt.buyerId (no soft "null buyerId" bypass).
-      const systemSources: Array<typeof source> = [
-        'webhook',
-        'reconcile',
-      ];
+      const systemSources: Array<typeof source> = ['webhook', 'reconcile'];
       if (!attempt) {
         throw new NotFoundException('Payment attempt not found');
       }
@@ -5288,7 +5499,7 @@ export class PaymentService implements OnModuleInit {
   }
 
   private isCanonicalSavedMethodsEnabledForUser(userId: string) {
-    if (!this.parseBooleanEnv(PAYMENT_SAVED_METHODS_FLAG, false)) {
+    if (!this.parseBooleanEnv(PAYMENT_SAVED_METHODS_FLAG, true)) {
       return false;
     }
 
@@ -5368,8 +5579,12 @@ export class PaymentService implements OnModuleInit {
       reusable:
         String(savedMethod?.status ?? '')
           .trim()
-          .toUpperCase() === 'ACTIVE',
+          .toUpperCase() === 'ACTIVE' &&
+        Boolean(savedMethod?.providerAuthorizationCodeEncrypted) &&
+        this.asObject(savedMethod?.providerAuthorizationMeta).reusable !==
+          false,
       isDefault: Boolean(savedMethod?.isDefault),
+      nickname: this.normalizeCardText(savedMethod?.nickname),
       addedAt: createdAt,
       lastUsedAt,
     };
@@ -5633,76 +5848,94 @@ export class PaymentService implements OnModuleInit {
       return 0;
     }
 
-    let hasDefault = Boolean(
-      await savedPaymentMethodModel.findFirst({
-        where: {
-          buyerId: userId,
-          status: 'ACTIVE',
-          isDefault: true,
-        },
-        select: { id: true },
-      }),
-    );
-
-    let processed = 0;
-    for (const card of inferredCards) {
-      const encryptedAuthorizationCode =
-        this.encryptSavedPaymentMethodAuthorizationCode(card.authorizationCode);
-
-      const upserted = await savedPaymentMethodModel.upsert({
-        where: {
-          buyerId_providerAuthorizationSignature: {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'wiez-payment-methods-' + userId}))`;
+      const savedPaymentMethodModel = tx.savedPaymentMethod;
+      let hasDefault = Boolean(
+        await savedPaymentMethodModel.findFirst({
+          where: {
             buyerId: userId,
+            status: 'ACTIVE',
+            isDefault: true,
+          },
+          select: { id: true },
+        }),
+      );
+
+      let processed = 0;
+      for (const card of inferredCards) {
+        const existing = await savedPaymentMethodModel.findUnique({
+          where: {
+            buyerId_providerAuthorizationSignature: {
+              buyerId: userId,
+              providerAuthorizationSignature: card.identityKey,
+            },
+          },
+          select: { status: true, providerAuthorizationMeta: true },
+        });
+        if (existing?.status === 'DISABLED') continue;
+        const encryptedAuthorizationCode =
+          this.encryptSavedPaymentMethodAuthorizationCode(
+            card.authorizationCode,
+          );
+
+        const upserted = await savedPaymentMethodModel.upsert({
+          where: {
+            buyerId_providerAuthorizationSignature: {
+              buyerId: userId,
+              providerAuthorizationSignature: card.identityKey,
+            },
+          },
+          update: {
+            status: 'ACTIVE',
+            brand: card.summary.brand,
+            bank: card.summary.bank,
+            last4: card.summary.last4,
+            expMonth: card.summary.expMonth,
+            expYear: card.summary.expYear,
+            lastUsedAt: new Date(card.summary.lastUsedAt),
+            providerAuthorizationCodeEncrypted:
+              encryptedAuthorizationCode ?? undefined,
+            providerAuthorizationMeta: {
+              ...this.asObject(existing?.providerAuthorizationMeta),
+              reusable: card.summary.reusable,
+              migratedFromAttemptId: card.sourcePaymentAttemptId,
+            },
+            sourcePaymentAttemptId: card.sourcePaymentAttemptId,
+          },
+          create: {
+            id: uuidv4(),
+            buyerId: userId,
+            provider: 'PAYSTACK',
+            paymentMethod: PaymentMethod.PAYSTACK,
+            status: 'ACTIVE',
+            isDefault: !hasDefault,
+            brand: card.summary.brand,
+            bank: card.summary.bank,
+            last4: card.summary.last4,
+            expMonth: card.summary.expMonth,
+            expYear: card.summary.expYear,
+            holderName: null,
+            providerAuthorizationCodeEncrypted:
+              encryptedAuthorizationCode ?? undefined,
             providerAuthorizationSignature: card.identityKey,
+            providerAuthorizationMeta: {
+              reusable: card.summary.reusable,
+              migratedFromAttemptId: card.sourcePaymentAttemptId,
+            },
+            sourcePaymentAttemptId: card.sourcePaymentAttemptId,
+            lastUsedAt: new Date(card.summary.lastUsedAt),
           },
-        },
-        update: {
-          status: 'ACTIVE',
-          brand: card.summary.brand,
-          bank: card.summary.bank,
-          last4: card.summary.last4,
-          expMonth: card.summary.expMonth,
-          expYear: card.summary.expYear,
-          lastUsedAt: new Date(card.summary.lastUsedAt),
-          providerAuthorizationCodeEncrypted:
-            encryptedAuthorizationCode ?? undefined,
-          providerAuthorizationMeta: {
-            reusable: card.summary.reusable,
-            migratedFromAttemptId: card.sourcePaymentAttemptId,
-          },
-        },
-        create: {
-          id: uuidv4(),
-          buyerId: userId,
-          provider: 'PAYSTACK',
-          paymentMethod: PaymentMethod.PAYSTACK,
-          status: 'ACTIVE',
-          isDefault: !hasDefault,
-          brand: card.summary.brand,
-          bank: card.summary.bank,
-          last4: card.summary.last4,
-          expMonth: card.summary.expMonth,
-          expYear: card.summary.expYear,
-          holderName: null,
-          providerAuthorizationCodeEncrypted:
-            encryptedAuthorizationCode ?? undefined,
-          providerAuthorizationSignature: card.identityKey,
-          providerAuthorizationMeta: {
-            reusable: card.summary.reusable,
-            migratedFromAttemptId: card.sourcePaymentAttemptId,
-          },
-          sourcePaymentAttemptId: card.sourcePaymentAttemptId,
-          lastUsedAt: new Date(card.summary.lastUsedAt),
-        },
-      });
+        });
 
-      if (!hasDefault && upserted) {
-        hasDefault = true;
+        if (!hasDefault && upserted) {
+          hasDefault = true;
+        }
+        processed += 1;
       }
-      processed += 1;
-    }
 
-    return processed;
+      return processed;
+    });
   }
 
   private extractErrorMessage(error: any): string {
@@ -7315,6 +7548,22 @@ export class PaymentService implements OnModuleInit {
         'This saved card is not reusable yet. Complete a fresh card payment first.',
       );
     }
+
+    const deletedMethod = await this.getSavedPaymentMethodModel()?.findFirst({
+      where: {
+        buyerId,
+        status: 'DISABLED',
+        OR: [
+          { sourcePaymentAttemptId: attempt.id },
+          { providerAuthorizationSignature: extracted.identityKey },
+        ],
+      },
+      select: { id: true },
+    });
+    if (deletedMethod)
+      throw new BadRequestException(
+        'This saved card was deleted. Complete a new secure payment to add it again.',
+      );
 
     return {
       authorizationCode: extracted.authorizationCode,
@@ -9038,8 +9287,14 @@ export class PaymentService implements OnModuleInit {
           versions.map((version) => [version.id, version]),
         );
 
-        if (customPendingLines.length && !this.customOrderQueue) throw new Error('Custom-order queue module is unavailable');
-        for (const brandId of [...new Set(configurations.map(configuration => configuration.brandId))].sort()) await this.customOrderQueue!.lockBrand(tx, brandId);
+        if (customPendingLines.length && !this.customOrderQueue)
+          throw new Error('Custom-order queue module is unavailable');
+        for (const brandId of [
+          ...new Set(
+            configurations.map((configuration) => configuration.brandId),
+          ),
+        ].sort())
+          await this.customOrderQueue!.lockBrand(tx, brandId);
 
         for (const line of customPendingLines) {
           const checkoutIntentId = String(line.checkoutIntentId ?? '').trim();
@@ -9122,7 +9377,8 @@ export class PaymentService implements OnModuleInit {
           }
 
           existingOrderByIntentId.set(checkoutIntentId, customOrderId);
-          if (!this.customOrderQueue) throw new Error('Custom-order queue module is unavailable');
+          if (!this.customOrderQueue)
+            throw new Error('Custom-order queue module is unavailable');
           await this.customOrderQueue.admitPaid(tx, customOrderId);
 
           await tx.checkoutSessionLine.update({

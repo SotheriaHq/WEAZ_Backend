@@ -6,6 +6,9 @@ import {
   Logger,
   NotFoundException,
   ServiceUnavailableException,
+  Inject,
+  forwardRef,
+  Optional,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import {
@@ -22,13 +25,18 @@ import {
 import { randomUUID } from 'crypto';
 import { v5 as uuidv5 } from 'uuid';
 import { Request } from 'express';
+import { PaymentService } from '../payment/payment.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { BrandAccessService } from '../brands/brand-access.service';
 import { LegalService } from '../legal/legal.service';
 import { LEGAL_VERSION } from '../legal/legal.constants';
 import { renderNotificationEmail } from '../notifications/email.policy';
 import { ADMIN_PERMISSIONS } from '../admin/constants/permissions';
-import { SubscriptionCheckoutDto } from './subscription-checkout.dto';
+import {
+  SubscriptionCheckoutDto,
+  SubscriptionHistoryQueryDto,
+  SubscriptionPaymentMethodDto,
+} from './subscription-checkout.dto';
 import {
   SubscriptionPaystackService,
   SubscriptionProviderTransaction,
@@ -78,10 +86,13 @@ export class SubscriptionsService {
     private readonly access: BrandAccessService,
     private readonly legal: LegalService,
     private readonly paystack: SubscriptionPaystackService,
+    @Optional()
+    @Inject(forwardRef(() => PaymentService))
+    private readonly payments?: PaymentService,
   ) {}
 
   private async lock(tx: Prisma.TransactionClient, brandId: string) {
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${'wiez-subscription-' + brandId}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'wiez-subscription-' + brandId}))`;
   }
 
   /** Financial change, inbox receipt and transactional email commit atomically. */
@@ -97,7 +108,7 @@ export class SubscriptionsService {
       select: { ownerId: true, owner: { select: { email: true } } },
     });
     if (!brand) return;
-    const targetUrl = '/studio?tab=subscription';
+    const targetUrl = `/settings?tab=subscription-billing&brandId=${brandId}`;
     const notificationId = uuidv5(`wiez-subscription-${eventKey}`, uuidv5.URL);
     const payload = {
       action: 'SUBSCRIPTION_BILLING',
@@ -219,6 +230,7 @@ export class SubscriptionsService {
             subscription.brandId,
           ),
       ),
+      savedPaymentMethodId: subscription.savedPaymentMethodId ?? null,
       billingTimezone: 'Africa/Lagos',
     };
   }
@@ -296,6 +308,265 @@ export class SubscriptionsService {
       serverNow: now.toISOString(),
       legalVersion: LEGAL_VERSION,
     };
+  }
+
+  async historyForOwner(
+    userId: string,
+    brandId: string,
+    query: SubscriptionHistoryQueryDto,
+  ) {
+    const resolved = await this.access.assertBrandOwnerAndResolve(
+      userId,
+      brandId,
+    );
+    const billing = query.kind !== 'SUBSCRIPTIONS';
+    const model = billing
+      ? this.prisma.brandSubscriptionInvoice
+      : this.prisma.brandSubscription;
+    const where = billing
+      ? { subscription: { brandId: resolved.brandId } }
+      : { brandId: resolved.brandId };
+    // A cursor must itself belong to this owner/brand; it never expands the scope.
+    if (
+      query.cursor &&
+      !(await (model as any).findFirst({
+        where: { ...where, id: query.cursor },
+        select: { id: true },
+      }))
+    ) {
+      throw new NotFoundException('History page not found.');
+    }
+    const rows = await (model as any).findMany({
+      where,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: 26,
+      ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
+      select: billing
+        ? {
+            id: true,
+            reference: true,
+            amount: true,
+            currency: true,
+            status: true,
+            createdAt: true,
+            paidAt: true,
+            periodStart: true,
+            periodEnd: true,
+            purpose: true,
+            subscription: { select: { tierKey: true } },
+          }
+        : {
+            id: true,
+            tierKey: true,
+            status: true,
+            priceSnapshotNgn: true,
+            createdAt: true,
+            currentPeriodStart: true,
+            currentPeriodEnd: true,
+            cancelAtPeriodEnd: true,
+            cancelRequestedAt: true,
+            scheduledTierKey: true,
+          },
+    });
+    const visible = rows.slice(0, 25);
+    return {
+      items: visible.map((row: any) =>
+        billing
+          ? {
+              id: row.id,
+              reference: row.reference,
+              amountNgn: Number(row.amount),
+              currency: row.currency,
+              status: row.status,
+              createdAt: row.createdAt,
+              paidAt: row.paidAt,
+              periodStart: row.periodStart,
+              periodEnd: row.periodEnd,
+              purpose: row.purpose,
+              tierKey: row.subscription.tierKey,
+            }
+          : {
+              ...this.presentSubscription(row),
+              createdAt: row.createdAt,
+              cancelRequestedAt: row.cancelRequestedAt,
+            },
+      ),
+      nextCursor: rows.length > 25 ? visible[24].id : null,
+    };
+  }
+
+  async claimNotice(userId: string, brandId: string) {
+    const resolved = await this.access.assertBrandOwnerAndResolve(
+      userId,
+      brandId,
+    );
+    return this.prisma.$transaction(async (tx) => {
+      await this.lock(tx, resolved.brandId);
+      const now = new Date();
+      const [subscription, brand, receipt] = await Promise.all([
+        this.current(tx, resolved.brandId),
+        tx.brand.findUnique({
+          where: { id: resolved.brandId },
+          select: { customOrderLegacyEligible: true },
+        }),
+        tx.subscriptionNoticeReceipt.findUnique({
+          where: { userId_brandId: { userId, brandId: resolved.brandId } },
+        }),
+      ]);
+      const paid =
+        subscription?.status === 'ACTIVE' &&
+        subscription.currentPeriodEnd > now &&
+        subscription.tierKey !== 'LEGACY';
+      if (
+        (!paid &&
+          (brand?.customOrderLegacyEligible ||
+            subscription?.tierKey === 'LEGACY')) ||
+        (paid && subscription.tierKey === 'IGWE') ||
+        (receipt &&
+          now.getTime() - receipt.lastShownAt.getTime() < 24 * 60 * 60_000)
+      )
+        return { notice: null };
+      const tierKey = paid
+        ? TIER_ORDER[TIER_ORDER.indexOf(subscription.tierKey) + 1]
+        : 'THREAD';
+      const tier = await tx.subscriptionTier.findUnique({
+        where: { key: tierKey },
+      });
+      if (!tier || tier.monthlyPriceNgn <= 0) return { notice: null };
+      await tx.subscriptionNoticeReceipt.upsert({
+        where: { userId_brandId: { userId, brandId: resolved.brandId } },
+        create: { userId, brandId: resolved.brandId, lastShownAt: now },
+        update: { lastShownAt: now, lastDismissedAt: null },
+      });
+      return {
+        notice: {
+          tierKey,
+          title: 'Make room for your next big idea',
+          message: `Want room for more orders? Explore ${tier.name} and give your next collection room to grow. Compare plans below, or find Billing & subscriptions in Settings.`,
+          targetUrl: '/settings?tab=subscription-billing',
+        },
+      };
+    });
+  }
+
+  async dismissNotice(userId: string, brandId: string) {
+    const resolved = await this.access.assertBrandOwnerAndResolve(
+      userId,
+      brandId,
+    );
+    await this.prisma.subscriptionNoticeReceipt.updateMany({
+      where: { userId, brandId: resolved.brandId },
+      data: { lastDismissedAt: new Date() },
+    });
+    return { success: true };
+  }
+
+  async paymentMethods(userId: string, brandId: string) {
+    await this.access.assertBrandOwnerAndResolve(userId, brandId);
+    if (!this.payments)
+      throw new ServiceUnavailableException(
+        'Payment settings are temporarily unavailable.',
+      );
+    return this.payments.listSubscriptionPaymentCards(userId);
+  }
+
+  async changePaymentMethod(
+    userId: string,
+    brandId: string,
+    dto: SubscriptionPaymentMethodDto,
+    req?: Request,
+  ) {
+    const resolved = await this.access.assertBrandOwnerAndResolve(
+      userId,
+      brandId,
+    );
+    if (dto.recurringConsent !== true || dto.legalVersion !== LEGAL_VERSION)
+      throw new BadRequestException(
+        'Accept the current recurring-payment authorization.',
+      );
+    if (!this.payments || !subscriptionAuthorizationStorageReady())
+      throw new ServiceUnavailableException(
+        'Secure billing is temporarily unavailable.',
+      );
+    const selected = await this.payments.getSubscriptionSavedCard(
+      userId,
+      dto.savedCardId,
+    );
+    await this.prisma.$transaction(async (tx) => {
+      await this.lock(tx, resolved.brandId);
+      const current = await this.current(tx, resolved.brandId);
+      if (!current || current.tierKey === 'LEGACY')
+        throw new NotFoundException(
+          'Choose a paid subscription before setting a renewal card.',
+        );
+      if (
+        selected.savedPaymentMethodId &&
+        !(await tx.savedPaymentMethod.findFirst({
+          where: {
+            id: selected.savedPaymentMethodId,
+            buyerId: userId,
+            status: 'ACTIVE',
+          },
+          select: { id: true },
+        }))
+      )
+        throw new ConflictException(
+          'This card changed. Refresh payment methods.',
+        );
+      await this.legal.recordAcceptedDocuments({
+        userId,
+        requiredKeys: REQUIRED_TERMS,
+        acceptances: REQUIRED_TERMS.map((documentKey) => ({
+          documentKey,
+          version: LEGAL_VERSION,
+        })),
+        source: LegalAcceptanceSource.CHECKOUT,
+        surface: 'brand-subscription-card-change',
+        accountType: UserType.BRAND,
+        req,
+        tx,
+        metadata: {
+          recurringConsent: true,
+          brandId: resolved.brandId,
+          savedCardId: dto.savedCardId,
+        },
+      });
+      await tx.brandSubscription.updateMany({
+        where: {
+          brandId: resolved.brandId,
+          OR: [
+            { id: current.id },
+            {
+              status: 'PENDING',
+              invoices: {
+                some: {
+                  previousSubscriptionId: current.id,
+                  purpose: 'RENEWAL',
+                },
+              },
+            },
+          ],
+        },
+        data: {
+          savedPaymentMethodId: selected.savedPaymentMethodId,
+          providerAuthorizationCode: encryptSubscriptionAuthorization(
+            selected.authorizationCode,
+            resolved.brandId,
+          ),
+          providerCustomerEmail: selected.authorizationEmail,
+          recurringConsentAt: new Date(),
+          recurringPolicyVersion: LEGAL_VERSION,
+        },
+      });
+      await this.notifyBilling(
+        tx,
+        resolved.brandId,
+        `card-${randomUUID()}`,
+        'Subscription payment method updated',
+        'Your renewal payment method has changed. Your plan, price and renewal cancellation setting are unchanged.',
+      );
+    });
+    return { success: true };
   }
 
   private async quote(
@@ -475,6 +746,13 @@ export class SubscriptionsService {
     });
     if (!owner?.email)
       throw new BadRequestException('A billing email is required.');
+    const selectedCard = dto.savedCardId
+      ? await this.payments?.getSubscriptionSavedCard(userId, dto.savedCardId)
+      : null;
+    if (dto.savedCardId && !selectedCard)
+      throw new ServiceUnavailableException(
+        'Saved-card checkout is temporarily unavailable.',
+      );
     const existingPeriod = await this.current(this.prisma, resolved.brandId);
     if (
       existingPeriod &&
@@ -488,6 +766,22 @@ export class SubscriptionsService {
       );
     const prepared = await this.prisma.$transaction(async (tx) => {
       await this.lock(tx, resolved.brandId);
+      if (selectedCard?.savedPaymentMethodId) {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'wiez-payment-methods-' + userId}))`;
+        if (
+          !(await tx.savedPaymentMethod.findFirst({
+            where: {
+              id: selectedCard.savedPaymentMethodId,
+              buyerId: userId,
+              status: 'ACTIVE',
+            },
+            select: { id: true },
+          }))
+        )
+          throw new ConflictException(
+            'This saved card changed. Refresh payment methods.',
+          );
+      }
       const now = new Date();
       const quote = await this.quote(tx, resolved.brandId, dto.tierKey, now);
       if (
@@ -596,15 +890,27 @@ export class SubscriptionsService {
             quote.current?.billingAnchorDay ?? billingAnchorDay(now),
           recurringConsentAt: now,
           recurringPolicyVersion: LEGAL_VERSION,
-          providerCustomerEmail: owner.email,
+          providerCustomerEmail:
+            selectedCard?.authorizationEmail ?? owner.email,
+          savedPaymentMethodId:
+            selectedCard?.savedPaymentMethodId ??
+            (quote.kind === 'UPGRADE' && quote.amountNgn === 0
+              ? quote.current?.savedPaymentMethodId
+              : null),
           ...(quote.kind === 'UPGRADE' && quote.amountNgn === 0
             ? {
-                providerAuthorizationCode:
-                  quote.current?.providerAuthorizationCode,
+                providerAuthorizationCode: selectedCard
+                  ? encryptSubscriptionAuthorization(
+                      selectedCard.authorizationCode,
+                      resolved.brandId,
+                    )
+                  : quote.current?.providerAuthorizationCode,
                 providerAuthorizationJson:
                   quote.current?.providerAuthorizationJson ?? Prisma.JsonNull,
                 providerCustomerEmail:
-                  quote.current?.providerCustomerEmail ?? owner.email,
+                  selectedCard?.authorizationEmail ??
+                  quote.current?.providerCustomerEmail ??
+                  owner.email,
               }
             : {}),
         },
@@ -613,6 +919,7 @@ export class SubscriptionsService {
         data: {
           subscriptionId: subscription.id,
           reference: `wzsub-${randomUUID()}`,
+          payerEmail: selectedCard?.authorizationEmail ?? owner.email,
           amount: quote.amountNgn,
           currency: 'NGN',
           periodStart: quote.effectiveAt,
@@ -649,7 +956,10 @@ export class SubscriptionsService {
           .subscription,
       };
     }
-    const hosted = await this.prepareHostedPayment(invoice.id, owner.email);
+    const hosted = await this.prepareHostedPayment(
+      invoice.id,
+      selectedCard?.authorizationEmail ?? owner.email,
+    );
     if (hosted.authorizationUrl)
       return {
         action: prepared.action,
@@ -659,6 +969,59 @@ export class SubscriptionsService {
         amountNgn: Number(invoice.amount),
         effectiveAt: invoice.periodStart,
       };
+    if (selectedCard) {
+      if (
+        hosted.email.toLowerCase() !==
+        selectedCard.authorizationEmail.toLowerCase()
+      )
+        throw new ConflictException(
+          'The existing payment uses another billing identity. Verify it before creating another payment.',
+        );
+      try {
+        const charge = await this.paystack.charge(
+          hosted.reference,
+          Math.round(Number(invoice.amount) * 100),
+          selectedCard.authorizationCode,
+          selectedCard.authorizationEmail,
+        );
+        await this.prisma.brandSubscriptionInvoice.updateMany({
+          where: { id: invoice.id, status: { notIn: ['PAID', 'PAID_REVIEW'] } },
+          data: {
+            status: 'PROCESSING',
+            lockedAt: null,
+            authorizationUrl: charge?.authorization_url ?? null,
+            providerAccessCode: charge?.access_code ?? null,
+            nextAttemptAt: new Date(Date.now() + 5 * 60_000),
+          },
+        });
+        const result = await this.verifyForOwner(
+          userId,
+          resolved.brandId,
+          hosted.reference,
+        );
+        return {
+          action: 'PAYMENT_SUBMITTED',
+          status: result.status,
+          reference: hosted.reference,
+          authorizationUrl: charge?.authorization_url,
+          providerAccessCode: charge?.access_code,
+          amountNgn: Number(invoice.amount),
+          effectiveAt: invoice.periodStart,
+        };
+      } catch (error) {
+        await this.prisma.brandSubscriptionInvoice.updateMany({
+          where: { id: invoice.id, status: { notIn: ['PAID', 'PAID_REVIEW'] } },
+          data: {
+            status: 'ACTION_REQUIRED',
+            lockedAt: null,
+            nextAttemptAt: new Date(Date.now() + 5 * 60_000),
+            lastError:
+              'Saved-card payment requires verification before another charge.',
+          },
+        });
+        throw error;
+      }
+    }
     let initialized: Awaited<
       ReturnType<SubscriptionPaystackService['initialize']>
     >;
@@ -715,6 +1078,29 @@ export class SubscriptionsService {
     return reference.replace(/(?:-a[1-4]|-h[a-f0-9-]{36})$/, '');
   }
 
+  private paymentIdentities(value: unknown): Record<string, { email: string }> {
+    const result: Record<string, { email: string }> = Object.create(null);
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      return result;
+    for (const [reference, identity] of Object.entries(value)) {
+      if (
+        identity &&
+        typeof identity === 'object' &&
+        typeof identity.email === 'string'
+      )
+        result[reference] = { email: identity.email };
+    }
+    return result;
+  }
+
+  private paymentEmail(invoice: InvoiceWithSubscription, reference: string) {
+    return (
+      this.paymentIdentities(invoice.paymentIdentityJson)[reference]?.email ??
+      invoice.payerEmail ??
+      invoice.subscription.providerCustomerEmail
+    );
+  }
+
   private paymentReferences(invoice: BrandSubscriptionInvoice): string[] {
     return [
       ...new Set([
@@ -761,7 +1147,7 @@ export class SubscriptionsService {
             reference,
             authorizationUrl: invoice.authorizationUrl,
             providerAccessCode: invoice.providerAccessCode,
-            email: invoice.subscription.providerCustomerEmail ?? fallbackEmail,
+            email: this.paymentEmail(invoice, reference) ?? fallbackEmail,
           };
         throw new ConflictException(
           'An earlier payment is still pending. Verify that payment before starting another one.',
@@ -802,6 +1188,17 @@ export class SubscriptionsService {
           'Billing changed while the payment was checked. Refresh and review the current status.',
         );
       const history = latest.hostedAttemptReferences ?? [];
+      const identities = this.paymentIdentities(latest.paymentIdentityJson);
+      const email =
+        identities[reference]?.email ??
+        this.paymentEmail(invoice, reference) ??
+        fallbackEmail;
+      identities[reference]?.email ??
+        (statuses.get(reference) === 'NOT_FOUND' && history.includes(reference)
+          ? this.paymentEmail(invoice, reference)
+          : fallbackEmail) ??
+        fallbackEmail;
+      identities[reference] = { email };
       if (!history.includes(reference) && history.length >= 20)
         throw new ConflictException(
           'This invoice needs billing support after repeated payment attempts. No new charge was initiated.',
@@ -814,6 +1211,7 @@ export class SubscriptionsService {
             ? history
             : [...history, reference],
           status: 'HOSTED_INITIALIZING',
+          paymentIdentityJson: identities,
           lockedAt: new Date(),
           nextAttemptAt: new Date(Date.now() + 10 * 60_000),
           authorizationUrl: null,
@@ -829,7 +1227,7 @@ export class SubscriptionsService {
         reference,
         authorizationUrl: null,
         providerAccessCode: null,
-        email: invoice.subscription.providerCustomerEmail ?? fallbackEmail,
+        email,
       };
     });
   }
@@ -906,7 +1304,7 @@ export class SubscriptionsService {
       Math.round(Number(invoice.amount) * 100) !== Number(result.amount) ||
       result.currency !== invoice.currency ||
       result.customer?.email?.toLowerCase() !==
-        invoice.subscription.providerCustomerEmail?.toLowerCase()
+        this.paymentEmail(invoice, reference)?.toLowerCase()
     ) {
       await this.prisma.brandSubscriptionInvoice.updateMany({
         where: { id: invoice.id, status: { notIn: ['PAID', 'PAID_REVIEW'] } },
@@ -1094,6 +1492,21 @@ export class SubscriptionsService {
             ),
           )
         : null;
+      const billingOwner =
+        reusable && this.payments
+          ? await tx.brand.findUnique({
+              where: { id: invoice.subscription.brandId },
+              select: { ownerId: true },
+            })
+          : null;
+      const savedCard = billingOwner
+        ? await this.payments.saveVerifiedSubscriptionCard(
+            tx,
+            billingOwner.ownerId,
+            authorization!,
+            provider.customer!.email,
+          )
+        : null;
       await tx.brandSubscription.update({
         where: { id: invoice.subscriptionId },
         data: {
@@ -1102,6 +1515,7 @@ export class SubscriptionsService {
           currentPeriodEnd: periodEnd,
           billingAnchorDay: anchor,
           recoveryUntil: null,
+          ...(savedCard ? { savedPaymentMethodId: savedCard.id } : {}),
           ...(encryptedAuthorization
             ? {
                 providerAuthorizationCode: encryptedAuthorization,
@@ -1317,6 +1731,7 @@ export class SubscriptionsService {
               providerAuthorizationJson:
                 current.providerAuthorizationJson ?? Prisma.JsonNull,
               providerCustomerEmail: current.providerCustomerEmail,
+              savedPaymentMethodId: current.savedPaymentMethodId,
             },
           }));
       }
@@ -1341,6 +1756,7 @@ export class SubscriptionsService {
                 billingAnchorDay(current.currentPeriodStart),
             ),
             purpose: 'RENEWAL',
+            payerEmail: subscription.providerCustomerEmail,
             previousSubscriptionId: targetTier ? current.id : null,
             nextAttemptAt: now,
           },
@@ -1418,7 +1834,10 @@ export class SubscriptionsService {
         });
         return;
       }
-      const subscription = invoice.subscription;
+      const subscription =
+        await this.prisma.brandSubscription.findUniqueOrThrow({
+          where: { id: invoice.subscriptionId },
+        });
       const sourceAgreement = await this.prisma.brandSubscription.findUnique({
         where: { id: invoice.previousSubscriptionId ?? subscription.id },
         select: { cancelAtPeriodEnd: true, status: true },
@@ -1427,6 +1846,16 @@ export class SubscriptionsService {
         subscription.providerAuthorizationCode,
         subscription.brandId,
       );
+      const linkedCard = subscription.savedPaymentMethodId
+        ? await this.prisma.savedPaymentMethod.findFirst({
+            where: {
+              id: subscription.savedPaymentMethodId,
+              status: 'ACTIVE',
+              buyer: { brand: { id: subscription.brandId } },
+            },
+            select: { id: true },
+          })
+        : null;
       if (
         !sourceAgreement ||
         sourceAgreement.cancelAtPeriodEnd ||
@@ -1434,6 +1863,7 @@ export class SubscriptionsService {
         subscription.cancelAtPeriodEnd ||
         !subscription.recurringConsentAt ||
         !authorizationCode ||
+        (subscription.savedPaymentMethodId && !linkedCard) ||
         !subscription.providerCustomerEmail ||
         now > recoveryDeadline(invoice.periodStart)
       ) {
@@ -1458,11 +1888,18 @@ export class SubscriptionsService {
         return;
       }
       const count = invoice.attemptCount + 1;
+      const reference = subscriptionAttemptReference(invoice.reference, count);
+      const identities = this.paymentIdentities(invoice.paymentIdentityJson);
+      identities[reference] = { email: subscription.providerCustomerEmail };
       await this.prisma.brandSubscriptionInvoice.update({
         where: { id },
-        data: { attemptCount: count, status: 'PROCESSING' },
+        data: {
+          attemptCount: count,
+          status: 'PROCESSING',
+          paymentIdentityJson: identities,
+        },
       });
-      const reference = subscriptionAttemptReference(invoice.reference, count);
+      invoice.paymentIdentityJson = identities;
       const charge = await this.paystack.charge(
         reference,
         Math.round(Number(invoice.amount) * 100),
