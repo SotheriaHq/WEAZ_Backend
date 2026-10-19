@@ -631,10 +631,12 @@ export class StoreService {
       : null;
   }
 
-  private resolveMediaAspectRatio(file?: {
-    width?: number | null;
-    height?: number | null;
-  } | null): number | null {
+  private resolveMediaAspectRatio(
+    file?: {
+      width?: number | null;
+      height?: number | null;
+    } | null,
+  ): number | null {
     const width = this.normalizedMediaDimension(file?.width);
     const height = this.normalizedMediaDimension(file?.height);
     return width && height ? width / height : null;
@@ -687,9 +689,7 @@ export class StoreService {
 
     await Promise.all(
       Array.from(byFile.entries()).map(async ([fileId, list]) => {
-        list.sort(
-          (a, b) => formatRank(a.format) - formatRank(b.format),
-        );
+        list.sort((a, b) => formatRank(a.format) - formatRank(b.format));
         const best = list[0];
         if (!best) return;
         const url = await this.resolveProductDisplayUrl({
@@ -751,30 +751,28 @@ export class StoreService {
 
       const media = await Promise.all(
         displayableMedia.map(async (entry, index) => {
-            const fileId = entry.fileUploadId || entry.file?.id;
-            const cardUrl =
-              typeof fileId === 'string' ? cardUrls.get(fileId) : undefined;
-            const width = this.normalizedMediaDimension(entry.file?.width);
-            const height = this.normalizedMediaDimension(entry.file?.height);
-            return {
-              id: entry.id,
-              fileUploadId: entry.fileUploadId,
-              url:
-                cardUrl ??
-                (await this.resolveProductDisplayUrl(entry.file)) ??
-                entry.file.s3Url,
-              type:
-                entry.file.fileType === FileType.POST_VIDEO
-                  ? 'video'
-                  : 'image',
-              viewSlot: entry.viewSlot,
-              reviewStatus: entry.reviewStatus,
-              width,
-              height,
-              aspectRatio: this.resolveMediaAspectRatio(entry.file),
-              isPrimary: index === primaryIndex,
-            };
-          }),
+          const fileId = entry.fileUploadId || entry.file?.id;
+          const cardUrl =
+            typeof fileId === 'string' ? cardUrls.get(fileId) : undefined;
+          const width = this.normalizedMediaDimension(entry.file?.width);
+          const height = this.normalizedMediaDimension(entry.file?.height);
+          return {
+            id: entry.id,
+            fileUploadId: entry.fileUploadId,
+            url:
+              cardUrl ??
+              (await this.resolveProductDisplayUrl(entry.file)) ??
+              entry.file.s3Url,
+            type:
+              entry.file.fileType === FileType.POST_VIDEO ? 'video' : 'image',
+            viewSlot: entry.viewSlot,
+            reviewStatus: entry.reviewStatus,
+            width,
+            height,
+            aspectRatio: this.resolveMediaAspectRatio(entry.file),
+            isPrimary: index === primaryIndex,
+          };
+        }),
       );
       return {
         ...baseWithFilters,
@@ -818,9 +816,7 @@ export class StoreService {
           id: upload?.id ?? url,
           fileUploadId: upload?.id ?? null,
           url: upload
-            ? (cardUrl ??
-              (await this.resolveProductDisplayUrl(upload)) ??
-              url)
+            ? (cardUrl ?? (await this.resolveProductDisplayUrl(upload)) ?? url)
             : url,
           type: 'image',
           width: this.normalizedMediaDimension(upload?.width),
@@ -1153,7 +1149,8 @@ export class StoreService {
           }
         } else {
           // No slot named: put it in the first free one.
-          const available = this.contentIntegrity.firstAvailableViewSlot(takenSlots);
+          const available =
+            this.contentIntegrity.firstAvailableViewSlot(takenSlots);
           if (!available) {
             throw new BadRequestException(
               `You can upload up to ${this.maxProductMediaCount} images`,
@@ -2620,7 +2617,9 @@ export class StoreService {
       });
     }
 
-    const response = await this.attachProductMedia(product, { includeOwnerFinancials: true });
+    const response = await this.attachProductMedia(product, {
+      includeOwnerFinancials: true,
+    });
     return {
       ...response,
       publicationStatus: product.publicationStatus,
@@ -2751,7 +2750,9 @@ export class StoreService {
       );
     }
 
-    const response = await this.attachProductMedia(updated, { includeOwnerFinancials: true });
+    const response = await this.attachProductMedia(updated, {
+      includeOwnerFinancials: true,
+    });
     return {
       ...response,
       publicationStatus: updated.publicationStatus,
@@ -3486,7 +3487,9 @@ export class StoreService {
       );
     }
 
-    const response = await this.attachProductMedia(updated, { includeOwnerFinancials: true });
+    const response = await this.attachProductMedia(updated, {
+      includeOwnerFinancials: true,
+    });
     return {
       ...response,
       publicationStatus: (updated as any)?.publicationStatus,
@@ -3810,7 +3813,9 @@ export class StoreService {
       );
     }
 
-    return this.attachProductMedia(duplicated, { includeOwnerFinancials: true });
+    return this.attachProductMedia(duplicated, {
+      includeOwnerFinancials: true,
+    });
   }
 
   // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -4765,8 +4770,8 @@ export class StoreService {
     // Remove wishlistItems from response (internal use only)
     const { wishlistItems, ...productData } = product;
     void wishlistItems;
-    // `GET /products/:id` answers both the public product page and the 
-    // studio editor, so the financials follow ownership rather than the 
+    // `GET /products/:id` answers both the public product page and the
+    // studio editor, so the financials follow ownership rather than the
     // route. `isOwner` is computed above from brand.ownerId.
     const withMedia = await this.attachProductMedia(productData, {
       includeOwnerFinancials: Boolean(isOwner),
@@ -5557,7 +5562,14 @@ export class StoreService {
     if (urls.length > 0) {
       const uploads = await this.prisma.fileUpload.findMany({
         where: { s3Url: { in: urls } },
-        select: { id: true, s3Url: true, s3Key: true, isPublic: true, width: true, height: true },
+        select: {
+          id: true,
+          s3Url: true,
+          s3Key: true,
+          isPublic: true,
+          width: true,
+          height: true,
+        },
       });
       for (const u of uploads) uploadByUrl.set(u.s3Url, u);
     }
@@ -5887,7 +5899,14 @@ export class StoreService {
     if (urls.length > 0) {
       const uploads = await this.prisma.fileUpload.findMany({
         where: { s3Url: { in: urls } },
-        select: { id: true, s3Url: true, s3Key: true, isPublic: true, width: true, height: true },
+        select: {
+          id: true,
+          s3Url: true,
+          s3Key: true,
+          isPublic: true,
+          width: true,
+          height: true,
+        },
       });
       for (const u of uploads) uploadByUrl.set(u.s3Url, u);
     }
@@ -7354,12 +7373,13 @@ export class StoreService {
       sizingMode === SizingMode.RTW_PLUS_FITTINGS &&
       requiredMeasurementKeys.length > 0
     ) {
-      const currentMeasurements = this.normalizeSizeFitData(
-        payload?.sizeFitProfile?.measurements,
-      ) ?? {};
-      const rawIncoming = (payload?.sizeFitData?.measurements && typeof payload.sizeFitData.measurements === 'object')
-        ? (payload.sizeFitData.measurements as Record<string, any>)
-        : (payload?.sizeFitData ?? {});
+      const currentMeasurements =
+        this.normalizeSizeFitData(payload?.sizeFitProfile?.measurements) ?? {};
+      const rawIncoming =
+        payload?.sizeFitData?.measurements &&
+        typeof payload.sizeFitData.measurements === 'object'
+          ? (payload.sizeFitData.measurements as Record<string, any>)
+          : (payload?.sizeFitData ?? {});
 
       const mergedMeasurements = { ...currentMeasurements };
       for (const [key, val] of Object.entries(rawIncoming)) {
@@ -9886,7 +9906,9 @@ export class StoreService {
     const customHeldInEscrow = Number(
       customHeldAllocations?._sum?.netBrandAmount ?? 0,
     );
-    const heldInEscrow = this.toMoney(standardHeldInEscrow + customHeldInEscrow);
+    const heldInEscrow = this.toMoney(
+      standardHeldInEscrow + customHeldInEscrow,
+    );
     const totalEarnings = this.toMoney(
       availableForPayout + pendingPayoutTotal + totalPaidOut + heldInEscrow,
     );
@@ -10961,7 +10983,9 @@ export class StoreService {
       createData.refundMethod = dto.refundMethod;
     }
     if (dto.responseTimeSla !== undefined) {
-      const sanitizedResponseTimeSla = sanitizeResponseTimeSla(dto.responseTimeSla);
+      const sanitizedResponseTimeSla = sanitizeResponseTimeSla(
+        dto.responseTimeSla,
+      );
       updateData.responseTimeSla = sanitizedResponseTimeSla;
       createData.responseTimeSla = sanitizedResponseTimeSla;
     }
@@ -10999,9 +11023,11 @@ export class StoreService {
       return;
     }
 
-    const rawMeasurements = (measurementData.measurements && typeof measurementData.measurements === 'object')
-      ? (measurementData.measurements as Record<string, any>)
-      : measurementData;
+    const rawMeasurements =
+      measurementData.measurements &&
+      typeof measurementData.measurements === 'object'
+        ? (measurementData.measurements as Record<string, any>)
+        : measurementData;
 
     const measurementValues: Record<string, number> = {};
     for (const [key, value] of Object.entries(rawMeasurements)) {
@@ -11016,7 +11042,10 @@ export class StoreService {
         }
       } else if (value && typeof value === 'object' && !Array.isArray(value)) {
         const nestedValue = (value as any).value;
-        const parsed = typeof nestedValue === 'number' ? nestedValue : Number(String(nestedValue ?? '').trim());
+        const parsed =
+          typeof nestedValue === 'number'
+            ? nestedValue
+            : Number(String(nestedValue ?? '').trim());
         if (Number.isFinite(parsed)) {
           numericValue = parsed;
         }
@@ -11057,9 +11086,12 @@ export class StoreService {
         });
       }
 
-      const currentMeasurements = (profile.measurements && typeof profile.measurements === 'object' && !Array.isArray(profile.measurements))
-        ? (profile.measurements as Record<string, any>)
-        : {};
+      const currentMeasurements =
+        profile.measurements &&
+        typeof profile.measurements === 'object' &&
+        !Array.isArray(profile.measurements)
+          ? (profile.measurements as Record<string, any>)
+          : {};
 
       const updatedMeasurements = { ...currentMeasurements };
       let changed = false;
@@ -11071,13 +11103,21 @@ export class StoreService {
 
         if (typeof existing === 'number') {
           existingVal = existing;
-        } else if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+        } else if (
+          existing &&
+          typeof existing === 'object' &&
+          !Array.isArray(existing)
+        ) {
           existingVal = Number(existing.value);
           existingUnit = String(existing.unit || 'CM');
         }
 
         if (existingVal !== val) {
-          if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+          if (
+            existing &&
+            typeof existing === 'object' &&
+            !Array.isArray(existing)
+          ) {
             updatedMeasurements[key] = { value: val, unit: existingUnit };
           } else {
             updatedMeasurements[key] = { value: val, unit: 'CM' };
@@ -11088,7 +11128,10 @@ export class StoreService {
 
       if (changed) {
         const now = new Date();
-        const nextReminderAt = new Date(now.getTime() + (profile.requireUpdateEveryDays || 14) * 24 * 60 * 60 * 1000);
+        const nextReminderAt = new Date(
+          now.getTime() +
+            (profile.requireUpdateEveryDays || 14) * 24 * 60 * 60 * 1000,
+        );
 
         await tx.userSizeFitProfile.update({
           where: { id: profile.id },
@@ -11108,9 +11151,15 @@ export class StoreService {
         const nextVersion = (latestRevision?.version ?? 0) + 1;
 
         const changedKeys: string[] = [];
-        const allKeys = new Set([...Object.keys(currentMeasurements), ...Object.keys(updatedMeasurements)]);
+        const allKeys = new Set([
+          ...Object.keys(currentMeasurements),
+          ...Object.keys(updatedMeasurements),
+        ]);
         for (const k of allKeys) {
-          if (JSON.stringify(currentMeasurements[k]) !== JSON.stringify(updatedMeasurements[k])) {
+          if (
+            JSON.stringify(currentMeasurements[k]) !==
+            JSON.stringify(updatedMeasurements[k])
+          ) {
             changedKeys.push(k);
           }
         }
@@ -11128,7 +11177,9 @@ export class StoreService {
         });
       }
     } catch (err) {
-      this.logger.warn(`Failed to sync measurements to profile for user ${userId}: ${err.message}`);
+      this.logger.warn(
+        `Failed to sync measurements to profile for user ${userId}: ${err.message}`,
+      );
     }
   }
 }
