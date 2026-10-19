@@ -7,6 +7,7 @@ import {
 import { NotificationType, Prisma } from '@prisma/client';
 import { LedgerService } from 'src/finance/ledger.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { reserveFullOrderRefund } from './queue-refund-reservation';
 
 type Tx = Prisma.TransactionClient;
 type Refund = Prisma.CustomOrderQueueRefundGetPayload<{
@@ -122,13 +123,16 @@ export class CustomOrderQueueRefundsService {
       row.currency !== row.paymentAttempt.currency ||
       row.currency !== quote.currency ||
       refund.greaterThan(row.paymentAttempt.amount) ||
-      row.customOrder.lane !== 'TERMINAL' ||
-      !row.customOrder.cancelledAt
+      (quote.refundKind !== 'POST_ACTIVE_PARTIAL' && (row.customOrder.lane !== 'TERMINAL' || !row.customOrder.cancelledAt))
     )
       throw new GatewayFailure(
         'REFUND_SNAPSHOT_RECONCILIATION_REQUIRED',
         false,
       );
+    if (['POST_ACTIVE_FULL', 'POST_ACTIVE_PARTIAL'].includes(String(quote.refundKind))) {
+      await reserveFullOrderRefund(tx, this.ledger, { id: row.id, customOrderId: row.customOrderId, brandId: row.customOrder.brandId, currency: row.currency, reservationKey: typeof quote.reservationKey === 'string' ? quote.reservationKey : undefined, captureAmount: captured.toNumber(), releasedNet: this.money(quote.releasedNet).toNumber(), releasedCommission: this.money(quote.releasedCommission).toNumber(), unreleasedGross: this.money(quote.unreleasedGross).toNumber() });
+      return;
+    }
     await this.ledger.postTransaction(tx, {
       idempotencyKey: `ledger:custom-order:${row.customOrderId}:queue_refund_reserved`,
       type: 'REVERSAL',
@@ -255,6 +259,8 @@ export class CustomOrderQueueRefundsService {
         throw new GatewayFailure('REFUND_UNKNOWN_PROVIDER_MODE', true);
       const gateway = this.gateway(row);
       const secret = this.secret(gateway, mode);
+      const settlement = this.providerSettlement(row);
+      await this.verifyCapture(row, gateway, secret);
       const url =
         gateway === 'PAYSTACK'
           ? 'https://api.paystack.co/refund'
@@ -263,12 +269,12 @@ export class CustomOrderQueueRefundsService {
         gateway === 'PAYSTACK'
           ? {
               transaction: row.paymentAttempt.reference,
-              amount: this.money(row.amount).times(100).toNumber(),
-              currency: row.currency,
+              amount: settlement.amount.times(100).toNumber(),
+              currency: settlement.currency,
               merchant_note: `Queue refund ${row.id}`,
             }
           : {
-              amount: this.money(row.amount).toNumber(),
+              amount: settlement.amount.toNumber(),
               comments: `Queue refund ${row.id}`,
             };
       const response = await fetch(url, {
@@ -359,15 +365,44 @@ export class CustomOrderQueueRefundsService {
         !secret.startsWith('sk_test_')) ||
       (gateway === 'FLUTTERWAVE' &&
         mode === 'test' &&
-        !secret.includes('_TEST')) ||
-      (mode === 'live' &&
-        (secret.startsWith('sk_test_') || secret.includes('_TEST')))
+        !secret.includes('_TEST'))
     )
       throw new GatewayFailure(
         'REFUND_PROVIDER_MODE_CREDENTIAL_MISMATCH',
         true,
       );
     return secret;
+  }
+
+  private providerSettlement(row: Refund): { amount: Prisma.Decimal; currency: string } {
+    const saved = object(object(row.breakdownJson).settlement);
+    if (saved.status === 'RECORDED' && typeof saved.currency === 'string') {
+      const amount = this.money(saved.amount);
+      if (saved.currency !== row.paymentAttempt.settlementCurrency || amount.greaterThan(row.paymentAttempt.settlementAmount ?? row.paymentAttempt.amount)) throw new GatewayFailure('REFUND_SETTLEMENT_SNAPSHOT_MISMATCH', false);
+      return { amount, currency: saved.currency };
+    }
+    // Older same-currency requests need no conversion; foreign-currency requests require their original snapshot.
+    if (!Object.keys(saved).length && (!row.paymentAttempt.settlementCurrency || row.paymentAttempt.settlementCurrency === row.currency)) return { amount: this.money(row.amount), currency: row.currency };
+    throw new GatewayFailure(string(saved.reason) || 'REFUND_ORIGINAL_FX_SNAPSHOT_MISSING', false);
+  }
+
+  private async verifyCapture(row: Refund, gateway: Gateway, secret: string) {
+    const url = gateway === 'PAYSTACK'
+      ? `https://api.paystack.co/transaction/verify/${encodeURIComponent(row.paymentAttempt.reference)}`
+      : `https://api.flutterwave.com/v3/transactions/${encodeURIComponent(this.flutterwaveTransaction(row))}/verify`;
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${secret}` }, signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new GatewayFailure('REFUND_CAPTURE_VERIFICATION_UNAVAILABLE', true);
+    const payload = object(await response.json()), data = object(payload.data);
+    const expectedCurrency = row.paymentAttempt.settlementCurrency || row.paymentAttempt.currency;
+    const expectedAmount = row.paymentAttempt.settlementAmount ?? row.paymentAttempt.amount;
+    const amount = this.money(data.amount).dividedBy(gateway === 'PAYSTACK' ? 100 : 1);
+    if ((payload.status !== true && payload.status !== 'success') ||
+      !['success', 'successful'].includes(string(data.status).toLowerCase()) ||
+      string(data.reference ?? data.tx_ref) !== row.paymentAttempt.reference ||
+      row.paymentAttempt.providerTransactionId && string(data.id) !== row.paymentAttempt.providerTransactionId ||
+      string(data.currency).toUpperCase() !== expectedCurrency.toUpperCase() || !amount.equals(expectedAmount)) {
+      throw new GatewayFailure('REFUND_ORIGINAL_CAPTURE_VERIFICATION_MISMATCH', true);
+    }
   }
 
   private flutterwaveTransaction(row: Refund): string {
@@ -402,11 +437,12 @@ export class CustomOrderQueueRefundsService {
       const amount = this.money(data.amount);
       const normalized =
         gateway === 'PAYSTACK' ? amount.dividedBy(100) : amount;
+      const settlement = this.providerSettlement(row);
       return (
         sameTransaction &&
         (!checkId || string(data.id) === row.providerRefundId) &&
-        string(data.currency).toUpperCase() === row.currency.toUpperCase() &&
-        normalized.equals(row.amount)
+        string(data.currency).toUpperCase() === settlement.currency.toUpperCase() &&
+        normalized.equals(settlement.amount)
       );
     } catch {
       return false;
@@ -450,7 +486,7 @@ export class CustomOrderQueueRefundsService {
       payload.status !== 'success' ||
       string(verified.id) !== id ||
       string(verified.tx_ref) !== row.paymentAttempt.reference ||
-      string(verified.currency) !== row.currency
+      string(verified.currency) !== this.providerSettlement(row).currency
     )
       throw new GatewayFailure(
         'REFUND_TRANSACTION_VERIFICATION_MISMATCH',
@@ -654,13 +690,15 @@ export class CustomOrderQueueRefundsService {
         return;
       await this.reserve(tx, current);
       const amount = this.money(current.amount).toNumber();
+      const settlement = object(object(current.breakdownJson).settlement);
       await this.ledger.postTransaction(tx, {
-        idempotencyKey: `ledger:custom-order:${current.customOrderId}:queue_refund_settled`,
+        idempotencyKey: `ledger:custom-order:${current.customOrderId}:queue_refund_settled:${current.id}`,
         type: 'REFUND_ISSUED',
         referenceType: 'CustomOrderQueueRefund',
         referenceId: current.id,
         totalAmount: amount,
         currency: current.currency,
+        ...(settlement.status === 'RECORDED' ? { baseCurrency: String(settlement.currency), baseCurrencyAmount: this.money(settlement.amount).toNumber(), fxRateSnapshotId: typeof settlement.exchangeRateSnapshotId === 'string' ? settlement.exchangeRateSnapshotId : null } : {}),
         description: 'Gateway confirmed waiting-order refund processed',
         lines: [
           {
@@ -695,8 +733,7 @@ export class CustomOrderQueueRefundsService {
       await tx.customOrder.update({
         where: { id: current.customOrderId },
         data: {
-          status: 'CLOSED',
-          paymentStatus: 'REFUNDED',
+          ...(object(current.breakdownJson).refundKind === 'POST_ACTIVE_PARTIAL' ? {} : { status: 'CLOSED', paymentStatus: 'REFUNDED' }),
           orderRevision: { increment: 1 },
         },
       });

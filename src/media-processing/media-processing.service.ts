@@ -1,8 +1,9 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
-// import-equals form: sharp is a callable CJS export and this tsconfig has no
-// esModuleInterop — default-import syntax breaks under ts-jest while working
-// under the SWC production build. This form is identical under both.
-import sharp = require('sharp');
+import type sharpTypes from 'sharp';
+import type { Metadata } from 'sharp';
+// Sharp 0.35 exposes separate ESM types and a callable CommonJS runtime.
+// Keep the runtime require explicit so SWC and ts-jest use the same export.
+const sharp: typeof sharpTypes = require('sharp');
 import {
   IMAGE_VARIANT_PROFILES,
   IMAGE_MIME_TYPES,
@@ -131,7 +132,7 @@ export class MediaProcessingService {
       return this.decodeHeicToJpegBuffer(buffer);
     }
 
-    let metadata: sharp.Metadata;
+    let metadata: Metadata;
     try {
       metadata = await sharp(buffer, { animated: true }).metadata();
     } catch {
@@ -219,7 +220,8 @@ export class MediaProcessingService {
 
       if (outputFormat === 'AVIF') {
         const out = await resized
-          .avif({ quality, effort: AVIF_ENCODER_EFFORT })
+          // Keep the existing encoder tuning when upgrading the security-patched image library.
+          .avif({ quality, effort: AVIF_ENCODER_EFFORT, tune: 'psnr' })
           .toBuffer({ resolveWithObject: true });
         variants.push({
           kind: profile.kind,

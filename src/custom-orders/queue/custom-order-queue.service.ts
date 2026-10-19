@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { AdminAuditAction, CustomOrderActorType, CustomOrderLane, CustomOrderLedgerAllocationStatus, CustomOrderLedgerAllocationType, CustomOrderStatus, LedgerAccountType, LedgerEntryDirection, LedgerTransactionType, NotificationType, Prisma, Role } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -8,6 +8,10 @@ import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-
 import { LedgerService } from 'src/finance/ledger.service';
 import { canRetainPosition, preActiveRefund, QUEUE_WAIT_MS, RETAIN_CLOSE_MS, RETAIN_OPEN_MS, retainedExpiry, selectQueueCandidate } from './subscription-queue.policy';
 import { getCachedActiveAdminIds } from '../custom-order-admin-attention';
+import { BrandBalanceService } from 'src/finance/brand-balance.service';
+import { reserveFullOrderRefund } from './queue-refund-reservation';
+import { refundSettlement } from './queue-refund-settlement';
+import { allocatePartialRefund } from './partial-refund-allocation';
 
 type Tx = Prisma.TransactionClient;
 const WAITING: CustomOrderLane[] = ['PENDING', 'UP_NEXT'];
@@ -24,7 +28,7 @@ export class CustomOrderQueueService {
   private readonly logger = new Logger(CustomOrderQueueService.name);
   private brandCursor = '';
   private expiryCursor: { at: Date; id: string } | null = null;
-  constructor(private readonly prisma: PrismaService, private readonly permissions: BrandPermissionService, private readonly finance: CustomOrderFinanceSyncService, private readonly ledger: LedgerService) {}
+  constructor(private readonly prisma: PrismaService, private readonly permissions: BrandPermissionService, private readonly finance: CustomOrderFinanceSyncService, private readonly ledger: LedgerService, @Optional() private readonly brandBalance?: BrandBalanceService) {}
 
   async lockBrand(tx: Tx, brandId: string): Promise<Date> {
     const rows = await tx.$queryRaw<Array<{ id: string }>>`SELECT "_id" AS id FROM "Brand" WHERE "_id" = ${brandId}::uuid FOR UPDATE`;
@@ -85,15 +89,16 @@ export class CustomOrderQueueService {
 
   async present(ids: string[], tx: Tx | PrismaService = this.prisma) {
     if (!ids.length) return {};
-    const rows = await tx.customOrder.findMany({ where: { id: { in: ids.slice(0, 100) } }, include: { queueRefund: true } });
+    const rows = await tx.customOrder.findMany({ where: { id: { in: ids.slice(0, 100) } }, include: { queueRefunds: { orderBy: { createdAt: 'desc' }, take: 20 } } });
     const brands = [...new Set(rows.map(row => row.brandId))];
     const ranks = brands.length ? await tx.$queryRaw<Array<{ id: string; position: bigint; waitingCount: bigint }>>(Prisma.sql`SELECT "id", ROW_NUMBER() OVER (PARTITION BY "brandId" ORDER BY CASE WHEN "lane" = 'UP_NEXT' THEN 0 ELSE 1 END, "queuePriority" DESC, "queuePosition" ASC NULLS LAST, "queuedAt", "id") AS position, COUNT(*) OVER (PARTITION BY "brandId") AS "waitingCount" FROM "CustomOrder" WHERE "brandId" IN (${Prisma.join(brands.map(id => Prisma.sql`${id}::uuid`))}) AND "lane" IN ('PENDING','UP_NEXT')`) : [];
     const byId = new Map(ranks.map(row => [row.id, row]));
     const now = new Date();
     return Object.fromEntries(rows.map(row => {
+      const queueRefund = row.queueRefunds.find(refund => refund.status !== 'SETTLED') ?? row.queueRefunds[0];
       const waiting = row.lane !== null && WAITING.includes(row.lane);
       const rank = byId.get(row.id);
-      return [row.id, { lane: row.lane, orderRevision: row.orderRevision, queueExpiresAt: row.queueExpiresAt?.toISOString() ?? null, serverNow: now.toISOString(), retainOpensAt: row.queueExpiresAt ? new Date(+row.queueExpiresAt - RETAIN_OPEN_MS).toISOString() : null, retainClosesAt: row.queueExpiresAt ? new Date(+row.queueExpiresAt - RETAIN_CLOSE_MS).toISOString() : null, canRetain: Boolean(waiting && row.queueExpiresAt && canRetainPosition({ now, queueExpiresAt: row.queueExpiresAt, retainCount: row.retainCount })), canCancel: waiting && row.paymentStatus === 'PAID', canResubmit: Boolean(row.cancelledAt), adminPromotionHeld: row.adminPromotionHeld, position: rank ? Number(rank.position) : null, waitingCount: rank ? Number(rank.waitingCount) : 0, activatedAt: row.activatedAt?.toISOString() ?? null, captureSummary: { amount: Number(object(row.buyerPriceSummaryJson).grandTotal ?? 0), currency: row.currency, held: waiting, heldAmount: waiting ? Number(object(row.buyerPriceSummaryJson).grandTotal ?? 0) : 0, status: row.queueRefund ? (row.queueRefund.status === 'SETTLED' ? 'REFUNDED' : 'REFUND_PROCESSING') : waiting ? 'HELD' : 'RELEASED' }, refundSummary: row.queueRefund ? { id: row.queueRefund.id, status: row.queueRefund.status, amount: Number(row.queueRefund.amount), currency: row.queueRefund.currency, lastError: row.queueRefund.lastError } : null }];
+      return [row.id, { refundHistory: row.queueRefunds.map(refund => ({ id: refund.id, kind: refund.kind, status: refund.status, amount: Number(refund.amount), currency: refund.currency, createdAt: refund.createdAt.toISOString() })), lane: row.lane, needsLaneReconciliation: row.lane === null && !row.queuePolicyVersion && ['DISPUTED', 'DELIVERY_ISSUE_REPORTED'].includes(row.status), orderRevision: row.orderRevision, queueExpiresAt: row.queueExpiresAt?.toISOString() ?? null, serverNow: now.toISOString(), retainOpensAt: row.queueExpiresAt ? new Date(+row.queueExpiresAt - RETAIN_OPEN_MS).toISOString() : null, retainClosesAt: row.queueExpiresAt ? new Date(+row.queueExpiresAt - RETAIN_CLOSE_MS).toISOString() : null, canRetain: Boolean(waiting && row.queueExpiresAt && canRetainPosition({ now, queueExpiresAt: row.queueExpiresAt, retainCount: row.retainCount })), canCancel: waiting && row.paymentStatus === 'PAID', canResubmit: Boolean(row.cancelledAt), adminPromotionHeld: row.adminPromotionHeld, position: rank ? Number(rank.position) : null, waitingCount: rank ? Number(rank.waitingCount) : 0, activatedAt: row.activatedAt?.toISOString() ?? null, captureSummary: { amount: Number(object(row.buyerPriceSummaryJson).grandTotal ?? 0), currency: row.currency, held: waiting, heldAmount: waiting ? Number(object(row.buyerPriceSummaryJson).grandTotal ?? 0) : 0, status: queueRefund ? (queueRefund.status === 'SETTLED' ? (row.cancelledAt ? 'REFUNDED' : 'PARTIALLY_REFUNDED') : 'REFUND_PROCESSING') : waiting ? 'HELD' : 'RELEASED' }, refundSummary: queueRefund ? { id: queueRefund.id, kind: queueRefund.kind, status: queueRefund.status, amount: Number(queueRefund.amount), currency: queueRefund.currency, settlement: object(queueRefund.breakdownJson).settlement ?? null, lastError: queueRefund.lastError } : null }];
     }));
   }
 
@@ -208,7 +213,19 @@ export class CustomOrderQueueService {
   async refundQuote(userId: string, id: string) {
     const order = await this.assertParticipant(userId, id);
     if (!order.lane || !WAITING.includes(order.lane)) throw new ConflictException('CUSTOM_ORDER_NO_LONGER_WAITING');
-    return this.quote(order);
+    return this.quoteWithSettlement(order);
+  }
+
+  async quoteWithSettlement(order: Prisma.CustomOrderGetPayload<object>) {
+    const quote = this.quote(order);
+    const attempt = order.paymentReference ? await this.prisma.paymentAttempt.findUnique({ where: { reference: order.paymentReference }, include: { exchangeRateSnapshot: true } }) : await this.prisma.paymentAttempt.findFirst({ where: { customOrderId: order.id, status: 'PAID' }, orderBy: { createdAt: 'desc' }, include: { exchangeRateSnapshot: true } });
+    const previous = attempt ? await this.prisma.customOrderQueueRefund.findMany({ where: { paymentAttemptId: attempt.id }, select: { amount: true, breakdownJson: true } }) : [];
+    return { ...quote, settlement: attempt ? refundSettlement(attempt, quote.refundAmount, previous) : { status: 'REQUIRES_RECONCILIATION' as const, reason: 'REFUND_CAPTURE_MISSING' }, settlementIsEstimate: true };
+  }
+
+  private async settlementForRequest(tx: Tx, attempt: Prisma.PaymentAttemptGetPayload<{ include: { exchangeRateSnapshot: true } }>, amount: number) {
+    const previous = await tx.customOrderQueueRefund.findMany({ where: { paymentAttemptId: attempt.id }, select: { amount: true, breakdownJson: true } });
+    return refundSettlement(attempt, amount, previous);
   }
 
   async cancel(userId: string | undefined, id: string, reason: string, expectedRevision?: number, actorType?: CustomOrderActorType) {
@@ -216,7 +233,7 @@ export class CustomOrderQueueService {
     const actor = actorType ?? (source.buyerId === userId ? 'BUYER' : 'BRAND');
     await this.prisma.$transaction(async tx => {
       // Parent capture first, then brand: matches payment finalization lock order.
-      if (source.paymentReference) await tx.$queryRaw`SELECT "id" FROM "PaymentAttempt" WHERE "reference" = ${source.paymentReference} FOR UPDATE`;
+      await this.lockCapture(tx, source);
       const now = await this.lockBrand(tx, source.brandId);
       const current = await tx.customOrder.findUniqueOrThrow({ where: { id } });
       if (current.cancelledAt) return;
@@ -231,23 +248,107 @@ export class CustomOrderQueueService {
 
   async requestCancellationInTransaction(tx: Tx, id: string, reason: string, actor: CustomOrderActorType, actorId?: string) {
     const source = await tx.customOrder.findUniqueOrThrow({ where: { id } });
-    if (source.paymentReference) await tx.$queryRaw`SELECT "id" FROM "PaymentAttempt" WHERE "reference" = ${source.paymentReference} FOR UPDATE`;
+    await this.lockCapture(tx, source);
     const now = await this.lockBrand(tx, source.brandId);
     const current = await tx.customOrder.findUniqueOrThrow({ where: { id } });
     if (!current.cancelledAt) await this.cancelLocked(tx, current, now, reason, actor, actorId);
     await this.drain(tx, current.brandId, now);
-    return tx.customOrderQueueRefund.findUniqueOrThrow({ where: { customOrderId: id } });
+    return tx.customOrderQueueRefund.findFirstOrThrow({ where: { customOrderId: id, kind: 'CANCELLATION' } });
+  }
+
+  private async lockCapture(tx: Tx, source: { id: string; paymentReference: string | null }) {
+    if (source.paymentReference) await tx.$queryRaw`SELECT "id" FROM "PaymentAttempt" WHERE "reference" = ${source.paymentReference} FOR UPDATE`;
+    else await tx.$queryRaw`SELECT "id" FROM "PaymentAttempt" WHERE "customOrderId" = ${source.id}::uuid AND "status" = 'PAID' ORDER BY "createdAt" DESC LIMIT 1 FOR UPDATE`;
+  }
+
+  async requestFullRefundInTransaction(tx: Tx, id: string, reason: string, actor: CustomOrderActorType, actorId?: string) {
+    const source = await tx.customOrder.findUniqueOrThrow({ where: { id } });
+    const attempt = source.paymentReference ? await tx.paymentAttempt.findUnique({ where: { reference: source.paymentReference }, include: { exchangeRateSnapshot: true } }) : await tx.paymentAttempt.findFirst({ where: { customOrderId: id, status: 'PAID' }, orderBy: { createdAt: 'desc' }, include: { exchangeRateSnapshot: true } });
+    if (!attempt) throw new ConflictException('CUSTOM_ORDER_CAPTURE_REQUIRES_REVIEW');
+    await tx.$queryRaw`SELECT "id" FROM "PaymentAttempt" WHERE "id" = ${attempt.id}::uuid FOR UPDATE`;
+    const now = await this.lockBrand(tx, source.brandId);
+    const order = await tx.customOrder.findUniqueOrThrow({ where: { id } });
+    const existing = await tx.customOrderQueueRefund.findFirst({ where: { customOrderId: id, kind: 'CANCELLATION' } });
+    if (existing) return existing;
+    if (order.paymentStatus !== 'PAID' || !['PAID', 'PARTIALLY_REFUNDED'].includes(attempt.status) || attempt.currency !== order.currency) throw new ConflictException('CUSTOM_ORDER_CAPTURE_REQUIRES_REVIEW');
+    if (order.lane && WAITING.includes(order.lane)) {
+      await this.cancelLocked(tx, order, now, reason, actor, actorId);
+      await this.drain(tx, order.brandId, now);
+      return tx.customOrderQueueRefund.findFirstOrThrow({ where: { customOrderId: id, kind: 'CANCELLATION' } });
+    }
+    const previous = await tx.customOrderQueueRefund.aggregate({ where: { customOrderId: id }, _sum: { amount: true } });
+    const captureKobo = money(object(order.buyerPriceSummaryJson).grandTotal) - money(previous._sum.amount);
+    if (captureKobo <= 0) throw new ConflictException('CUSTOM_ORDER_REFUND_SNAPSHOT_REQUIRES_REVIEW');
+    const reserved = await tx.customOrderQueueRefund.aggregate({ where: { paymentAttemptId: attempt.id }, _sum: { amount: true } });
+    if (money(reserved._sum.amount) + captureKobo > money(attempt.amount)) throw new ConflictException('CUSTOM_ORDER_REFUND_EXCEEDS_CAPTURE');
+    const allocations = await tx.customOrderLedgerAllocation.findMany({ where: { customOrderId: id, allocationType: { not: 'PLACEMENT_CAPTURE' } } });
+    const released = allocations.filter(row => ['PAYOUT_ELIGIBLE', 'PAID_OUT'].includes(row.status) || row.eligibleAt || row.paidOutAt);
+    const releasedNet = released.reduce((sum, row) => sum + money(row.netBrandAmount), 0);
+    const releasedCommission = released.reduce((sum, row) => sum + money(row.commissionAmount), 0);
+    const unreleasedGross = captureKobo - releasedNet - releasedCommission;
+    if (unreleasedGross < 0 || releasedNet > 0 && !this.brandBalance) throw new ConflictException('CUSTOM_ORDER_REFUND_RELEASE_RECONCILIATION_REQUIRED');
+    const settlement = await this.settlementForRequest(tx, attempt, captureKobo / 100);
+    const breakdown = { settlement, refundKind: 'POST_ACTIVE_FULL', currency: order.currency, captureAmount: captureKobo / 100, refundAmount: captureKobo / 100, vatAmount: 0, garmentCharge: 0, jumpCharge: 0, releasedNet: releasedNet / 100, releasedCommission: releasedCommission / 100, unreleasedGross: unreleasedGross / 100, actorId: actorId ?? null };
+    const refund = await tx.customOrderQueueRefund.create({ data: { requestKey: `custom-order:${id}:cancellation`, customOrderId: id, paymentAttemptId: attempt.id, amount: captureKobo / 100, currency: order.currency, breakdownJson: breakdown } });
+    await reserveFullOrderRefund(tx, this.ledger, { id: refund.id, customOrderId: id, brandId: order.brandId, ...breakdown });
+    await this.recordRefundDebt(tx, order.brandId, id, releasedNet / 100, order.currency, reason, actorId);
+    await tx.customOrderLedgerAllocation.updateMany({ where: { customOrderId: id, status: { in: ['HELD', 'PAYOUT_ELIGIBLE', 'PAID_OUT'] } }, data: { status: 'REVERSED', reversedAt: now, reversalReason: reason } });
+    await tx.customOrder.update({ where: { id }, data: { lane: 'TERMINAL', status: 'REFUND_IN_PROGRESS', cancelledAt: now, cancellationReason: reason, cancellationActorType: actor, orderRevision: { increment: 1 } } });
+    await this.invalidateReminders(tx, id);
+    await this.record(tx, order, 'ORDER_REFUND_REQUESTED', `An order-scoped refund of ${order.currency} ${(captureKobo / 100).toFixed(2)} has been reserved. Provider confirmation is pending.`, actor, actorId);
+    await this.drain(tx, order.brandId, now);
+    return refund;
+  }
+
+  async requestPartialRefundInTransaction(tx: Tx, id: string, amount: number, disputeId: string, reason: string, actorId: string) {
+    const source = await tx.customOrder.findUniqueOrThrow({ where: { id } });
+    await this.lockCapture(tx, source);
+    const now = await this.lockBrand(tx, source.brandId);
+    const requestKey = `custom-order:${id}:dispute:${disputeId}`;
+    const existing = await tx.customOrderQueueRefund.findUnique({ where: { requestKey } });
+    if (existing) return existing;
+    const order = await tx.customOrder.findUniqueOrThrow({ where: { id } });
+    const attempt = order.paymentReference ? await tx.paymentAttempt.findUnique({ where: { reference: order.paymentReference }, include: { exchangeRateSnapshot: true } }) : await tx.paymentAttempt.findFirst({ where: { customOrderId: id, status: 'PAID' }, orderBy: { createdAt: 'desc' }, include: { exchangeRateSnapshot: true } });
+    if (!attempt || attempt.currency !== order.currency || !['PAID', 'PARTIALLY_REFUNDED'].includes(attempt.status) || order.paymentStatus !== 'PAID' || order.cancelledAt || !['ACTIVE', 'IN_DELIVERY'].includes(order.lane ?? '')) throw new ConflictException('CUSTOM_ORDER_PARTIAL_REFUND_NOT_AVAILABLE');
+    const previous = await tx.customOrderQueueRefund.aggregate({ where: { customOrderId: id }, _sum: { amount: true } });
+    const remaining = money(object(order.buyerPriceSummaryJson).grandTotal) - money(previous._sum.amount);
+    const refundCents = money(amount);
+    if (refundCents <= 0 || refundCents >= remaining) throw new BadRequestException('Partial refund must be positive and less than the order remaining refundable amount');
+    const parentReserved = await tx.customOrderQueueRefund.aggregate({ where: { paymentAttemptId: attempt.id }, _sum: { amount: true } });
+    if (money(parentReserved._sum.amount) + refundCents > money(attempt.amount)) throw new ConflictException('CUSTOM_ORDER_REFUND_EXCEEDS_CAPTURE');
+    const allocations = await tx.customOrderLedgerAllocation.findMany({ where: { customOrderId: id, allocationType: { not: 'PLACEMENT_CAPTURE' }, status: { in: ['HELD', 'PAYOUT_ELIGIBLE', 'PAID_OUT'] } }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
+    const reductions = allocatePartialRefund(allocations, refundCents, remaining);
+    const releasedNet = reductions.filter(row => row.released).reduce((sum, row) => sum + row.refundNet, 0);
+    const releasedCommission = reductions.filter(row => row.released).reduce((sum, row) => sum + row.refundCommission, 0);
+    const refundId = randomUUID();
+    const settlement = await this.settlementForRequest(tx, attempt, amount);
+    const breakdown = { refundKind: 'POST_ACTIVE_PARTIAL', disputeId, reservationKey: `ledger:custom-order:${id}:partial-refund:${refundId}:reserved`, currency: order.currency, captureAmount: amount, refundAmount: amount, vatAmount: 0, garmentCharge: 0, jumpCharge: 0, releasedNet: releasedNet / 100, releasedCommission: releasedCommission / 100, unreleasedGross: (refundCents - releasedNet - releasedCommission) / 100, settlement, reductions };
+    const refund = await tx.customOrderQueueRefund.create({ data: { id: refundId, requestKey, kind: 'PARTIAL', customOrderId: id, paymentAttemptId: attempt.id, amount, currency: order.currency, breakdownJson: breakdown } });
+    await reserveFullOrderRefund(tx, this.ledger, { id: refund.id, customOrderId: id, brandId: order.brandId, ...breakdown });
+    for (const reduction of reductions) await tx.customOrderLedgerAllocation.update({ where: { id: reduction.id }, data: { amount: reduction.amount, netBrandAmount: reduction.netBrandAmount, commissionAmount: reduction.commissionAmount } });
+    await this.recordRefundDebt(tx, order.brandId, id, releasedNet / 100, order.currency, reason, actorId);
+    await tx.customOrder.update({ where: { id }, data: { orderRevision: { increment: 1 } } });
+    await this.record(tx, order, 'ORDER_PARTIAL_REFUND_REQUESTED', `An agreed partial refund of ${order.currency} ${amount.toFixed(2)} has been reserved. Your order continues in its existing fulfilment stage; provider processing is separate.`, 'ADMIN', actorId);
+    return refund;
+  }
+
+  private async recordRefundDebt(tx: Tx, brandId: string, customOrderId: string, amount: number, currency: string, reason: string, actorId?: string) {
+    if (amount <= 0) return;
+    if (!this.brandBalance) throw new ConflictException('CUSTOM_ORDER_REFUND_RELEASE_RECONCILIATION_REQUIRED');
+    const existing = await tx.brandBalanceAdjustment.findFirst({ where: { brandId, customOrderId, type: 'REFUND_CLAWBACK' }, select: { id: true, recoveredAmount: true } });
+    if (existing) await tx.brandBalanceAdjustment.update({ where: { id: existing.id }, data: { amount: { increment: amount }, status: Number(existing.recoveredAmount) > 0 ? 'PARTIALLY_RECOVERED' : 'OUTSTANDING' } });
+    else await this.brandBalance.raiseAdjustment(tx, { brandId, customOrderId, type: 'REFUND_CLAWBACK', amount, currency, reason: `Order refund reserved (${reason})`, createdById: actorId ?? null });
   }
 
   private async cancelLocked(tx: Tx, order: Prisma.CustomOrderGetPayload<object>, now: Date, reason: string, actor: CustomOrderActorType, actorId?: string) {
     if (!order.lane || !WAITING.includes(order.lane) || order.paymentStatus !== 'PAID') throw new ConflictException('CUSTOM_ORDER_NO_LONGER_WAITING');
     const quote = this.quote(order);
-    const attempt = order.paymentReference ? await tx.paymentAttempt.findUnique({ where: { reference: order.paymentReference } }) : await tx.paymentAttempt.findFirst({ where: { customOrderId: order.id, status: 'PAID' }, orderBy: { createdAt: 'desc' } });
+    const attempt = order.paymentReference ? await tx.paymentAttempt.findUnique({ where: { reference: order.paymentReference }, include: { exchangeRateSnapshot: true } }) : await tx.paymentAttempt.findFirst({ where: { customOrderId: order.id, status: 'PAID' }, orderBy: { createdAt: 'desc' }, include: { exchangeRateSnapshot: true } });
     if (!attempt || attempt.currency !== order.currency || !['PAID', 'PARTIALLY_REFUNDED'].includes(attempt.status)) throw new ConflictException('CUSTOM_ORDER_CAPTURE_REQUIRES_REVIEW');
     await tx.$queryRaw`SELECT "id" FROM "PaymentAttempt" WHERE "id" = ${attempt.id}::uuid FOR UPDATE`;
     const existing = await tx.customOrderQueueRefund.aggregate({ where: { paymentAttemptId: attempt.id }, _sum: { amount: true } });
     if (money(existing._sum.amount) + money(quote.refundAmount) > money(attempt.amount)) throw new ConflictException('CUSTOM_ORDER_REFUND_EXCEEDS_CAPTURE');
-    await tx.customOrderQueueRefund.create({ data: { customOrderId: order.id, paymentAttemptId: attempt.id, amount: quote.refundAmount, currency: order.currency, breakdownJson: quote } });
+    await tx.customOrderQueueRefund.create({ data: { requestKey: `custom-order:${order.id}:cancellation`, customOrderId: order.id, paymentAttemptId: attempt.id, amount: quote.refundAmount, currency: order.currency, breakdownJson: { ...quote, settlement: await this.settlementForRequest(tx, attempt, quote.refundAmount) } } });
     await tx.customOrder.update({ where: { id: order.id }, data: { lane: 'TERMINAL', status: 'REFUND_IN_PROGRESS', cancelledAt: now, cancellationReason: reason, cancellationActorType: actor, orderRevision: { increment: 1 }, adminPromotionHeld: false } });
     await tx.customOrderLedgerAllocation.updateMany({ where: { customOrderId: order.id, allocationType: 'PLACEMENT_CAPTURE' }, data: { status: 'REVERSED', reversedAt: now, reversalReason: reason } });
     await this.invalidateReminders(tx, order.id);
@@ -275,17 +376,18 @@ export class CustomOrderQueueService {
   }
 
   async resubmit(userId: string, id: string) {
-    const order = await this.prisma.customOrder.findFirst({ where: { id, buyerId: userId }, include: { queueRefund: true } });
+    const order = await this.prisma.customOrder.findFirst({ where: { id, buyerId: userId }, include: { queueRefunds: { orderBy: { createdAt: 'desc' }, take: 20 } } });
     if (!order?.cancelledAt) throw new NotFoundException('Cancelled order not found');
     await this.assertIntake(userId, order.brandId);
-    return { sourceType: order.sourceType, sourceId: order.sourceId, configurationId: order.configurationId, previousOrderId: id, refundPending: Boolean(order.queueRefund && order.queueRefund.status !== 'SETTLED'), requiresNewPayment: true };
+    return { sourceType: order.sourceType, sourceId: order.sourceId, configurationId: order.configurationId, previousOrderId: id, refundPending: order.queueRefunds.some(refund => refund.status !== 'SETTLED'), requiresNewPayment: true };
   }
 
-  async reorder(id: string, action: 'promote' | 'demote' | 'release-hold', actorId: string, reason: string) {
+  async reorder(id: string, action: 'promote' | 'demote' | 'release-hold', actorId: string, reason: string, expectedRevision?: number) {
     const source = await this.prisma.customOrder.findUniqueOrThrow({ where: { id } });
     await this.prisma.$transaction(async tx => {
       const now = await this.lockBrand(tx, source.brandId);
       const row = await tx.customOrder.findUniqueOrThrow({ where: { id } });
+      this.checkRevision(row.orderRevision, expectedRevision);
       if (!row.lane || !WAITING.includes(row.lane) || !row.queueExpiresAt || row.queueExpiresAt <= now) throw new ConflictException('CUSTOM_ORDER_NO_LONGER_WAITING');
       if (action === 'release-hold') await tx.customOrder.update({ where: { id }, data: { adminPromotionHeld: false, orderRevision: { increment: 1 } } });
       else if (action === 'promote') {
@@ -300,6 +402,21 @@ export class CustomOrderQueueService {
       await this.record(tx, row, `ADMIN_QUEUE_${action.toUpperCase()}`, `An admin updated this order's queue placement (${action}). ${reason}`, 'ADMIN', actorId);
       await this.audit(tx, actorId, `queue.${action}`, id, { reason });
       await this.drain(tx, row.brandId, now);
+    });
+    return { queue: (await this.present([id]))[id] };
+  }
+
+  async reconcileHistoricalLane(id: string, lane: 'ACTIVE' | 'IN_DELIVERY', evidence: string, expectedRevision: number, actorId: string) {
+    const source = await this.prisma.customOrder.findUniqueOrThrow({ where: { id } });
+    await this.prisma.$transaction(async tx => {
+      const now = await this.lockBrand(tx, source.brandId);
+      const current = await tx.customOrder.findUniqueOrThrow({ where: { id } });
+      this.checkRevision(current.orderRevision, expectedRevision);
+      if (current.queuePolicyVersion || current.lane !== null || current.paymentStatus !== 'PAID' || !['DISPUTED', 'DELIVERY_ISSUE_REPORTED'].includes(current.status)) throw new ConflictException('Only quarantined paid historical orders can be reconciled');
+      await tx.customOrder.update({ where: { id }, data: { lane, activatedAt: current.acceptedAt ?? current.createdAt, adminPromotionHeld: false, orderRevision: { increment: 1 } } });
+      await this.audit(tx, actorId, 'queue.historical-lane.reconcile', id, { lane, evidence, previousStatus: current.status });
+      await this.record(tx, current, 'HISTORICAL_LANE_RECONCILED', `An admin reconciled this historical order to ${lane === 'ACTIVE' ? 'Active' : 'In Delivery'} from fulfilment evidence. Existing promises, money and dispute status are preserved.`, 'ADMIN', actorId);
+      await this.drain(tx, current.brandId, now);
     });
     return { queue: (await this.present([id]))[id] };
   }

@@ -27,6 +27,22 @@ describe('CollectionsService brand catalog access', () => {
       brandAccessService,
     );
 
+  it('parses quoted bulk CSV fields and trims surrounding whitespace', () => {
+    const rows = (createService({}) as any).parseBulkCsv({
+      buffer: Buffer.from(' name ,description\n"Aso, blue", soft cotton \n\n'),
+    });
+    expect(rows).toEqual([{ name: 'Aso, blue', description: 'soft cotton' }]);
+  });
+
+  it('does not let a CSV prototype header change the row prototype', () => {
+    const rows = (createService({}) as any).parseBulkCsv({
+      buffer: Buffer.from('__proto__,name\nmalicious,Aso\n'),
+    });
+    expect(rows[0].name).toBe('Aso');
+    expect(Object.getPrototypeOf(rows[0])).toBe(Object.prototype);
+    expect(({} as any).malicious).toBeUndefined();
+  });
+
   it('allows an active catalog manager to update a store collection', async () => {
     const prisma = {
       storeCollection: {

@@ -1,4 +1,4 @@
-import { BadRequestException, Body, ConflictException, Controller, ForbiddenException, Get, Param, ParseEnumPipe, ParseUUIDPipe, Patch, Post, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, ForbiddenException, Get, Param, ParseEnumPipe, ParseUUIDPipe, Patch, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { Role, SubscriptionTierKey } from '@prisma/client';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
@@ -10,7 +10,7 @@ import { ADMIN_PERMISSIONS as P } from 'src/admin/constants/permissions';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CustomOrderQueueService } from './custom-order-queue.service';
 import { CustomOrderQueueRefundsService } from './custom-order-queue-refunds.service';
-import { QueuePublishNoticeDto, QueueReconcileRefundDto } from './custom-order-queue.dto';
+import { QueuePublishNoticeDto, QueueReconcileRefundDto, QueueReconcileLaneDto, QueueRefundListDto } from './custom-order-queue.dto';
 import { QueueAssignTierDto, QueueCampaignDto, QueueCancelManyDto, QueueIdsDto, QueueIntakeDto, QueueNoticeDto, QueueOverrideDto, QueueReasonDto, QueueRevisionDto, QueueSettingsDto, QueueTierDto } from './custom-order-queue.dto';
 
 type ActorRequest = { user: { id: string; role: Role } };
@@ -39,13 +39,17 @@ export class CustomOrderQueueController {
 @UsePipes(validation)
 export class AdminCustomOrderQueueController {
   constructor(private readonly queue: CustomOrderQueueService, private readonly prisma: PrismaService, private readonly refunds: CustomOrderQueueRefundsService) {}
-  @Get('refunds') @RequirePermissions(P.DISPUTES_REFUND) async pendingRefunds() { return { refunds: await this.prisma.customOrderQueueRefund.findMany({ where: { status: { not: 'SETTLED' } }, orderBy: { createdAt: 'asc' }, take: 100, select: { id: true, customOrderId: true, amount: true, currency: true, status: true, providerRefundId: true, lastError: true, createdAt: true } }) }; }
+  @Get('refunds') @RequirePermissions(P.DISPUTES_REFUND) async pendingRefunds(@Query() dto: QueueRefundListDto) {
+    const rows = await this.prisma.customOrderQueueRefund.findMany({ where: { status: { not: 'SETTLED' } }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], ...(dto.cursor ? { cursor: { id: dto.cursor }, skip: 1 } : {}), take: 101, select: { id: true, customOrderId: true, kind: true, amount: true, currency: true, status: true, providerRefundId: true, lastError: true, createdAt: true } });
+    return { refunds: rows.slice(0, 100), nextCursor: rows.length > 100 ? rows[99].id : null };
+  }
   @Post('refunds/:id/reconcile') @RequirePermissions(P.DISPUTES_REFUND) @Throttle({ default: { limit: 3, ttl: 60000 } }) async reconcile(@Req() req: ActorRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: QueueReconcileRefundDto) { return this.refunds.reconcile(id, dto.providerRefundId, req.user.id); }
   @Get('brands/:brandId') @RequirePermissions(P.BRANDS_READ) summary(@Param('brandId', ParseUUIDPipe) id: string) { return this.queue.summary(id); }
-  @Get('orders/:id/refund-quote') @RequirePermissions(P.DISPUTES_REFUND) async quote(@Param('id', ParseUUIDPipe) id: string) { return this.queue.quote(await this.prisma.customOrder.findUniqueOrThrow({ where: { id } })); }
-  @Post('orders/:id/promote') @RequirePermissions(P.MODERATION_WRITE) promote(@Req() req: ActorRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: QueueReasonDto) { return this.queue.reorder(id, 'promote', req.user.id, dto.reason); }
-  @Post('orders/:id/demote') @RequirePermissions(P.MODERATION_WRITE) demote(@Req() req: ActorRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: QueueReasonDto) { return this.queue.reorder(id, 'demote', req.user.id, dto.reason); }
-  @Post('orders/:id/release-hold') @RequirePermissions(P.MODERATION_WRITE) release(@Req() req: ActorRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: QueueReasonDto) { return this.queue.reorder(id, 'release-hold', req.user.id, dto.reason); }
+  @Get('orders/:id/refund-quote') @RequirePermissions(P.DISPUTES_REFUND) async quote(@Param('id', ParseUUIDPipe) id: string) { return this.queue.quoteWithSettlement(await this.prisma.customOrder.findUniqueOrThrow({ where: { id } })); }
+  @Post('orders/:id/promote') @RequirePermissions(P.MODERATION_WRITE) promote(@Req() req: ActorRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: QueueReasonDto) { return this.queue.reorder(id, 'promote', req.user.id, dto.reason, dto.expectedRevision); }
+  @Post('orders/:id/reconcile-lane') @RequirePermissions(P.MODERATION_WRITE) reconcileLane(@Req() req: ActorRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: QueueReconcileLaneDto) { return this.queue.reconcileHistoricalLane(id, dto.lane, dto.evidence, dto.expectedRevision, req.user.id); }
+  @Post('orders/:id/demote') @RequirePermissions(P.MODERATION_WRITE) demote(@Req() req: ActorRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: QueueReasonDto) { return this.queue.reorder(id, 'demote', req.user.id, dto.reason, dto.expectedRevision); }
+  @Post('orders/:id/release-hold') @RequirePermissions(P.MODERATION_WRITE) release(@Req() req: ActorRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: QueueReasonDto) { return this.queue.reorder(id, 'release-hold', req.user.id, dto.reason, dto.expectedRevision); }
   @Post('orders/:id/cancel') @RequirePermissions(P.DISPUTES_REFUND) @Throttle({ default: { limit: 5, ttl: 60000 } }) cancel(@Req() req: ActorRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: QueueReasonDto) { return this.queue.cancel(req.user.id, id, dto.reason, dto.expectedRevision, 'ADMIN'); }
   @Patch('brands/:brandId/intake') @RequirePermissions(P.BRANDS_SUSPEND) async intake(@Req() req: ActorRequest, @Param('brandId', ParseUUIDPipe) brandId: string, @Body() dto: QueueIntakeDto) {
     await this.prisma.$transaction(async tx => { const now = await this.queue.lockBrand(tx, brandId); await tx.brand.update({ where: { id: brandId }, data: { customOrderIntakeBlockedAt: dto.blocked ? now : null, customOrderIntakeBlockedById: dto.blocked ? req.user.id : null, customOrderIntakeBlockReason: dto.blocked ? dto.reason : null } }); await this.queue.audit(tx, req.user.id, dto.blocked ? 'queue.intake.block' : 'queue.intake.unblock', brandId, { reason: dto.reason }); });

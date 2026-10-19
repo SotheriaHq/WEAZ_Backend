@@ -155,6 +155,7 @@ function harness(initial: ReturnType<typeof order>[], cap = 0, streak = 0) {
       update: jest.fn(),
     },
     customOrderQueueRefund: {
+      findMany: jest.fn(async () => []),
       aggregate: jest.fn(async () => ({
         _sum: {
           amount: refunds.reduce((sum, row) => sum + Number(row.amount), 0),
@@ -164,7 +165,7 @@ function harness(initial: ReturnType<typeof order>[], cap = 0, streak = 0) {
         refunds.push({ ...data });
         return data;
       }),
-      findUniqueOrThrow: jest.fn(async ({ where }) =>
+      findFirstOrThrow: jest.fn(async ({ where }) =>
         refunds.find((row) => row.customOrderId === where.customOrderId),
       ),
     },
@@ -256,16 +257,49 @@ function harness(initial: ReturnType<typeof order>[], cap = 0, streak = 0) {
     finance,
     ledger,
     locks,
+    permissions,
   };
 }
 
 describe('custom order queue transaction boundaries', () => {
+  it('prevents a different shopper or unauthorized staff member from reading or cancelling an order', async () => {
+    const h = harness([order('private-order')]);
+    h.permissions.assertPermission.mockRejectedValue(new Error('Access denied'));
+    await expect(h.service.get('different-shopper', 'private-order')).rejects.toThrow('Access denied');
+    await expect(h.service.cancel('unassigned-staff', 'private-order', 'Cancel this')).rejects.toThrow('Access denied');
+    expect(h.refunds).toHaveLength(0);
+    expect(h.prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a batch containing another shopper order without presenting any records', async () => {
+    const h = harness([order('own'), order('other', { buyerId: 'another-buyer' })]);
+    (h.prisma as any).user = { findUnique: jest.fn(async () => ({ type: 'REGULAR' })) };
+    await expect(h.service.batch('buyer', ['own', 'other'])).rejects.toThrow('Not authorized');
+    expect(h.service.present).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     jest.useFakeTimers().setSystemTime(NOW);
   });
   afterEach(() => {
     jest.useRealTimers();
     jest.restoreAllMocks();
+  });
+
+  it('reconciles an ambiguous paid historical lane with evidence without changing its money, dates or dispute', async () => {
+    const promised = new Date(+NOW + 3 * 86400000);
+    const h = harness([order('legacy', { lane: null, status: 'DISPUTED', queuePolicyVersion: null, adminPromotionHeld: true, acceptedAt: NOW, promisedProductionAt: promised })]);
+    await h.service.reconcileHistoricalLane('legacy', 'IN_DELIVERY', 'Verified courier handover receipt', 0, 'admin');
+    expect(h.rows.get('legacy')).toMatchObject({ lane: 'IN_DELIVERY', status: 'DISPUTED', promisedProductionAt: promised, adminPromotionHeld: false, orderRevision: 1 });
+    expect(h.tx.adminAuditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({ metadata: expect.objectContaining({ evidence: 'Verified courier handover receipt' }) }) });
+    expect(h.finance.applyPaidSettlement).not.toHaveBeenCalled();
+    expect(h.ledger.postTransaction).not.toHaveBeenCalled();
+    await expect(h.service.reconcileHistoricalLane('legacy', 'ACTIVE', 'Contradictory second instruction', 0, 'admin')).rejects.toThrow('CUSTOM_ORDER_CHANGED_REFRESH_REQUIRED');
+  });
+
+  it('rejects historical reconciliation of a current queue order', async () => {
+    const h = harness([order('current', { queuePolicyVersion: 1 })]);
+    await expect(h.service.reconcileHistoricalLane('current', 'ACTIVE', 'Not a historical migration record', 0, 'admin')).rejects.toThrow('Only quarantined paid historical orders can be reconciled');
+    expect(h.tx.customOrder.update).not.toHaveBeenCalled();
   });
 
   it('allows one concurrent retain and rejects the stale revision without changing position or priority', async () => {

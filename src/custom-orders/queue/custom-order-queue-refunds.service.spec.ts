@@ -11,6 +11,7 @@ const makeRow = (override: Record<string, unknown> = {}) => ({
   status: 'REQUESTED',
   providerRefundId: null,
   attempts: 0,
+  lastError: null,
   lockedAt: null,
   nextAttemptAt: new Date(0),
   breakdownJson: {
@@ -121,7 +122,8 @@ function harness(override: Record<string, unknown> = {}) {
     prisma as any,
     ledger as any,
   );
-  return { row, tx, prisma, ledger, entries, service, depth: () => depth };
+  const verification = jest.spyOn(service as any, 'verifyCapture').mockResolvedValue(undefined);
+  return { row, tx, prisma, ledger, entries, service, verification, depth: () => depth };
 }
 
 const paystackData = (status = 'pending', extra = {}) => ({
@@ -186,6 +188,42 @@ describe('durable per-order queued refunds', () => {
     expect(
       calls.filter(([, options]) => options?.method === 'POST'),
     ).toHaveLength(1);
+  });
+
+  it('verifies the capture using real API mode even with test merchant credentials', async () => {
+    const h = harness();
+    h.verification.mockRestore();
+    process.env.PAYSTACK_SECRET_KEY = 'sk_test_fixture';
+    global.fetch = jest.fn(async (url) => String(url).includes('/transaction/verify/')
+      ? response({ id: 456, reference: 'mixed-capture', status: 'success', amount: 25000000, currency: 'NGN' })
+      : response(paystackData()));
+    await (h.service as any).processOne(h.row.id);
+    expect(h.row.status).toBe('PROCESSING');
+    expect((global.fetch as jest.Mock).mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('never submits a refund when the authoritative capture differs', async () => {
+    const h = harness();
+    h.verification.mockRestore();
+    global.fetch = jest.fn(async () => response({ id: 456, reference: 'another-capture', status: 'success', amount: 25000000, currency: 'NGN' }));
+    await (h.service as any).processOne(h.row.id);
+    expect(h.row.lastError).toBe('REFUND_ORIGINAL_CAPTURE_VERIFICATION_MISMATCH');
+    expect((global.fetch as jest.Mock).mock.calls.some(([, options]) => options?.method === 'POST')).toBe(false);
+  });
+
+  it('submits and verifies the stored provider currency while keeping the financial ledger in the original currency', async () => {
+    const h = harness();
+    h.row.currency = 'USD';
+    h.row.paymentAttempt.currency = 'USD';
+    Object.assign(h.row.paymentAttempt, { settlementCurrency: 'NGN', settlementAmount: decimal(500000000) });
+    Object.assign(h.row.breakdownJson, { currency: 'USD', settlement: { status: 'RECORDED', currency: 'NGN', amount: 226000000, rate: '2000' } });
+    global.fetch = jest.fn(async (_url, options) => {
+      expect(JSON.parse(String(options?.body))).toMatchObject({ currency: 'NGN', amount: 22600000000 });
+      return response(paystackData('processed', { amount: 22600000000 }));
+    });
+    await (h.service as any).processOne(h.row.id);
+    expect(h.row.status).toBe('SETTLED');
+    expect([...h.entries.values()].every(post => post.currency === 'USD')).toBe(true);
   });
 
   it('quarantines a timeout after possible acceptance and never blindly retries', async () => {

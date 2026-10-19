@@ -30,6 +30,14 @@ describe('CustomOrdersService', () => {
   let customOrderAccessService: any;
   let brandBalance: any;
 
+  it('restricts an order-again predecessor to the same buyer, brand, source and cancelled history', async () => {
+    prisma.customOrder.findFirst.mockResolvedValue(null);
+    await expect((service as any).assertOrderPredecessor('buyer_1', 'cancelled-order', { brandId: 'brand_1', sourceId: 'source_1', sourceType: 'DESIGN' })).rejects.toThrow('Cancelled source order not found');
+    expect(prisma.customOrder.findFirst).toHaveBeenCalledWith({ where: { id: 'cancelled-order', buyerId: 'buyer_1', brandId: 'brand_1', sourceId: 'source_1', sourceType: 'DESIGN', cancelledAt: { not: null } }, select: { id: true } });
+    prisma.customOrder.findFirst.mockResolvedValue({ id: 'cancelled-order' });
+    await expect((service as any).assertOrderPredecessor('buyer_1', 'cancelled-order', { brandId: 'brand_1', sourceId: 'source_1', sourceType: 'DESIGN' })).resolves.toBeUndefined();
+  });
+
   const buildOrder = (overrides: Record<string, unknown> = {}) => ({
     id: 'co_1',
     buyerId: 'buyer_1',
@@ -385,6 +393,7 @@ describe('CustomOrdersService', () => {
 
     const tx = {
       customOrder: {
+        findUniqueOrThrow: jest.fn().mockResolvedValue(buildOrder()),
         update: jest.fn().mockResolvedValue(updatedOrder),
       },
       customOrderLedgerAllocation: {

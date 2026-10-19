@@ -3094,7 +3094,9 @@ model BrandSubscriptionPaymentCapture {
 
 model CustomOrderQueueRefund {
   id String @id @default(uuid()) @db.Uuid
-  customOrderId String @unique @db.Uuid
+  customOrderId String @db.Uuid
+  requestKey String @unique @default(uuid())
+  kind String @default("CANCELLATION")
   customOrder CustomOrder @relation(fields: [customOrderId], references: [id], onDelete: Restrict)
   paymentAttemptId String @db.Uuid
   paymentAttempt PaymentAttempt @relation(fields: [paymentAttemptId], references: [id], onDelete: Restrict)
@@ -3112,6 +3114,7 @@ model CustomOrderQueueRefund {
   updatedAt DateTime @updatedAt
   @@index([status, nextAttemptAt])
   @@index([paymentAttemptId])
+  @@index([customOrderId, createdAt])
 }
 
 /// Generic Runway notice for brands. Seasonal bonuses and free-order periods
@@ -3682,7 +3685,7 @@ model CustomOrder {
   cancellationReason            String?
   cancellationActorType         CustomOrderActorType?
   predecessorOrderId            String? @db.Uuid
-  queueRefund                   CustomOrderQueueRefund?
+  queueRefunds                  CustomOrderQueueRefund[]
   paymentStatus                 PaymentStatus                        @default(PENDING)
   paymentMethod                 PaymentMethod                        @default(PENDING_SELECTION)
   paymentReference              String?
@@ -3797,6 +3800,7 @@ model CustomOrder {
   // The deadline sweeps read production/delivery promises on live orders only.
   @@index([status, promisedProductionAt])
   @@index([brandId, lane, queuePosition])
+  @@index([brandId, lane, adminPromotionHeld, queuePriority, queuePosition], map: "CustomOrder_waiting_selection_idx")
   @@index([lane, queueExpiresAt])
 }
 

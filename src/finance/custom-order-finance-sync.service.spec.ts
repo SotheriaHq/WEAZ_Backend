@@ -19,6 +19,7 @@ describe('CustomOrderFinanceSyncService', () => {
       },
       $transaction: jest.fn(async (fn: (tx: any) => Promise<unknown>) => {
         const tx = {
+          $queryRaw: jest.fn().mockResolvedValue([]),
           customOrder: { findUnique: jest.fn().mockResolvedValue(null) },
           customOrderLedgerAllocation: {
             findMany: jest.fn().mockResolvedValue([]),
@@ -96,6 +97,7 @@ describe('CustomOrderFinanceSyncService', () => {
 
   it('applies paid settlement with allocations and immediate release', async () => {
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       customOrder: { findUnique: jest.fn().mockResolvedValue(null) },
       customOrderLedgerAllocation: {
         findMany: jest.fn().mockResolvedValue([]),
@@ -138,6 +140,7 @@ describe('CustomOrderFinanceSyncService', () => {
 
   it('skips invalid gross amounts', async () => {
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       customOrder: { findUnique: jest.fn().mockResolvedValue(null) },
       customOrderLedgerAllocation: {
         findMany: jest.fn(),
@@ -181,6 +184,7 @@ describe('CustomOrderFinanceSyncService', () => {
 
   it.each(['PENDING', 'UP_NEXT'])('holds a persisted %s order even when a finance repair caller omits the hold flag', async lane => {
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       customOrder: { findUnique: jest.fn().mockResolvedValue({ lane, queuePolicyVersion: 1, activatedAt: null, cancelledAt: null, buyerPriceSummaryJson: { grandTotal: 1200 }, jumpFeeAmount: decimal(200) }) },
       customOrderLedgerAllocation: { findMany: jest.fn().mockResolvedValue([]), create: jest.fn(), createMany: jest.fn(), updateMany: jest.fn() },
     };
@@ -190,5 +194,18 @@ describe('CustomOrderFinanceSyncService', () => {
     expect(tx.customOrderLedgerAllocation.updateMany).not.toHaveBeenCalled();
     expect(ledgerService.postCustomOrderImmediateRelease).not.toHaveBeenCalled();
     expect(settlementCalculatorService.calculate).toHaveBeenCalledWith(expect.objectContaining({ grossAmount: 1000 }));
+  });
+
+  it('releases only the reduced milestone after a partial refund while a safety hold was active', async () => {
+    const tx = { $queryRaw: jest.fn().mockResolvedValue([]), customOrder: { findUnique: jest.fn().mockResolvedValue({ lane: 'ACTIVE', status: 'ACCEPTED', activatedAt: new Date(), cancelledAt: null, queuePolicyVersion: 1, jumpFeeAmount: decimal(0), buyerPriceSummaryJson: { grandTotal: 1000 }, brand: { verificationStatus: 'APPROVED', owner: { status: 'ACTIVE' } } }) }, customOrderLedgerAllocation: { findMany: jest.fn().mockResolvedValue([{ allocationType: 'BRAND_ACCEPTANCE_PORTION', status: 'HELD', amount: decimal(540), commissionAmount: decimal(54), netBrandAmount: decimal(486) }, { allocationType: 'FINAL_COMPLETION_PORTION', status: 'HELD', amount: decimal(360), commissionAmount: decimal(36), netBrandAmount: decimal(324) }]), createMany: jest.fn(), updateMany: jest.fn() } };
+    await service.applyPaidSettlement(tx as any, { customOrderId: 'co_1', brandId: 'brand_1', grossAmount: 1000, currency: 'NGN', effectiveAt: new Date(), releaseEligibleAt: new Date() });
+    expect(ledgerService.postCustomOrderImmediateRelease).toHaveBeenCalledWith(tx, expect.objectContaining({ amount: 540, commissionAmount: 54, netBrandAmount: 486 }));
+  });
+
+  it('does not resurrect finance releases after a cancellation wins the brand lock', async () => {
+    const tx = { $queryRaw: jest.fn().mockResolvedValue([]), customOrder: { findUnique: jest.fn().mockResolvedValue({ cancelledAt: new Date() }) } };
+    expect(await service.applyPaidSettlement(tx as any, { customOrderId: 'co_1', brandId: 'brand_1', grossAmount: 1000, currency: 'NGN', effectiveAt: new Date(), releaseEligibleAt: new Date() })).toBeNull();
+    expect(settlementCalculatorService.calculate).not.toHaveBeenCalled();
+    expect(ledgerService.postCustomOrderImmediateRelease).not.toHaveBeenCalled();
   });
 });

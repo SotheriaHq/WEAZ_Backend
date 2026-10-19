@@ -171,8 +171,9 @@ describe('MessagingService', () => {
     );
   });
 
-  it('re-checks context status in transaction and blocks send on race to read-only', async () => {
+  it('re-checks moderation in transaction and blocks a newly blocked thread even when order completion permits messaging', async () => {
     const { service, prisma } = buildService();
+    jest.spyOn(service as any, 'getOrCreateThreadInTx').mockResolvedValue({ id: 'thread_1', status: MessageThreadStatus.BLOCKED });
 
     prisma.customOrder.findUnique
       .mockResolvedValueOnce({

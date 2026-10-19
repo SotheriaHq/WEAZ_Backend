@@ -56,6 +56,7 @@ import {
   assertHandoverRequestAllowed,
   assertOwnedBy,
   assertResolutionAllowed,
+  statusAfterPartialRefund,
   consentPartyFor,
   DISPUTE_CLAIM_POLICY,
   evaluateConsent,
@@ -921,8 +922,11 @@ export class CustomOrderDisputeService {
           break;
 
         case CustomOrderDisputeResolution.PARTIAL_REFUND:
+          if (!Number.isFinite(dto.refundAmount) || Number(dto.refundAmount) <= 0) throw new BadRequestException('CUSTOM_ORDER_DISPUTE_REFUND_AMOUNT_REQUIRED');
           await this.refundService.initiateRefund(tx, {
             customOrderId: dispute.customOrderId,
+            refundAmount: dto.refundAmount,
+            disputeId,
             reason:
               dto.note ??
               `Partial refund agreed in dispute resolution (${dto.refundAmount})`,
@@ -953,11 +957,16 @@ export class CustomOrderDisputeService {
 
       // Clearing the intervention is what lets the order leave the "WIEZ is
       // reviewing this" state on both clients.
+      let resumedStatus: CustomOrderStatus | undefined;
+      const anotherDisputeOpen = dto.resolution === CustomOrderDisputeResolution.PARTIAL_REFUND && await tx.customOrderDispute.count({ where: { customOrderId: dispute.customOrderId, status: { in: [...ACTIVE_DISPUTE_STATUSES] } } }) > 0;
+      if (dto.resolution === CustomOrderDisputeResolution.PARTIAL_REFUND && !anotherDisputeOpen) {
+        resumedStatus = statusAfterPartialRefund(await tx.customOrder.findUniqueOrThrow({ where: { id: dispute.customOrderId } }));
+      }
       await tx.customOrder.update({
         where: { id: dispute.customOrderId },
         data: {
-          adminInterventionResolvedAt: now,
-          adminInterventionResolvedById: adminId,
+          ...(!anotherDisputeOpen ? { adminInterventionResolvedAt: now, adminInterventionResolvedById: adminId } : {}),
+          ...(resumedStatus ? { status: resumedStatus } : {}),
         },
       });
     });

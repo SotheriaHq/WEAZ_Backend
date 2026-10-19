@@ -18,6 +18,7 @@ import { CustomOrderSideEffectsService } from './custom-order-side-effects.servi
 import { CustomOrdersPaymentsService } from './custom-orders-payments.service';
 import { CustomOrderThreadBootstrapService } from 'src/messaging/custom-order-thread-bootstrap.service';
 import { CustomOrdersService } from './custom-orders.service';
+import { CustomOrderQueueService } from './queue/custom-order-queue.service';
 
 function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
@@ -301,6 +302,7 @@ describe('CustomOrdersPaymentsService', () => {
       providers: [
         CustomOrdersPaymentsService,
         CustomOrderFinanceSyncService,
+        { provide: CustomOrderQueueService, useValue: { admitPaid: jest.fn().mockResolvedValue(undefined) } },
         { provide: PrismaService, useValue: prisma },
         { provide: PaymentService, useValue: paymentService },
         {
@@ -377,6 +379,7 @@ describe('CustomOrdersPaymentsService', () => {
         update: jest.fn().mockResolvedValue(updatedAttempt),
       },
       customOrder: {
+        findUnique: jest.fn().mockResolvedValue(null),
         update: jest.fn().mockResolvedValue(undefined),
       },
       paymentEvent: {
@@ -700,6 +703,7 @@ describe('CustomOrdersPaymentsService', () => {
         update: jest.fn().mockResolvedValue(updatedAttempt),
       },
       customOrder: {
+        findUnique: jest.fn().mockResolvedValue(null),
         update: jest.fn().mockResolvedValue(undefined),
       },
       paymentEvent: {
@@ -824,6 +828,7 @@ describe('CustomOrdersPaymentsService', () => {
         update: jest.fn().mockResolvedValue(updatedAttempt),
       },
       customOrder: {
+        findUnique: jest.fn().mockResolvedValue(null),
         update: jest.fn().mockResolvedValue(undefined),
       },
       paymentEvent: {
@@ -890,7 +895,7 @@ describe('CustomOrdersPaymentsService', () => {
 
     expect(tx.customOrderLedgerAllocation.findMany).toHaveBeenCalledWith({
       where: { customOrderId: 'co_4' },
-      select: { allocationType: true, status: true },
+      select: expect.objectContaining({ allocationType: true, status: true }),
     });
     expect(tx.customOrderLedgerAllocation.createMany).not.toHaveBeenCalled();
     expect(ledgerService.postCustomOrderPaymentReceived).toHaveBeenCalledWith(
@@ -941,6 +946,8 @@ describe('CustomOrdersPaymentsService', () => {
     );
 
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      customOrder: { findUnique: jest.fn().mockResolvedValue(null) },
       customOrderLedgerAllocation: {
         findMany: jest
           .fn()
@@ -999,6 +1006,8 @@ describe('CustomOrdersPaymentsService', () => {
     );
 
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      customOrder: { findUnique: jest.fn().mockResolvedValue(null) },
       customOrderLedgerAllocation: {
         findMany: jest.fn().mockResolvedValue([]),
         createMany: jest.fn().mockResolvedValue({ count: 2 }),
@@ -1046,6 +1055,8 @@ describe('CustomOrdersPaymentsService', () => {
     );
 
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      customOrder: { findUnique: jest.fn().mockResolvedValue(null) },
       customOrderLedgerAllocation: {
         findMany: jest.fn().mockResolvedValue([]),
         createMany: jest.fn().mockResolvedValue({ count: 2 }),

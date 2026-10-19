@@ -124,7 +124,7 @@ describe('SubscriptionsService boundary and payment invariants', () => {
     await expect(
       service.checkout('owner', 'brand-one', {
         tierKey: 'ARU',
-        legalVersion: '2026.10.18-v1.3',
+        legalVersion: '2026.10.19-v1.4',
       } as any),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.$transaction).not.toHaveBeenCalled();

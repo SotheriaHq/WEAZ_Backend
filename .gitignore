@@ -80,3 +80,6 @@ GEMINI.md
 .aider*
 project-memory/
 memory-bank/
+
+# Generated Jest transform cache
+/src/.cache/

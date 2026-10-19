@@ -37,6 +37,7 @@ export type CustomOrderResolverPolicy =
 
 export class CustomOrderPricePreviewDto {
   @IsOptional()
+  @Transform(({ obj, key }) => obj[key])
   @IsBoolean()
   queueJumpSelected?: boolean;
   @IsUUID()
@@ -50,6 +51,7 @@ export class CustomOrderPricePreviewDto {
   measurementValues: Record<string, number>;
 
   @IsOptional()
+  @Transform(({ obj, key }) => obj[key])
   @IsBoolean()
   rushSelected?: boolean;
 
@@ -77,6 +79,10 @@ export class CustomOrderPricePreviewDto {
 
 export class CreateCustomOrderDto {
   @IsOptional()
+  @IsUUID()
+  previousOrderId?: string;
+  @IsOptional()
+  @Transform(({ obj, key }) => obj[key])
   @IsBoolean()
   queueJumpSelected?: boolean;
   @IsUUID()
@@ -92,6 +98,7 @@ export class CreateCustomOrderDto {
   @IsObject()
   measurementValues: Record<string, number>;
 
+  @Transform(({ obj, key }) => obj[key])
   @IsBoolean()
   rushSelected: boolean;
 
@@ -110,6 +117,7 @@ export class CreateCustomOrderDto {
   idempotencyKey: string;
 
   @IsOptional()
+  @Transform(({ obj, key }) => obj[key])
   @IsBoolean()
   noDirectMatchAcknowledged?: boolean;
 }
@@ -237,6 +245,7 @@ export class AcceptCustomOrderDto {
    * forgets to show the notice cannot quietly skip the agreement.
    */
   @IsOptional()
+  @Transform(({ obj, key }) => obj[key])
   @IsBoolean()
   acknowledgeDebt?: boolean;
 }
@@ -294,6 +303,7 @@ export class QueryCustomOrdersDto {
   sort?: 'queue' | 'newest' | 'oldest';
   @IsOptional()
   @Transform(({ value }) => value === undefined ? undefined : value === true || value === 'true' || value === '1')
+  @Transform(({ obj, key }) => obj[key])
   @IsBoolean()
   cancelled?: boolean;
 

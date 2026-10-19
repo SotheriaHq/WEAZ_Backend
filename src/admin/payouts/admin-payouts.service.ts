@@ -20,6 +20,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
 import { LedgerService } from 'src/finance/ledger.service';
+import { assertBrandPayoutSafe } from 'src/finance/brand-financial-safety';
 import { FinancialDocumentsService } from 'src/finance/financial-documents.service';
 import {
   WebhookEventsQueueService,
@@ -535,6 +536,8 @@ export class AdminPayoutsService {
         Number(current.amount ?? 0),
       );
 
+      await assertBrandPayoutSafe(tx, current.brandId);
+
       const transferReference =
         current.providerTransferReference ??
         this.buildTransferReference(current.id);
@@ -641,6 +644,7 @@ export class AdminPayoutsService {
         );
       }
 
+      await assertBrandPayoutSafe(tx, current.brandId);
       const providerPayload = await this.callPaystack(
         '/transfer/finalize_transfer',
         {

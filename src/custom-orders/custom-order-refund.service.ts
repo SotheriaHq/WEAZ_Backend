@@ -20,6 +20,8 @@ import { CustomOrderQueueService } from './queue/custom-order-queue.service';
 
 interface InitiateCustomOrderRefundParams {
   customOrderId: string;
+  refundAmount?: number;
+  disputeId?: string;
   reason: string;
   actorType: CustomOrderActorType;
   actorId?: string;
@@ -127,9 +129,18 @@ export class CustomOrderRefundService {
       throw new NotFoundException('Custom order not found');
     }
 
+    if (params.refundAmount !== undefined) {
+      if (!this.queue || !params.disputeId || !params.actorId) throw new BadRequestException('Partial refund requires an authorized dispute resolution');
+      const refund = await this.queue.requestPartialRefundInTransaction(tx, order.id, params.refundAmount, params.disputeId, params.reason, params.actorId);
+      return { customOrderId: order.id, paymentAttemptId: refund.paymentAttemptId, reference: order.paymentReference, alreadyRefunded: refund.status === 'SETTLED', refundId: refund.id };
+    }
     if (order.queuePolicyVersion && !order.activatedAt) {
       if (!this.queue) throw new BadRequestException('Queue refund processing is unavailable');
       const refund = await this.queue.requestCancellationInTransaction(tx, order.id, params.reason, params.actorType, params.actorId);
+      return { customOrderId: order.id, paymentAttemptId: refund.paymentAttemptId, reference: order.paymentReference, alreadyRefunded: refund.status === 'SETTLED', refundId: refund.id };
+    }
+    if (this.queue && order.paymentStatus !== PaymentStatus.REFUNDED) {
+      const refund = await this.queue.requestFullRefundInTransaction(tx, order.id, params.reason, params.actorType, params.actorId);
       return { customOrderId: order.id, paymentAttemptId: refund.paymentAttemptId, reference: order.paymentReference, alreadyRefunded: refund.status === 'SETTLED', refundId: refund.id };
     }
 

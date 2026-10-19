@@ -10,6 +10,7 @@ import {
   Min,
 } from 'class-validator';
 import { SubscriptionTierKey } from '@prisma/client';
+import { Transform } from 'class-transformer';
 
 export class SubscriptionCheckoutDto {
   @IsEnum(SubscriptionTierKey)
@@ -24,6 +25,7 @@ export class SubscriptionCheckoutDto {
   @MaxLength(2048)
   callbackUrl?: string;
 
+  @Transform(({ obj }) => obj.recurringConsent)
   @Equals(true, {
     message:
       'Confirm recurring billing and the subscription terms before continuing.',

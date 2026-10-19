@@ -1,8 +1,12 @@
+import { Transform } from 'class-transformer';
 import { CapacityCampaignResetMode, RunwayBrandNoticeKind, SubscriptionTierKey } from '@prisma/client';
-import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsBoolean, IsDateString, IsEnum, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsBoolean, IsDateString, IsEnum, IsIn, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min, MinLength } from 'class-validator';
 
 export class QueueRevisionDto {
   @IsOptional() @IsInt() @Min(0) expectedRevision?: number;
+}
+export class QueueRefundListDto {
+  @IsOptional() @IsUUID() cursor?: string;
 }
 export class QueueReasonDto extends QueueRevisionDto {
   @IsString() @MinLength(3) @MaxLength(1000) reason: string;
@@ -13,9 +17,9 @@ export class QueueIdsDto {
 export class QueueCancelManyDto extends QueueIdsDto {
   @IsString() @MinLength(3) @MaxLength(1000) reason: string;
 }
-export class QueueSettingsDto { @IsBoolean() queueJumpEnabled: boolean; }
+export class QueueSettingsDto { @Transform(({ obj, key }) => obj[key]) @IsBoolean() queueJumpEnabled: boolean; }
 export class QueueIntakeDto {
-  @IsBoolean() blocked: boolean;
+  @Transform(({ obj, key }) => obj[key]) @IsBoolean() blocked: boolean;
   @IsString() @MinLength(3) @MaxLength(1000) reason: string;
 }
 export class QueueOverrideDto {
@@ -29,8 +33,13 @@ export class QueueTierDto {
   @IsOptional() @IsInt() @Min(0) @Max(100000) maxInDelivery?: number;
   @IsOptional() @IsInt() @Min(100) @Max(100000000) monthlyPriceNgn?: number;
 }
-export class QueuePublishNoticeDto { @IsBoolean() published: boolean; }
+export class QueuePublishNoticeDto { @Transform(({ obj, key }) => obj[key]) @IsBoolean() published: boolean; }
 export class QueueReconcileRefundDto { @IsString() @MinLength(1) @MaxLength(120) providerRefundId: string; }
+export class QueueReconcileLaneDto {
+  @IsIn(['ACTIVE', 'IN_DELIVERY']) lane: 'ACTIVE' | 'IN_DELIVERY';
+  @IsString() @MinLength(10) @MaxLength(3000) evidence: string;
+  @IsInt() @Min(0) expectedRevision: number;
+}
 export class QueueAssignTierDto {
   @IsEnum(SubscriptionTierKey) tierKey: SubscriptionTierKey;
   @IsString() @MinLength(3) @MaxLength(1000) reason: string;
@@ -48,5 +57,5 @@ export class QueueNoticeDto {
   @IsEnum(RunwayBrandNoticeKind) kind: RunwayBrandNoticeKind;
   @IsDateString() startsAt: string;
   @IsDateString() endsAt: string;
-  @IsOptional() @IsBoolean() published?: boolean;
+  @IsOptional() @Transform(({ obj, key }) => obj[key]) @IsBoolean() published?: boolean;
 }

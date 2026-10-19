@@ -9,17 +9,9 @@ import {
 
 @Injectable()
 export class MessagingPolicyService {
-  private readonly customOrderWritable = new Set<CustomOrderStatus>([
-    CustomOrderStatus.PENDING_BRAND_ACCEPTANCE,
-    CustomOrderStatus.ACCEPTED,
-    CustomOrderStatus.IN_PRODUCTION,
-    CustomOrderStatus.READY_FOR_DISPATCH,
-    CustomOrderStatus.IN_TRANSIT,
-    CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION,
-    CustomOrderStatus.DELIVERY_ISSUE_REPORTED,
-    CustomOrderStatus.REFUND_IN_PROGRESS,
-    CustomOrderStatus.DISPUTED,
-  ]);
+  // Order lifecycle does not close a conversation. Participant, moderation,
+  // account-safety and retention checks remain independent gates.
+  private readonly customOrderWritable = new Set<CustomOrderStatus>(Object.values(CustomOrderStatus));
 
   private readonly standardOrderWritable = new Set<OrderStatus>([
     OrderStatus.PENDING,

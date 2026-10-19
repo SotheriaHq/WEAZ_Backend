@@ -2630,6 +2630,12 @@ export class CustomOrderAdminService {
       );
     }
 
+    if (this.queue) {
+      await this.prisma.$transaction(tx => this.queue!.requestFullRefundInTransaction(tx, id, dto.reason.trim(), 'ADMIN', adminUserId), { timeout: 15000 });
+      await this.clearAdminAttention(id, adminUserId);
+      return this.getOrder(id);
+    }
+
     const normalizedReason = dto.reason.trim();
     const normalizedNote = dto.note?.trim() || null;
 

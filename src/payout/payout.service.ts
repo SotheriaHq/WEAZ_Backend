@@ -23,6 +23,7 @@ import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.se
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 import { BrandBalanceService } from 'src/finance/brand-balance.service';
 import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-sync.service';
+import { assertBrandPayoutSafe } from 'src/finance/brand-financial-safety';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdminAuditService } from 'src/admin/services/admin-audit.service';
 import {
@@ -1594,6 +1595,7 @@ export class PayoutService {
   private async assertPayoutAccountReadyForRequest(
     brandId: string,
   ): Promise<void> {
+    await assertBrandPayoutSafe(this.prisma, brandId);
     const paymentAccount = await (
       this.prisma as any
     ).storePaymentAccount.findUnique({

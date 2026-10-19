@@ -413,6 +413,7 @@ type CustomOrderRequestSnapshot = {
 };
 
 type CustomOrderSubmissionMeta = {
+  previousOrderId: string | null;
   contactInfo: Record<string, unknown> | null;
   customerName: string | null;
   submissionIdempotencyKey: string | null;
@@ -960,12 +961,15 @@ export class CustomOrdersService {
     );
     const alreadySubmitted =
       submissionMeta.submissionIdempotencyKey === dto.idempotencyKey;
+    if (alreadySubmitted && submissionMeta.previousOrderId !== (dto.previousOrderId ?? null)) throw new BadRequestException('CUSTOM_ORDER_PREDECESSOR_MISMATCH');
 
     const configuration = await this.getConfigurationVersion(
       intent.configurationId,
       intent.configurationVersionId,
     );
     if (this.queue) await this.queue.assertIntake(userId, configuration.configuration.brandId);
+    if (dto.previousOrderId) await this.assertOrderPredecessor(userId, dto.previousOrderId, configuration.configuration);
+
     if (
       !isBrandStoreVerified(configuration.configuration.brand?.verificationStatus)
     ) {
@@ -1033,6 +1037,7 @@ export class CustomOrdersService {
           requestSnapshotJson: this.buildCheckoutIntentSubmissionSnapshot(
             intentSnapshot,
             {
+              previousOrderId: dto.previousOrderId,
               contactInfo: dto.contactInfo,
               customerName: dto.customerName,
               idempotencyKey: dto.idempotencyKey,
@@ -1301,6 +1306,7 @@ export class CustomOrdersService {
       params.intent.configurationId,
       params.intent.configurationVersionId,
     );
+    if (submissionMeta.previousOrderId) await this.assertOrderPredecessor(params.buyerId, submissionMeta.previousOrderId, configuration.configuration);
     const requiredMeasurementKeys = await this.resolveRequiredMeasurementKeys(
       configuration.snapshot.requiredMeasurementKeys ?? [],
       configuration.snapshot.requiredFreeformPointIds ?? [],
@@ -1368,6 +1374,7 @@ export class CustomOrdersService {
     return {
       brandId: configuration.configuration.brandId,
       buyerId: params.buyerId,
+      predecessorOrderId: submissionMeta.previousOrderId,
       sourceType: configuration.configuration.sourceType,
       sourceId: configuration.configuration.sourceId,
       sourceTitleSnapshot: sourceSnapshot.title,
@@ -1927,6 +1934,7 @@ export class CustomOrdersService {
     const finalSnapshot =
       submissionMeta.contactInfo || submissionMeta.customerName
         ? this.buildCheckoutIntentSubmissionSnapshot(requestSnapshot, {
+            previousOrderId: submissionMeta.previousOrderId,
             contactInfo: submissionMeta.contactInfo,
             customerName: submissionMeta.customerName,
             idempotencyKey: submissionMeta.submissionIdempotencyKey,
@@ -4521,6 +4529,11 @@ export class CustomOrdersService {
       : {};
   }
 
+  private async assertOrderPredecessor(buyerId: string, id: string, source: { brandId: string; sourceId: string; sourceType: string }) {
+    const previous = await this.prisma.customOrder.findFirst({ where: { id, buyerId, brandId: source.brandId, sourceId: source.sourceId, sourceType: source.sourceType as CustomOrderSourceType, cancelledAt: { not: null } }, select: { id: true } });
+    if (!previous) throw new NotFoundException('Cancelled source order not found');
+  }
+
   private extractCheckoutIntentSubmissionMeta(
     snapshot: Prisma.JsonValue,
   ): CustomOrderSubmissionMeta {
@@ -4533,6 +4546,7 @@ export class CustomOrdersService {
         : null;
 
     return {
+      previousOrderId: typeof value.previousOrderId === 'string' ? value.previousOrderId : null,
       contactInfo,
       customerName:
         typeof value.customerName === 'string' ? value.customerName : null,
@@ -4549,6 +4563,7 @@ export class CustomOrdersService {
   private buildCheckoutIntentSubmissionSnapshot(
     baseSnapshot: CustomOrderRequestSnapshot,
     submission: {
+      previousOrderId?: string | null;
       contactInfo: Record<string, unknown>;
       customerName: string;
       idempotencyKey: string;
@@ -4557,6 +4572,7 @@ export class CustomOrdersService {
   ) {
     return {
       ...baseSnapshot,
+      previousOrderId: submission.previousOrderId ?? null,
       contactInfo: submission.contactInfo,
       customerName: submission.customerName,
       submissionIdempotencyKey: submission.idempotencyKey,

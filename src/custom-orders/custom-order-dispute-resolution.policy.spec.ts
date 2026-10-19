@@ -3,6 +3,7 @@ import {
   CustomOrderDisputeResolution,
   CustomOrderDisputeStatus,
   CustomOrderIssueType,
+  CustomOrderStatus,
   DisputeConsentParty,
 } from '@prisma/client';
 
@@ -16,12 +17,22 @@ import {
   evaluateConsent,
   remainingExtensionDays,
   resolutionOptionsFor,
+  statusAfterPartialRefund,
   type ResolutionContext,
 } from './custom-order-dispute-resolution.policy';
 
 const ADMIN_A = 'admin-a';
 const ADMIN_B = 'admin-b';
 const SUPER = 'super-admin';
+
+describe('continuation after an agreed partial refund', () => {
+  it('restores production and delivery from occupied lane and recorded facts', () => {
+    expect(statusAfterPartialRefund({ status: CustomOrderStatus.DISPUTED, lane: 'ACTIVE', currentProgressStage: 'DESIGN_MODE', deliveredAt: null })).toBe('IN_PRODUCTION');
+    expect(statusAfterPartialRefund({ status: CustomOrderStatus.DISPUTED, lane: 'ACTIVE', currentProgressStage: 'READY_FOR_DELIVERY', deliveredAt: null })).toBe('READY_FOR_DISPATCH');
+    expect(statusAfterPartialRefund({ status: CustomOrderStatus.DISPUTED, lane: 'IN_DELIVERY', currentProgressStage: null, deliveredAt: new Date() })).toBe('DELIVERED_PENDING_BUYER_CONFIRMATION');
+    expect(() => statusAfterPartialRefund({ status: CustomOrderStatus.DISPUTED, lane: null, currentProgressStage: null, deliveredAt: null })).toThrow('RECONCILIATION');
+  });
+});
 
 function context(overrides: Partial<ResolutionContext> = {}): ResolutionContext {
   return {

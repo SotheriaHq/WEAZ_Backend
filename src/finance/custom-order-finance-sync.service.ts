@@ -58,10 +58,12 @@ export class CustomOrderFinanceSyncService {
     tx: Prisma.TransactionClient,
     params: CustomOrderSettlementApplyParams,
   ) {
+    await tx.$queryRaw`SELECT "_id" FROM "Brand" WHERE "_id" = ${params.brandId}::uuid FOR UPDATE`;
     const persisted = await tx.customOrder.findUnique({
       where: { id: params.customOrderId },
-      select: { lane: true, queuePolicyVersion: true, activatedAt: true, cancelledAt: true, buyerPriceSummaryJson: true, jumpFeeAmount: true, brand: { select: { owner: { select: { status: true } } } } },
+      select: { status: true, lane: true, queuePolicyVersion: true, activatedAt: true, cancelledAt: true, buyerPriceSummaryJson: true, jumpFeeAmount: true, brand: { select: { verificationStatus: true, owner: { select: { status: true } } } } },
     });
+    if (persisted?.cancelledAt) return null;
     const summary = persisted?.buyerPriceSummaryJson && typeof persisted.buyerPriceSummaryJson === 'object' && !Array.isArray(persisted.buyerPriceSummaryJson) ? persisted.buyerPriceSummaryJson as Record<string, unknown> : {};
     const captureAmount = this.roundMoney(Number(summary.grandTotal ?? params.grossAmount));
     const grossAmount = this.roundMoney(persisted?.queuePolicyVersion ? captureAmount - Number(persisted.jumpFeeAmount) : Number(params.grossAmount));
@@ -87,7 +89,7 @@ export class CustomOrderFinanceSyncService {
 
     const existingAllocations = await tx.customOrderLedgerAllocation.findMany({
       where: { customOrderId: params.customOrderId },
-      select: { allocationType: true, status: true },
+      select: { allocationType: true, status: true, amount: true, commissionAmount: true, netBrandAmount: true },
     });
     const existingAllocationTypes = new Set(
       existingAllocations.map((allocation) => allocation.allocationType),
@@ -156,13 +158,16 @@ export class CustomOrderFinanceSyncService {
       });
     }
 
+    if (existingAllocationTypes.has(CustomOrderLedgerAllocationType.PLACEMENT_CAPTURE)) await tx.customOrderLedgerAllocation.updateMany({ where: { customOrderId: params.customOrderId, allocationType: 'PLACEMENT_CAPTURE', status: 'HELD' }, data: { status: 'REVERSED', reversedAt: params.releaseEligibleAt, reversalReason: 'Capture allocated to Active garment and priority settlement' } });
+
     await this.ledgerService.postCustomOrderPaymentReceived(tx, {
       customOrderId: params.customOrderId,
       totalAmount: captureAmount,
       currency: params.currency,
     });
 
-    if (this.shouldReleaseCustomOrderUpfront(snapshot) && (!persisted?.brand || persisted.brand.owner.status === 'ACTIVE')) {
+    if (this.shouldReleaseCustomOrderUpfront(snapshot) && (!persisted?.brand || persisted.brand.owner.status === 'ACTIVE' && persisted.brand.verificationStatus === 'APPROVED') && !['DISPUTED', 'DELIVERY_ISSUE_REPORTED', 'REFUND_IN_PROGRESS'].includes(persisted?.status ?? '')) {
+      const upfront = existingAllocations.find(allocation => allocation.allocationType === 'BRAND_ACCEPTANCE_PORTION');
       await tx.customOrderLedgerAllocation.updateMany({
         where: {
           customOrderId: params.customOrderId,
@@ -180,9 +185,9 @@ export class CustomOrderFinanceSyncService {
         customOrderId: params.customOrderId,
         brandId: params.brandId,
         currency: params.currency,
-        amount: Number(snapshot.upfrontReleaseGrossAmount),
-        commissionAmount: Number(snapshot.upfrontReleaseCommissionAmount),
-        netBrandAmount: Number(snapshot.upfrontReleaseNetBrandAmount),
+        amount: Number(upfront?.amount ?? snapshot.upfrontReleaseGrossAmount),
+        commissionAmount: Number(upfront?.commissionAmount ?? snapshot.upfrontReleaseCommissionAmount),
+        netBrandAmount: Number(upfront?.netBrandAmount ?? snapshot.upfrontReleaseNetBrandAmount),
       });
     }
 

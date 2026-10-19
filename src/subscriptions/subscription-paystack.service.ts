@@ -37,6 +37,7 @@ export class SubscriptionPaystackService {
     body?: Record<string, unknown>,
     allowMissing = false,
   ): Promise<T | null> {
+    if ((process.env.PAYMENTS_MODE ?? 'live').trim().toLowerCase() !== 'live') throw new ServiceUnavailableException('Subscription provider requests are disabled in simulated payment mode. No charge has been initiated.');
     const secret = process.env.PAYSTACK_SECRET_KEY?.trim();
     if (!secret)
       throw new ServiceUnavailableException(

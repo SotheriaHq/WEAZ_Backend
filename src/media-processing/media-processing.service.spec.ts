@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
-import sharp = require('sharp');
+import type sharpTypes from 'sharp';
+const sharp: typeof sharpTypes = require('sharp');
 import { MediaProcessingService } from './media-processing.service';
 
 describe('MediaProcessingService', () => {
@@ -36,6 +37,20 @@ describe('MediaProcessingService', () => {
   beforeEach(() => {
     service = new MediaProcessingService();
   });
+
+  it('encodes decodable AVIF and WebP variants without enlarging the source', async () => {
+    const source = await makeNoisyJpeg(48, 32);
+    const variants = await service.generateVariants(source, { mimeType: 'image/jpeg' });
+    expect(variants.some(variant => variant.format === 'AVIF')).toBe(true);
+    expect(variants.some(variant => variant.format === 'WEBP')).toBe(true);
+    for (const variant of variants) {
+      const metadata = await sharp(variant.buffer).metadata();
+      expect(metadata.width).toBe(variant.width);
+      expect(metadata.height).toBe(variant.height);
+      expect(variant.width).toBeLessThanOrEqual(48);
+      expect(variant.height).toBeLessThanOrEqual(32);
+    }
+  }, 30_000);
 
   describe('isHeicLikeBuffer', () => {
     it('detects HEIC ftyp brands', () => {

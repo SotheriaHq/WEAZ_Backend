@@ -3464,13 +3464,6 @@ export class MessagingService {
     const status = this.policy.resolveThreadStatusForCustomOrder(
       context.status,
     );
-    if (
-      context.status === CustomOrderStatus.DRAFT ||
-      context.status === CustomOrderStatus.PENDING_PAYMENT
-    ) {
-      return null;
-    }
-
     return this.prisma.$transaction((tx) =>
       this.getOrCreateThreadInTx(
         tx,
@@ -4276,6 +4269,7 @@ export class MessagingService {
       participants: any[];
     },
   >(thread: T): Promise<T> {
+    if (thread.status === MessageThreadStatus.ARCHIVED || thread.status === MessageThreadStatus.BLOCKED) return thread;
     if (thread.pairKey || thread.conversationType) {
       return thread;
     }

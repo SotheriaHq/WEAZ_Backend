@@ -177,6 +177,21 @@ describe('AdminPayoutsService', () => {
     expect((global as any).fetch).not.toHaveBeenCalled();
   });
 
+  it.each(['initiate', 'finalize'])('blocks %s transfer execution during a brand safety suspension', async operation => {
+    const sourceCheck = jest.spyOn(service as any, 'assertPayoutSourceReservations').mockResolvedValue(undefined);
+    prisma.$transaction.mockImplementation(async (callback: any) => callback({
+      $queryRaw: jest.fn().mockResolvedValue(undefined),
+      payout: { findUnique: jest.fn().mockResolvedValue({ id: 'p_1', brandId: 'brand_1', amount: 6000, currency: 'NGN', status: PayoutStatus.APPROVED, assignedAdminId: 'admin_1', providerTransferCode: 'TRF_pending', providerTransferStatus: 'otp' }) },
+      storePaymentAccount: { findUnique: jest.fn().mockResolvedValue({ status: 'ACTIVE', transferRecipientCode: 'RCP_1', transferRecipientActive: true }) },
+      brand: { findUnique: jest.fn().mockResolvedValue({ verificationStatus: 'APPROVED', owner: { status: 'SUSPENDED' } }) },
+    }));
+    try {
+      const request = operation === 'initiate' ? service.initiateTransfer('p_1', 'admin_1', Role.Admin, req) : service.finalizeTransferOtp('p_1', '123456', 'admin_1', Role.Admin, req);
+      await expect(request).rejects.toMatchObject({ response: { code: 'PAYOUT_SAFETY_HOLD' } });
+      expect((global as any).fetch).not.toHaveBeenCalled();
+    } finally { sourceCheck.mockRestore(); }
+  });
+
   it('rejects transfer initiation after the locked payout has already moved to processing', async () => {
     prisma.$transaction.mockImplementation(async (callback: any) =>
       callback({

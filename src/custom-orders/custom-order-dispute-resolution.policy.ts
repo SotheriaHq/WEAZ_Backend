@@ -33,10 +33,22 @@ import {
   CustomOrderDisputeResolution,
   CustomOrderDisputeStatus,
   CustomOrderIssueType,
+  CustomOrderStatus,
+  CustomOrderProgressStage,
   DisputeConsentParty,
 } from '@prisma/client';
 
 import { EXTENSION_POLICY } from './custom-order-extension.policy';
+
+export function statusAfterPartialRefund(order: { status: CustomOrderStatus; lane: string | null; deliveredAt: Date | null; currentProgressStage: CustomOrderProgressStage | null }): CustomOrderStatus {
+  if (!['DISPUTED', 'DELIVERY_ISSUE_REPORTED'].includes(order.status)) return order.status;
+  if (order.lane === 'IN_DELIVERY') return order.deliveredAt ? CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION : CustomOrderStatus.IN_TRANSIT;
+  if (order.lane === 'ACTIVE') {
+    if (order.currentProgressStage === 'READY_FOR_DELIVERY') return CustomOrderStatus.READY_FOR_DISPATCH;
+    return order.currentProgressStage && !['ORDER_PLACED', 'ORDER_RECEIVED'].includes(order.currentProgressStage) ? CustomOrderStatus.IN_PRODUCTION : CustomOrderStatus.ACCEPTED;
+  }
+  throw new BadRequestException('CUSTOM_ORDER_FULFILMENT_STAGE_REQUIRES_RECONCILIATION');
+}
 
 export const DISPUTE_CLAIM_POLICY = {
   /**
