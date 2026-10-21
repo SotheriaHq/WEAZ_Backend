@@ -120,6 +120,18 @@ describe('ImageProcessingProcessor re-encode (newVersion)', () => {
     );
   });
 
+  it('reports a failed legacy batch to BullMQ instead of silently succeeding', async () => {
+    const { prisma, run } = build({
+      getObject: jest.fn().mockRejectedValue(new Error('NoSuchKey')),
+    });
+    await expect(run({})).rejects.toThrow('Image batch failed for 1 file(s)');
+    expect(prisma.fileUpload.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ processingStatus: 'FAILED' }),
+      }),
+    );
+  });
+
   it('leaves the normal processing path on the current version', async () => {
     const { prisma, upload, run } = build();
 
