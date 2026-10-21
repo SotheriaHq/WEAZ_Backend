@@ -206,6 +206,24 @@ export class BrandPermissionService {
     ]);
   }
 
+  async getBrandIdsWithPermission(userId: string, permission: BrandPermissionCode): Promise<string[]> {
+    const validated = this.validatePermissionCode(permission);
+    const [owned, members] = await Promise.all([
+      this.prisma.brand.findMany({ where: { ownerId: userId }, select: { id: true } }),
+      this.prisma.brandMember.findMany({
+        where: { userId, status: BrandMemberStatus.ACTIVE },
+        select: {
+          id: true, brandId: true, userId: true, role: true, status: true,
+          permissionGrants: { select: { permissionCode: true } },
+        },
+      }),
+    ]);
+    return [...new Set([
+      ...owned.map((brand) => brand.id),
+      ...members.filter((member) => this.summarizeMember(member).effectivePermissions.includes(validated)).map((member) => member.brandId),
+    ])];
+  }
+
   async hasPermission(
     userId: string,
     brandId: string,

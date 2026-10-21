@@ -1,5 +1,6 @@
 import {
   Controller,
+  Header,
   Post,
   Get,
   Param,
@@ -377,6 +378,7 @@ export class CollectionsController {
   @Throttle({ default: { limit: 90, ttl: 60000 } })
   @UseGuards(OptionalJwtAuthGuard)
   @Get('market')
+  @Header('Cache-Control', 'private, no-store')
   @ApiOperation({
     summary: 'Get market feed of individual collection uploads',
     description:
@@ -388,6 +390,7 @@ export class CollectionsController {
     @Query('tag') tag?: string,
     @Query('category') category?: string,
     @Query('counts') countsPolicy?: string,
+    @Query('feedKey') feedKey?: string,
     @Query('feedMode') feedMode?: string,
     @Query('query') query?: string,
     @Query('anchorDesignId') anchorDesignId?: string,
@@ -410,6 +413,7 @@ export class CollectionsController {
       limit: limit ? parseInt(limit, 10) : undefined,
       tag,
       category,
+      feedKey,
       countsPolicy: countsPolicy === 'combined' ? 'combined' : undefined,
       requesterId: req?.user?.id, // Pass userId if authenticated
     });

@@ -1,3 +1,4 @@
+import { withCartTransaction } from '../bagging/cart-transaction.util';
 import {
   Injectable,
   NotFoundException,
@@ -2051,6 +2052,22 @@ export class StoreService {
   }
 
   // ==================== PRODUCTS ====================
+
+  private expiredProductDraftWhere(): Prisma.ProductWhereInput {
+    return { isActive: false, publicationStatus: CollectionStatus.DRAFT, archivedAt: null, deletedAt: null, createdAt: { lt: new Date(Date.now() - 90 * 86400000) } };
+  }
+
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async cleanupExpiredProductDrafts() {
+    // Retain the existing 90-day draft policy without a write on every catalogue read.
+    const expired = this.expiredProductDraftWhere();
+    const drafts = await this.prisma.product.findMany({
+      where: expired,
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: { id: true }, take: 500,
+    });
+    if (drafts.length) await this.prisma.product.deleteMany({ where: { AND: [expired, { id: { in: drafts.map(row => row.id) } }] } });
+  }
 
   @Cron(CronExpression.EVERY_5_MINUTES)
   async handleScheduledProductPublishNotifications() {
@@ -5311,19 +5328,6 @@ export class StoreService {
       throw new NotFoundException('Store is closed');
     }
 
-    if (isOwner) {
-      const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-      await this.prisma.product.deleteMany({
-        where: {
-          brandId: brand.id,
-          isActive: false,
-          publicationStatus: CollectionStatus.DRAFT,
-          archivedAt: null,
-          deletedAt: null,
-          createdAt: { lt: ninetyDaysAgo },
-        },
-      });
-    }
 
     // Build where clause - owners see all products, public sees only active/published
     const where: Prisma.ProductWhereInput = {
@@ -5334,6 +5338,9 @@ export class StoreService {
 
     if (isOwner) {
       // Owner preview: show all products including inactive
+      // Expired drafts were previously deleted before this read. Keep the same
+      // visible result while the bounded retention worker removes them later.
+      andFilters.push({ NOT: this.expiredProductDraftWhere() });
       // Optionally filter by collection status if needed
       if (collectionId) {
         andFilters.push({
@@ -6425,7 +6432,26 @@ export class StoreService {
       product.name,
     );
 
-    const existingItem = await this.prisma.cartItem.findFirst({
+    if (!recommendationSnapshot && this.sizeComputationService) {
+      const recommendation = await this.sizeComputationService
+        .computeProductRecommendation(userId, product.id, {
+          selectedSize: resolvedSelectedSize,
+          measurementsOverride:
+            sizingPayload.sizeFitData?.measurements ??
+            sizingPayload.sizeFitData ??
+            null,
+        })
+        .catch(() => null);
+      if (recommendation) {
+        recommendationSnapshot = this.sizeComputationService.toSnapshotJson(
+          recommendation,
+          { selectedSize: resolvedSelectedSize },
+        );
+      }
+    }
+
+    const resultingQuantity = await withCartTransaction(this.prisma, userId, async (tx) => {
+    const existingItem = await tx.cartItem.findFirst({
       where: {
         userId,
         productId: dto.productId,
@@ -6481,25 +6507,6 @@ export class StoreService {
       }
     }
 
-    if (!recommendationSnapshot && this.sizeComputationService) {
-      const recommendation = await this.sizeComputationService
-        .computeProductRecommendation(userId, product.id, {
-          selectedSize: resolvedSelectedSize,
-          measurementsOverride:
-            sizingPayload.sizeFitData?.measurements ??
-            sizingPayload.sizeFitData ??
-            null,
-        })
-        .catch(() => null);
-      if (recommendation) {
-        recommendationSnapshot = this.sizeComputationService.toSnapshotJson(
-          recommendation,
-          { selectedSize: resolvedSelectedSize },
-        );
-      }
-    }
-
-    await this.prisma.$transaction(async (tx) => {
       if (dto.sizeFitData) {
         await this.syncMeasurementsToProfile(userId, dto.sizeFitData, tx);
       }
@@ -6530,6 +6537,7 @@ export class StoreService {
           },
         });
       }
+      return resultingQuantity;
     });
 
     await this.notifyBuyerBagItemAdded({
@@ -6730,7 +6738,8 @@ export class StoreService {
     cartItemId: string,
     dto: UpdateCartItemDto,
   ) {
-    const item = await this.prisma.cartItem.findFirst({
+    await withCartTransaction(this.prisma, userId, async (tx) => {
+    const item = await tx.cartItem.findFirst({
       where: { id: cartItemId, userId },
       include: { product: { include: { variants: true } } },
     });
@@ -6771,16 +6780,19 @@ export class StoreService {
       }
     }
 
-    await this.prisma.cartItem.update({
+    await tx.cartItem.update({
       where: { id: cartItemId },
       data: { quantity: dto.quantity },
+    });
+
     });
 
     return this.getCart(userId);
   }
 
   async removeFromCart(userId: string, cartItemId: string) {
-    const item = await this.prisma.cartItem.findFirst({
+    await withCartTransaction(this.prisma, userId, async (tx) => {
+    const item = await tx.cartItem.findFirst({
       where: { id: cartItemId, userId },
     });
 
@@ -6788,12 +6800,14 @@ export class StoreService {
       throw new NotFoundException('Cart item not found');
     }
 
-    await this.prisma.cartItem.delete({ where: { id: cartItemId } });
+    await tx.cartItem.delete({ where: { id: cartItemId } });
+    });
+
     return this.getCart(userId);
   }
 
   async clearCart(userId: string) {
-    await this.prisma.cartItem.deleteMany({ where: { userId } });
+    await withCartTransaction(this.prisma, userId, (tx) => tx.cartItem.deleteMany({ where: { userId } }));
     return { success: true, message: 'Cart cleared' };
   }
 

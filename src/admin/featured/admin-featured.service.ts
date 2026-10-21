@@ -6,10 +6,12 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { AdminAuditAction, NotificationType } from '@prisma/client';
+import { AdminAuditAction, NotificationType, Prisma } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
 import { CreateFeaturedDto } from './dto';
+import { loadFeaturedSummaries } from './featured-summary.util';
+import { retryDatabaseTransaction } from '../../common/transaction-retry.util';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import {
   adminUserDisplaySelect,
@@ -54,11 +56,19 @@ export class AdminFeaturedService {
       startsAt.getTime() + FEATURED_DURATION_DAYS * 24 * 60 * 60 * 1000,
     );
 
-    // Eligibility checks
-    await this.checkEligibility(entityType, entityId, brandId);
-
     const id = uuidv4();
-    const featured = await this.prisma.$transaction(async (tx) => {
+    const featured = await retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
+      // Serialize the small global featured quota across every API replica.
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(180214, 1)`;
+      await tx.$queryRaw`SELECT "_id" FROM "Brand" WHERE "_id" = ${brandId}::uuid FOR UPDATE`;
+      if (entityType === 'PRODUCT') {
+        await tx.$queryRaw`SELECT "_id" FROM "Product" WHERE "_id" = ${entityId}::uuid FOR UPDATE`;
+      } else {
+        await tx.$queryRaw`SELECT "_id" FROM "Collection" WHERE "_id" = ${entityId}::uuid FOR UPDATE`;
+      }
+      const current = await this.resolveEntity(entityType, entityId, tx);
+      if (current.brandId !== brandId) throw new BadRequestException('Item brand changed; please retry');
+      await this.checkEligibility(entityType, entityId, brandId, tx);
       const item = await tx.featuredItem.create({
         data: {
           id,
@@ -113,7 +123,7 @@ export class AdminFeaturedService {
       });
 
       return item;
-    });
+    }));
 
     // Notify brand owner
     this.notifyBrandOwner(brandId, NotificationType.ITEM_FEATURED, {
@@ -180,17 +190,10 @@ export class AdminFeaturedService {
     const results = hasMore ? items.slice(0, take) : items;
     const nextCursor = hasMore ? results[results.length - 1]?.id : undefined;
 
-    // Enrich with entity names
+    const summaries = await loadFeaturedSummaries(this.prisma, results);
     const enriched = await Promise.all(
       results.map(async (item) => {
-        const entityName = await this.getEntityName(
-          item.entityType,
-          item.entityId,
-        );
-        const entityThumbnail = await this.getEntityThumbnail(
-          item.entityType,
-          item.entityId,
-        );
+        const { entityName, entityThumbnail } = summaries.get(item.id)!;
         return {
           ...item,
           featuredBy: mapAdminUserDisplay(item.featuredBy),
@@ -219,16 +222,10 @@ export class AdminFeaturedService {
       orderBy: { startsAt: 'asc' },
     });
 
+    const summaries = await loadFeaturedSummaries(this.prisma, items);
     return Promise.all(
       items.map(async (item) => {
-        const entityName = await this.getEntityName(
-          item.entityType,
-          item.entityId,
-        );
-        const entityThumbnail = await this.getEntityThumbnail(
-          item.entityType,
-          item.entityId,
-        );
+        const { entityName, entityThumbnail } = summaries.get(item.id)!;
         return { ...item, entityName, entityThumbnail };
       }),
     );
@@ -331,12 +328,10 @@ export class AdminFeaturedService {
     const results = hasMore ? items.slice(0, take) : items;
     const nextCursor = hasMore ? results[results.length - 1]?.id : undefined;
 
+    const summaries = await loadFeaturedSummaries(this.prisma, results);
     const enriched = await Promise.all(
       results.map(async (item) => {
-        const entityName = await this.getEntityName(
-          item.entityType,
-          item.entityId,
-        );
+        const entityName = summaries.get(item.id)!.entityName;
         return {
           ...item,
           featuredBy: mapAdminUserDisplay(item.featuredBy),
@@ -558,12 +553,14 @@ export class AdminFeaturedService {
         orderBy: { name: 'asc' },
       });
 
+      const active = await this.loadActiveFeaturedForEligibility(products.map((p) => p.brandId), products.map((p) => p.id));
       for (const p of products) {
         const { eligible, reason } = await this.checkEligibilityQuick(
           'PRODUCT',
           p.id,
           p.brandId,
           p,
+          active,
         );
         results.push({
           entityType: 'PRODUCT',
@@ -617,6 +614,7 @@ export class AdminFeaturedService {
         orderBy: { title: 'asc' },
       });
 
+      const active = await this.loadActiveFeaturedForEligibility(designs.flatMap((d) => d.owner?.brand ? [d.owner.brand.id] : []), designs.map((d) => d.id));
       for (const d of designs) {
         const brandId = d.owner?.brand?.id;
         if (!brandId) continue;
@@ -628,6 +626,7 @@ export class AdminFeaturedService {
             isFeaturedBlocked: d.isFeaturedBlocked,
             brand: d.owner.brand,
           },
+          active,
         );
         results.push({
           entityType: 'DESIGN',
@@ -695,20 +694,11 @@ export class AdminFeaturedService {
       orderBy: { startsAt: 'asc' },
     });
 
+    const summaries = await loadFeaturedSummaries(this.prisma, items);
     return Promise.all(
       items.map(async (item) => {
-        const entityName = await this.getEntityName(
-          item.entityType,
-          item.entityId,
-        );
-        const entityThumbnail = await this.getEntityThumbnail(
-          item.entityType,
-          item.entityId,
-        );
-        const entityPrice =
-          item.entityType === 'PRODUCT'
-            ? await this.getProductPrice(item.entityId)
-            : null;
+        const { entityName, entityThumbnail } = summaries.get(item.id)!;
+        const entityPrice = summaries.get(item.id)!.entityPrice;
 
         return {
           ...item,
@@ -866,9 +856,9 @@ export class AdminFeaturedService {
 
   // ── Private helpers ──
 
-  private async resolveEntity(entityType: string, entityId: string) {
+  private async resolveEntity(entityType: string, entityId: string, client: Prisma.TransactionClient = this.prisma) {
     if (entityType === 'PRODUCT') {
-      const product = await this.prisma.product.findUnique({
+      const product = await client.product.findUnique({
         where: { id: entityId },
         select: {
           id: true,
@@ -889,7 +879,7 @@ export class AdminFeaturedService {
     }
 
     if (entityType === 'DESIGN') {
-      const design = await this.prisma.collection.findUnique({
+      const design = await client.collection.findUnique({
         where: { id: entityId },
         select: {
           id: true,
@@ -921,11 +911,12 @@ export class AdminFeaturedService {
     entityType: string,
     entityId: string,
     brandId: string,
+    client: Prisma.TransactionClient = this.prisma,
   ) {
     const now = new Date();
 
     // Brand-level checks
-    const brand = await this.prisma.brand.findUnique({
+    const brand = await client.brand.findUnique({
       where: { id: brandId },
       select: {
         isFeaturedBlocked: true,
@@ -947,7 +938,7 @@ export class AdminFeaturedService {
     }
 
     // Brand active+scheduled count
-    const brandActiveCount = await this.prisma.featuredItem.count({
+    const brandActiveCount = await client.featuredItem.count({
       where: { brandId, isActive: true },
     });
     if (brandActiveCount >= MAX_PER_BRAND) {
@@ -957,7 +948,7 @@ export class AdminFeaturedService {
     }
 
     // Global active count (currently live items only, not scheduled)
-    const globalActiveCount = await this.prisma.featuredItem.count({
+    const globalActiveCount = await client.featuredItem.count({
       where: {
         isActive: true,
         startsAt: { lte: now },
@@ -971,7 +962,7 @@ export class AdminFeaturedService {
     }
 
     // Duplicate check — item already featured
-    const existingActive = await this.prisma.featuredItem.findFirst({
+    const existingActive = await client.featuredItem.findFirst({
       where: { entityType, entityId, isActive: true },
     });
     if (existingActive) {
@@ -981,11 +972,20 @@ export class AdminFeaturedService {
     }
   }
 
+  private async loadActiveFeaturedForEligibility(brandIds: string[], entityIds: string[]) {
+    if (!brandIds.length && !entityIds.length) return [];
+    return this.prisma.featuredItem.findMany({
+      where: { isActive: true, OR: [{ brandId: { in: [...new Set(brandIds)] } }, { entityId: { in: [...new Set(entityIds)] } }] },
+      select: { brandId: true, entityType: true, entityId: true },
+    });
+  }
+
   private async checkEligibilityQuick(
     entityType: string,
     entityId: string,
     brandId: string,
     entityData: { isFeaturedBlocked: boolean; brand: any },
+    active: Array<{ brandId: string; entityType: string; entityId: string }>,
   ): Promise<{ eligible: boolean; reason?: string }> {
     const now = new Date();
 
@@ -1000,16 +1000,10 @@ export class AdminFeaturedService {
       return { eligible: false, reason: 'Brand under penalty' };
     }
 
-    const brandActive = await this.prisma.featuredItem.count({
-      where: { brandId, isActive: true },
-    });
-    if (brandActive >= MAX_PER_BRAND)
+    if (active.filter((item) => item.brandId === brandId).length >= MAX_PER_BRAND)
       return { eligible: false, reason: 'Brand already featured' };
-
-    const existing = await this.prisma.featuredItem.findFirst({
-      where: { entityType, entityId, isActive: true },
-    });
-    if (existing) return { eligible: false, reason: 'Already featured' };
+    if (active.some((item) => item.entityType === entityType && item.entityId === entityId))
+      return { eligible: false, reason: 'Already featured' };
 
     return { eligible: true };
   }

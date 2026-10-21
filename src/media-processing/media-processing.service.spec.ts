@@ -52,6 +52,43 @@ describe('MediaProcessingService', () => {
     }
   }, 30_000);
 
+  it('retains fine coloured fabric detail in the actual display variants', async () => {
+    const { fixture, metrics } = require('../../scripts/benchmark-image-quality.cjs');
+    const input = fixture('weave', 256, 384);
+    const source = await sharp(input.pixels, { raw: input })
+      .jpeg({ quality: 100, chromaSubsampling: '4:4:4' }).toBuffer();
+    const reference = await sharp(source).raw().toBuffer();
+    const variants = await service.generateVariants(source, { mimeType: 'image/jpeg' });
+    for (const format of ['WEBP', 'AVIF']) {
+      const detail = variants.find((variant) => variant.kind === 'DETAIL' && variant.format === format)!;
+      const decoded = await sharp(detail.buffer).removeAlpha().raw().toBuffer();
+      expect(metrics(reference, decoded, 256, 384, 3).rgbSsim8x8).toBeGreaterThan(0.95);
+    }
+  }, 30_000);
+
+  it('preserves every RGBA value in transparent display images', async () => {
+    const { fixture } = require('../../scripts/benchmark-image-quality.cjs');
+    const input = fixture('alpha', 48, 64);
+    const source = await sharp(input.pixels, { raw: input }).png().toBuffer();
+    const variants = await service.generateVariants(source, { mimeType: 'image/png' });
+    const detail = variants.find((variant) => variant.kind === 'DETAIL' && variant.format === 'WEBP')!;
+    const decoded = await sharp(detail.buffer).ensureAlpha().raw().toBuffer();
+    expect(decoded).toEqual(input.pixels);
+  }, 30_000);
+
+  it('uses oriented dimensions and strips EXIF while keeping the colour profile', async () => {
+    const source = await sharp({ create: { width: 48, height: 32, channels: 3, background: '#bb3344' } })
+      .jpeg().withMetadata({ orientation: 6 }).toBuffer();
+    expect(await service.probeImage(source)).toMatchObject({ width: 32, height: 48 });
+    const variants = await service.generateVariants(source, { mimeType: 'image/jpeg' });
+    for (const variant of variants) {
+      const metadata = await sharp(variant.buffer).metadata();
+      expect(metadata).toMatchObject({ width: 32, height: 48 });
+      expect(metadata.exif).toBeUndefined();
+      expect(metadata.icc).toBeDefined();
+    }
+  }, 30_000);
+
   describe('isHeicLikeBuffer', () => {
     it('detects HEIC ftyp brands', () => {
       expect(service.isHeicLikeBuffer(makeFakeHeicBuffer())).toBe(true);
@@ -88,9 +125,9 @@ describe('MediaProcessingService', () => {
       const convertSpy = jest
         .spyOn(
           service as unknown as {
-            convertHeicToJpeg: (buf: Buffer) => Promise<ArrayBuffer>;
+            convertHeicToPng: (buf: Buffer) => Promise<ArrayBuffer>;
           },
-          'convertHeicToJpeg',
+          'convertHeicToPng',
         )
         .mockResolvedValue(jpegArrayBuffer);
 

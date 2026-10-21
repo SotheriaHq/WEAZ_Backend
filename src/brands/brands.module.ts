@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BrandsService } from './brands.service';
+import { BrandCustomersService } from './brand-customers.service';
+import { BrandCommerceAccessService } from './brand-commerce-access.service';
 import { BrandsController } from './brands.controller';
 import { BrandAccessService } from './brand-access.service';
 import { BrandMetricsService } from './brand-metrics.service';
@@ -25,6 +27,8 @@ import { AdminAuditService } from 'src/admin/services/admin-audit.service';
     UsersModule,
   ],
   providers: [
+    BrandCustomersService,
+    BrandCommerceAccessService,
     BrandsService,
     BrandAccessService,
     BrandMetricsService,

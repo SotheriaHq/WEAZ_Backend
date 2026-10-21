@@ -207,6 +207,23 @@ export class ReconciliationService {
     });
   }
 
+  private async loadLedgerByReference(type: 'PAYMENT_RECEIVED' | 'PAYOUT_DISBURSED', referenceType: string, ids: string[]) {
+    const unique = [...new Set(ids)];
+    const grouped = new Map<string, Array<{ id: string; totalAmount: Prisma.Decimal }>>();
+    for (let offset = 0; offset < unique.length; offset += 500) {
+      const rows = await this.prisma.ledgerTransaction.findMany({
+        where: { type, referenceType, referenceId: { in: unique.slice(offset, offset + 500) } },
+        select: { id: true, totalAmount: true, referenceId: true },
+      });
+      for (const row of rows) {
+        if (!row.referenceId) continue;
+        const entries = grouped.get(row.referenceId) ?? [];
+        entries.push(row); grouped.set(row.referenceId, entries);
+      }
+    }
+    return grouped;
+  }
+
   private async reconcilePayments(runId: string) {
     const attempts = await this.prisma.paymentAttempt.findMany({
       where: { status: 'PAID' },
@@ -214,29 +231,18 @@ export class ReconciliationService {
       take: 500,
     });
 
+    const [customLedger, standardLedger] = await Promise.all([
+      this.loadLedgerByReference('PAYMENT_RECEIVED', 'CustomOrder', attempts.filter((attempt) => attempt.subjectType === 'CUSTOM_ORDER' && attempt.customOrderId).map((attempt) => attempt.customOrderId!)),
+      this.loadLedgerByReference('PAYMENT_RECEIVED', 'Order', attempts.filter((attempt) => !(attempt.subjectType === 'CUSTOM_ORDER' && attempt.customOrderId)).flatMap((attempt) => attempt.orderIds)),
+    ]);
     const createdStatuses: ReconciliationItemStatus[] = [];
     for (const attempt of attempts) {
       const expectedAmount = Number(
         attempt.settlementAmount ?? attempt.amount ?? 0,
       );
-      const ledgerTransactions =
-        attempt.subjectType === 'CUSTOM_ORDER' && attempt.customOrderId
-          ? await this.prisma.ledgerTransaction.findMany({
-              where: {
-                type: 'PAYMENT_RECEIVED',
-                referenceType: 'CustomOrder',
-                referenceId: attempt.customOrderId,
-              },
-              select: { totalAmount: true, id: true },
-            })
-          : await this.prisma.ledgerTransaction.findMany({
-              where: {
-                type: 'PAYMENT_RECEIVED',
-                referenceType: 'Order',
-                referenceId: { in: attempt.orderIds },
-              },
-              select: { totalAmount: true, id: true },
-            });
+      const ledgerTransactions = attempt.subjectType === 'CUSTOM_ORDER' && attempt.customOrderId
+        ? customLedger.get(attempt.customOrderId) ?? []
+        : [...new Set(attempt.orderIds)].flatMap((id) => standardLedger.get(id) ?? []);
 
       const actualAmount = this.roundMoney(
         ledgerTransactions.reduce((sum, tx) => sum + Number(tx.totalAmount), 0),
@@ -289,16 +295,10 @@ export class ReconciliationService {
       take: 500,
     });
 
+    const ledgerByPayout = await this.loadLedgerByReference('PAYOUT_DISBURSED', 'Payout', payouts.map((payout) => payout.id));
     const createdStatuses: ReconciliationItemStatus[] = [];
     for (const payout of payouts) {
-      const ledgerTransactions = await this.prisma.ledgerTransaction.findMany({
-        where: {
-          type: 'PAYOUT_DISBURSED',
-          referenceType: 'Payout',
-          referenceId: payout.id,
-        },
-        select: { totalAmount: true, id: true },
-      });
+      const ledgerTransactions = ledgerByPayout.get(payout.id) ?? [];
 
       const actualAmount = this.roundMoney(
         ledgerTransactions.reduce((sum, tx) => sum + Number(tx.totalAmount), 0),

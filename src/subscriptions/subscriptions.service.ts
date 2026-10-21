@@ -11,6 +11,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { SUBSCRIPTION_TIER_ORDER as TIER_ORDER } from './subscription-tiers';
 import {
   BrandSubscription,
   BrandSubscriptionInvoice,
@@ -60,7 +61,6 @@ const REQUIRED_TERMS = [
   LegalDocumentKey.SELLER_TERMS,
   LegalDocumentKey.PAYMENT_POLICY,
 ];
-const TIER_ORDER: SubscriptionTierKey[] = ['THREAD', 'ASO_OKE', 'ARU', 'IGWE'];
 type InvoiceWithSubscription = BrandSubscriptionInvoice & {
   subscription: BrandSubscription;
 };

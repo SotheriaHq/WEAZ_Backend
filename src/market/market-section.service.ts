@@ -163,43 +163,12 @@ export class MarketSectionService {
    * multi-MB upload. Falls back to null when the pipeline has not produced
    * variants for this file yet.
    */
-  private async resolveCardVariantUrl(
-    fileId: string | null | undefined,
-  ): Promise<string | null> {
-    if (!fileId || !this.uploadService) return null;
+  private async resolveCardVariantUrls(fileIds: string[]): Promise<Map<string, string>> {
+    if (!this.uploadService || !fileIds.length) return new Map();
     try {
-      const rows = await (this.prisma as any).fileVariant.findMany({
-        where: { fileUploadId: fileId, variantKind: 'CARD' },
-        select: { s3Key: true, s3Url: true, format: true },
-      });
-      if (!Array.isArray(rows) || rows.length === 0) return null;
-      const formatRank = (format: unknown): number => {
-        const value = String(format ?? '').toUpperCase();
-        if (value === 'WEBP') return 0;
-        if (value === 'AVIF') return 1;
-        return 2;
-      };
-      rows.sort((a: any, b: any) => formatRank(a.format) - formatRank(b.format));
-      const best = rows[0];
-      const bestKey =
-        typeof best?.s3Key === 'string' && best.s3Key.trim()
-          ? best.s3Key.trim()
-          : null;
-      if (!bestKey) return null;
-      return (
-        this.uploadService.getPublicDisplayUrl({
-          id: fileId,
-          s3Key: bestKey,
-          s3Url: best?.s3Url ?? null,
-          isPublic: true,
-        } as any) ??
-        (await this.uploadService.getTemporarySignedDisplayUrl(
-          { id: fileId, s3Key: bestKey },
-          3600,
-        ))
-      );
+      return await this.uploadService.getBatchVariantDisplayUrls([...new Set(fileIds)], 'CARD');
     } catch {
-      return null;
+      return new Map();
     }
   }
 
@@ -212,12 +181,13 @@ export class MarketSectionService {
   private async resolveDisplayMediaUrl(
     rawUrl: string | null | undefined,
     fileId: string | null | undefined,
-    s3Key?: string | null,
+    s3Key: string | null | undefined,
+    cardVariants: ReadonlyMap<string, string>,
   ): Promise<string | null> {
     const clean = this.cleanString(rawUrl);
     if (!this.uploadService) return clean;
 
-    const cardVariant = await this.resolveCardVariantUrl(fileId);
+    const cardVariant = fileId ? cardVariants.get(fileId) : null;
     if (cardVariant) return cardVariant;
 
     const key =
@@ -1152,6 +1122,7 @@ export class MarketSectionService {
         }
       }
     }
+    const cardVariants = await this.resolveCardVariantUrls([...fileIdByUrl.values()]);
     const items = (
       await Promise.all(
         page.map(async (product) => {
@@ -1163,6 +1134,7 @@ export class MarketSectionService {
             raw,
             fileId,
             raw ? s3KeyByUrl.get(raw) : null,
+            cardVariants,
           );
           if (signed) {
             mapped.media.url = signed;
@@ -1420,6 +1392,7 @@ export class MarketSectionService {
         }
       }
     }
+    const cardVariants = await this.resolveCardVariantUrls([...fileIdByUrl.values()]);
     const items = (
       await Promise.all(
         page.map(async (brand) => {
@@ -1430,6 +1403,7 @@ export class MarketSectionService {
             raw,
             mapped.media.fileId ?? null,
             raw ? s3KeyByUrl.get(raw) : null,
+            cardVariants,
           );
           if (signed) {
             mapped.media.url = signed;

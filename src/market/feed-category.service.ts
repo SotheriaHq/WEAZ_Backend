@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { RUNWAY_CATEGORIES } from '../collections/runway-categories';
 import { PrismaService } from 'src/prisma/prisma.service';
 
 export type FeedCategoryView = {
@@ -25,7 +26,7 @@ const FEED_CATEGORY_DEFAULTS: FeedCategoryView[] = [
     label: 'Discover',
     description: 'Broad runway/design discovery for authenticated new users.',
     surface: 'DESIGN_FEED',
-    rankingProfileKey: 'deterministic-v1',
+    rankingProfileKey: 'runway-v2',
     displayOrder: 10,
     fallbackCategoryKey: 'explore',
     requiresAuth: false,
@@ -41,7 +42,7 @@ const FEED_CATEGORY_DEFAULTS: FeedCategoryView[] = [
     label: 'Explore',
     description: 'Guest-safe broad design exploration.',
     surface: 'DESIGN_FEED',
-    rankingProfileKey: 'deterministic-v1',
+    rankingProfileKey: 'runway-v2',
     displayOrder: 20,
     fallbackCategoryKey: 'discover',
     requiresAuth: false,
@@ -56,9 +57,9 @@ const FEED_CATEGORY_DEFAULTS: FeedCategoryView[] = [
     key: 'for-you',
     label: 'For You',
     description:
-      'Reserved personalization category; deterministic fallback until ranking ships.',
+      'Personalized fashion with diverse discovery for new users.',
     surface: 'DESIGN_FEED',
-    rankingProfileKey: 'deterministic-v1',
+    rankingProfileKey: 'runway-v2',
     displayOrder: 30,
     fallbackCategoryKey: 'discover',
     requiresAuth: true,
@@ -69,12 +70,12 @@ const FEED_CATEGORY_DEFAULTS: FeedCategoryView[] = [
     status: 'ACTIVE',
   },
   {
-    id: 'african-style',
-    key: 'african-style',
-    label: 'African Style',
-    description: 'African fashion inspiration lane.',
+    id: 'african-casual',
+    key: 'african-casual',
+    label: 'African Casual',
+    description: 'Contemporary everyday African fashion with explicit casual classification.',
     surface: 'DESIGN_FEED',
-    rankingProfileKey: 'deterministic-v1',
+    rankingProfileKey: 'runway-v2',
     displayOrder: 40,
     fallbackCategoryKey: 'explore',
     requiresAuth: false,
@@ -90,7 +91,7 @@ const FEED_CATEGORY_DEFAULTS: FeedCategoryView[] = [
     label: 'Casual Style',
     description: 'Casual fashion inspiration lane.',
     surface: 'DESIGN_FEED',
-    rankingProfileKey: 'deterministic-v1',
+    rankingProfileKey: 'runway-v2',
     displayOrder: 50,
     fallbackCategoryKey: 'explore',
     requiresAuth: false,
@@ -109,23 +110,28 @@ export class FeedCategoryService {
   constructor(private readonly prisma: PrismaService) {}
 
   async listCategories(options?: { userId?: string | null }) {
-    const categories = await this.getActiveCategories();
+    const categories = (await this.getActiveCategories()).map(category => {
+      const builtIn = RUNWAY_CATEGORIES.find(row => row.key === category.key);
+      return builtIn ? { ...category, label: builtIn.label, requiresAuth: builtIn.requiresAuth } : category;
+    });
     const visible = categories.filter(
       (category) => !category.requiresAuth || Boolean(options?.userId),
     );
+    const designCategories = visible.filter(category => category.surface === 'DESIGN_FEED');
+    const availableDefault = (preferred: string) => designCategories.find(category => category.key === preferred)?.key ?? designCategories[0]?.key ?? 'explore';
 
     return {
       generatedAt: new Date().toISOString(),
       categories: visible,
       defaults: {
-        guest: 'explore',
-        authenticatedNewUser: 'discover',
-        authenticatedReturningUser: 'explore',
-        selected: options?.userId ? 'discover' : 'explore',
+        guest: availableDefault('explore'),
+        authenticatedNewUser: availableDefault('discover'),
+        authenticatedReturningUser: availableDefault('discover'),
+        selected: availableDefault(options?.userId ? 'discover' : 'explore'),
       },
       metadata: {
-        version: 'phase2.foundation',
-        personalization: 'disabled',
+        version: 'runway-v2',
+        personalization: options?.userId ? 'interaction-affinity' : 'guest-discovery',
         cachePolicy: 'private-no-store',
       },
     };
@@ -134,15 +140,15 @@ export class FeedCategoryService {
   private async getActiveCategories(): Promise<FeedCategoryView[]> {
     try {
       const rows = await this.prisma.feedCategory.findMany({
-        where: { status: 'ACTIVE' },
         orderBy: [{ displayOrder: 'asc' }, { key: 'asc' }],
       });
       if (!rows.length) return FEED_CATEGORY_DEFAULTS;
 
-      return rows.map((row) => ({
+      const paused = new Set(rows.filter(row => row.status === 'PAUSED' || row.status === 'ARCHIVED').map(row => row.key === 'african-style' ? 'african-casual' : row.key));
+      const configured = rows.filter(row => row.status === 'ACTIVE').map((row) => ({
         id: row.id,
-        key: row.key,
-        label: row.label,
+        key: row.key === 'african-style' ? 'african-casual' : row.key,
+        label: row.key === 'african-style' || row.key === 'african-casual' ? 'African Casual' : row.label,
         description: row.description,
         surface: row.surface as FeedCategoryView['surface'],
         rankingProfileKey: row.rankingProfileKey,
@@ -153,8 +159,16 @@ export class FeedCategoryService {
         isDefaultForGuest: row.isDefaultForGuest,
         isDefaultForNewUser: row.isDefaultForNewUser,
         isDefaultForReturningUser: row.isDefaultForReturningUser,
-        status: 'ACTIVE',
+        status: 'ACTIVE' as const,
       }));
+      const defaults = FEED_CATEGORY_DEFAULTS.filter(row => row.surface === 'DESIGN_FEED');
+      const byKey = new Map(configured.map(row => [row.key, row]));
+      for (const category of defaults) {
+        if (paused.has(category.key)) continue;
+        const existing = byKey.get(category.key);
+        byKey.set(category.key, { ...category, ...existing, label: category.label, requiresAuth: category.requiresAuth, rankingProfileKey: category.rankingProfileKey });
+      }
+      return [...byKey.values()].sort((a, b) => a.displayOrder - b.displayOrder || a.key.localeCompare(b.key));
     } catch (error) {
       this.logger.warn(
         `Feed category config read failed, using code defaults: ${

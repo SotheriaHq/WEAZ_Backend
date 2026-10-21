@@ -1,3 +1,4 @@
+import { privateCollectionCountsForOwners } from './collection-counts.util';
 import {
   Injectable,
   BadRequestException,
@@ -88,6 +89,9 @@ import {
 } from 'src/common/brand-profile-source.helper';
 import { ContentIntegrityService } from 'src/content-integrity/content-integrity.service';
 import { SearchCoreService } from 'src/search/core/search-core.service';
+
+import { RunwayFeedService } from './runway-feed.service';
+import { RUNWAY_KEYS } from './runway-ranking.util';
 
 type CollectionScope = 'design' | 'store' | 'all';
 
@@ -206,6 +210,7 @@ export class CollectionsService {
     @Optional()
     private readonly contentIntegrity?: ContentIntegrityService,
     @Optional() searchCore?: SearchCoreService,
+    @Optional() private readonly runwayFeed?: RunwayFeedService,
   ) {
     this.searchCore = searchCore ?? new SearchCoreService();
   }
@@ -913,6 +918,7 @@ export class CollectionsService {
 
   private async buildFeedBrandAvatar(
     owner: any,
+    prefetchedAvatars?: ReadonlyMap<string, string>,
   ): Promise<FeedMediaAssetDto | null> {
     const profileImageFile = owner?.userProfile?.profileImageFile ?? null;
     const brandLogoUrl =
@@ -950,10 +956,7 @@ export class CollectionsService {
       fileId &&
       typeof this.uploadService.getBatchVariantDisplayUrls === 'function'
     ) {
-      const avatarUrls = await this.uploadService.getBatchVariantDisplayUrls(
-        [fileId],
-        'AVATAR',
-      );
+      const avatarUrls = prefetchedAvatars ?? await this.uploadService.getBatchVariantDisplayUrls([fileId], 'AVATAR');
       const avatarUrl = avatarUrls.get(fileId);
       if (avatarUrl) {
         return { ...asset, displayUrl: avatarUrl };
@@ -2263,23 +2266,7 @@ export class CollectionsService {
     }
 
     const ownerIds = Array.from(groupedByBrand.keys());
-    const privateCollectionCounts = new Map<string, number>(
-      await Promise.all(
-        ownerIds.map(
-          async (ownerId): Promise<[string, number]> => [
-            ownerId,
-            await this.prisma.collection.count({
-              where: {
-                ownerId,
-                visibility: CollectionVisibility.PRIVATE,
-                status: 'PUBLISHED',
-                deletedAt: null,
-              } as any,
-            }),
-          ],
-        ),
-      ),
-    );
+    const privateCollectionCounts = await privateCollectionCountsForOwners(this.prisma, ownerIds);
 
     const aggregated = Array.from(groupedByBrand.entries())
       .map(([ownerId, groupRows]) => {
@@ -2393,23 +2380,7 @@ export class CollectionsService {
     }
 
     const ownerIds = Array.from(groupedByBrand.keys());
-    const privateCollectionCounts = new Map<string, number>(
-      await Promise.all(
-        ownerIds.map(
-          async (ownerId): Promise<[string, number]> => [
-            ownerId,
-            await this.prisma.collection.count({
-              where: {
-                ownerId,
-                visibility: CollectionVisibility.PRIVATE,
-                status: 'PUBLISHED',
-                deletedAt: null,
-              } as any,
-            }),
-          ],
-        ),
-      ),
-    );
+    const privateCollectionCounts = await privateCollectionCountsForOwners(this.prisma, ownerIds);
 
     const aggregated = Array.from(groupedByBrand.entries())
       .map(([ownerId, groupRows]) => {
@@ -3022,11 +2993,16 @@ export class CollectionsService {
     limit?: number;
     tag?: string;
     category?: string;
+    feedKey?: string;
     countsPolicy?: 'combined';
     requesterId?: string; // Add requesterId to check thread status
   }) {
     const { cursor, limit = 20, tag, category, requesterId } = options ?? {};
-    const take = Math.min(Math.max(limit, 1), 40);
+    const requestedLane = options?.feedKey ?? tag;
+    const lane = requestedLane && ([...RUNWAY_KEYS, 'african-style'] as string[]).includes(requestedLane) ? requestedLane : undefined;
+    if (cursor && (cursor.length > 256 || (!cursor.startsWith('rw_') && !parseMixCursor(cursor) && !isUuid(cursor)))) throw new BadRequestException('Invalid Runway cursor');
+    const taxonomyTag = lane === tag ? undefined : tag;
+    const take = Number.isFinite(limit) ? Math.min(Math.max(Math.floor(limit), 1), 40) : 20;
     this.logger.debug(
       `[feed] market query start cursor=${cursor ?? 'none'} limit=${take} tag=${tag ?? 'all'} category=${category ?? 'all'}`,
     );
@@ -3043,13 +3019,14 @@ export class CollectionsService {
       status: 'PUBLISHED',
       visibility: CollectionVisibility.PUBLIC,
       deletedAt: null,
+      owner: { status: 'ACTIVE' },
       medias: {
         some: readyMediaWhere,
       } as any,
-      ...(tag
+      ...(taxonomyTag
         ? {
             tags: {
-              has: tag,
+              has: taxonomyTag,
             },
           }
         : {}),
@@ -3061,6 +3038,22 @@ export class CollectionsService {
           }
         : {}),
     } as Prisma.CollectionWhereInput;
+
+    if (this.runwayFeed && (!cursor || cursor.startsWith('rw_'))) {
+      const page = await this.runwayFeed.page(where, requesterId, lane, cursor, take);
+      const rows = page.ids.length ? await this.prisma.collection.findMany({
+        where: { AND: [where, { id: { in: page.ids } }] },
+        include: this.marketFeedInclude(),
+      }) : [];
+      const byId = new Map(rows.map(row => [row.id, row]));
+      const ordered = page.ids.map(id => byId.get(id)).filter(Boolean);
+      return {
+        items: await this.buildMarketFeedItems(ordered, requesterId, options?.countsPolicy),
+        hasNextPage: page.hasNextPage,
+        nextCursor: page.nextCursor,
+        metadata: { ranking: 'runway-v2', categoryKey: lane ?? 'discover', personalization: requesterId ? 'interaction-affinity' : 'guest-discovery' },
+      };
+    }
 
     // ── Ranked + rotated feed (default) ─────────────────────────────────
     // Scoring/rotation rules live in feed-ranking.util.ts: quality score
@@ -3116,7 +3109,7 @@ export class CollectionsService {
       if (pageRows.length > 0) {
         const pageIds = pageRows.map((row: any) => row.id);
         const fullRows = await this.prisma.collection.findMany({
-          where: { id: { in: pageIds } } as any,
+          where: { AND: [where, { id: { in: pageIds } }] },
           include: this.marketFeedInclude(),
         });
         const rowById = new Map(
@@ -3379,6 +3372,13 @@ export class CollectionsService {
       })
       .filter((row): row is { collection: any; media: any } => Boolean(row));
 
+    const avatarIds = [...new Set(feedRows.map((row) =>
+      row.collection.owner?.userProfile?.profileImageFile?.id,
+    ).filter((id): id is string => typeof id === 'string' && id.length > 0))];
+    const avatarUrls = avatarIds.length && typeof this.uploadService.getBatchVariantDisplayUrls === 'function'
+      ? await this.uploadService.getBatchVariantDisplayUrls(avatarIds, 'AVATAR')
+      : new Map<string, string>();
+
     // Hydrate isThreaded for requester when available
     let isThreadedMap: Record<string, boolean> = {};
     if (requesterId) {
@@ -3476,7 +3476,7 @@ export class CollectionsService {
             return null;
           }
 
-          const avatar = await this.buildFeedBrandAvatar(collection.owner);
+          const avatar = await this.buildFeedBrandAvatar(collection.owner, avatarUrls);
           const logoFileId =
             avatar?.fileId ??
             owner.profileImageId ??

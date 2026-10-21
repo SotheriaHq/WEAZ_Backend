@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ServiceUnavailableException,
   Injectable,
   Logger,
   OnModuleDestroy,
@@ -176,6 +177,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
   private redis: RedisClientType | null = null;
   private redisCircuitOpenUntil = 0;
   private redisFailureCount = 0;
+  private readonly searchFlights = new Map<string, Promise<SearchResponse>>();
   private isRebuildingSuggestions = false;
   private prismaSearchHooksRegistered = false;
   private readonly searchCore: SearchCoreService;
@@ -231,6 +233,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy() {
+    this.searchFlights.clear();
     if (!this.redis) {
       return;
     }
@@ -1662,7 +1665,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND (p."publishAt" IS NULL OR p."publishAt" <= NOW())
           AND b."isStoreOpen" = true
           ${brandFilter}
-          AND COALESCE(p.search_vector, ''::tsvector) @@ sp.tsq${productCoverage}
+          AND p.search_vector @@ sp.tsq${productCoverage}
       ),
       trgm AS (
         SELECT
@@ -1765,7 +1768,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND (p."publishAt" IS NULL OR p."publishAt" <= NOW())
           AND b."isStoreOpen" = true
           ${brandFilter}
-          AND COALESCE(p.search_vector, ''::tsvector) @@ sp.tsq${productCoverage}
+          AND p.search_vector @@ sp.tsq${productCoverage}
       ),
       trgm AS (
         SELECT p."_id" AS id
@@ -1877,7 +1880,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         FROM "Brand" b
         CROSS JOIN search_params sp
         WHERE b."isStoreOpen" = true
-          AND COALESCE(b.search_vector, ''::tsvector) @@ sp.tsq${brandCoverage}
+          AND b.search_vector @@ sp.tsq${brandCoverage}
       ),
       trgm AS (
         SELECT
@@ -1918,7 +1921,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         FROM "Brand" b
         CROSS JOIN search_params sp
         WHERE b."isStoreOpen" = true
-          AND COALESCE(b.search_vector, ''::tsvector) @@ sp.tsq${brandCoverage}
+          AND b.search_vector @@ sp.tsq${brandCoverage}
       ),
       trgm AS (
         SELECT b."_id" AS id
@@ -1978,7 +1981,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND c.status = ${CollectionStatus.PUBLISHED}
           AND c.visibility = ${CollectionVisibility.PUBLIC}
           AND c."deletedAt" IS NULL
-          AND COALESCE(c.search_vector, ''::tsvector) @@ sp.tsq${designCoverage}
+          AND c.search_vector @@ sp.tsq${designCoverage}
       ),
       trgm AS (
         SELECT
@@ -2048,7 +2051,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND c.status = ${CollectionStatus.PUBLISHED}
           AND c.visibility = ${CollectionVisibility.PUBLIC}
           AND c."deletedAt" IS NULL
-          AND COALESCE(c.search_vector, ''::tsvector) @@ sp.tsq${designCoverage}
+          AND c.search_vector @@ sp.tsq${designCoverage}
       ),
       trgm AS (
         SELECT c."_id" AS id
@@ -2132,7 +2135,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND sc.visibility = ${CollectionVisibility.PUBLIC}
           AND sc."deletedAt" IS NULL
           ${ownerFilter}
-          AND COALESCE(sc.search_vector, ''::tsvector) @@ sp.tsq${collectionCoverage}
+          AND sc.search_vector @@ sp.tsq${collectionCoverage}
       ),
       trgm AS (
         SELECT
@@ -2178,7 +2181,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           AND sc.visibility = ${CollectionVisibility.PUBLIC}
           AND sc."deletedAt" IS NULL
           ${ownerFilter}
-          AND COALESCE(sc.search_vector, ''::tsvector) @@ sp.tsq${collectionCoverage}
+          AND sc.search_vector @@ sp.tsq${collectionCoverage}
       ),
       trgm AS (
         SELECT sc."_id" AS id
@@ -3327,6 +3330,21 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
   }
 
   async search(params: SearchParams): Promise<SearchResponse> {
+    const parsed = this.parseSearchQuery(params.query);
+    const key = JSON.stringify([parsed.normalizedQuery, parsed.mode, [...(params.types ?? [])].sort(), params.brandId, params.page ?? 1, params.limit ?? 20]);
+    let flight = this.searchFlights.get(key);
+    if (!flight) {
+      if (this.searchFlights.size >= 16) throw new ServiceUnavailableException('Search is busy. Please try again.');
+      flight = this.executeSearch(params);
+      this.searchFlights.set(key, flight);
+      void flight.finally(() => { if (this.searchFlights.get(key) === flight) this.searchFlights.delete(key); }).catch(() => undefined);
+    }
+    const result = await flight;
+    await this.recordSearch(params.userId, parsed.normalizedQuery);
+    return { ...result, query: params.query || '' };
+  }
+
+  private async executeSearch(params: SearchParams): Promise<SearchResponse> {
     const startedAt = Date.now();
     const parsedQuery = this.parseSearchQuery(params.query);
     const normalizedQuery = parsedQuery.normalizedQuery;
@@ -3357,7 +3375,6 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
     const cached = await this.getCachedSearchResult(cacheKey);
     if (cached) {
-      await this.recordSearch(params.userId, normalizedQuery);
       this.logSearchEvent('search', {
         mode: parsedQuery.mode,
         normalizedQueryLength: normalizedQuery.length,
@@ -3519,7 +3536,6 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     };
 
     await this.setCachedSearchResult(cacheKey, response);
-    await this.recordSearch(params.userId, normalizedQuery);
     this.logSearchEvent('search', {
       mode: parsedQuery.mode,
       normalizedQueryLength: normalizedQuery.length,

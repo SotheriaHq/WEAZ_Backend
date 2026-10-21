@@ -1,4 +1,4 @@
-import { Controller, Get, Param } from '@nestjs/common';
+import { Controller, Get, Header, Param } from '@nestjs/common';
 import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 import { CategoriesService } from './categories.service';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -14,12 +14,14 @@ export class CategoriesPublicController {
   constructor(private readonly categories: CategoriesService) {}
 
   @Get()
+  @Header('Cache-Control', 'public, max-age=60, stale-while-revalidate=300')
   @ApiOperation({ summary: 'List active categories with sub-categories' })
   async list() {
     return this.categories.listCategoriesWithSubCategories();
   }
 
   @Get('filters')
+  @Header('Cache-Control', 'public, max-age=60, stale-while-revalidate=300')
   @ApiOperation({ summary: 'List active filter dimensions with values' })
   async filters() {
     return this.categories.getFilterDimensions();

@@ -96,6 +96,7 @@ describe('MarketSectionService', () => {
   });
 
   const createPrisma = (overrides: Record<string, any> = {}) => ({
+    fileUpload: { findMany: jest.fn().mockResolvedValue([]) },
     product: {
       findMany: jest.fn().mockResolvedValue([product()]),
     },

@@ -1,3 +1,4 @@
+import { loadActiveDisplayVariants } from './variant-display.util';
 import {
   Injectable,
   Logger,
@@ -1102,17 +1103,37 @@ export class UploadService {
       where: { s3Key: normalizedKey },
       select: { s3Key: true, fileType: true, processingStatus: true, originalDeletedAt: true },
     });
+    return this.signVerificationReviewFile(file);
+  }
+
+  async getVerificationReviewSignedUrlsByKey(keys: string[]): Promise<Map<string, string>> {
+    const valid = [...new Set(keys.map((key) => key.trim()).filter((key) => key && !key.includes('..')))];
+    const urls = new Map<string, string>();
+    for (let offset = 0; offset < valid.length; offset += 50) {
+      const files = await this.prisma.fileUpload.findMany({
+        where: { s3Key: { in: valid.slice(offset, offset + 50) } },
+        select: { s3Key: true, fileType: true, processingStatus: true, originalDeletedAt: true },
+      });
+      await Promise.all(files.map(async (file) => {
+        const signed = await this.signVerificationReviewFile(file);
+        if (signed) urls.set(file.s3Key, signed);
+      }));
+    }
+    return urls;
+  }
+
+  private async signVerificationReviewFile(file: Pick<FileUpload, 's3Key' | 'fileType' | 'processingStatus' | 'originalDeletedAt'> | null): Promise<string | null> {
     if (!file || !this.isDisplayableStoredFile(file)) return null;
     if (String(file.fileType) !== String(FileType.BRAND_VERIFICATION)) {
       this.logger.warn(
-        `[media] verification-review signing denied for non-verification file keyPrefix=${normalizedKey.split('/')[0] ?? 'unknown'}`,
+        `[media] verification-review signing denied for non-verification file keyPrefix=${file.s3Key.split('/')[0] ?? 'unknown'}`,
       );
       return null;
     }
 
     const command = new GetObjectCommand({
       Bucket: this.bucketName,
-      Key: file.s3Key || normalizedKey,
+      Key: file.s3Key,
     });
     return await getSignedUrl(this.s3, command, { expiresIn: 900 });
   }
@@ -1279,10 +1300,7 @@ export class UploadService {
       return new Map<string, string>();
     }
 
-    const rows = await (this.prisma as any).fileVariant.findMany({
-      where: { fileUploadId: { in: fileIds }, variantKind },
-      select: { fileUploadId: true, s3Key: true, s3Url: true, format: true },
-    });
+    const rows = await loadActiveDisplayVariants(this.prisma, fileIds, variantKind);
 
     const formatRank = (format: unknown): number => {
       const value = String(format ?? '').toUpperCase();

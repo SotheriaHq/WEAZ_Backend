@@ -32,10 +32,16 @@ assertIncludes('src/designs/mappers/design-response.mapper.ts', 's3Url: null', '
 assertIncludes('src/designs/mappers/design-response.mapper.ts', 'variants: sanitizedVariants', 'private media variant URLs must be stripped');
 assertIncludes('src/designs/mappers/design-response.mapper.spec.ts', 'keeps private explicit design media owner-gated by omitting direct storage URLs', 'private media leak test must remain');
 
-assertIncludes('scripts/seed-phase5c-private-media.ts', 'THREADLY_PHASE5C_PRIVATE_MEDIA_FIXTURE', 'fixture script must require an explicit local flag');
-assertIncludes('scripts/seed-phase5c-private-media.ts', "NODE_ENV || '').toLowerCase() === 'production'", 'fixture script must refuse production');
-assertIncludes('scripts/seed-phase5c-private-media.ts', 'isSafeLocalDatabaseUrl(process.env.DATABASE_URL)', 'fixture script must refuse non-local databases');
-assertNotMatches('scripts/seed-phase5c-private-media.ts', /https:\/\/.+(amazonaws|s3)\./i, 'fixture script must not hardcode remote private media URLs');
+// This optional local-only tool was removed in f0a1377. If restored, its
+// safety guards must still hold; normal CI verifies the tracked privacy tests.
+if (fs.existsSync(path.join(repoRoot, 'scripts/seed-phase5c-private-media.ts'))) {
+  assertIncludes('scripts/seed-phase5c-private-media.ts', 'THREADLY_PHASE5C_PRIVATE_MEDIA_FIXTURE', 'fixture script must require an explicit local flag');
+  assertIncludes('scripts/seed-phase5c-private-media.ts', "NODE_ENV || '').toLowerCase() === 'production'", 'fixture script must refuse production');
+  assertIncludes('scripts/seed-phase5c-private-media.ts', 'isSafeLocalDatabaseUrl(process.env.DATABASE_URL)', 'fixture script must refuse non-local databases');
+  assertNotMatches('scripts/seed-phase5c-private-media.ts', /https:\/\/.+(amazonaws|s3)\./i, 'fixture script must not hardcode remote private media URLs');
+}
+assertIncludes('src/upload/upload.service.spec.ts', 'denies signed URLs for deleted or failed owned media', 'invalid media signing denial must remain');
+assertIncludes('src/upload/upload.service.spec.ts', 'rejects cross-user and wrong-prefix presigned upload finalization attempts', 'cross-user upload denial must remain');
 
 if (failures.length > 0) {
   console.error('Performance regression guard failed:');

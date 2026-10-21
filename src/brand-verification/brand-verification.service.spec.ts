@@ -30,6 +30,7 @@ describe('BrandVerificationService', () => {
       findMany: jest.fn(),
     },
     fileUpload: {
+      findMany: jest.fn(),
       findFirst: jest.fn(),
     },
     userProfile: {
@@ -76,6 +77,10 @@ describe('BrandVerificationService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    prisma.fileUpload.findMany.mockImplementation(async ({ where }: any) => (where.s3Key.in as string[]).map((s3Key) => ({
+      id: `file-${s3Key}`, s3Key, mimeType: 'image/jpeg', size: 100, sha256: null,
+      createdAt: new Date('2026-05-05T00:00:00.000Z'), fileType: 'BRAND_VERIFICATION',
+    })));
     prisma.$transaction.mockImplementation((callback: any) => callback(prisma));
   });
 

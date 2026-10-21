@@ -89,16 +89,18 @@ export class UploadController {
     if (ids.length === 0) {
       throw new BadRequestException('fileIds is required');
     }
-    const items = await Promise.all(
-      ids.map(async (fileId) => {
-        try {
-          const url = await this.uploadService.getPublicSignedUrl(fileId);
-          return { fileId, url: url ?? null };
-        } catch {
-          return { fileId, url: null };
-        }
-      }),
+    const validIds = ids.filter((id) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id),
     );
+    let urls = new Map<string, string>();
+    if (validIds.length) {
+      try {
+        urls = await this.uploadService.getBatchPublicSignedUrls(validIds);
+      } catch {
+        this.logger.warn('[media] public URL batch could not be resolved');
+      }
+    }
+    const items = ids.map((fileId) => ({ fileId, url: urls.get(fileId) ?? null }));
     return { items };
   }
 

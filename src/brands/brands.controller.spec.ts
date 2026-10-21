@@ -13,6 +13,7 @@ describe('BrandsController brand access endpoints', () => {
   const brandAccessService = {
     assertCanUpdateBrandProfile: jest.fn(),
     assertCanSubmitVerification: jest.fn(),
+    resolveBrandContext: jest.fn().mockResolvedValue({brandId: 'brand-1', ownerId: 'owner-1'}),
   };
 
   const controller = new BrandsController(
@@ -20,6 +21,7 @@ describe('BrandsController brand access endpoints', () => {
     collectionsService as any,
     brandVerificationService as any,
     brandAccessService as any,
+    {} as any,
   );
 
   beforeEach(() => {

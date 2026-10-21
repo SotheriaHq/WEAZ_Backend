@@ -8,7 +8,7 @@ import type { CollectionBagStatusContract } from './bagging.types';
 describe('CollectionBaggingService', () => {
   const prisma = {
     product: { findMany: jest.fn() },
-    cartItem: { findFirst: jest.fn() },
+    cartItem: { findFirst: jest.fn(), findMany: jest.fn() },
     userSizeFitProfile: { findUnique: jest.fn() },
     // `assertBuyerAccount` reads this on every bag path. Without it the mock
     // threw "Cannot read properties of undefined (reading 'findUnique')" before
@@ -140,6 +140,7 @@ describe('CollectionBaggingService', () => {
     jest.clearAllMocks();
     prisma.userSizeFitProfile.findUnique.mockResolvedValue(null);
     prisma.cartItem.findFirst.mockResolvedValue(null);
+    prisma.cartItem.findMany.mockResolvedValue([]);
     // A buyer, so `assertBuyerAccount` lets the bag paths through. Brand
     // accounts are rejected — covered separately below.
     prisma.user.findUnique.mockResolvedValue({ type: 'REGULAR' });
@@ -150,7 +151,9 @@ describe('CollectionBaggingService', () => {
     });
     prisma.$transaction.mockImplementation(async (callback: any) =>
       callback({
+        $queryRaw: jest.fn().mockResolvedValue([]),
         cartItem: {
+          findMany: jest.fn().mockResolvedValue([]),
           create: jest.fn(async ({ data }: any) => ({
             id: `cart_${data.productId}`,
             quantity: data.quantity,

@@ -1,3 +1,4 @@
+import { retryDatabaseTransaction } from '../common/transaction-retry.util';
 import {
   Injectable,
   BadRequestException,
@@ -896,12 +897,6 @@ export class CategoriesService {
       filterValueIds,
     );
 
-    await this.prisma.entityFilter.deleteMany({
-      where: { entityType, entityId },
-    });
-
-    if (validFilterValueIds.length === 0) return [];
-
     const records = validFilterValueIds.map((filterValueId) => ({
       id: uuidv4(),
       filterValueId,
@@ -911,9 +906,17 @@ export class CategoriesService {
       ...(entityType === 'DESIGN' ? { designId: entityId } : {}),
     }));
 
+    await retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(180216, hashtext(${entityType + ':' + entityId}))`;
+    await tx.entityFilter.deleteMany({
+      where: { entityType, entityId },
+    });
+
     if (records.length > 0) {
-      await this.prisma.entityFilter.createMany({ data: records });
+      await tx.entityFilter.createMany({ data: records });
     }
+
+    }));
 
     return records.map((r) => r.filterValueId);
   }

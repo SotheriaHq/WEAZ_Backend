@@ -147,37 +147,7 @@ export class MessagingAccessService {
     userId: string,
     permission: BrandPermissionCode,
   ): Promise<string[]> {
-    const [ownedBrands, memberships] = await Promise.all([
-      this.prisma.brand.findMany({
-        where: { ownerId: userId },
-        select: { id: true },
-      }),
-      this.prisma.brandMember.findMany({
-        where: { userId, status: 'ACTIVE' },
-        select: { brandId: true },
-      }),
-    ]);
-
-    const brandIds = Array.from(
-      new Set([
-        ...ownedBrands.map((brand) => brand.id),
-        ...memberships.map((membership) => membership.brandId),
-      ]),
-    );
-
-    const allowed = await Promise.all(
-      brandIds.map(async (brandId) => ({
-        brandId,
-        allowed: await this.brandPermissionService.hasPermission(
-          userId,
-          brandId,
-          permission,
-        ),
-      })),
-    );
-    return allowed
-      .filter((entry) => entry.allowed)
-      .map((entry) => entry.brandId);
+    return this.brandPermissionService.getBrandIdsWithPermission(userId, permission);
   }
 
   async resolveActorThreadRole(userId: string, threadId: string) {

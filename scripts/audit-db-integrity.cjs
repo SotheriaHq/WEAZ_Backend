@@ -1,0 +1,63 @@
+/** Metadata and aggregate counts only. Never changes data or prints connection secrets. */
+require('dotenv').config({ quiet: true });
+const { Client } = require('pg');
+const { Prisma } = require('@prisma/client');
+const fs = require('node:fs');
+const path = require('node:path');
+const url = new URL(process.env.DATABASE_URL);
+const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+if (!local && !process.argv.includes('--allow-remote-read-only')) throw new Error('Remote audit requires --allow-remote-read-only');
+const models = Prisma.dmmf.datamodel.models;
+const client = new Client({ connectionString: url.toString(), statement_timeout: 30000 });
+async function main() {
+  await client.connect();
+  try {
+    await client.query('BEGIN READ ONLY');
+    const report = {
+      generatedAt: new Date().toISOString(), scope: local ? 'local database only' : 'configured remote database',
+      serverVersion: (await client.query('SHOW server_version')).rows[0].server_version,
+      schema: {
+        models: models.length,
+        relationalFields: models.flatMap((model) => model.fields.filter((field) => field.kind === 'object')).length,
+        jsonFields: models.flatMap((model) => model.fields.filter((field) => field.type === 'Json')).length,
+        // These are review candidates, not automatic normalization defects.
+        unboundIdCandidates: models.flatMap((model) => {
+          const foreignFields = new Set(model.fields.flatMap((field) => field.relationFromFields ?? []));
+          return model.fields.filter((field) => field.kind === 'scalar' && /Id$/.test(field.name) && field.name !== 'id' && !foreignFields.has(field.name))
+            .map((field) => `${model.name}.${field.name}`);
+        }),
+      }, counts: {}, migrationHealth: {},
+    };
+    const queries = {
+      duplicateCartSelections: `SELECT COUNT(*)::int count FROM (SELECT 1 FROM "CartItem" GROUP BY "userId","productId","selectedSize","selectedColor" HAVING COUNT(*)>1) duplicates`,
+      invalidCartQuantities: `SELECT COUNT(*)::int count FROM "CartItem" WHERE quantity NOT BETWEEN 1 AND 99`,
+      orphanCartOwners: `SELECT COUNT(*)::int count FROM "CartItem" item LEFT JOIN "User" owner ON owner."_id"=item."userId" WHERE owner."_id" IS NULL`,
+      orphanWishlistOwners: `SELECT COUNT(*)::int count FROM "WishlistItem" item LEFT JOIN "User" owner ON owner."_id"=item."userId" WHERE owner."_id" IS NULL`,
+      activeFeaturedBrandDuplicates: `SELECT COUNT(*)::int count FROM (SELECT 1 FROM "FeaturedItem" WHERE "isActive" GROUP BY "brandId" HAVING COUNT(*)>1) duplicates`,
+      inconsistentProductFilterBridge: `SELECT COUNT(*)::int count FROM "EntityFilter" WHERE ("entityType"='PRODUCT' AND "productId" IS DISTINCT FROM "entityId") OR ("entityType"<>'PRODUCT' AND "productId" IS NOT NULL)`,
+      orphanProductFilterTargets: `SELECT COUNT(*)::int count FROM "EntityFilter" filters LEFT JOIN "Product" product ON product."_id"=filters."entityId" WHERE filters."entityType"='PRODUCT' AND product."_id" IS NULL`,
+    };
+    // An older database may lack an audited feature. Preserve the read-only transaction after a missing-table error.
+    for (const [key, sql] of Object.entries(queries)) {
+      await client.query('SAVEPOINT audit_check');
+      try { report.counts[key] = (await client.query(sql)).rows[0].count; }
+      catch (error) { await client.query('ROLLBACK TO SAVEPOINT audit_check'); report.counts[key] = { unavailable: error.code }; }
+      await client.query('RELEASE SAVEPOINT audit_check');
+    }
+    const columns = (await client.query(`SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='BrandPhysicalVerification' AND column_name=ANY($1::text[])`, [['reminderDayBeforeAt', 'reminderHourBeforeAt', 'awaitingReplyNudgedAt']])).rows.map((row) => row.column_name);
+    report.migrationHealth.physicalVerificationReminderColumns = columns.sort();
+    report.migrationHealth.missingPhysicalVerificationReminderColumns = ['reminderDayBeforeAt', 'reminderHourBeforeAt', 'awaitingReplyNudgedAt'].filter((column) => !columns.includes(column));
+    if ((await client.query(`SELECT to_regclass('"_prisma_migrations"') IS NOT NULL AS exists`)).rows[0].exists) {
+      report.migrationHealth.failedUnresolved = (await client.query(`SELECT migration_name FROM "_prisma_migrations" WHERE finished_at IS NULL AND rolled_back_at IS NULL`)).rows.map((row) => row.migration_name);
+    }
+    await client.query('ROLLBACK');
+    const flag = process.argv.indexOf('--output');
+    if (flag >= 0) {
+      const output = path.resolve(process.argv[flag + 1]);
+      fs.mkdirSync(path.dirname(output), { recursive: true });
+      fs.writeFileSync(output, JSON.stringify(report, null, 2) + '\n');
+    }
+    console.log(JSON.stringify({ scope: report.scope, serverVersion: report.serverVersion, models: models.length, counts: report.counts, migrationHealth: report.migrationHealth }));
+  } finally { await client.end(); }
+}
+main().catch((error) => { console.error(error.code ?? error.message); process.exitCode = 1; });

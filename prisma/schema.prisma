@@ -14,6 +14,8 @@ datasource db {
 }
 
 model User {
+  runwayAffinityCache RunwayAffinityCache?
+  runwayFeedSessions RunwayFeedSession[]
   id                       String                        @id @map("_id") @db.Uuid
   username                 String                        @unique
   role                     Role                          @default(User)
@@ -27,6 +29,8 @@ model User {
   subscriptionNoticeReceipts SubscriptionNoticeReceipt[]
   studioHandoffCodes       StudioHandoffCode[]
   fileUploads              FileUpload[]                  @relation("UserFiles")
+  cartItems                CartItem[] @relation("UserCartItems")
+  wishlistItems            WishlistItem[] @relation("UserWishlistItems")
   posts                    Post[]
   comments                 Comment[]
   threads                  Thread[]
@@ -172,6 +176,8 @@ model FileUpload {
   mimeType          String
   size              Int
   processingStatus  ImageProcessingStatus @default(PENDING)
+  processingLeaseToken String? @db.Uuid
+  processingLeaseUntil DateTime?
   processingError   String?
   width             Int?
   height            Int?
@@ -2670,6 +2676,7 @@ model Brand {
   id                     String    @id @map("_id") @db.Uuid
   name                   String
   storeNameLastChangedAt DateTime?
+  customerMinimumOrders Int       @default(3)
   ownerId                String    @unique @db.Uuid
   owner                  User      @relation("BrandOwner", fields: [ownerId], references: [id])
 
@@ -5360,6 +5367,7 @@ enum SavedItemType {
 model CartItem {
   id        String  @id @map("_id") @db.Uuid
   userId    String  @db.Uuid
+  user      User    @relation("UserCartItems", fields: [userId], references: [id], onDelete: Cascade)
   productId String  @db.Uuid
   product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
@@ -5375,6 +5383,7 @@ model CartItem {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // PostgreSQL NULLS NOT DISTINCT treats missing options as one bag selection.
   @@unique([userId, productId, selectedSize, selectedColor])
   @@index([userId])
 }
@@ -5382,6 +5391,7 @@ model CartItem {
 model WishlistItem {
   id        String  @id @map("_id") @db.Uuid
   userId    String  @db.Uuid
+  user      User    @relation("UserWishlistItems", fields: [userId], references: [id], onDelete: Cascade)
   productId String  @db.Uuid
   product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
@@ -5489,7 +5499,8 @@ model FeaturedItem {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([entityType, entityId, isActive])
+  // Active-only uniqueness is enforced by partial indexes; history is unlimited.
+  @@index([entityType, entityId, isActive])
   @@index([isActive, expiresAt])
   @@index([brandId, isActive])
   @@index([entityType, isActive])
@@ -5782,6 +5793,27 @@ enum MarketSectionConfigSourceType {
   DESIGN
   BRAND
   MIXED
+}
+
+model RunwayFeedSession {
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String?  @db.Uuid
+  categoryKey String   @db.VarChar(80)
+  designIds   String[] @db.Uuid
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  @@index([expiresAt])
+  @@index([userId])
+}
+
+model RunwayAffinityCache {
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String   @id @db.Uuid
+  payload   Json
+  builtAt   DateTime
+  expiresAt DateTime
+  @@index([expiresAt])
 }
 
 model FeedCategory {
@@ -6578,4 +6610,14 @@ model AdminEmailChangeRequest {
   @@index([adminId, status])
   @@index([status, createdAt])
   @@map("admin_email_change_requests")
+}
+
+// Durable storage side effects are committed together with the file-row deletion.
+model StorageObjectDeletion {
+  s3Key         String    @id
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now())
+  leaseUntil    DateTime?
+  createdAt     DateTime  @default(now())
+  @@index([nextAttemptAt, leaseUntil])
 }

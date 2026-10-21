@@ -219,6 +219,14 @@ export class ReviewEligibilityService {
     }
 
     const completed = this.isCompletedPaidStandardOrder(order);
+    const reviews = await this.prisma.review.findMany({
+      where: { reviewerId: userId, OR: [
+        { orderItemId: { in: order.orderItems.map((item) => item.id) }, targetType: { in: [ReviewTargetType.PRODUCT, ReviewTargetType.COLLECTION] } },
+        { targetType: ReviewTargetType.BRAND, brandId: order.brandId, orderId: order.id },
+      ] },
+      select: { targetType: true, orderItemId: true },
+    });
+    const reviewed = new Set(reviews.map((review) => `${review.targetType}:${review.orderItemId ?? ''}`));
     const targets: EligibleReviewTarget[] = [];
 
     for (const item of order.orderItems) {
@@ -241,10 +249,7 @@ export class ReviewEligibilityService {
           completed &&
           Boolean(item.productId) &&
           item.product?.brand?.ownerId !== userId &&
-          !(await this.hasDuplicateReview(userId, {
-            ...base,
-            targetType: ReviewTargetType.PRODUCT,
-          })),
+          !reviewed.has(`${ReviewTargetType.PRODUCT}:${item.id}`),
         reason: completed ? undefined : REVIEW_ERRORS.NOT_ELIGIBLE,
       });
 
@@ -255,10 +260,7 @@ export class ReviewEligibilityService {
           eligible:
             completed &&
             item.product?.brand?.ownerId !== userId &&
-            !(await this.hasDuplicateReview(userId, {
-              ...base,
-              targetType: ReviewTargetType.COLLECTION,
-            })),
+            !reviewed.has(`${ReviewTargetType.COLLECTION}:${item.id}`),
           reason: completed ? undefined : REVIEW_ERRORS.NOT_ELIGIBLE,
         });
       }
@@ -272,11 +274,7 @@ export class ReviewEligibilityService {
       eligible:
         completed &&
         order.brand.ownerId !== userId &&
-        !(await this.hasDuplicateReview(userId, {
-          brandId: order.brandId,
-          orderId: order.id,
-          targetType: ReviewTargetType.BRAND,
-        })),
+        !reviews.some((review) => review.targetType === ReviewTargetType.BRAND),
       reason: completed ? undefined : REVIEW_ERRORS.NOT_ELIGIBLE,
     });
 

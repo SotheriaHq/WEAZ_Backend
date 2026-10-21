@@ -1,3 +1,4 @@
+import { consumePaidCartLines } from '../bagging/cart-transaction.util';
 import {
   BadRequestException,
   ConflictException,
@@ -9418,22 +9419,8 @@ export class PaymentService implements OnModuleInit {
           },
         });
 
-        const cartItemIdsToDelete = Array.from(
-          new Set(
-            standardPendingLines
-              .map((line) => String(line.cartItemId ?? '').trim())
-              .filter(Boolean),
-          ),
-        );
-        if (cartItemIdsToDelete.length > 0 && attempt.buyerId) {
-          await tx.cartItem.deleteMany({
-            where: {
-              userId: attempt.buyerId,
-              id: {
-                in: cartItemIdsToDelete,
-              },
-            },
-          });
+        if (attempt.buyerId) {
+          await consumePaidCartLines(tx, attempt.buyerId, standardPendingLines);
         }
 
         for (const requiredIntentId of requiredCustomIntentIds) {

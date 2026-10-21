@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
-import { NotificationType } from '@prisma/client';
+import { NotificationType, Prisma } from '@prisma/client';
 import { UploadService } from 'src/upload/upload.service';
 import { ClockService } from 'src/common/clock/clock.service';
 import {
@@ -228,67 +228,25 @@ export class CollectionSchedulerService {
       take: this.config.CLEANUP_BATCH_SIZE,
     });
 
+    let deleted = 0;
     for (const draft of expiredDrafts) {
       try {
-        // Notify owner before deletion
-        await this.notifications.create(
-          draft.ownerId,
-          NotificationType.COLLECTION_DELETED,
-          {
-            payload: {
-              type: 'DRAFT_AUTO_DELETED',
-              collectionId: draft.id,
-              collectionTitle: draft.title || 'Untitled Draft',
-              mediaCount: draft._count.medias,
-              productCount: draft._count.products,
-              reason: `Automatically deleted after ${this.config.DRAFT_TTL_DAYS} days of inactivity`,
-            },
+        if (!(await this.deleteExpiredCollection(draft.id, 'DRAFT', activityBefore))) continue;
+        deleted++;
+        await this.notifications.create(draft.ownerId, NotificationType.COLLECTION_DELETED, {
+          payload: {
+            type: 'DRAFT_AUTO_DELETED', collectionId: draft.id,
+            collectionTitle: draft.title || 'Untitled Draft',
+            mediaCount: draft._count.medias, productCount: draft._count.products,
+            reason: `Automatically deleted after ${this.config.DRAFT_TTL_DAYS} days of inactivity`,
           },
-        );
-
-        const medias = await this.prisma.collectionMedia.findMany({
-          where: { collectionId: draft.id },
-          include: { file: true },
         });
-        const keys = medias
-          .map((m) => m.file?.s3Key)
-          .filter((k): k is string => !!k);
-
-        if (keys.length > 0) {
-          try {
-            await this.uploadService.deleteS3ObjectsByKeys(keys);
-          } catch (error) {
-            this.logger.error(
-              `Failed to delete S3 objects for draft ${draft.id}:`,
-              error,
-            );
-          }
-        }
-
-        const fileIds = medias
-          .map((m) => m.file?.id)
-          .filter((id): id is string => !!id);
-
-        await this.prisma.$transaction(async (tx) => {
-          await tx.collectionMedia.deleteMany({
-            where: { collectionId: draft.id } as any,
-          });
-          if (fileIds.length) {
-            await tx.fileUpload.deleteMany({
-              where: { id: { in: fileIds } } as any,
-            });
-          }
-          await tx.collection.delete({ where: { id: draft.id } });
-        });
-
-        this.logger.log(`Deleted expired draft ${draft.id}`);
       } catch (error) {
-        this.logger.error(`Failed to delete expired draft ${draft.id}:`, error);
+        this.logger.error(`Failed to clean up expired draft ${draft.id}:`, error);
       }
     }
-
-    this.logger.log(`Deleted ${expiredDrafts.length} expired drafts`);
-    return expiredDrafts.length;
+    this.logger.log(`Deleted ${deleted} expired drafts`);
+    return deleted;
   }
 
   /**
@@ -323,53 +281,80 @@ export class CollectionSchedulerService {
       take: this.config.CLEANUP_BATCH_SIZE,
     });
 
+    let deleted = 0;
     for (const entry of candidates) {
       try {
-        const medias = await this.prisma.collectionMedia.findMany({
-          where: { collectionId: entry.id },
-          include: { file: true },
-        });
-        const keys = medias
-          .map((m) => m.file?.s3Key)
-          .filter((k): k is string => !!k);
-        if (keys.length) {
-          try {
-            await this.uploadService.deleteS3ObjectsByKeys(keys);
-          } catch (error) {
-            this.logger.error(
-              `Failed to delete S3 objects for collection ${entry.id}:`,
-              error,
-            );
-          }
-        }
-
-        const fileIds = medias
-          .map((m) => m.file?.id)
-          .filter((id): id is string => !!id);
-
-        await this.prisma.$transaction(async (tx) => {
-          await tx.collectionMedia.deleteMany({
-            where: { collectionId: entry.id } as any,
-          });
-          if (fileIds.length) {
-            await tx.fileUpload.deleteMany({
-              where: { id: { in: fileIds } } as any,
-            });
-          }
-          await tx.collection.delete({ where: { id: entry.id } });
-        });
-
-        this.logger.log(
-          `Hard-deleted collection ${entry.id} after recovery window`,
-        );
+        if (await this.deleteExpiredCollection(entry.id, 'SOFT', now)) deleted++;
       } catch (error) {
-        this.logger.error(
-          `Failed to hard-delete collection ${entry.id}:`,
-          error,
-        );
+        this.logger.error(`Failed to hard-delete collection ${entry.id}:`, error);
       }
     }
-    return candidates.length;
+    return deleted;
+  }
+
+  private async deleteExpiredCollection(id: string, mode: 'DRAFT' | 'SOFT', cutoff: Date): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const eligibility = mode === 'DRAFT'
+        ? Prisma.sql`status = 'DRAFT' AND "deletedAt" IS NULL AND
+            ("lastActivityAt" <= ${cutoff} OR ("lastActivityAt" IS NULL AND "createdAt" <= ${cutoff}))`
+        : Prisma.sql`"deletedAt" IS NOT NULL AND "deleteExpiresAt" <= ${cutoff}`;
+      // Lock and recheck the aggregate, then join all of its immutable storage keys.
+      const rows = await tx.$queryRaw<Array<{ id: string; fileId: string | null; s3Key: string | null; variantKey: string | null }>>(Prisma.sql`
+        WITH claimed AS (
+          SELECT "_id" FROM "Collection" WHERE "_id" = ${id}::uuid AND ${eligibility}
+          FOR UPDATE SKIP LOCKED
+        )
+        SELECT claimed."_id" AS id, file."_id" AS "fileId", file."s3Key", variant."s3Key" AS "variantKey"
+        FROM claimed
+        LEFT JOIN "CollectionMedia" media ON media."collectionId" = claimed."_id"
+        LEFT JOIN "FileUpload" file ON file."_id" = media."fileUploadId"
+        LEFT JOIN "FileVariant" variant ON variant."fileUploadId" = file."_id"
+      `);
+      if (!rows.length) return false;
+      const fileIds = [...new Set(rows.flatMap((row) => row.fileId ? [row.fileId] : []))];
+      const keys = [...new Set(rows.flatMap((row) => [row.s3Key, row.variantKey]).filter((key): key is string => Boolean(key)))];
+      await tx.collectionMedia.deleteMany({ where: { collectionId: id } });
+      if (fileIds.length) await tx.fileUpload.deleteMany({ where: { id: { in: fileIds } } });
+      await tx.collection.delete({ where: { id } });
+      if (keys.length) await tx.storageObjectDeletion.createMany({ data: keys.map((s3Key) => ({ s3Key })), skipDuplicates: true });
+      return true;
+    });
+  }
+
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async dispatchStorageDeletions(): Promise<void> {
+    const now = new Date();
+    const leaseUntil = new Date(now.getTime() + 5 * 60_000);
+    const claimed = await this.prisma.$queryRaw<Array<{ s3Key: string; attempts: number }>>`
+      WITH pending AS (
+        SELECT "s3Key" FROM "StorageObjectDeletion"
+        WHERE "nextAttemptAt" <= ${now} AND ("leaseUntil" IS NULL OR "leaseUntil" <= ${now})
+        ORDER BY "nextAttemptAt", "s3Key" LIMIT 100 FOR UPDATE SKIP LOCKED
+      )
+      UPDATE "StorageObjectDeletion" job SET "leaseUntil" = ${leaseUntil}
+      FROM pending WHERE job."s3Key" = pending."s3Key" RETURNING job."s3Key", job.attempts
+    `;
+    if (!claimed.length) return;
+    const keys = claimed.map((job) => job.s3Key);
+    try {
+      const [files, variants] = await Promise.all([
+        this.prisma.fileUpload.findMany({ where: { s3Key: { in: keys } }, select: { s3Key: true } }),
+        this.prisma.fileVariant.findMany({ where: { s3Key: { in: keys } }, select: { s3Key: true } }),
+      ]);
+      const referenced = new Set([...files, ...variants].map((file) => file.s3Key));
+      const deletable = keys.filter((key) => !referenced.has(key));
+      if (deletable.length) await this.uploadService.deleteS3ObjectsByKeys(deletable);
+      await this.prisma.storageObjectDeletion.deleteMany({ where: { s3Key: { in: keys }, leaseUntil } });
+    } catch (error) {
+      // One bounded batch, including partial S3 failures, can safely repeat: DELETE is idempotent.
+      const attempts = Math.max(...claimed.map((job) => job.attempts));
+      const nextAttemptAt = new Date(Date.now() + Math.min(6 * 60 * 60_000, 30_000 * 2 ** Math.min(attempts, 10)));
+      await this.prisma.storageObjectDeletion.updateMany({
+        where: { s3Key: { in: keys }, leaseUntil },
+        data: { attempts: { increment: 1 }, nextAttemptAt, leaseUntil: null },
+      });
+      this.logger.error('Storage cleanup batch failed; retained for retry', error);
+    }
   }
 
   /**

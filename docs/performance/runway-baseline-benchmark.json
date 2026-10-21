@@ -1,0 +1,137 @@
+{
+  "scope": "Local PostgreSQL service/query benchmark; excludes HTTP, images, network and device rendering.",
+  "results": [
+    {
+      "designs": 10000,
+      "concurrency": 1,
+      "samples": 3,
+      "p50Ms": 82.06490000000122,
+      "p95Ms": 558.1062999999995,
+      "nextPageMs": 11.328700000000026,
+      "fts": {
+        "before": {
+          "executionMs": 4.318,
+          "plan": [
+            "Seq Scan"
+          ]
+        },
+        "after": {
+          "executionMs": 2.913,
+          "plan": [
+            "Seq Scan"
+          ]
+        }
+      }
+    },
+    {
+      "designs": 10000,
+      "concurrency": 5,
+      "samples": 15,
+      "p50Ms": 174.34019999999873,
+      "p95Ms": 219.45190000000002,
+      "nextPageMs": 14.21060000000034,
+      "fts": {
+        "before": {
+          "executionMs": 4.318,
+          "plan": [
+            "Seq Scan"
+          ]
+        },
+        "after": {
+          "executionMs": 2.913,
+          "plan": [
+            "Seq Scan"
+          ]
+        }
+      }
+    },
+    {
+      "designs": 10000,
+      "concurrency": 20,
+      "samples": 60,
+      "p50Ms": 627.6044000000002,
+      "p95Ms": 718.4943999999996,
+      "nextPageMs": 4.931000000000495,
+      "fts": {
+        "before": {
+          "executionMs": 4.318,
+          "plan": [
+            "Seq Scan"
+          ]
+        },
+        "after": {
+          "executionMs": 2.913,
+          "plan": [
+            "Seq Scan"
+          ]
+        }
+      }
+    },
+    {
+      "designs": 100000,
+      "concurrency": 1,
+      "samples": 3,
+      "p50Ms": 2503.4892999999865,
+      "p95Ms": 4242.985499999995,
+      "nextPageMs": 21.60460000000603,
+      "fts": {
+        "before": {
+          "executionMs": 9.191,
+          "plan": [
+            "Seq Scan"
+          ]
+        },
+        "after": {
+          "executionMs": 5.112,
+          "plan": [
+            "Seq Scan"
+          ]
+        }
+      }
+    },
+    {
+      "designs": 100000,
+      "concurrency": 5,
+      "samples": 15,
+      "p50Ms": 3552.1542999999947,
+      "p95Ms": 4839.995999999999,
+      "nextPageMs": 18.145000000004075,
+      "fts": {
+        "before": {
+          "executionMs": 9.191,
+          "plan": [
+            "Seq Scan"
+          ]
+        },
+        "after": {
+          "executionMs": 5.112,
+          "plan": [
+            "Seq Scan"
+          ]
+        }
+      }
+    },
+    {
+      "designs": 100000,
+      "concurrency": 20,
+      "samples": 60,
+      "p50Ms": 20212.656000000003,
+      "p95Ms": 22573.065100000007,
+      "nextPageMs": 13.464399999997113,
+      "fts": {
+        "before": {
+          "executionMs": 9.191,
+          "plan": [
+            "Seq Scan"
+          ]
+        },
+        "after": {
+          "executionMs": 5.112,
+          "plan": [
+            "Seq Scan"
+          ]
+        }
+      }
+    }
+  ]
+}

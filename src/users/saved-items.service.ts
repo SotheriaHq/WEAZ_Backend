@@ -1,3 +1,4 @@
+import { loadByIds } from '../common/bulk-read.util';
 import {
   Injectable,
   NotFoundException,
@@ -148,15 +149,11 @@ export class SavedItemsService {
       },
     });
 
-    // Enhance the saved items with additional data from collections or collection media
-    const enhancedSavedItems = await Promise.all(
-      savedItems.map(async (item) => {
-        let additionalData: any = {};
-
-        if (item.targetType === SavedItemTypeDto.COLLECTION) {
-          const collection = await this.prisma.collection.findUnique({
-            where: { id: item.targetId },
-            include: {
+    const targetIds = (type: string) => savedItems.filter((item) => item.targetType === type).map((item) => item.targetId);
+    const [collectionsById, mediasById, designsById, productsById] = await Promise.all([
+      loadByIds(targetIds(SavedItemTypeDto.COLLECTION), (ids) => this.prisma.collection.findMany({
+        where: { id: { in: ids } },
+        include: {
               owner: {
                 select: {
                   id: true,
@@ -172,7 +169,68 @@ export class SavedItemsService {
                 },
               },
             },
-          });
+      })),
+      loadByIds(targetIds(SavedItemTypeDto.COLLECTION_MEDIA), (ids) => this.prisma.collectionMedia.findMany({
+        where: { id: { in: ids } },
+        include: {
+              file: true,
+              collection: {
+                include: {
+                  owner: {
+                    select: {
+                      id: true,
+                      username: true,
+                      userProfile: { select: canonicalUserProfileSelect },
+                      brand: { select: canonicalBrandProfileSelect },
+                    },
+                  },
+                },
+              },
+            },
+      })),
+      loadByIds(targetIds(SavedItemTypeDto.DESIGN), (ids) => this.prisma.collection.findMany({
+        where: { id: { in: ids }, domain: 'DESIGN' },
+        include: {
+              owner: {
+                select: {
+                  id: true,
+                  username: true,
+                  userProfile: { select: canonicalUserProfileSelect },
+                  brand: { select: canonicalBrandProfileSelect },
+                },
+              },
+              medias: {
+                take: 1,
+                include: { file: true },
+                orderBy: { orderIndex: 'asc' },
+              },
+            },
+      })),
+      loadByIds(targetIds(SavedItemTypeDto.PRODUCT), (ids) => this.prisma.product.findMany({
+        where: { id: { in: ids } },
+        include: {
+              brand: {
+                select: {
+                  owner: {
+                    select: {
+                      id: true,
+                      username: true,
+                      userProfile: { select: canonicalUserProfileSelect },
+                      brand: { select: canonicalBrandProfileSelect },
+                    },
+                  },
+                },
+              },
+            },
+      })),
+    ]);
+
+    // Enhance the saved items with additional data from collections or collection media
+    const enhancedSavedItems = savedItems.map((item) => {
+        let additionalData: any = {};
+
+        if (item.targetType === SavedItemTypeDto.COLLECTION) {
+          const collection = collectionsById.get(item.targetId);
 
           if (collection) {
             additionalData = {
@@ -202,24 +260,7 @@ export class SavedItemsService {
             };
           }
         } else if (item.targetType === SavedItemTypeDto.COLLECTION_MEDIA) {
-          const media = await this.prisma.collectionMedia.findUnique({
-            where: { id: item.targetId },
-            include: {
-              file: true,
-              collection: {
-                include: {
-                  owner: {
-                    select: {
-                      id: true,
-                      username: true,
-                      userProfile: { select: canonicalUserProfileSelect },
-                      brand: { select: canonicalBrandProfileSelect },
-                    },
-                  },
-                },
-              },
-            },
-          });
+          const media = mediasById.get(item.targetId);
 
           if (media) {
             additionalData = {
@@ -251,24 +292,7 @@ export class SavedItemsService {
             };
           }
         } else if (item.targetType === SavedItemTypeDto.DESIGN) {
-          const design = await this.prisma.collection.findFirst({
-            where: { id: item.targetId, domain: 'DESIGN' },
-            include: {
-              owner: {
-                select: {
-                  id: true,
-                  username: true,
-                  userProfile: { select: canonicalUserProfileSelect },
-                  brand: { select: canonicalBrandProfileSelect },
-                },
-              },
-              medias: {
-                take: 1,
-                include: { file: true },
-                orderBy: { orderIndex: 'asc' },
-              },
-            },
-          });
+          const design = designsById.get(item.targetId);
 
           if (design) {
             additionalData = {
@@ -288,23 +312,7 @@ export class SavedItemsService {
             };
           }
         } else if (item.targetType === SavedItemTypeDto.PRODUCT) {
-          const product = await this.prisma.product.findUnique({
-            where: { id: item.targetId },
-            include: {
-              brand: {
-                select: {
-                  owner: {
-                    select: {
-                      id: true,
-                      username: true,
-                      userProfile: { select: canonicalUserProfileSelect },
-                      brand: { select: canonicalBrandProfileSelect },
-                    },
-                  },
-                },
-              },
-            },
-          });
+          const product = productsById.get(item.targetId);
 
           if (product) {
             additionalData = {
@@ -323,8 +331,7 @@ export class SavedItemsService {
           ...item,
           ...additionalData,
         };
-      }),
-    );
+      });
 
     return enhancedSavedItems;
   }

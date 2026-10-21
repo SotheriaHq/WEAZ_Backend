@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import {
+  Prisma,
   FabricStretch,
   FitPreference,
   FitType,
@@ -241,12 +242,10 @@ export class SizeComputationService {
       GarmentCategory.JACKET,
     ];
 
+    const profileCharts = await this.selectProfileChartVersions(selectedRegion, categories);
     const categoryEntries = await Promise.all(
       categories.map(async (garmentCategory) => {
-        const selectedChart = await this.selectChartVersion({
-          region: selectedRegion,
-          garmentCategory,
-        });
+        const selectedChart = profileCharts.get(garmentCategory) ?? { source: 'NONE' as const, version: null };
         const result = this.computeAgainstChart({
           chartSelection: selectedChart,
           garmentCategory,
@@ -1009,6 +1008,33 @@ export class SizeComputationService {
       warnings: Array.from(new Set(warnings)).slice(0, 5),
       usedMeasurements,
     };
+  }
+
+  private async selectProfileChartVersions(region: SizingRegion, categories: GarmentCategory[]): Promise<Map<GarmentCategory, SelectedChartVersion>> {
+    if (!categories.length) return new Map();
+    // One indexed lateral selection per category in one SQL request, then hydrate at most five versions.
+    const choices = await this.prisma.$queryRaw<Array<{ garmentCategory: GarmentCategory; versionId: string; source: 'REGIONAL' | 'INTERNATIONAL' }>>(Prisma.sql`
+      SELECT requested."garmentCategory", selected.id AS "versionId", selected.source
+      FROM unnest(${categories}::"GarmentCategory"[]) AS requested("garmentCategory")
+      JOIN LATERAL (
+        SELECT version.id,
+          CASE WHEN chart."scopeType"='REGIONAL' THEN 'REGIONAL' ELSE 'INTERNATIONAL' END AS source
+        FROM "SizeChart" chart JOIN "SizeChartVersion" version ON version."chartId"=chart.id
+        WHERE chart.status='APPROVED' AND version.status='APPROVED' AND version."isActive"
+          AND chart."scopeId" IS NULL AND chart."garmentCategory"=requested."garmentCategory"
+          AND ((chart."scopeType"='REGIONAL' AND chart.region=${region}::"SizingRegion")
+            OR (chart."scopeType"='SYSTEM' AND chart.region='INTERNATIONAL'))
+        ORDER BY CASE WHEN chart."scopeType"='REGIONAL' THEN 0 ELSE 1 END, version.version DESC, version.id ASC
+        LIMIT 1
+      ) selected ON TRUE
+    `);
+    const ids = [...new Set(choices.map((choice) => choice.versionId))];
+    const versions = ids.length ? await this.prisma.sizeChartVersion.findMany({
+      where: { id: { in: ids }, status: 'APPROVED', isActive: true, chart: { status: 'APPROVED' } },
+      include: { chart: true, rows: { orderBy: { sortOrder: 'asc' } } },
+    }) : [];
+    const byId = new Map(versions.map((version) => [version.id, version]));
+    return new Map(choices.map((choice) => [choice.garmentCategory, { source: choice.source, version: byId.get(choice.versionId) ?? null }]));
   }
 
   private async selectChartVersion(input: {

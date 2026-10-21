@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Header,
   Get,
   Param,
   Patch,
@@ -15,6 +16,8 @@ import {
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { BrandsService, BrandProfileResponse } from './brands.service';
+import { BrandCustomersService } from './brand-customers.service';
+import { BrandCustomersQueryDto, UpdateCustomerSettingsDto } from './dto/brand-customers.dto';
 import { UpdateBrandProfileDto } from './dto/update-brand-profile.dto';
 import { AuthUserResponseDto } from '../auth/dto/auth-response.dto';
 import { TransformInterceptor } from '../transform/transform.interceptor';
@@ -44,9 +47,30 @@ export class BrandsController {
     private readonly collectionsService: CollectionsService,
     private readonly brandVerificationService: BrandVerificationService,
     private readonly brandAccessService: BrandAccessService,
+    private readonly customersService: BrandCustomersService,
   ) {}
 
   // ... existing methods ...
+
+  @UseGuards(JwtAuthGuard)
+  @Get('brands/:id/customers')
+  @Header('Cache-Control', 'private, no-store')
+  async customers(@Param('id') id: string, @Req() req: any, @Query() query: BrandCustomersQueryDto) {
+    return this.customersService.list(req.user.id, id, query);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('brands/:id/customer-settings')
+  @Header('Cache-Control', 'private, no-store')
+  async customerSettings(@Param('id') id: string, @Req() req: any) {
+    return this.customersService.settings(req.user.id, id);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch('brands/:id/customer-settings')
+  async updateCustomerSettings(@Param('id') id: string, @Req() req: any, @Body() dto: UpdateCustomerSettingsDto) {
+    return this.customersService.updateSettings(req.user.id, id, dto.minimumOrders);
+  }
 
   // ===================== Brand Patching =====================
 

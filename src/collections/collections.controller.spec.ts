@@ -20,6 +20,7 @@ describe('CollectionsController market feed', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
       { user: { id: 'user_1' } },
     );
 
@@ -29,6 +30,7 @@ describe('CollectionsController market feed', () => {
       tag: 'ankara',
       category: 'womenswear',
       countsPolicy: 'combined',
+      feedKey: undefined,
       requesterId: 'user_1',
     });
   });
@@ -47,6 +49,7 @@ describe('CollectionsController market feed', () => {
     await controller.getMarketFeed(
       'cursor_2',
       '10',
+      undefined,
       undefined,
       undefined,
       undefined,

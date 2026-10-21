@@ -1921,9 +1921,15 @@ export class BrandVerificationService {
     const filteredKeys = keys.filter((value): value is string =>
       Boolean(value),
     );
-    const rows = await Promise.all(
-      filteredKeys.map((key) => this.getOwnedVerificationFile(ownerId, key)),
-    );
+    const files = filteredKeys.length ? await this.prisma.fileUpload.findMany({
+      where: { userId: ownerId, s3Key: { in: [...new Set(filteredKeys)] }, fileType: FileType.BRAND_VERIFICATION as any },
+    }) : [];
+    const byKey = new Map(files.map((file) => [file.s3Key, file]));
+    const rows = filteredKeys.map((key) => {
+      const file = byKey.get(key);
+      if (!file) throw new BadRequestException(`Verification file does not belong to this brand owner: ${key}`);
+      return file;
+    });
 
     return rows.map((row) => ({
       fileId: row.id,
@@ -1934,22 +1940,6 @@ export class BrandVerificationService {
       uploadedAt: row.createdAt,
       fileType: row.fileType,
     }));
-  }
-
-  private async getOwnedVerificationFile(ownerId: string, s3Key: string) {
-    const file = await this.prisma.fileUpload.findFirst({
-      where: {
-        userId: ownerId,
-        s3Key,
-        fileType: FileType.BRAND_VERIFICATION as any,
-      },
-    });
-    if (!file) {
-      throw new BadRequestException(
-        `Verification file does not belong to this brand owner: ${s3Key}`,
-      );
-    }
-    return file;
   }
 
   private async getLatestAttemptOrThrow(brandId: string) {
@@ -2034,6 +2024,7 @@ export class BrandVerificationService {
     });
     const fileMap = new Map(files.map((file) => [file.s3Key, file]));
 
+    const signedUrls = await this.uploadService.getVerificationReviewSignedUrlsByKey(docConfig.map((item) => item.s3Key!));
     return Promise.all(
       docConfig.map(async (item) => {
         const meta = fileMap.get(item.s3Key!);
@@ -2041,11 +2032,7 @@ export class BrandVerificationService {
         // returns null for every document — which is why reviewers saw "No
         // reviewer preview is available" on all evidence, including the signed
         // letter. Sign through the verification-review path instead.
-        const signedUrl = item.s3Key
-          ? await this.uploadService.getVerificationReviewSignedUrlByKey(
-              item.s3Key,
-            )
-          : null;
+        const signedUrl = item.s3Key ? signedUrls.get(item.s3Key) ?? null : null;
 
         return {
           key: item.key,

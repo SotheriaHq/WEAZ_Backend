@@ -1,3 +1,4 @@
+import { withCartTransaction } from './cart-transaction.util';
 import {
   BadRequestException,
   Injectable,
@@ -160,6 +161,11 @@ export class CollectionBaggingService {
       },
     });
 
+    const selectionKey = (item: { productId: string; selectedSize: string | null; selectedColor: string | null }) => JSON.stringify([item.productId, item.selectedSize, item.selectedColor]);
+    const existingRows = candidates.length ? await this.prisma.cartItem.findMany({
+      where: { userId, productId: { in: candidates.map((item) => item.productId) } },
+    }) : [];
+    const existingBySelection = new Map(existingRows.map((item) => [selectionKey(item), item]));
     const prepared: PreparedAdd[] = [];
     const blocked: CollectionBagMutationResult['blocked'] = [];
 
@@ -226,15 +232,7 @@ export class CollectionBaggingService {
         continue;
       }
 
-      const existingItem = await this.prisma.cartItem.findFirst({
-        where: {
-          userId,
-          productId: item.productId,
-          selectedSize,
-          selectedColor,
-        },
-        select: { id: true, quantity: true },
-      });
+      const existingItem = existingBySelection.get(selectionKey({ productId: item.productId, selectedSize, selectedColor })) ?? null;
       const requiredMeasurementKeys = standardFittingRequired
         ? this.normalizeKeys(product.customMeasurementKeys)
         : [];
@@ -290,18 +288,28 @@ export class CollectionBaggingService {
       );
     }
 
-    const added = await this.prisma.$transaction(async (tx) => {
+    const added = await withCartTransaction(this.prisma, userId, async (tx) => {
+      const currentRows = prepared.length ? await tx.cartItem.findMany({
+        where: { userId, productId: { in: prepared.map((item) => item.productId) } },
+      }) : [];
+      const currentBySelection = new Map(currentRows.map((item) => [selectionKey(item), item]));
       const rows: Array<{
         productId: string;
         bagItemId: string;
         quantity: number;
       }> = [];
       for (const item of prepared) {
-        if (item.existingItem) {
+        const existingItem = currentBySelection.get(selectionKey(item));
+        this.validationService.validateStandardBagInput({
+          product: productById.get(item.productId), selectedSize: item.selectedSize, selectedColor: item.selectedColor,
+          resultingQuantity: (existingItem?.quantity ?? 0) + item.quantity,
+          sizingMode: item.sizingMode, requiredMeasurementKeys: item.requiredMeasurementKeys, sizeFitData: item.sizeFitData,
+        });
+        if (existingItem) {
           const updated = await tx.cartItem.update({
-            where: { id: item.existingItem.id },
+            where: { id: existingItem.id },
             data: {
-              quantity: item.existingItem.quantity + item.quantity,
+              quantity: existingItem.quantity + item.quantity,
               sizingMode: item.sizingMode,
               requiredMeasurementKeys: item.requiredMeasurementKeys,
               sizeFitData: item.sizeFitData as any,

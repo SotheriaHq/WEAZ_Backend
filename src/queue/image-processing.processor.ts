@@ -1,3 +1,4 @@
+import { Prisma, type FileUpload } from '@prisma/client';
 import { Logger } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
@@ -80,155 +81,116 @@ export class ImageProcessingProcessor extends WorkerHost {
     }
   }
 
-  /**
-   * `newVersion` re-encodes a file that already has variants, under the NEXT
-   * asset version, for when the encoder settings change.
-   *
-   * It cannot overwrite in place: variant objects are served with a year-long
-   * immutable Cache-Control through the Cloudflare edge, so rewritten bytes at
-   * the same key would never reach a client. The new version's objects and
-   * rows are written first, then the file is switched to it, then the older
-   * version's ROWS are removed — several readers pick a variant by kind and
-   * format without filtering on `assetVersion`, so leaving both would keep
-   * serving the old one. The older objects are left in the bucket, because
-   * clients still hold their URLs.
-   *
-   * A failure leaves a working photo exactly as it was: no FAILED status
-   * (that drops it from the feed) and no throw (a batch retry would re-run
-   * every file in the batch and bump the ones that had already succeeded).
-   */
-  private async processOne(
-    fileId: string,
-    force: boolean,
-    newVersion = false,
-  ): Promise<void> {
-    const file = await this.prisma.fileUpload.findUnique({
-      where: { id: fileId },
+  /** Durable per-file lease; expensive encoding never holds a database connection. */
+  private async processOne(fileId: string, force: boolean, newVersion = false): Promise<void> {
+    const initial = await this.prisma.fileUpload.findUnique({ where: { id: fileId } });
+    if (!initial || (!force && !newVersion && initial.processingStatus === 'READY')) return;
+    const token = crypto.randomUUID();
+    const claim = await this.prisma.fileUpload.updateMany({
+      where: { id: fileId, OR: [{ processingLeaseUntil: null }, { processingLeaseUntil: { lte: new Date() } }] },
+      data: { processingLeaseToken: token, processingLeaseUntil: new Date(Date.now() + 10 * 60_000) },
     });
-    if (!file) return;
-
-    const isImage = this.mediaProcessing.isSupportedImageMime(file.mimeType);
-    if (!isImage) {
-      await this.prisma.fileUpload.update({
-        where: { id: fileId },
-        data: { processingStatus: 'READY', processingError: null } as any,
-      } as any);
-      return;
-    }
-
-    if (!force && (file as any).processingStatus === 'READY') {
-      return;
-    }
-
-    const reencode = newVersion && (file as any).processingStatus === 'READY';
-
+    if (!claim.count) return;
+    let renewal: Promise<void> | undefined;
+    let lostLease = false;
+    const heartbeat = setInterval(() => {
+      if (renewal) return;
+      renewal = this.prisma.fileUpload.updateMany({
+        where: { id: fileId, processingLeaseToken: token },
+        data: { processingLeaseUntil: new Date(Date.now() + 10 * 60_000) },
+      }).then((result) => { if (!result.count) lostLease = true; })
+        .catch(() => { lostLease = true; })
+        .finally(() => { renewal = undefined; });
+    }, 30_000);
+    heartbeat.unref();
     try {
-      if (!reencode) {
-        await this.prisma.fileUpload.update({
-          where: { id: fileId },
-          data: { processingError: null } as any,
-        } as any);
+      const file = await this.prisma.fileUpload.findUnique({ where: { id: fileId } });
+      if (file?.processingLeaseToken === token) {
+        await this.processOwnedFile(file, token, force, newVersion, () => lostLease);
       }
+    } finally {
+      clearInterval(heartbeat);
+      await renewal;
+      await this.prisma.fileUpload.updateMany({
+        where: { id: fileId, processingLeaseToken: token },
+        data: { processingLeaseToken: null, processingLeaseUntil: null },
+      });
+    }
+  }
 
-      const originalBuffer = await this.uploadService.getObjectBufferByKey(
-        file.s3Key,
-      );
+  private async processOwnedFile(file: FileUpload, token: string, force: boolean, newVersion: boolean, lostLease: () => boolean): Promise<void> {
+    const fileId = file.id;
+    if (!this.mediaProcessing.isSupportedImageMime(file.mimeType)) {
+      await this.prisma.fileUpload.updateMany({
+        where: { id: fileId, processingLeaseToken: token },
+        data: { processingStatus: 'READY', processingError: null },
+      });
+      return;
+    }
+    // Any force on a published image uses new immutable URLs, even for legacy callers.
+    const reencode = file.processingStatus === 'READY' && (force || newVersion);
+    const uploadedKeys: string[] = [];
+    let published = false;
+    try {
+      const originalBuffer = await this.uploadService.getObjectBufferByKey(file.s3Key);
       const probe = await this.mediaProcessing.probeImage(originalBuffer);
-      const variants = await this.mediaProcessing.generateVariants(
-        originalBuffer,
-        {
-          mimeType: file.mimeType,
-        },
-      );
-
-      const currentVersion = Number((file as any).assetVersion || 1);
-      const nextVersion = reencode ? currentVersion + 1 : currentVersion;
+      const variants = await this.mediaProcessing.generateVariants(originalBuffer, { mimeType: file.mimeType });
+      const nextVersion = file.assetVersion + (reencode ? 1 : 0);
+      const encoded: Prisma.FileVariantUncheckedCreateInput[] = [];
       for (const variant of variants) {
-        const key = this.uploadService.buildVariantS3Key({
-          variantKind: variant.kind,
-          fileId,
+        if (lostLease()) throw new Error('Image processing lease lost');
+        const baseKey = this.uploadService.buildVariantS3Key({ variantKind: variant.kind, fileId, assetVersion: nextVersion, ext: variant.ext });
+        // A stale encoder cannot overwrite another attempt's objects, including after lease expiry.
+        const key = baseKey.replace(/\/([^/]+)$/, `/${token}/$1`);
+        const uploaded = await this.uploadService.putObjectBuffer({ key, body: variant.buffer, contentType: variant.mimeType });
+        uploadedKeys.push(key);
+        encoded.push({
+          id: crypto.randomUUID(), fileUploadId: fileId, variantKind: variant.kind as any,
+          format: variant.format as any, width: variant.width, height: variant.height,
+          sizeBytes: variant.buffer.length, quality: variant.quality, s3Key: key, s3Url: uploaded.url,
           assetVersion: nextVersion,
-          ext: variant.ext,
-        });
-
-        const uploaded = await this.uploadService.putObjectBuffer({
-          key,
-          body: variant.buffer,
-          contentType: variant.mimeType,
-          isPublic: true,
-        });
-
-        await (this.prisma as any).fileVariant.upsert({
-          where: {
-            fileUploadId_variantKind_format_assetVersion: {
-              fileUploadId: fileId,
-              variantKind: variant.kind,
-              format: variant.format,
-              assetVersion: nextVersion,
-            },
-          },
-          update: {
-            width: variant.width,
-            height: variant.height,
-            sizeBytes: variant.buffer.length,
-            quality: variant.quality,
-            s3Key: key,
-            s3Url: uploaded.url,
-          },
-          create: {
-            id: crypto.randomUUID(),
-            fileUploadId: fileId,
-            variantKind: variant.kind,
-            format: variant.format,
-            width: variant.width,
-            height: variant.height,
-            sizeBytes: variant.buffer.length,
-            quality: variant.quality,
-            s3Key: key,
-            s3Url: uploaded.url,
-            assetVersion: nextVersion,
-          },
         });
       }
-
-      await this.prisma.fileUpload.update({
-        where: { id: fileId },
-        data: {
-          processingStatus: 'READY',
-          processingError: null,
-          width: probe.width,
-          height: probe.height,
-          hasAlpha: probe.hasAlpha,
-          isAnimated: probe.isAnimated,
-          orientation: probe.orientation,
-          colorSpace: probe.colorSpace,
-          lastProcessedAt: new Date(),
-          ...(reencode ? { assetVersion: nextVersion } : {}),
-        } as any,
-      } as any);
-
-      if (reencode) {
-        await (this.prisma as any).fileVariant.deleteMany({
-          where: { fileUploadId: fileId, assetVersion: { lt: nextVersion } },
+      if (lostLease()) throw new Error('Image processing lease lost');
+      published = await this.prisma.$transaction(async (tx) => {
+        const owned = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "_id" AS id FROM "FileUpload" WHERE "_id"=${fileId}::uuid
+          AND "processingLeaseToken"=${token}::uuid AND "processingLeaseUntil">CURRENT_TIMESTAMP FOR UPDATE
+        `;
+        if (!owned.length) return false;
+        for (const variant of encoded) {
+          await tx.fileVariant.upsert({
+            where: { fileUploadId_variantKind_format_assetVersion: {
+              fileUploadId: fileId, variantKind: variant.variantKind, format: variant.format, assetVersion: nextVersion,
+            } },
+            create: variant,
+            update: { width: variant.width, height: variant.height, sizeBytes: variant.sizeBytes, quality: variant.quality, s3Key: variant.s3Key, s3Url: variant.s3Url },
+          });
+        }
+        await tx.fileUpload.update({
+          where: { id: fileId },
+          data: {
+            processingStatus: 'READY', processingError: null, width: probe.width, height: probe.height,
+            hasAlpha: probe.hasAlpha, isAnimated: probe.isAnimated, orientation: probe.orientation,
+            colorSpace: probe.colorSpace, lastProcessedAt: new Date(), assetVersion: nextVersion,
+          },
         });
-      }
+        if (reencode) await tx.fileVariant.deleteMany({ where: { fileUploadId: fileId, assetVersion: { lt: nextVersion } } });
+        return true;
+      });
+      if (!published) throw new Error('Image processing publish lease expired');
     } catch (error) {
+      if (!published && uploadedKeys.length) {
+        await this.prisma.storageObjectDeletion.createMany({ data: uploadedKeys.map((s3Key) => ({ s3Key })), skipDuplicates: true });
+      }
       if (reencode) {
-        this.logger.warn(
-          `Image re-encode skipped for ${fileId}; current version kept: ${String(error)}`,
-        );
+        this.logger.warn(`Image re-encode skipped for ${fileId}; current version kept: ${String(error)}`);
         return;
       }
-      this.logger.error(
-        `Image processing failed for ${fileId}: ${String(error)}`,
-      );
-      await this.prisma.fileUpload.update({
-        where: { id: fileId },
-        data: {
-          processingStatus: 'FAILED',
-          processingError: String(error),
-        } as any,
-      } as any);
+      await this.prisma.fileUpload.updateMany({
+        where: { id: fileId, processingLeaseToken: token },
+        data: { processingStatus: 'FAILED', processingError: String(error) },
+      });
       throw error;
     }
   }

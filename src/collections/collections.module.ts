@@ -1,6 +1,7 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { CollectionsService } from './collections.service';
+import { RunwayFeedService } from './runway-feed.service';
 import { CollectionsController } from './collections.controller';
 import { StoreCollectionsController } from './store-collections.controller';
 import { CollectionSchedulerService } from './collection-scheduler.service';
@@ -54,6 +55,7 @@ import { SearchModule } from 'src/search/search.module';
     RealtimeModule,
   ],
   providers: [
+    RunwayFeedService,
     CollectionsService,
     CollectionSchedulerService,
     HelperService,

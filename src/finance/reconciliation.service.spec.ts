@@ -52,7 +52,7 @@ describe('ReconciliationService', () => {
       },
     ]);
     prisma.ledgerTransaction.findMany.mockResolvedValue([
-      { id: 'ledger-1', totalAmount: new Prisma.Decimal('100.00') },
+      { id: 'ledger-1', referenceId: 'order-1', totalAmount: new Prisma.Decimal('100.00') },
     ]);
     prisma.reconciliationItem.create.mockResolvedValue({ id: 'item-1' });
     prisma.reconciliationRun.update.mockResolvedValue({

@@ -50,8 +50,8 @@ const HEIC_FTYP_BRANDS = new Set([
   'mif1',
   'msf1',
 ]);
-const AVIF_ENCODER_EFFORT = 6;
-const WEBP_ENCODER_EFFORT = 5;
+const AVIF_ENCODER_EFFORT = 4;
+const WEBP_ENCODER_EFFORT = 4;
 const PNG_ENCODER_EFFORT = 9;
 
 @Injectable()
@@ -110,9 +110,9 @@ export class MediaProcessingService {
     return new BadRequestException('Unsupported or unreadable image format');
   }
 
-  private async decodeHeicToJpegBuffer(buffer: Buffer): Promise<Buffer> {
+  private async decodeHeicToPngBuffer(buffer: Buffer): Promise<Buffer> {
     try {
-      return Buffer.from(await this.convertHeicToJpeg(buffer));
+      return Buffer.from(await this.convertHeicToPng(buffer));
     } catch {
       throw this.unsupportedImageFormatException();
     }
@@ -129,7 +129,7 @@ export class MediaProcessingService {
     // read HEIF container metadata without a decode plugin, so metadata() alone
     // is not a reliable signal — sniff the ftyp brand and convert up front.
     if (this.isHeicLikeBuffer(buffer)) {
-      return this.decodeHeicToJpegBuffer(buffer);
+      return this.decodeHeicToPngBuffer(buffer);
     }
 
     let metadata: Metadata;
@@ -139,12 +139,12 @@ export class MediaProcessingService {
       throw this.unsupportedImageFormatException();
     }
     if (metadata.format === 'heif') {
-      return this.decodeHeicToJpegBuffer(buffer);
+      return this.decodeHeicToPngBuffer(buffer);
     }
     return buffer;
   }
 
-  private async convertHeicToJpeg(buffer: Buffer): Promise<ArrayBuffer> {
+  private async convertHeicToPng(buffer: Buffer): Promise<ArrayBuffer> {
     type HeicConvert = (options: {
       buffer: Buffer | Uint8Array;
       format: 'JPEG' | 'PNG';
@@ -160,16 +160,21 @@ export class MediaProcessingService {
         ? (heicModule as HeicConvert)
         : (heicModule as { default: HeicConvert }).default;
 
-    return convert({ buffer, format: 'JPEG', quality: 0.9 });
+    // Avoid an irreversible JPEG generation before the actual output encoder.
+    return convert({ buffer, format: 'PNG' });
   }
 
   async probeImage(buffer: Buffer): Promise<ImageProbe> {
     const metadata = await sharp(buffer, { animated: true }).metadata();
-    const width = metadata.width ?? null;
-    const height = metadata.height ?? null;
+    const rawWidth = metadata.width ?? null;
+    const rawHeight = metadata.height ?? null;
+    const rotated = typeof metadata.orientation === 'number' && metadata.orientation >= 5 && metadata.orientation <= 8;
+    const frameHeight = metadata.pageHeight ?? rawHeight;
+    const width = rotated ? frameHeight : rawWidth;
+    const height = rotated ? rawWidth : frameHeight;
 
-    if (width && height) {
-      const megapixels = (width * height) / 1_000_000;
+    if (rawWidth && rawHeight) {
+      const megapixels = (rawWidth * rawHeight) / 1_000_000;
       if (megapixels > this.maxMegapixels) {
         throw new BadRequestException('Image dimensions are too large');
       }
@@ -210,6 +215,7 @@ export class MediaProcessingService {
     for (const profile of IMAGE_VARIANT_PROFILES) {
       const resized = sharp(buffer, { animated: false })
         .rotate()
+        .withIccProfile('srgb')
         .resize({
           width: Math.min(profile.maxWidth, probe.width),
           withoutEnlargement: true,
@@ -219,29 +225,30 @@ export class MediaProcessingService {
       const quality = Math.min(95, profile.quality + qualityBump);
 
       if (outputFormat === 'AVIF') {
+        const avifQuality = Math.min(95, profile.avifQuality + qualityBump);
         const out = await resized
-          // Keep the existing encoder tuning when upgrading the security-patched image library.
-          .avif({ quality, effort: AVIF_ENCODER_EFFORT, tune: 'psnr' })
+          .avif({ quality: avifQuality, effort: AVIF_ENCODER_EFFORT, tune: 'psnr', chromaSubsampling: '4:4:4' })
           .toBuffer({ resolveWithObject: true });
         variants.push({
           kind: profile.kind,
           format: 'AVIF',
           width: out.info.width,
           height: out.info.height,
-          quality,
+          quality: avifQuality,
           buffer: out.data,
           ext: 'avif',
           mimeType: 'image/avif',
         });
-        // The WebP is what every client actually displays (variant URLs pick
-        // WEBP over AVIF), so it gets the profile's full quality. It used to be
-        // `quality - 4`, on the theory that AVIF was primary — which meant the
-        // image people saw was quietly a notch below the setting.
+        // Legacy clients select WebP. Near-lossless avoids the chroma loss
+        // that a higher lossy quality number cannot fix on fine fabric prints.
         const webp = await resized
           .webp({
             quality,
             effort: WEBP_ENCODER_EFFORT,
-            smartSubsample: true,
+            nearLossless: !probe.hasAlpha,
+            lossless: probe.hasAlpha,
+            exact: true,
+            alphaQuality: 100,
           })
           .toBuffer({ resolveWithObject: true });
         variants.push({
@@ -279,7 +286,10 @@ export class MediaProcessingService {
           .webp({
             quality: Math.max(80, quality),
             effort: WEBP_ENCODER_EFFORT,
-            smartSubsample: true,
+            nearLossless: !probe.hasAlpha,
+            lossless: probe.hasAlpha,
+            exact: true,
+            alphaQuality: 100,
           })
           .toBuffer({ resolveWithObject: true });
         variants.push({
@@ -287,7 +297,7 @@ export class MediaProcessingService {
           format: 'WEBP',
           width: webp.info.width,
           height: webp.info.height,
-          quality: Math.max(80, quality),
+          quality: probe.hasAlpha ? 100 : Math.max(80, quality),
           buffer: webp.data,
           ext: 'webp',
           mimeType: 'image/webp',
@@ -299,7 +309,8 @@ export class MediaProcessingService {
         .webp({
           quality,
           effort: WEBP_ENCODER_EFFORT,
-          smartSubsample: true,
+          nearLossless: true,
+          exact: true,
         })
         .toBuffer({ resolveWithObject: true });
       variants.push({
@@ -316,7 +327,7 @@ export class MediaProcessingService {
       const jpegQuality =
         profile.jpegFallbackQuality ?? Math.min(90, quality + 2);
       const jpeg = await resized
-        .jpeg({ quality: jpegQuality, mozjpeg: true })
+        .jpeg({ quality: jpegQuality, mozjpeg: true, chromaSubsampling: '4:4:4' })
         .toBuffer({ resolveWithObject: true });
       variants.push({
         kind: profile.kind,
@@ -348,7 +359,7 @@ export class MediaProcessingService {
         (this.isHeicLikeBuffer(sourceBuffer) ||
           this.isSharpHeifPluginError(error))
       ) {
-        buffer = await this.decodeHeicToJpegBuffer(sourceBuffer);
+        buffer = await this.decodeHeicToPngBuffer(sourceBuffer);
         return this.encodePreviewJpeg(buffer, options);
       }
       throw error;
@@ -382,7 +393,7 @@ export class MediaProcessingService {
       const resized = await sharp(buffer, { animated: false })
         .rotate()
         .resize({ width, withoutEnlargement: true })
-        .jpeg({ quality, mozjpeg: true })
+        .jpeg({ quality, mozjpeg: true, chromaSubsampling: '4:4:4' })
         .toBuffer({ resolveWithObject: true });
 
       if (!maxBytes || resized.data.length <= maxBytes) {
