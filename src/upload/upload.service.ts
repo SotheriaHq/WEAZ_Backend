@@ -198,6 +198,14 @@ export class UploadService {
       };
     }
 
+    // An S3-compatible endpoint (such as Cloudflare R2) is opt-in.
+    // Keep the default AWS path and existing URLs unchanged until migration.
+    const storageEndpoint = this.configService.get<string>('S3_ENDPOINT');
+    if (storageEndpoint) {
+      s3Config.endpoint = storageEndpoint;
+      s3Config.forcePathStyle = true;
+    }
+
     this.s3 = new S3Client(s3Config);
   }
 
@@ -209,6 +217,10 @@ export class UploadService {
   }
 
   private buildS3ObjectUrl(key: string): string {
+    const publicBaseUrl = this.configService.get<string>('S3_PUBLIC_BASE_URL');
+    if (publicBaseUrl) {
+      return `${publicBaseUrl.replace(/\\/$/, '')}/${this.encodeS3KeyForUrl(key)}`;
+    }
     return `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${this.encodeS3KeyForUrl(key)}`;
   }
 
@@ -800,7 +812,9 @@ export class UploadService {
     });
 
     // Build a region-specific upload URL to avoid region-signature mismatches
-    const uploadUrl = this.buildS3BucketUrl();
+    const uploadUrl = this.configService.get<string>('S3_ENDPOINT')
+      ? presigned.url
+      : this.buildS3BucketUrl();
 
     return {
       ...presigned,
@@ -1795,6 +1809,7 @@ export class UploadService {
     contentType: string;
     isPublic?: boolean;
   }): Promise<{ key: string; url: string }> {
+    const supportsAcl = !this.configService.get<string>('S3_ENDPOINT');
     const buildCommand = (withAcl: boolean) =>
       new PutObjectCommand({
         Bucket: this.bucketName,
@@ -1805,7 +1820,7 @@ export class UploadService {
         ...(withAcl && params.isPublic ? { ACL: 'public-read' } : {}),
       } as any);
     try {
-      await this.s3.send(buildCommand(true));
+      await this.s3.send(buildCommand(supportsAcl));
     } catch (error: any) {
       // Buckets with Object Ownership "bucket owner enforced" (modern S3
       // default) reject any ACL. Public access there comes from bucket
