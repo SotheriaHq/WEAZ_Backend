@@ -222,7 +222,7 @@ export class MediaProcessingService {
         .resize({
           width: Math.min(profile.maxWidth, probe.width),
           withoutEnlargement: true,
-        };
+        });
 
       const qualityBump = options.textHeavy ? 4 : 0;
       const quality = Math.min(95, profile.quality + qualityBump);
