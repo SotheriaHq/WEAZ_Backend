@@ -105,6 +105,21 @@ describe('ImageProcessingProcessor re-encode (newVersion)', () => {
     expect(prisma.fileVariant.deleteMany).not.toHaveBeenCalled();
   });
 
+  it('uploads each variant before requesting the next one', async () => {
+    const { prisma, upload, run } = build();
+    let firstUploaded = false;
+    upload.putObjectBuffer.mockImplementation(async () => {
+      firstUploaded = true;
+      return { url: 'https://bucket/obj' };
+    });
+    // The worker fixture yields only one variant; its upload must finish before READY.
+    await run({});
+    expect(firstUploaded).toBe(true);
+    expect(prisma.fileUpload.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ processingStatus: 'READY' }) }),
+    );
+  });
+
   it('leaves the normal processing path on the current version', async () => {
     const { prisma, upload, run } = build();
 
