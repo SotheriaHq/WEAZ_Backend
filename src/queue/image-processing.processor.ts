@@ -72,6 +72,7 @@ export class ImageProcessingProcessor extends WorkerHost {
       const data = job.data as ImageProcessBatchJob;
       // Isolate each file: one missing S3 object must not stall the rest of a batch.
       // Failed files can be retried independently by a later reprocess job.
+      const failedFileIds: string[] = [];
       for (const fileId of data.fileIds || []) {
         try {
           await this.processOne(
@@ -80,8 +81,14 @@ export class ImageProcessingProcessor extends WorkerHost {
             Boolean(data.newVersion),
           );
         } catch (error) {
+          failedFileIds.push(fileId);
           this.logger.error(`Image batch item failed for ${fileId}: ${String(error)}`);
         }
+      }
+      if (failedFileIds.length > 0) {
+        // Do not let BullMQ report a partially failed legacy batch as successful.
+        // On retry, already READY files are skipped unless force was requested.
+        throw new Error(`Image batch failed for ${failedFileIds.length} file(s): ${failedFileIds.join(', ')}`);
       }
     }
   }
