@@ -219,7 +219,7 @@ export class UploadService {
   private buildS3ObjectUrl(key: string): string {
     const publicBaseUrl = this.configService.get<string>('S3_PUBLIC_BASE_URL');
     if (publicBaseUrl) {
-      return `${publicBaseUrl.replace(/\\/$/, '')}/${this.encodeS3KeyForUrl(key)}`;
+      return `${publicBaseUrl.replace(/\/$/, '')}/${this.encodeS3KeyForUrl(key)}`;
     }
     return `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${this.encodeS3KeyForUrl(key)}`;
   }
