@@ -42,8 +42,7 @@ function build(overrides: { getObject?: jest.Mock } = {}) {
         isAnimated: false,
       }),
     generateVariantsIter: jest.fn(async function* () {
-      yield 
-        {
+      yield {
           kind: 'DETAIL',
           format: 'WEBP',
           width: 1440,
@@ -52,8 +51,7 @@ function build(overrides: { getObject?: jest.Mock } = {}) {
           buffer: Buffer.from('x'),
           ext: 'webp',
           mimeType: 'image/webp',
-        },
-      ;
+      };
     }),
   };
   const processor = new ImageProcessingProcessor(
