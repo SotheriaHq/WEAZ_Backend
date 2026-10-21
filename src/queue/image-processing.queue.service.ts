@@ -43,13 +43,17 @@ export class ImageProcessingQueueService {
   async enqueueBatch(fileIds: string[], force = false): Promise<void> {
     const unique = Array.from(new Set((fileIds || []).filter(Boolean)));
     if (unique.length === 0) return;
-    await this.queue.add(
-      IMAGE_PROCESS_BATCH_JOB,
-      { fileIds: unique, force } as ImageProcessBatchJob,
-      {
-        attempts: 2,
-        backoff: { type: 'exponential', delay: 2000 },
-      },
+    // One job per file prevents a slow or corrupt object from stalling a whole
+    // backfill and gives each image independent retry/backoff behavior.
+    await this.queue.addBulk(
+      unique.map((fileId) => ({
+        name: IMAGE_PROCESS_SINGLE_JOB,
+        data: { fileId, force } as ImageProcessSingleJob,
+        opts: {
+          attempts: 4,
+          backoff: { type: 'exponential' as const, delay: 1500 },
+        },
+      })),
     );
   }
 
