@@ -41,9 +41,8 @@ function build(overrides: { getObject?: jest.Mock } = {}) {
         hasAlpha: false,
         isAnimated: false,
       }),
-    generateVariants: jest
-      .fn()
-      .mockResolvedValue([
+    generateVariantsIter: jest.fn(async function* () {
+      yield 
         {
           kind: 'DETAIL',
           format: 'WEBP',
@@ -54,7 +53,8 @@ function build(overrides: { getObject?: jest.Mock } = {}) {
           ext: 'webp',
           mimeType: 'image/webp',
         },
-      ]),
+      ;
+    }),
   };
   const processor = new ImageProcessingProcessor(
     prisma as any,
