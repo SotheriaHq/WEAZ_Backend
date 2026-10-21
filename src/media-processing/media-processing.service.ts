@@ -190,6 +190,17 @@ export class MediaProcessingService {
     sourceBuffer: Buffer,
     options: { mimeType: string; textHeavy?: boolean },
   ): Promise<EncodedVariant[]> {
+    const variants: EncodedVariant[] = [];
+    for await (const variant of this.generateVariantsIter(sourceBuffer, options)) {
+      variants.push(variant);
+    }
+    return variants;
+  }
+
+  async *generateVariantsIter(
+    sourceBuffer: Buffer,
+    options: { mimeType: string; textHeavy?: boolean },
+  ): AsyncGenerator<EncodedVariant> {
     const buffer = await this.toDecodableImageBuffer(sourceBuffer);
     const probe = await this.probeImage(buffer);
     if (!probe.width || !probe.height) {
@@ -197,10 +208,9 @@ export class MediaProcessingService {
     }
 
     if (probe.isAnimated) {
-      return [];
+      return;
     }
 
-    const variants: EncodedVariant[] = [];
     const outputFormat = this.pickPrimaryFormat(
       options.mimeType,
       probe.hasAlpha,
@@ -212,7 +222,7 @@ export class MediaProcessingService {
         .resize({
           width: Math.min(profile.maxWidth, probe.width),
           withoutEnlargement: true,
-        });
+        };
 
       const qualityBump = options.textHeavy ? 4 : 0;
       const quality = Math.min(95, profile.quality + qualityBump);
@@ -221,7 +231,7 @@ export class MediaProcessingService {
         const out = await resized
           .avif({ quality, effort: AVIF_ENCODER_EFFORT })
           .toBuffer({ resolveWithObject: true });
-        variants.push({
+        yield {
           kind: profile.kind,
           format: 'AVIF',
           width: out.info.width,
@@ -230,7 +240,7 @@ export class MediaProcessingService {
           buffer: out.data,
           ext: 'avif',
           mimeType: 'image/avif',
-        });
+        };
         // The WebP is what every client actually displays (variant URLs pick
         // WEBP over AVIF), so it gets the profile's full quality. It used to be
         // `quality - 4`, on the theory that AVIF was primary — which meant the
@@ -242,7 +252,7 @@ export class MediaProcessingService {
             smartSubsample: true,
           })
           .toBuffer({ resolveWithObject: true });
-        variants.push({
+        yield {
           kind: profile.kind,
           format: 'WEBP',
           width: webp.info.width,
@@ -251,7 +261,7 @@ export class MediaProcessingService {
           buffer: webp.data,
           ext: 'webp',
           mimeType: 'image/webp',
-        });
+        };
         continue;
       }
 
@@ -263,7 +273,7 @@ export class MediaProcessingService {
             effort: PNG_ENCODER_EFFORT,
           })
           .toBuffer({ resolveWithObject: true });
-        variants.push({
+        yield {
           kind: profile.kind,
           format: 'PNG',
           width: png.info.width,
@@ -272,7 +282,7 @@ export class MediaProcessingService {
           buffer: png.data,
           ext: 'png',
           mimeType: 'image/png',
-        });
+        };
         const webp = await resized
           .webp({
             quality: Math.max(80, quality),
@@ -280,7 +290,7 @@ export class MediaProcessingService {
             smartSubsample: true,
           })
           .toBuffer({ resolveWithObject: true });
-        variants.push({
+        yield {
           kind: profile.kind,
           format: 'WEBP',
           width: webp.info.width,
@@ -289,7 +299,7 @@ export class MediaProcessingService {
           buffer: webp.data,
           ext: 'webp',
           mimeType: 'image/webp',
-        });
+        };
         continue;
       }
 
@@ -300,7 +310,7 @@ export class MediaProcessingService {
           smartSubsample: true,
         })
         .toBuffer({ resolveWithObject: true });
-      variants.push({
+      yield {
         kind: profile.kind,
         format: 'WEBP',
         width: webp.info.width,
@@ -309,14 +319,14 @@ export class MediaProcessingService {
         buffer: webp.data,
         ext: 'webp',
         mimeType: 'image/webp',
-      });
+      };
 
       const jpegQuality =
         profile.jpegFallbackQuality ?? Math.min(90, quality + 2);
       const jpeg = await resized
         .jpeg({ quality: jpegQuality, mozjpeg: true })
         .toBuffer({ resolveWithObject: true });
-      variants.push({
+      yield {
         kind: profile.kind,
         format: 'JPEG',
         width: jpeg.info.width,
@@ -325,10 +335,9 @@ export class MediaProcessingService {
         buffer: jpeg.data,
         ext: 'jpg',
         mimeType: 'image/jpeg',
-      });
+      };
     }
 
-    return variants;
   }
 
   async generatePreviewJpeg(
