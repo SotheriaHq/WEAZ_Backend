@@ -70,12 +70,18 @@ export class ImageProcessingProcessor extends WorkerHost {
 
     if (job.name === IMAGE_PROCESS_BATCH_JOB) {
       const data = job.data as ImageProcessBatchJob;
+      // Isolate each file: one missing S3 object must not stall the rest of a batch.
+      // Failed files can be retried independently by a later reprocess job.
       for (const fileId of data.fileIds || []) {
-        await this.processOne(
-          fileId,
-          Boolean(data.force),
-          Boolean(data.newVersion),
-        );
+        try {
+          await this.processOne(
+            fileId,
+            Boolean(data.force),
+            Boolean(data.newVersion),
+          );
+        } catch (error) {
+          this.logger.error(`Image batch item failed for ${fileId}: ${String(error)}`);
+        }
       }
     }
   }
