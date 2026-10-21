@@ -134,7 +134,7 @@ export class ImageProcessingProcessor extends WorkerHost {
         file.s3Key,
       );
       const probe = await this.mediaProcessing.probeImage(originalBuffer);
-      const variants = await this.mediaProcessing.generateVariants(
+      const variants = this.mediaProcessing.generateVariantsIter(
         originalBuffer,
         {
           mimeType: file.mimeType,
@@ -143,7 +143,7 @@ export class ImageProcessingProcessor extends WorkerHost {
 
       const currentVersion = Number((file as any).assetVersion || 1);
       const nextVersion = reencode ? currentVersion + 1 : currentVersion;
-      for (const variant of variants) {
+      for await (const variant of variants) {
         const key = this.uploadService.buildVariantS3Key({
           variantKind: variant.kind,
           fileId,
