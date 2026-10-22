@@ -72,7 +72,12 @@ After editing: `cp .env .env.bak.$(date +%s)` first, then `pm2 restart weaz-api 
 1. Sentry → Settings → Developer Settings → Custom Integrations → **Create New Integration → Internal Integration**.
 2. Name `WIEZ Telegram (SIT)`. Webhook URL `https://api.weaz.me/webhooks/sentry`. Turn on **Alert Rule Action**. Permissions: Issue & Event **Read**, Project **Read**, Organization **Read**. Webhooks: none needed (alert rules deliver through the action).
 3. Save. Copy the **Client Secret** to `SENTRY_WEBHOOK_CLIENT_SECRET`. Optionally create a token on the integration and set `SENTRY_API_TOKEN` plus `SENTRY_ORG_SLUG`.
-4. Create alert rules for the backend project with environment `sit`, each with the action "Send a notification via WIEZ Telegram (SIT)":
+4. Route alerts to the integration. **This org (`sotheria`) uses Sentry's workflow engine**: the legacy `/rules/` API returns 404, and alerts are *workflows* (`/api/0/organizations/<org>/workflows/`) attached to the project's issue-stream detector. The action is type `webhook` with `targetIdentifier` = the integration slug (`wiez-51b488` for SIT). It needs integration permission **Alerts: Read & Write**. Created on SIT on 2026-10-22 (all `environment: sit`):
+   - `SIT → Telegram: new, regressed or reappeared issue` (id 1406327, 5 min frequency)
+   - `SIT → Telegram: fatal errors` (id 1406328, level = fatal, 30 min)
+   - `SIT → Telegram: error spike (>50 events/hour)` (id 1406329, 60 min)
+
+   Equivalent legacy-UI rules, for orgs still on alert rules (environment `sit`, action "Send a notification via WIEZ Telegram (SIT)"):
    - **Issue alert:** "A new issue is created".
    - **Issue alert:** "The issue changes state from resolved to unresolved" (regressions).
    - **Issue alert:** "The issue's level is equal to fatal" plus "An event is seen".
@@ -115,7 +120,7 @@ The CLI starts a small Nest context (about 150 MB for a few seconds). Avoid runn
 | `fatal (401)` | token revoked or wrong; replace `TELEGRAM_BOT_TOKEN` |
 | `fatal (400) chat not found` / `(403) blocked` | owner must open the bot and press Start; check the chat ID |
 | Bursts arrive slowly | intended: 1 msg/s; a 429 pauses the queue for Telegram's `retry_after` |
-| No Sentry alerts | secret set? rule environment `sit`? rule action targets the integration? logs show `Rejected Sentry webhook`? |
+| No Sentry alerts | secret set on the SERVER `.env` (not just a local one)? workflow environment `sit` and webhook action targets the integration slug? `Rejected Sentry webhook with invalid signature` means a wrong secret, or the raw body is not captured (`/webhooks/sentry` must stay in `rawBodySaver` in `main.ts`) |
 | Report missing | `report-log`; worker down at 07:00 means it runs when the worker returns (same window) |
 | Report duplicated | should not happen; inspect `wiez:tgmon:sit:report:*` |
 
