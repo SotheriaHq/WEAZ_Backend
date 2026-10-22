@@ -55,6 +55,12 @@ import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-
 import { CustomOrderQueueService } from 'src/custom-orders/queue/custom-order-queue.service';
 import { CustomOrderQueueRefundsService } from 'src/custom-orders/queue/custom-order-queue-refunds.service';
 import { SubscriptionsService } from 'src/subscriptions/subscriptions.service';
+import type { ForwardRefType } from 'src/common/types/forward-ref-type';
+import { TelegramEventsService } from 'src/telegram-monitoring/telegram-events.service';
+import {
+  checkoutCompleted,
+  paymentOutcome,
+} from 'src/telegram-monitoring/business-events';
 import { decryptSubscriptionAuthorization } from 'src/subscriptions/subscription-authorization.crypto';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import {
@@ -337,9 +343,11 @@ export class PaymentService implements OnModuleInit {
     private readonly customOrderQueue?: CustomOrderQueueService,
     @Optional()
     @Inject(forwardRef(() => SubscriptionsService))
-    private readonly subscriptions?: SubscriptionsService,
+    private readonly subscriptions?: ForwardRefType<SubscriptionsService>,
     @Optional()
     private readonly queueRefunds?: CustomOrderQueueRefundsService,
+    @Optional()
+    private readonly telegramEvents?: TelegramEventsService,
   ) {}
 
   onModuleInit(): void {
@@ -4189,6 +4197,7 @@ export class PaymentService implements OnModuleInit {
         return {
           attempt,
           transitionedToPaid: false,
+          transitioned: false,
         };
       }
 
@@ -4294,10 +4303,21 @@ export class PaymentService implements OnModuleInit {
       return {
         attempt: updated,
         transitionedToPaid: nextStatus === 'PAID',
+        transitioned: true,
       };
     });
 
     const updatedAttempt = transitionResult.attempt;
+
+    // After commit, and only for the call that performed the transition: the
+    // row lock + terminal check above make this once per attempt even when the
+    // webhook, verify and reconcile paths race.
+    if (
+      transitionResult.transitioned &&
+      ['PAID', 'FAILED', 'CANCELLED', 'EXPIRED'].includes(updatedAttempt.status)
+    ) {
+      this.telegramEvents?.record(paymentOutcome(updatedAttempt, source));
+    }
 
     if (updatedAttempt.subjectType === PaymentSubjectType.UNIFIED_CHECKOUT) {
       if (transitionResult.transitionedToPaid) {
@@ -9516,6 +9536,7 @@ export class PaymentService implements OnModuleInit {
       await this.markUnifiedFinalizationRecovered(reference);
     }
 
+    let checkoutBrandNames: string[] = [];
     if (finalized && finalized.orderIds.length > 0) {
       const linkedOrders = await this.prisma.order.findMany({
         where: {
@@ -9539,6 +9560,13 @@ export class PaymentService implements OnModuleInit {
         },
       });
 
+      checkoutBrandNames = Array.from(
+        new Set(
+          linkedOrders
+            .map((order) => order.brand?.name)
+            .filter((name): name is string => Boolean(name)),
+        ),
+      );
       if (linkedOrders.length > 0) {
         await this.standardOrderFinanceSyncService.syncPaidOrdersByReferences([
           reference,
@@ -9592,6 +9620,34 @@ export class PaymentService implements OnModuleInit {
 
       await this.notifyCustomOrderPlacementAfterPayment(
         finalized.customOrderIds,
+      );
+    }
+
+    // Reconcile re-runs return the same result; the delivery layer dedupes on
+    // the payment reference, so a checkout is announced once.
+    if (
+      this.telegramEvents &&
+      finalized &&
+      finalized.orderIds.length + finalized.customOrderIds.length > 0
+    ) {
+      // System sources (webhook/reconcile) may finalize without a buyer id.
+      const buyerId =
+        userId ||
+        (
+          await this.prisma.paymentAttempt
+            .findUnique({ where: { reference }, select: { buyerId: true } })
+            .catch(() => null)
+        )?.buyerId ||
+        null;
+      this.telegramEvents.record(
+        checkoutCompleted({
+          reference,
+          buyerId,
+          orderIds: finalized.orderIds,
+          customOrderIds: finalized.customOrderIds,
+          summary: finalized.summary,
+          brandNames: checkoutBrandNames,
+        }),
       );
     }
 

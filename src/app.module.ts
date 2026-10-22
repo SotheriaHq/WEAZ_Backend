@@ -48,6 +48,7 @@ import { SeoModule } from './seo/seo.module';
 import { LoggerModule } from 'nestjs-pino';
 import { buildPinoModuleParams } from './common/logging/pino.config';
 import { HealthModule } from './health/health.module';
+import { TelegramMonitoringModule } from './telegram-monitoring/telegram-monitoring.module';
 import { SentryModule } from '@sentry/nestjs/setup';
 import { APP_GUARD } from '@nestjs/core';
 import { AuthIntentGuard } from './auth/guard/auth-intent.guard';
@@ -75,6 +76,7 @@ const isHardProduction =
     PrismaModule,
     ViewCountingModule,
     LegalModule,
+    TelegramMonitoringModule,
     MonitoringModule,
     HealthModule,
     AuthModule,

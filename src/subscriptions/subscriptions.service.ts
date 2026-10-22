@@ -27,6 +27,7 @@ import { randomUUID } from 'crypto';
 import { v5 as uuidv5 } from 'uuid';
 import { Request } from 'express';
 import { PaymentService } from '../payment/payment.service';
+import type { ForwardRefType } from '../common/types/forward-ref-type';
 import { PrismaService } from '../prisma/prisma.service';
 import { BrandAccessService } from '../brands/brand-access.service';
 import { LegalService } from '../legal/legal.service';
@@ -88,7 +89,7 @@ export class SubscriptionsService {
     private readonly paystack: SubscriptionPaystackService,
     @Optional()
     @Inject(forwardRef(() => PaymentService))
-    private readonly payments?: PaymentService,
+    private readonly payments?: ForwardRefType<PaymentService>,
   ) {}
 
   private async lock(tx: Prisma.TransactionClient, brandId: string) {

@@ -4,8 +4,11 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { TelegramEventsService } from '../telegram-monitoring/telegram-events.service';
+import { verificationDecision } from '../telegram-monitoring/business-events';
 import {
   BrandVerificationStatus,
   NotificationType,
@@ -79,6 +82,7 @@ export class PhysicalVerificationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    @Optional() private readonly telegramEvents?: TelegramEventsService,
   ) {}
 
   /**
@@ -645,6 +649,23 @@ export class PhysicalVerificationService {
         },
       });
     });
+
+    this.telegramEvents?.record(
+      verificationDecision({
+        stage: 'Physical visit',
+        brandId: row.brandId,
+        brandName: row.brand.name,
+        ownerId: row.brand.ownerId,
+        outcome: passed ? 'PASSED' : 'FAILED',
+        nextStatus: passed
+          ? BrandVerificationStatus.APPROVED
+          : BrandVerificationStatus.REJECTED,
+        reasons: passed ? null : (input.failureReason ?? null),
+        reviewerId: agentId,
+        decidedAt: now,
+        submittedAt: row.visitCompletedAt,
+      }),
+    );
 
     await this.notifications.create(
       row.brand.ownerId,

@@ -10,6 +10,7 @@ import {
   REVIEW_AGGREGATE_QUEUE,
   REVIEW_REMINDER_QUEUE,
   WEBHOOK_EVENTS_QUEUE,
+  TELEGRAM_MONITORING_QUEUE,
 } from './queue.constants';
 import { NotificationsQueueService } from './notifications.queue.service';
 import { ImageProcessingQueueService } from './image-processing.queue.service';
@@ -39,6 +40,7 @@ import { WebhookEventsQueueService } from './webhook-events.queue.service';
       { name: REVIEW_AGGREGATE_QUEUE },
       { name: REVIEW_REMINDER_QUEUE },
       { name: WEBHOOK_EVENTS_QUEUE },
+      { name: TELEGRAM_MONITORING_QUEUE },
     ),
   ],
   providers: [

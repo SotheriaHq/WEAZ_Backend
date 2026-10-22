@@ -27,6 +27,9 @@ import { AdminModule } from 'src/admin/admin.module';
 import { CustomOrdersModule } from 'src/custom-orders/custom-orders.module';
 import { WebhookEventsProcessor } from './webhook-events.processor';
 import { ViewCountingModule } from 'src/view-counting/view-counting.module';
+import { TelegramMonitoringModule } from 'src/telegram-monitoring/telegram-monitoring.module';
+import { TelegramMonitoringProcessor } from 'src/telegram-monitoring/telegram-monitoring.processor';
+import { TelegramMonitoringScheduler } from 'src/telegram-monitoring/telegram-monitoring.scheduler';
 
 @Module({
   imports: [
@@ -61,8 +64,12 @@ import { ViewCountingModule } from 'src/view-counting/view-counting.module';
     PaymentModule,
     AdminModule,
     CustomOrdersModule,
+    // Global in its own graph only: the worker needs its own import.
+    TelegramMonitoringModule,
   ],
   providers: [
+    TelegramMonitoringProcessor,
+    TelegramMonitoringScheduler,
     CollectionsService,
     HelperService,
     NotificationsProcessor,

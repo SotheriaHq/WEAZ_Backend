@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Optional } from '@nestjs/common';
+import { TelegramEventsService } from 'src/telegram-monitoring/telegram-events.service';
 import { CustomOrderSourceType } from '@prisma/client';
 import { validate as isUuid } from 'uuid';
 
@@ -34,6 +35,7 @@ export class DesignsService {
     private readonly collectionsService: CollectionsService,
     private readonly customOrderConfigurationsService: CustomOrderConfigurationsService,
     private readonly legacyAdapter: LegacyCollectionDesignAdapter,
+    @Optional() private readonly telegramEvents?: TelegramEventsService,
   ) {}
 
   private assertPersistedDesignId(designId: string) {
@@ -233,11 +235,27 @@ export class DesignsService {
     },
   ) {
     this.assertPersistedDesignId(designId);
-    return this.collectionsService.reportDesignPublishFailure(
+    // Ownership is asserted inside; only a verified owner's report is counted.
+    const result = await this.collectionsService.reportDesignPublishFailure(
       designId,
       userId,
       dto,
     );
+    this.telegramEvents?.record({
+      key: 'design.publish_failed',
+      idempotencyKey: `${designId}:${Date.now()}`,
+      summary: `Latest: stage "${dto.stage ?? 'unknown'}" — ${dto.reason ?? 'no reason given'}`,
+      fields: [
+        ['Design ID', designId],
+        ['Title', dto.title],
+        ['Stage', dto.stage],
+        ['Client-reported reason', dto.reason],
+      ],
+      identity: { userId },
+      timeline: [['Reported', new Date()]],
+      counterSuffix: dto.stage ?? 'unknown',
+    });
+    return result;
   }
 
   async getMyDraftDesigns(userId: string) {

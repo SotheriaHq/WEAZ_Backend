@@ -23,3 +23,9 @@ export const REVIEW_REMINDER_JOB = 'review.reminder.process';
 export const WEBHOOK_EVENTS_QUEUE = 'webhook-events';
 export const WEBHOOK_PAYMENT_PROCESS_JOB = 'webhook.payment.process';
 export const WEBHOOK_PAYOUT_PROCESS_JOB = 'webhook.payout.process';
+
+export const TELEGRAM_MONITORING_QUEUE = 'telegram-monitoring';
+export const TELEGRAM_SEND_JOB = 'telegram.send';
+export const TELEGRAM_SENTRY_ALERT_JOB = 'telegram.sentry-alert';
+export const TELEGRAM_REPORT_JOB = 'telegram.report';
+export const TELEGRAM_WATCHDOG_JOB = 'telegram.watchdog';

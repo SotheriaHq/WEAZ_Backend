@@ -13,6 +13,8 @@ import { redactSensitiveLogValue } from 'src/common/utils/sensitive-log';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
+import { TelegramEventsService } from 'src/telegram-monitoring/telegram-events.service';
+import { operationalAlertEvent } from 'src/telegram-monitoring/business-events';
 import {
   AlertCategory,
   OperationalAlert,
@@ -71,6 +73,7 @@ export class MonitoringService {
     @Optional() private readonly config?: ConfigService,
     @Optional() private readonly emailService?: EmailService,
     @Optional() private readonly notificationsService?: NotificationsService,
+    @Optional() private readonly telegramEvents?: TelegramEventsService,
   ) {}
 
   emitAlert(alert: OperationalAlert): SanitizedOperationalAlert {
@@ -78,7 +81,23 @@ export class MonitoringService {
     this.bufferAlert(sanitized);
     this.writeLocalLog(sanitized);
     this.persistAlertInBackground(sanitized);
+    this.forwardToTelegram(sanitized);
     return sanitized;
+  }
+
+  /** Non-blocking; policy lives in `operationalAlertEvent`. */
+  private forwardToTelegram(alert: SanitizedOperationalAlert): void {
+    if (!this.telegramEvents) return;
+    try {
+      const event = operationalAlertEvent(
+        alert,
+        alert.severity === 'critical' || ADMIN_NOTIFICATION_EVENTS.has(alert.event),
+      );
+      if ('countOnly' in event) this.telegramEvents.count(event.countOnly);
+      else this.telegramEvents.record(event);
+    } catch (error) {
+      this.logger.warn(`Telegram forward skipped for ${alert.event}: ${error instanceof Error ? error.message : error}`);
+    }
   }
 
   emitAuditAlert(

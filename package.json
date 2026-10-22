@@ -17,6 +17,7 @@
     "start:debug": "nest start --debug --watch",
     "start:prod": "node -r module-alias/register dist/main.js",
     "start:worker": "node -r module-alias/register dist/worker.js",
+    "monitoring:telegram": "node -r module-alias/register dist/telegram-monitoring/telegram-monitoring.cli.js",
     "dev:worker": "npm run prisma:generate && ts-node -r tsconfig-paths/register src/worker.ts",
     "dev:all": "concurrently -k -n BUILD,API,WORKER \"npm run dev:build\" \"npm run dev:serve\" \"npm run dev:worker\"",
     "dev:reset": "node scripts/reset-all-data.cjs",

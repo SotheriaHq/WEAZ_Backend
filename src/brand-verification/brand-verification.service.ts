@@ -4,8 +4,11 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { TelegramEventsService } from 'src/telegram-monitoring/telegram-events.service';
+import { verificationDecision } from 'src/telegram-monitoring/business-events';
 import {
   BrandVerificationStatus,
   NotificationType,
@@ -132,6 +135,7 @@ export class BrandVerificationService {
     private readonly emailService: EmailService,
     private readonly configService: ConfigService,
     private readonly physicalVerification: PhysicalVerificationService,
+    @Optional() private readonly telegramEvents?: TelegramEventsService,
   ) {}
 
   private normalizePhoneNumber(value: unknown): string {
@@ -1388,6 +1392,24 @@ export class BrandVerificationService {
         },
       });
     });
+
+    this.telegramEvents?.record(
+      verificationDecision({
+        stage: 'Document review',
+        brandId,
+        brandName: brand.name,
+        ownerId: brand.ownerId,
+        outcome: decision === 'APPROVED' ? 'PASSED' : 'REJECTED',
+        nextStatus: newStatus,
+        reasons:
+          decision === 'REJECTED'
+            ? rejectionReasons.map((reason) => reason.label).join('; ')
+            : null,
+        reviewerId: adminId,
+        decidedAt: now,
+        submittedAt: latestAttempt.submittedAt ?? latestAttempt.createdAt,
+      }),
+    );
 
     const appName = this.emailService.getAppName();
     if (decision === 'APPROVED') {

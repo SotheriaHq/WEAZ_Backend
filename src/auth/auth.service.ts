@@ -78,6 +78,11 @@ import { LegalService } from 'src/legal/legal.service';
 import { LegalAcceptanceInputDto } from 'src/legal/dto/legal-acceptance.dto';
 import { PRODUCT_NAME } from 'src/common/branding/product-identity.constants';
 import { MonitoringService } from 'src/monitoring/monitoring.service';
+import { TelegramEventsService } from 'src/telegram-monitoring/telegram-events.service';
+import {
+  signupFailed,
+  signupSucceeded,
+} from 'src/telegram-monitoring/business-events';
 
 const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const RESET_REQUEST_SUPPRESSION_MS = 2 * 60 * 1000;
@@ -104,6 +109,7 @@ export class AuthService {
     private readonly googleTokenVerifier: GoogleTokenVerifierService,
     private readonly legalService: LegalService,
     @Optional() private readonly monitoring?: MonitoringService,
+    @Optional() private readonly telegramEvents?: TelegramEventsService,
   ) {}
 
   private buildPasswordPolicyContext(
@@ -786,6 +792,20 @@ export class AuthService {
         })
         .catch(() => undefined);
 
+      // Post-commit, fire-and-forget: the account and session already exist.
+      this.telegramEvents?.record(
+        signupSucceeded({
+          user,
+          method: 'Email & password',
+          req,
+          brandName: signupDto.brandFullName,
+          device: signupDevice,
+          location: signupLocation,
+          verificationEmail: verificationDispatchResult?.dispatchStatus ?? null,
+          createdAt,
+        }),
+      );
+
       return {
         user: toAuthUserResponse(user),
         accessToken,
@@ -800,6 +820,15 @@ export class AuthService {
       };
     } catch (error) {
       this.logger.error('Signup error:', error.message, error.stack);
+      this.telegramEvents?.record(
+        signupFailed({
+          error,
+          email: normalizedEmail,
+          accountType: signupDto.type ?? 'REGULAR',
+          method: 'Email & password',
+          req,
+        }),
+      );
       if (error.code === 'P2002') {
         // Unique-constraint race (email/CAC created between our pre-check and
         // insert). Surface the same standard email-exists contract.
@@ -1232,6 +1261,19 @@ export class AuthService {
           },
         })
         .catch(() => undefined);
+
+      this.telegramEvents?.record(
+        signupSucceeded({
+          user,
+          method: 'Google',
+          req,
+          brandName: dto.brandFullName,
+          device: this.describeSignupDevice(req),
+          location: this.describeSignupLocation(req),
+          verificationEmail: verificationDispatchResult?.dispatchStatus ?? null,
+          createdAt,
+        }),
+      );
     } else {
       void this.notifications
         .create(user.id, NotificationType.LOGIN, {
