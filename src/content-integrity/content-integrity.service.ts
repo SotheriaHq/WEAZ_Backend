@@ -1,4 +1,11 @@
 import {
+  loadReviewBrands,
+  readReviewRows,
+  REVIEW_COLLECTION_SELECT,
+  REVIEW_FILE_SELECT,
+  REVIEW_PRODUCT_SELECT,
+} from './content-review-prefetch';
+import {
   BadRequestException,
   ForbiddenException,
   Injectable,
@@ -68,7 +75,17 @@ type UserSnapshot = { id: string; username: string | null } | null;
  * without this the identical brand and user rows are re-read once per
  * submission. Scoped to one request — never a process-lifetime cache.
  */
+type ReviewSources = {
+  products: Map<string, any>;
+  collections: Map<string, any>;
+  brands?: Map<string, any>;
+};
+
 type SubmissionMapOptions = {
+  sources?: ReviewSources;
+  mediaRows?: Map<string, any[]>;
+  thumbUrls?: Map<string, string>;
+  cardUrls?: Map<string, string>;
   includeReports?: boolean;
   mode?: 'list' | 'detail';
   brandCache?: Map<string, Promise<BrandReviewSnapshot>>;
@@ -922,14 +939,9 @@ export class ContentIntegrityService {
     ]);
 
     const pageRows = rows.slice(0, take);
-    // One set of caches for the whole page: a queue is typically a few brands
-    // submitting several items each, reviewed by the same one or two admins.
-    const brandCache = new Map<string, Promise<BrandReviewSnapshot>>();
-    const userCache = new Map<string, Promise<UserSnapshot>>();
+    const pageOptions = await this.prefetchSubmissionPage(pageRows);
     const enriched = await Promise.all(
-      pageRows.map((row) =>
-        this.mapSubmissionDetail(row, { mode: 'list', brandCache, userCache }),
-      ),
+      pageRows.map((row) => this.mapSubmissionDetail(row, pageOptions)),
     );
     const q = String(filters.q ?? '')
       .trim()
@@ -1121,7 +1133,7 @@ export class ContentIntegrityService {
     ]);
 
     return {
-      items: await Promise.all(rows.map((row) => this.mapReport(row))),
+      items: await this.mapReports(rows),
       summary,
     };
   }
@@ -1311,11 +1323,16 @@ export class ContentIntegrityService {
     // and every content report, for rows nobody had opened yet. `list` mode
     // fetches only what a row shows; the modal still gets everything.
     const listMode = options.mode === 'list';
-    const target = await this.getSubmissionTarget(submission);
+    const target = await this.getSubmissionTarget(submission, options.sources);
     const media = await this.getSubmissionMedia(submission, {
       // A row shows one thumbnail. The rest of the media still loads (slot
       // completeness is counted from it) but needs no display URL.
       previewLimit: listMode ? 1 : undefined,
+      prefetchedRows: options.mediaRows?.get(
+        this.submissionMediaKey(submission),
+      ),
+      thumbUrls: options.thumbUrls,
+      cardUrls: options.cardUrls,
     });
     const [brand, submittedBy, reviewedBy, history, reports] =
       await Promise.all([
@@ -1373,30 +1390,208 @@ export class ContentIntegrityService {
     };
   }
 
-  private async getSubmissionTarget(submission: any) {
+  private submissionMediaKey(submission: any): string {
+    return submission.productId
+      ? `PRODUCT:${submission.productId}`
+      : `COLLECTION:${submission.legacyCollectionId ?? ''}`;
+  }
+
+  private async prefetchSubmissionPage(
+    rows: any[],
+  ): Promise<SubmissionMapOptions> {
+    const productIds = rows.map((row) => row.productId).filter(Boolean);
+    const collectionIds = rows
+      .map((row) => row.legacyCollectionId)
+      .filter(Boolean);
+    const [products, collections, productMedia, collectionMedia, users] =
+      await Promise.all([
+        readReviewRows<any>(productIds, (ids) =>
+          this.prisma.product.findMany({
+            where: { id: { in: ids } },
+            select: REVIEW_PRODUCT_SELECT,
+          }),
+        ),
+        readReviewRows<any>(collectionIds, (ids) =>
+          this.prisma.collection.findMany({
+            where: { id: { in: ids } },
+            select: REVIEW_COLLECTION_SELECT,
+          }),
+        ),
+        readReviewRows<any>(productIds, (ids) =>
+          this.prisma.productMedia.findMany({
+            where: { productId: { in: ids } },
+            include: { file: { select: REVIEW_FILE_SELECT } },
+            orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
+          }),
+        ),
+        readReviewRows<any>(collectionIds, (ids) =>
+          this.prisma.collectionMedia.findMany({
+            where: { collectionId: { in: ids } },
+            include: { file: { select: REVIEW_FILE_SELECT } },
+            orderBy: [{ orderIndex: 'asc' }],
+          }),
+        ),
+        readReviewRows<any>(
+          rows.flatMap((row) => [row.submittedById, row.reviewedById]),
+          (ids) =>
+            this.prisma.user.findMany({
+              where: { id: { in: ids } },
+              select: { id: true, username: true },
+            }),
+        ),
+      ]);
+    const sources = {
+      products: new Map(products.map((row) => [row.id, row])),
+      collections: new Map(collections.map((row) => [row.id, row])),
+    };
+    const mediaRows = new Map<string, any[]>();
+    for (const row of rows) mediaRows.set(this.submissionMediaKey(row), []);
+    for (const row of productMedia)
+      mediaRows.get(`PRODUCT:${row.productId}`)?.push(row);
+    for (const row of collectionMedia)
+      mediaRows.get(`COLLECTION:${row.collectionId}`)?.push(row);
+    const fileIds = [
+      ...new Set(
+        [...mediaRows.values()]
+          .map((media) => media[0]?.fileUploadId)
+          .filter(Boolean),
+      ),
+    ] as string[];
+    const [brands, thumbUrls, cardUrls] = await Promise.all([
+      loadReviewBrands(
+        this.prisma,
+        [
+          ...rows.map((row) => row.brandId),
+          ...products.map((row) => row.brandId),
+        ].filter(Boolean),
+      ),
+      fileIds.length
+        ? (this.uploadService?.getBatchVariantDisplayUrls(fileIds, 'THUMB') ??
+          Promise.resolve(new Map<string, string>()))
+        : Promise.resolve(new Map<string, string>()),
+      fileIds.length
+        ? (this.uploadService?.getBatchVariantDisplayUrls(fileIds, 'CARD') ??
+          Promise.resolve(new Map<string, string>()))
+        : Promise.resolve(new Map<string, string>()),
+    ]);
+    const brandById = new Map(brands.map((row) => [row.id, row]));
+    const userById = new Map(users.map((row) => [row.id, row]));
+    const brandCache = new Map<string, Promise<BrandReviewSnapshot>>();
+    const userCache = new Map<string, Promise<UserSnapshot>>();
+    for (const id of [
+      ...rows.map((row) => row.brandId),
+      ...products.map((row) => row.brandId),
+    ].filter(Boolean))
+      brandCache.set(id, Promise.resolve(brandById.get(id) ?? null));
+    for (const id of rows
+      .flatMap((row) => [row.submittedById, row.reviewedById])
+      .filter(Boolean))
+      userCache.set(id, Promise.resolve(userById.get(id) ?? null));
+    return {
+      mode: 'list',
+      sources,
+      mediaRows,
+      thumbUrls,
+      cardUrls,
+      brandCache,
+      userCache,
+    };
+  }
+
+  private async mapReports(rows: any[]) {
+    if (!rows.length) return [];
+    const [products, collections, brands, users] = await Promise.all([
+      readReviewRows<any>(
+        rows
+          .filter((row) => row.targetType === ContentReportTargetType.PRODUCT)
+          .map((row) => row.targetId),
+        (ids) =>
+          this.prisma.product.findMany({
+            where: { id: { in: ids } },
+            select: {
+              id: true,
+              name: true,
+              brandId: true,
+              publicationStatus: true,
+            },
+          }),
+      ),
+      readReviewRows<any>(
+        rows
+          .filter((row) =>
+            [
+              ContentReportTargetType.DESIGN,
+              ContentReportTargetType.COLLECTION,
+            ].includes(row.targetType),
+          )
+          .map((row) => row.targetId),
+        (ids) =>
+          this.prisma.collection.findMany({
+            where: { id: { in: ids } },
+            select: REVIEW_COLLECTION_SELECT,
+          }),
+      ),
+      readReviewRows<any>(
+        rows
+          .filter((row) => row.targetType === ContentReportTargetType.BRAND)
+          .map((row) => row.targetId),
+        (ids) =>
+          this.prisma.brand.findMany({
+            where: { id: { in: ids } },
+            select: { id: true, name: true },
+          }),
+      ),
+      readReviewRows<any>(
+        rows.flatMap((row) => [row.reporterId, row.reviewedById]),
+        (ids) =>
+          this.prisma.user.findMany({
+            where: { id: { in: ids } },
+            select: { id: true, username: true },
+          }),
+      ),
+    ]);
+    const sources = {
+      products: new Map(products.map((row) => [row.id, row])),
+      collections: new Map(collections.map((row) => [row.id, row])),
+      brands: new Map(brands.map((row) => [row.id, row])),
+    };
+    const userById = new Map(users.map((row) => [row.id, row]));
+    const userCache = new Map<string, Promise<UserSnapshot>>();
+    for (const id of rows
+      .flatMap((row) => [row.reporterId, row.reviewedById])
+      .filter(Boolean))
+      userCache.set(id, Promise.resolve(userById.get(id) ?? null));
+    return Promise.all(
+      rows.map((row) => this.mapReport(row, sources, userCache)),
+    );
+  }
+
+  private async getSubmissionTarget(submission: any, sources?: ReviewSources) {
     if (submission.productId) {
-      const product = await this.prisma.product.findUnique({
-        where: { id: submission.productId },
-        select: {
-          id: true,
-          name: true,
-          description: true,
-          brandId: true,
-          publicationStatus: true,
-          isActive: true,
-          createdAt: true,
-          updatedAt: true,
-          // Commercial terms are part of what is being approved: a reviewer
-          // deciding whether a listing may go live needs the price it will go
-          // live at, and whether it accepts commissions. Neither was returned,
-          // so the console judged photos alone.
-          price: true,
-          salePrice: true,
-          currency: true,
-          customOrderEnabled: true,
-          standardCheckoutEnabled: true,
-        },
-      });
+      const product = sources
+        ? sources.products.get(submission.productId)
+        : await this.prisma.product.findUnique({
+            where: { id: submission.productId },
+            select: {
+              id: true,
+              name: true,
+              description: true,
+              brandId: true,
+              publicationStatus: true,
+              isActive: true,
+              createdAt: true,
+              updatedAt: true,
+              // Commercial terms are part of what is being approved: a reviewer
+              // deciding whether a listing may go live needs the price it will go
+              // live at, and whether it accepts commissions. Neither was returned,
+              // so the console judged photos alone.
+              price: true,
+              salePrice: true,
+              currency: true,
+              customOrderEnabled: true,
+              standardCheckoutEnabled: true,
+            },
+          });
       // Prisma Decimal does not survive JSON serialization as a number; send a
       // plain number so the console can format it without a Decimal shim.
       const toAmount = (value: Prisma.Decimal | null | undefined) =>
@@ -1421,18 +1616,20 @@ export class ContentIntegrityService {
     }
 
     const collection = submission.legacyCollectionId
-      ? await this.prisma.collection.findUnique({
-          where: { id: submission.legacyCollectionId },
-          select: {
-            id: true,
-            title: true,
-            description: true,
-            status: true,
-            ownerId: true,
-            createdAt: true,
-            updatedAt: true,
-          },
-        })
+      ? sources
+        ? sources.collections.get(submission.legacyCollectionId)
+        : await this.prisma.collection.findUnique({
+            where: { id: submission.legacyCollectionId },
+            select: {
+              id: true,
+              title: true,
+              description: true,
+              status: true,
+              ownerId: true,
+              createdAt: true,
+              updatedAt: true,
+            },
+          })
       : null;
     return {
       id: submission.legacyCollectionId ?? submission.id,
@@ -1458,21 +1655,28 @@ export class ContentIntegrityService {
 
   private async getSubmissionMedia(
     submission: any,
-    options: { previewLimit?: number } = {},
+    options: {
+      previewLimit?: number;
+      prefetchedRows?: any[];
+      thumbUrls?: Map<string, string>;
+      cardUrls?: Map<string, string>;
+    } = {},
   ) {
-    const rows = submission.productId
-      ? await (this.prisma as any).productMedia.findMany({
-          where: { productId: submission.productId },
-          include: { file: true },
-          orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
-        })
-      : submission.legacyCollectionId
-        ? await (this.prisma as any).collectionMedia.findMany({
-            where: { collectionId: submission.legacyCollectionId },
+    const rows =
+      options.prefetchedRows ??
+      (submission.productId
+        ? await (this.prisma as any).productMedia.findMany({
+            where: { productId: submission.productId },
             include: { file: true },
-            orderBy: [{ orderIndex: 'asc' }],
+            orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
           })
-        : [];
+        : submission.legacyCollectionId
+          ? await (this.prisma as any).collectionMedia.findMany({
+              where: { collectionId: submission.legacyCollectionId },
+              include: { file: true },
+              orderBy: [{ orderIndex: 'asc' }],
+            })
+          : []);
 
     // Resolve the processed image variants for the whole submission in two
     // queries instead of one signing round-trip per file.
@@ -1496,12 +1700,15 @@ export class ContentIntegrityService {
           ),
       ),
     );
-    const [thumbUrls, cardUrls] = await Promise.all([
-      this.uploadService?.getBatchVariantDisplayUrls(fileIds, 'THUMB') ??
-        Promise.resolve(new Map<string, string>()),
-      this.uploadService?.getBatchVariantDisplayUrls(fileIds, 'CARD') ??
-        Promise.resolve(new Map<string, string>()),
-    ]);
+    const [thumbUrls, cardUrls] =
+      options.thumbUrls && options.cardUrls
+        ? [options.thumbUrls, options.cardUrls]
+        : await Promise.all([
+            this.uploadService?.getBatchVariantDisplayUrls(fileIds, 'THUMB') ??
+              Promise.resolve(new Map<string, string>()),
+            this.uploadService?.getBatchVariantDisplayUrls(fileIds, 'CARD') ??
+              Promise.resolve(new Map<string, string>()),
+          ]);
 
     const previewRowIds = new Set(previewRows.map((row: any) => row?.id));
     return Promise.all(
@@ -1725,16 +1932,13 @@ export class ContentIntegrityService {
           ),
       ),
     );
-    const reviewers = new Map<
-      string,
-      { id: string; username: string | null }
-    >();
-    await Promise.all(
-      reviewerIds.map(async (id) => {
-        const snapshot = await this.getUserSnapshot(id);
-        if (snapshot) reviewers.set(id, snapshot);
+    const users = await readReviewRows<any>(reviewerIds, (ids) =>
+      this.prisma.user.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, username: true },
       }),
     );
+    const reviewers = new Map(users.map((user) => [user.id, user]));
 
     return rows.map((row) => ({
       ...row,
@@ -1764,16 +1968,20 @@ export class ContentIntegrityService {
       orderBy: [{ createdAt: 'desc' }],
       take: 20,
     });
-    return Promise.all(reports.map((report) => this.mapReport(report)));
+    return this.mapReports(reports);
   }
 
-  private async mapReport(report: any) {
+  private async mapReport(
+    report: any,
+    sources?: ReviewSources,
+    userCache?: Map<string, Promise<UserSnapshot>>,
+  ) {
     const [reporter, reviewer, target] = await Promise.all([
-      this.getUserSnapshot(report.reporterId),
+      this.getUserSnapshot(report.reporterId, userCache),
       report.reviewedById
-        ? this.getUserSnapshot(report.reviewedById)
+        ? this.getUserSnapshot(report.reviewedById, userCache)
         : Promise.resolve(null),
-      this.getReportTargetSummary(report.targetType, report.targetId),
+      this.getReportTargetSummary(report.targetType, report.targetId, sources),
     ]);
     return {
       id: report.id,
@@ -1800,17 +2008,20 @@ export class ContentIntegrityService {
   private async getReportTargetSummary(
     targetType: ContentReportTargetType | string,
     targetId: string,
+    sources?: ReviewSources,
   ) {
     if (targetType === ContentReportTargetType.PRODUCT) {
-      const product = await this.prisma.product.findUnique({
-        where: { id: targetId },
-        select: {
-          id: true,
-          name: true,
-          brandId: true,
-          publicationStatus: true,
-        },
-      });
+      const product = sources
+        ? sources.products.get(targetId)
+        : await this.prisma.product.findUnique({
+            where: { id: targetId },
+            select: {
+              id: true,
+              name: true,
+              brandId: true,
+              publicationStatus: true,
+            },
+          });
       return product
         ? {
             id: product.id,
@@ -1822,15 +2033,20 @@ export class ContentIntegrityService {
         : { id: targetId, type: targetType, title: 'Deleted product' };
     }
     if (targetType === ContentReportTargetType.DESIGN) {
-      const design = await this.prisma.collection.findFirst({
-        where: { id: targetId, domain: 'DESIGN' },
-        select: {
-          id: true,
-          title: true,
-          status: true,
-          owner: { select: { brand: { select: { id: true } } } },
-        },
-      });
+      const cached = sources?.collections.get(targetId);
+      const design = sources
+        ? cached?.domain === 'DESIGN'
+          ? cached
+          : null
+        : await this.prisma.collection.findFirst({
+            where: { id: targetId, domain: 'DESIGN' },
+            select: {
+              id: true,
+              title: true,
+              status: true,
+              owner: { select: { brand: { select: { id: true } } } },
+            },
+          });
       return design
         ? {
             id: design.id,
@@ -1842,10 +2058,12 @@ export class ContentIntegrityService {
         : { id: targetId, type: targetType, title: 'Deleted design' };
     }
     if (targetType === ContentReportTargetType.COLLECTION) {
-      const collection = await this.prisma.collection.findUnique({
-        where: { id: targetId },
-        select: { id: true, title: true, status: true, ownerId: true },
-      });
+      const collection = sources
+        ? sources.collections.get(targetId)
+        : await this.prisma.collection.findUnique({
+            where: { id: targetId },
+            select: { id: true, title: true, status: true, ownerId: true },
+          });
       return collection
         ? {
             id: collection.id,
@@ -1857,10 +2075,12 @@ export class ContentIntegrityService {
         : { id: targetId, type: targetType, title: 'Deleted design' };
     }
     if (targetType === ContentReportTargetType.BRAND) {
-      const brand = await this.prisma.brand.findUnique({
-        where: { id: targetId },
-        select: { id: true, name: true },
-      });
+      const brand = sources
+        ? sources.brands?.get(targetId)
+        : await this.prisma.brand.findUnique({
+            where: { id: targetId },
+            select: { id: true, name: true },
+          });
       return brand
         ? {
             id: brand.id,
@@ -2390,9 +2610,7 @@ export class ContentIntegrityService {
   }) {
     const reason = args.reason?.trim();
     if (!reason) {
-      throw new BadRequestException(
-        'Give a reason for changing auto-publish.',
-      );
+      throw new BadRequestException('Give a reason for changing auto-publish.');
     }
     const current = await this.prisma.brand.findUnique({
       where: { id: args.brandId },

@@ -208,6 +208,7 @@ model FileUpload {
   messageAttachments MessageAttachment[]
 
   @@index([processingStatus, updatedAt])
+  @@index([s3Url])
 }
 
 model UserProfile {
@@ -287,6 +288,8 @@ model FileVariant {
 
   @@unique([fileUploadId, variantKind, format, assetVersion])
   @@index([fileUploadId, variantKind])
+  @@index([s3Key])
+  @@index([s3Url])
 }
 
 model Post {
@@ -2554,9 +2557,17 @@ model PresignedUpload {
   status               PresignStatus         @default(PENDING)
   finalizedAt          DateTime?
   processingEnqueuedAt DateTime?
+  processingRequestedAt DateTime?
+  finalizeLeaseToken    String?               @db.Uuid
+  finalizeLeaseUntil    DateTime?
+  finalizeTargetKey     String?
   expiresAt            DateTime
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
+
+  // Pending image dispatch uses a partial index in migration 20261022103400.
+  @@index([status, expiresAt])
+  @@index([finalizeTargetKey, finalizeLeaseUntil])
 }
 
 // ===== Threads Analytics & Moderation =====
@@ -3977,6 +3988,8 @@ model MessageNotificationOutbox {
   attempts         Int                 @default(0)
   availableAt      DateTime            @default(now())
   processedAt      DateTime?
+  processingLeaseToken String?          @db.Uuid
+  processingLeaseUntil DateTime?
   lastError        String?
   createdAt        DateTime            @default(now())
   updatedAt        DateTime            @updatedAt
@@ -3984,6 +3997,7 @@ model MessageNotificationOutbox {
   thread MessageThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
 
   @@index([status, availableAt, createdAt])
+  @@index([status, processingLeaseUntil])
   @@index([recipientId, createdAt])
 }
 

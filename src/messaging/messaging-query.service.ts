@@ -37,7 +37,8 @@ export class MessagingQueryService {
       WHERE p."archivedAt" IS NULL
         AND m."visibilityState" = 'VISIBLE'
         AND m."senderUserId" IS DISTINCT FROM ${actorId}
-        AND (p."lastReadAt" IS NULL OR m."createdAt" > p."lastReadAt")
+        AND (p."lastReadAt" IS NULL OR m."createdAt" > p."lastReadAt"
+          OR (m."createdAt" = p."lastReadAt" AND (p."lastReadMessageId" IS NULL OR m."id" > p."lastReadMessageId")))
     `);
 
     return Number(rows[0]?.unreadCount ?? 0);
@@ -290,17 +291,19 @@ export class MessagingQueryService {
     };
     if (!recipientPrivacy.deliveryReceipts) return false;
 
-    const now = new Date();
-    for (const messageId of messageIds) {
-      await this.prisma.messageDeliveryReceipt
-        .upsert({
-          where: { messageId_recipientId: { messageId, recipientId } },
-          create: { messageId, recipientId, deliveredAt: now },
-          update: { deliveredAt: now },
-        })
-        .catch(() => {
-          /* ignore duplicates or missing messages */
-        });
+    const unique = Array.from(new Set(messageIds));
+    for (let index = 0; index < unique.length; index += 500) {
+      const ids = unique.slice(index, index + 500);
+      await this.prisma.$executeRaw`
+        INSERT INTO "MessageDeliveryReceipt"("id","messageId","recipientId","deliveredAt","createdAt")
+        SELECT gen_random_uuid(),m."id",${recipientId}::uuid,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
+        FROM "Message" m
+        WHERE m."threadId"=${threadId}::uuid AND m."id" IN (${Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`))})
+          AND m."senderUserId" IS DISTINCT FROM ${recipientId}::uuid
+        ORDER BY m."id"
+        ON CONFLICT ("messageId","recipientId") DO UPDATE
+          SET "deliveredAt"=COALESCE("MessageDeliveryReceipt"."deliveredAt",EXCLUDED."deliveredAt")
+      `;
     }
     return true;
   }
@@ -318,44 +321,22 @@ export class MessagingQueryService {
     };
     if (!recipientPrivacy.readReceipts) return;
 
-    const upToMessage = await this.prisma.message.findFirst({
-      where: { id: upToMessageId, threadId },
-      select: { createdAt: true },
-    });
-    if (!upToMessage) return;
-
-    // Find all messages in thread from other senders up to this point
-    const messages = await this.prisma.message.findMany({
-      where: {
-        threadId,
-        senderUserId: { not: recipientId },
-        createdAt: { lte: upToMessage.createdAt },
-        kind: 'USER',
-        visibilityState: 'VISIBLE',
-      },
-      select: { id: true },
-    });
-
-    const now = new Date();
-    for (const msg of messages) {
-      await this.prisma.messageDeliveryReceipt
-        .upsert({
-          where: { messageId_recipientId: { messageId: msg.id, recipientId } },
-          create: {
-            messageId: msg.id,
-            recipientId,
-            deliveredAt: now,
-            readAt: now,
-          },
-          update: {
-            readAt: now,
-            ...(!recipientPrivacy.deliveryReceipts ? {} : { deliveredAt: now }),
-          },
-        })
-        .catch(() => {
-          /* ignore */
-        });
-    }
+    // Join directly to the requested watermark and existing receipts; no per-message query loop.
+    await this.prisma.$executeRaw`
+      INSERT INTO "MessageDeliveryReceipt"("id","messageId","recipientId","deliveredAt","readAt","createdAt")
+      SELECT gen_random_uuid(),m."id",${recipientId}::uuid,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
+      FROM "Message" m
+      JOIN "Message" watermark ON watermark."id"=${upToMessageId}::uuid AND watermark."threadId"=${threadId}::uuid
+      LEFT JOIN "MessageDeliveryReceipt" receipt ON receipt."messageId"=m."id" AND receipt."recipientId"=${recipientId}::uuid
+      WHERE m."threadId"=${threadId}::uuid
+        AND (m."createdAt",m."id")<=(watermark."createdAt",watermark."id")
+        AND m."senderUserId" IS DISTINCT FROM ${recipientId}::uuid
+        AND m."kind"='USER' AND m."visibilityState"='VISIBLE' AND receipt."readAt" IS NULL
+      ORDER BY m."id"
+      ON CONFLICT ("messageId","recipientId") DO UPDATE
+        SET "readAt"=COALESCE("MessageDeliveryReceipt"."readAt",EXCLUDED."readAt"),
+            "deliveredAt"=CASE WHEN ${recipientPrivacy.deliveryReceipts} THEN COALESCE("MessageDeliveryReceipt"."deliveredAt",EXCLUDED."deliveredAt") ELSE "MessageDeliveryReceipt"."deliveredAt" END
+    `;
   }
 
   private async getThreadParticipantIds(threadId: string): Promise<string[]> {
@@ -398,7 +379,7 @@ export class MessagingQueryService {
   ) {
     const participant = await this.prisma.messageThreadParticipant.findUnique({
       where: { threadId_userId: { threadId, userId: actorId } },
-      select: { lastReadAt: true, mutedUntil: true, archivedAt: true },
+      select: { lastReadAt: true, lastReadMessageId: true, mutedUntil: true, archivedAt: true },
     });
 
     const thread = await this.prisma.messageThread.findUnique({
@@ -422,7 +403,10 @@ export class MessagingQueryService {
       threadId,
       visibilityState: 'VISIBLE' as const,
       ...(participant?.lastReadAt
-        ? { createdAt: { gt: participant.lastReadAt } }
+        ? { OR: [
+            { createdAt: { gt: participant.lastReadAt } },
+            { createdAt: participant.lastReadAt, ...(participant.lastReadMessageId ? { id: { gt: participant.lastReadMessageId } } : {}) },
+          ] }
         : {}),
       senderUserId: { not: actorId },
     };
@@ -548,7 +532,8 @@ export class MessagingQueryService {
           WHERE m."threadId" IN (${Prisma.join(threads.map((thread) => thread.id))})
             AND m."visibilityState" = 'VISIBLE'
             AND m."senderUserId" IS DISTINCT FROM ${actorId}
-            AND (p."lastReadAt" IS NULL OR m."createdAt" > p."lastReadAt")
+            AND (p."lastReadAt" IS NULL OR m."createdAt" > p."lastReadAt"
+          OR (m."createdAt" = p."lastReadAt" AND (p."lastReadMessageId" IS NULL OR m."id" > p."lastReadMessageId")))
           GROUP BY m."threadId"
         `)
       : await this.prisma.$queryRaw<Array<{ threadId: string }>>(Prisma.sql`
@@ -559,7 +544,8 @@ export class MessagingQueryService {
           WHERE m."threadId" IN (${Prisma.join(threads.map((thread) => thread.id))})
             AND m."visibilityState" = 'VISIBLE'
             AND m."senderUserId" IS DISTINCT FROM ${actorId}
-            AND (p."lastReadAt" IS NULL OR m."createdAt" > p."lastReadAt")
+            AND (p."lastReadAt" IS NULL OR m."createdAt" > p."lastReadAt"
+          OR (m."createdAt" = p."lastReadAt" AND (p."lastReadMessageId" IS NULL OR m."id" > p."lastReadMessageId")))
         `);
 
     const unreadCountByThreadId = new Map<string, number>();

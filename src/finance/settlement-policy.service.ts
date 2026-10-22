@@ -267,6 +267,75 @@ export class SettlementPolicyService {
     });
   }
 
+  async resolveActivePoliciesBatch(
+    params: Array<{
+      orderType: SettlementOrderType;
+      brandId?: string | null;
+      currency?: string | null;
+      at?: Date;
+    }>,
+    tx?: Prisma.TransactionClient,
+  ): Promise<SettlementPolicyResolution[]> {
+    const result: SettlementPolicyResolution[] = [];
+    const fallback = new Map<
+      SettlementOrderType,
+      Promise<SettlementPolicyResolution>
+    >();
+    for (let offset = 0; offset < params.length; offset += 500) {
+      const batch = params
+        .slice(offset, offset + 500)
+        .map((request) => ({
+          ...request,
+          currency: this.normalizeCurrency(request.currency),
+          at: request.at ?? new Date(),
+        }));
+      const requests = batch.map((request, position) => ({
+        position,
+        orderType: request.orderType,
+        brandId: request.brandId ?? null,
+        currency: request.currency,
+        at: request.at.toISOString(),
+      }));
+      const rows = await (tx ?? this.prisma).$queryRaw<
+        Array<SettlementPolicyRecord & { position: number }>
+      >(Prisma.sql`
+        SELECT r.position, p.id, p."orderType", p.scope, p."brandId", p.currency, p."releaseMode", p."upfrontReleaseEnabled",
+          p."upfrontReleasePercent", p."settlementDelayHours", p."autoReleaseDays", p."finalReleaseTrigger", p."isDefault", p."isActive", p."effectiveFrom", p."effectiveTo"
+        FROM jsonb_to_recordset(${JSON.stringify(requests)}::jsonb) AS r(position int, "orderType" text, "brandId" uuid, currency text, at timestamp)
+        LEFT JOIN LATERAL (
+          SELECT p.* FROM "SettlementPolicy" p
+          WHERE p."orderType"=r."orderType"::"SettlementOrderType" AND p."isActive"=true AND p."effectiveFrom"<=r.at AND (p."effectiveTo" IS NULL OR p."effectiveTo">=r.at)
+            AND ((p.scope='BRAND' AND p."brandId"=r."brandId") OR (p.scope='PLATFORM' AND p."brandId" IS NULL))
+            AND (p.currency=r.currency OR p.currency IS NULL)
+          ORDER BY CASE WHEN p.scope='BRAND' THEN 0 ELSE 1 END,
+            CASE WHEN p.currency=r.currency THEN 0 ELSE 1 END, p."isDefault" DESC, p."effectiveFrom" DESC, p."updatedAt" DESC, p.id
+          LIMIT 1
+        ) p ON true ORDER BY r.position
+      `);
+      for (const row of rows) {
+        if (row.id) result.push(this.toResolution(row));
+        else {
+          const request = batch[row.position];
+          if (!fallback.has(request.orderType))
+            fallback.set(
+              request.orderType,
+              this.buildFallbackResolution({
+                orderType: request.orderType,
+                currency: null,
+                at: request.at,
+              }),
+            );
+          result.push({
+            ...(await fallback.get(request.orderType)!),
+            currency: request.currency,
+            effectiveFrom: request.at,
+          });
+        }
+      }
+    }
+    return result;
+  }
+
   async seedDefaults(): Promise<void> {
     await Promise.all(
       [

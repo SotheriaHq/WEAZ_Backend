@@ -1359,17 +1359,12 @@ export class PayoutService {
       ),
     );
 
-    const resolvedRules = await Promise.all(
-      uniqueCurrencies.map(async (currency) => {
-        const resolved = await this.commissionService.resolveRule({
-          brandId,
-          currency,
-        });
-        return [currency, resolved.ratePercent] as const;
-      }),
+    const resolvedRules = await this.commissionService.resolveRulesBatch(
+      uniqueCurrencies.map((currency) => ({ brandId, currency })),
     );
-
-    return new Map<string, number>(resolvedRules);
+    return new Map<string, number>(
+      uniqueCurrencies.map((currency, index) => [currency, resolvedRules[index].ratePercent]),
+    );
   }
 
   private async syncFinanceSources(brandId: string) {

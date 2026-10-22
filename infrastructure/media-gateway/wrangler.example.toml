@@ -1,0 +1,16 @@
+name = "wiez-media-gateway-sit"
+main = "worker.mjs"
+compatibility_date = "2026-10-21"
+workers_dev = false
+routes = [{ pattern = "media.example.invalid", custom_domain = true }]
+
+[[r2_buckets]]
+binding = "MEDIA_BUCKET"
+bucket_name = "replace-with-private-sit-bucket"
+
+[vars]
+MEDIA_GATEWAY_BASE_URL = "https://media.example.invalid"
+MEDIA_GATEWAY_ENVIRONMENT = "sit"
+MEDIA_GATEWAY_MAX_TTL_SECONDS = "900"
+MEDIA_GATEWAY_ALLOWED_ORIGINS = "https://web.example.invalid"
+MEDIA_GATEWAY_CACHE_VERSION = "v1"

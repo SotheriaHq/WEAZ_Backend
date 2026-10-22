@@ -257,14 +257,19 @@ export class CollectionSchedulerService {
     const ttlMs = this.config.PRESIGN_TTL_HOURS * 60 * 60 * 1000;
     const expiryThreshold = new Date(Date.now() - ttlMs);
 
-    const deleted = await this.prisma.presignedUpload.deleteMany({
-      where: {
-        status: 'PENDING',
-        expiresAt: { lte: expiryThreshold },
-      },
+    const deleted = await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<Array<{ id: string; s3Key: string; finalizeTargetKey: string | null }>>`
+        SELECT "_id" AS id, "s3Key", "finalizeTargetKey" FROM "PresignedUpload"
+        WHERE status IN ('PENDING', 'READY', 'EXPIRED') AND "expiresAt" <= ${expiryThreshold}
+          AND ("finalizeLeaseUntil" IS NULL OR "finalizeLeaseUntil" <= clock_timestamp())
+        ORDER BY "expiresAt", "_id" LIMIT 100 FOR UPDATE SKIP LOCKED
+      `;
+      if (!rows.length) return 0;
+      const keys = [...new Set(rows.flatMap((row) => [row.s3Key, row.finalizeTargetKey]).filter((key): key is string => Boolean(key)))];
+      await tx.storageObjectDeletion.createMany({ data: keys.map((s3Key) => ({ s3Key })), skipDuplicates: true });
+      return (await tx.presignedUpload.deleteMany({ where: { id: { in: rows.map((row) => row.id) } } })).count;
     });
-
-    this.logger.log(`Cleaned up ${deleted.count} orphaned presigned uploads`);
+    this.logger.log(`Cleaned up ${deleted} orphaned presigned uploads`);
   }
 
   /**
@@ -327,8 +332,10 @@ export class CollectionSchedulerService {
     const leaseUntil = new Date(now.getTime() + 5 * 60_000);
     const claimed = await this.prisma.$queryRaw<Array<{ s3Key: string; attempts: number }>>`
       WITH pending AS (
-        SELECT "s3Key" FROM "StorageObjectDeletion"
+        SELECT "s3Key" FROM "StorageObjectDeletion" job
         WHERE "nextAttemptAt" <= ${now} AND ("leaseUntil" IS NULL OR "leaseUntil" <= ${now})
+          AND NOT EXISTS (SELECT 1 FROM "PresignedUpload" intent
+            WHERE intent."finalizeTargetKey" = job."s3Key" AND intent."finalizeLeaseUntil" > clock_timestamp())
         ORDER BY "nextAttemptAt", "s3Key" LIMIT 100 FOR UPDATE SKIP LOCKED
       )
       UPDATE "StorageObjectDeletion" job SET "leaseUntil" = ${leaseUntil}
@@ -354,6 +361,26 @@ export class CollectionSchedulerService {
         data: { attempts: { increment: 1 }, nextAttemptAt, leaseUntil: null },
       });
       this.logger.error('Storage cleanup batch failed; retained for retry', error);
+    }
+  }
+
+  @Cron(CronExpression.EVERY_MINUTE)
+  async recoverPresignedImageProcessing(): Promise<void> {
+    const rows = await this.prisma.$queryRaw<Array<{ id: string; completed: boolean }>>`
+      SELECT intent."_id" AS id, (file."lastProcessedAt" IS NOT NULL) AS completed FROM "PresignedUpload" intent
+      JOIN "FileUpload" file ON file."_id" = intent."_id"
+      WHERE intent.status = 'USED' AND intent."processingEnqueuedAt" IS NULL
+        AND intent."processingRequestedAt" IS NOT NULL
+      ORDER BY intent."createdAt", intent."_id" LIMIT 100
+    `;
+    const completedIds = rows.filter((row) => row.completed).map((row) => row.id);
+    if (completedIds.length) await this.prisma.presignedUpload.updateMany({
+      where: { id: { in: completedIds }, processingEnqueuedAt: null }, data: { processingEnqueuedAt: new Date() },
+    });
+    // Queue deduplication coalesces replicas and crash-after-enqueue retries.
+    const pending = rows.filter((row) => !row.completed);
+    for (let offset = 0; offset < pending.length; offset += 4) {
+      await Promise.all(pending.slice(offset, offset + 4).map((row) => this.uploadService.dispatchPresignedImageProcessing(row.id)));
     }
   }
 

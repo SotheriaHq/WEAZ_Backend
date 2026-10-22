@@ -1482,6 +1482,17 @@ export class NotificationsService {
     );
   }
 
+  private async findNotificationReplay(notificationId: string, recipientId: string, type: NotificationType, actorId: string | null) {
+    const existing = await this.prisma.notification.findUnique({
+      where: { id: notificationId },
+      include: { actor: { select: NOTIFICATION_ACTOR_SELECT } },
+    });
+    if (existing && (existing.recipientId !== recipientId || existing.type !== type || existing.actorId !== actorId)) {
+      throw new BadRequestException('Notification identity does not match its original delivery');
+    }
+    return existing;
+  }
+
   async create(
     recipientId: string,
     type: NotificationType,
@@ -1495,6 +1506,15 @@ export class NotificationsService {
     if (actorId && actorId === recipientId) {
       this.logger.debug('Skipping self-notification');
       return null;
+    }
+
+    const notificationId = opts?.notificationId;
+    if (notificationId) {
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(notificationId)) {
+        throw new BadRequestException('Invalid notificationId');
+      }
+      const replay = await this.findNotificationReplay(notificationId, recipientId, type, actorId);
+      if (replay) return replay;
     }
 
     // Check user settings
@@ -1575,7 +1595,7 @@ export class NotificationsService {
         opts?.dedupeMs ?? DEFAULT_SEMANTIC_DEDUPE_MS,
         0,
       );
-      if (dedupeWindowMs > 0) {
+      if (dedupeWindowMs > 0 && !notificationId) {
         const since = new Date(Date.now() - dedupeWindowMs);
 
         // Fast path: when explicit target and dedupe window are provided, use JSON path lookup.
@@ -1642,9 +1662,10 @@ export class NotificationsService {
         }
       }
 
+      let replayedDelivery = false;
       const created = await this.prisma.notification.create({
         data: {
-          id: uuidv4(),
+          id: notificationId ?? uuidv4(),
           type,
           payload: {
             ...sanitizedPayload,
@@ -1659,7 +1680,16 @@ export class NotificationsService {
             select: NOTIFICATION_ACTOR_SELECT,
           },
         },
+      }).catch(async (error) => {
+        if (notificationId && (error as { code?: string }).code === 'P2002') {
+          const replay = await this.findNotificationReplay(notificationId, recipientId, type, actorId);
+          if (replay) { replayedDelivery = true; return replay; }
+        }
+        throw error;
       });
+
+      // A concurrent worker already persisted this delivery and owns its side effects.
+      if (replayedDelivery) return created;
 
       this.logger.debug(`Notification created successfully: id=${created.id}`);
 

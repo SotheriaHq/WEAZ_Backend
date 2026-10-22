@@ -316,4 +316,46 @@ describe('SettlementCalculatorService', () => {
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
+  it('calculates a batch through two shared rule reads using the caller transaction', async () => {
+    const inputs = Array.from({ length: 50 }, (_, index) => ({
+      orderType: SettlementOrderType.STANDARD_ORDER,
+      brandId: `brand_${index}`,
+      orderId: `order_${index}`,
+      grossAmount: 100 + index,
+      currency: 'NGN',
+      effectiveAt,
+    }));
+    const policies = {
+      resolveActivePoliciesBatch: jest.fn(async (_params: any[], _tx?: any) =>
+        inputs.map(() => policy()),
+      ),
+    };
+    const commissions = {
+      calculateBreakdownsBatch: jest.fn(async (items: any[], _tx?: any) =>
+        items.map(({ amount }) =>
+          commission({
+            grossAmount: amount,
+            commissionAmount: Number((amount * 0.1).toFixed(2)),
+            netAmount: Number((amount * 0.9).toFixed(2)),
+          }),
+        ),
+      ),
+    };
+    const batchService = new SettlementCalculatorService(
+      policies as any,
+      commissions as any,
+    );
+    const tx = {} as any;
+    const result = await batchService.calculateBatch(inputs, tx);
+    expect(result).toHaveLength(50);
+    expect(result[0].grossAmount).toBe(100);
+    expect(result[49].commissionAmount).toBe(14.9);
+    expect(
+      result[49].upfrontReleaseGrossAmount + result[49].finalReleaseGrossAmount,
+    ).toBe(149);
+    expect(policies.resolveActivePoliciesBatch).toHaveBeenCalledTimes(1);
+    expect(commissions.calculateBreakdownsBatch).toHaveBeenCalledTimes(1);
+    expect(policies.resolveActivePoliciesBatch.mock.calls[0][1]).toBe(tx);
+    expect(commissions.calculateBreakdownsBatch.mock.calls[0][1]).toBe(tx);
+  });
 });

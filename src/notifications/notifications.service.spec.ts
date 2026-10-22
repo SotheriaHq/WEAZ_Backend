@@ -198,6 +198,39 @@ describe('NotificationsService', () => {
   });
 
   describe('create', () => {
+    const stableId = '4465a9a3-b218-4710-81cd-56c671c8a332';
+
+    it('replays a durable notification without generating another delivery or side effect', async () => {
+      const existing = { id: stableId, recipientId: 'recipient-id', actorId: null, type: NotificationType.THREAD };
+      mockPrisma.notification.findUnique.mockResolvedValue(existing);
+      await expect(service.create('recipient-id', NotificationType.THREAD, { notificationId: stableId })).resolves.toBe(existing);
+      expect(mockPrisma.notification.create).not.toHaveBeenCalled();
+      expect(mockPushNotifications.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('replays a concurrent primary-key winner after a durable create conflict', async () => {
+      const existing = { id: stableId, recipientId: 'recipient-id', actorId: null, type: NotificationType.THREAD };
+      mockPrisma.notification.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce(existing);
+      mockPrisma.notification.create.mockRejectedValueOnce({ code: 'P2002' });
+      await expect(service.create('recipient-id', NotificationType.THREAD, { notificationId: stableId, payload: { target: { id: 'target-id' } } })).resolves.toBe(existing);
+      expect(mockPushNotifications.enqueue).not.toHaveBeenCalled();
+      expect(cacheManager.del).not.toHaveBeenCalled();
+    });
+
+    it('never returns another recipient notification for a reused durable ID', async () => {
+      mockPrisma.notification.findUnique.mockResolvedValue({ id: stableId, recipientId: 'other-recipient', actorId: null, type: NotificationType.THREAD });
+      await expect(service.create('recipient-id', NotificationType.THREAD, { notificationId: stableId })).rejects.toThrow('Notification identity');
+      expect(mockPrisma.notification.create).not.toHaveBeenCalled();
+    });
+
+    it('persists a fresh durable ID rather than relying on a temporary semantic dedupe window', async () => {
+      mockPrisma.notification.findUnique.mockResolvedValue(null);
+      mockPrisma.notification.create.mockResolvedValue({ id: stableId, recipientId: 'recipient-id', actorId: null, type: NotificationType.THREAD, payload: {}, actor: null, createdAt: new Date() });
+      await service.create('recipient-id', NotificationType.THREAD, { notificationId: stableId, payload: { target: { id: 'target-id' } }, suppressEmail: true, suppressPush: true });
+      expect(mockPrisma.notification.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ id: stableId }) }));
+      expect(mockPrisma.notification.findMany).not.toHaveBeenCalled();
+    });
+
     it('should skip self-notifications', async () => {
       const result = await service.create('user-id', NotificationType.THREAD, {
         actorId: 'user-id',

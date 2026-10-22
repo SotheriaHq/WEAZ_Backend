@@ -41,6 +41,7 @@ import { MessagingAccessService } from './messaging-access.service';
 import { MessagingPolicyService } from './messaging-policy.service';
 import { MessagingQueryService } from './messaging-query.service';
 import { MessagingSideEffectsService } from './messaging-side-effects.service';
+import { advanceMessageReadState, lockMessageThread, nextMessageTimestamp, withMessagingTransaction } from './messaging-transaction.util';
 import {
   AdminSystemMessageDto,
   BulkQueryThreadSummaryDto,
@@ -586,7 +587,7 @@ export class MessagingService {
         throw new BadRequestException('Cannot message your own brand');
       }
 
-      const thread = await this.prisma.$transaction((tx) =>
+      const thread = await withMessagingTransaction(this.prisma, (tx) =>
         this.getOrCreateBrandBrandThreadInTx(tx, {
           actorBrandId: actorBrand.id,
           actorOwnerUserId: actorBrand.ownerId,
@@ -601,7 +602,7 @@ export class MessagingService {
       throw new BadRequestException('Cannot message your own brand');
     }
 
-    const thread = await this.prisma.$transaction((tx) =>
+    const thread = await withMessagingTransaction(this.prisma, (tx) =>
       this.getOrCreateBuyerBrandThreadInTx(tx, {
         brandId: targetBrand.id,
         buyerId: actorId,
@@ -662,150 +663,140 @@ export class MessagingService {
       );
     }
 
-    const existing = await this.prisma.message.findFirst({
-      where: {
-        threadId: thread.id,
-        senderUserId: actorId,
-        clientMessageId: dto.clientMessageId,
-      },
-      include: {
-        attachments: {
-          include: {
-            file: {
-              select: {
-                id: true,
-                s3Url: true,
-                originalName: true,
-                mimeType: true,
-                size: true,
-              },
-            },
-          },
-        },
-        sender: {
-          select: MESSAGE_USER_DISPLAY_SELECT,
-        },
-      },
-    });
-
-    if (existing) {
-      return {
-        statusCode: 200,
-        replay: true,
-        thread,
-        message: {
-          ...existing,
-          sender: this.mapUserDisplay(existing.sender),
-        },
-      };
-    }
-
-    const contentContextMeta = buildContentContextMeta(dto);
-
-    // Validate that replyToMessageId belongs to the same thread (if provided)
-    const safeReplyToMessageId = dto.replyToMessageId
-      ? await this.prisma.message
-          .findFirst({
-            where: { id: dto.replyToMessageId, threadId: thread.id },
-          })
-          .then((m) => m?.id ?? null)
-      : null;
-
-    const message = await this.prisma.message.create({
-      data: {
-        threadId: thread.id,
-        contextType: thread.contextType,
-        orderId: thread.orderId,
-        customOrderId: thread.customOrderId,
-        senderUserId: actorId,
-        senderRole: actorParticipant.role,
-        kind: MessageKind.USER,
-        clientMessageId: dto.clientMessageId,
-        bodyText: bodyText || null,
-        ...(contentContextMeta ? { metadataJson: contentContextMeta } : {}),
-        ...(safeReplyToMessageId
-          ? { replyToMessageId: safeReplyToMessageId }
-          : {}),
-        attachments: {
-          create: attachments,
-        },
-      },
-      include: {
-        attachments: {
-          include: {
-            file: {
-              select: {
-                id: true,
-                s3Url: true,
-                originalName: true,
-                mimeType: true,
-                size: true,
-              },
-            },
-          },
-        },
-        sender: {
-          select: MESSAGE_USER_DISPLAY_SELECT,
-        },
-      },
-    });
-
-    await this.prisma.messageThread.update({
-      where: { id: thread.id },
-      data: {
-        lastMessageId: message.id,
-        lastMessageAt: message.createdAt,
-        lastVisibleMessageAt: message.createdAt,
-        lastMessagePreview: bodyText ? bodyText.slice(0, 200) : '[Attachment]',
-        lastSenderUserId: actorId,
-      },
-    });
-
-    await this.prisma.messageThreadParticipant.upsert({
-      where: { threadId_userId: { threadId: thread.id, userId: actorId } },
-      update: {
-        role: actorParticipant.role,
-        lastReadMessageId: message.id,
-        lastReadAt: message.createdAt,
-      },
-      create: {
-        threadId: thread.id,
-        userId: actorId,
-        role: actorParticipant.role,
-        lastReadMessageId: message.id,
-        lastReadAt: message.createdAt,
-      },
-    });
-
-    const recipients = thread.participants
-      .filter((entry) => entry.userId !== actorId)
-      .map((entry) => ({ id: entry.userId, role: entry.role }));
-
-    if (recipients.length > 0) {
-      const senderDisplayName = this.resolveUserDisplayName(
-        message.sender,
-        actorParticipant.role === 'BRAND_OWNER' ? 'Brand' : 'User',
-      );
-
-      await this.prisma.messageNotificationOutbox.createMany({
-        data: recipients.map((recipient) => ({
+    const result = await withMessagingTransaction(this.prisma, async (tx) => {
+      thread = await lockMessageThread(tx, threadId);
+      this.policy.assertCanSend(thread.status);
+      const existing = await tx.message.findFirst({
+        where: {
           threadId: thread.id,
-          messageId: message.id,
-          recipientId: recipient.id,
-          notificationType: NotificationType.MESSAGE_RECEIVED,
-          payloadJson: this.buildMessageNotificationPayload({
-            thread,
-            messageId: message.id,
-            actorUserId: actorId,
-            recipientRole: recipient.role,
-            message: `${senderDisplayName} sent a new message`,
-          }),
-        })),
+          senderUserId: actorId,
+          clientMessageId: dto.clientMessageId,
+        },
+        include: {
+          attachments: {
+            include: {
+              file: {
+                select: {
+                  id: true,
+                  s3Url: true,
+                  originalName: true,
+                  mimeType: true,
+                  size: true,
+                },
+              },
+            },
+          },
+          sender: {
+            select: MESSAGE_USER_DISPLAY_SELECT,
+          },
+        },
       });
-    }
+
+      if (existing) {
+        return { replay: true, thread, message: existing };
+      }
+
+      const contentContextMeta = buildContentContextMeta(dto);
+
+      // Validate that replyToMessageId belongs to the same thread (if provided)
+      const safeReplyToMessageId = dto.replyToMessageId
+        ? await tx.message
+            .findFirst({
+              where: { id: dto.replyToMessageId, threadId: thread.id },
+            })
+            .then((m) => m?.id ?? null)
+        : null;
+
+      const message = await tx.message.create({
+        data: {
+          threadId: thread.id,
+          contextType: thread.contextType,
+          orderId: thread.orderId,
+          customOrderId: thread.customOrderId,
+          senderUserId: actorId,
+          senderRole: actorParticipant.role,
+          kind: MessageKind.USER,
+          clientMessageId: dto.clientMessageId,
+          createdAt: await nextMessageTimestamp(tx, thread.lastMessageAt),
+          bodyText: bodyText || null,
+          ...(contentContextMeta ? { metadataJson: contentContextMeta } : {}),
+          ...(safeReplyToMessageId
+            ? { replyToMessageId: safeReplyToMessageId }
+            : {}),
+          attachments: {
+            create: attachments,
+          },
+        },
+        include: {
+          attachments: {
+            include: {
+              file: {
+                select: {
+                  id: true,
+                  s3Url: true,
+                  originalName: true,
+                  mimeType: true,
+                  size: true,
+                },
+              },
+            },
+          },
+          sender: {
+            select: MESSAGE_USER_DISPLAY_SELECT,
+          },
+        },
+      });
+
+      await tx.messageThread.update({
+        where: { id: thread.id },
+        data: {
+          lastMessageId: message.id,
+          lastMessageAt: message.createdAt,
+          lastVisibleMessageAt: message.createdAt,
+          lastMessagePreview: bodyText ? bodyText.slice(0, 200) : '[Attachment]',
+          lastSenderUserId: actorId,
+        },
+      });
+
+      await advanceMessageReadState(tx, thread.id, actorId, actorParticipant.role, message);
+
+      const recipients = thread.participants
+        .filter((entry) => entry.userId !== actorId)
+        .map((entry) => ({ id: entry.userId, role: entry.role }));
+
+      if (recipients.length > 0) {
+        const senderDisplayName = this.resolveUserDisplayName(
+          message.sender,
+          actorParticipant.role === 'BRAND_OWNER' ? 'Brand' : 'User',
+        );
+
+        await tx.messageNotificationOutbox.createMany({
+          data: recipients.map((recipient) => ({
+            threadId: thread.id,
+            messageId: message.id,
+            recipientId: recipient.id,
+            notificationType: NotificationType.MESSAGE_RECEIVED,
+            payloadJson: this.buildMessageNotificationPayload({
+              thread,
+              messageId: message.id,
+              actorUserId: actorId,
+              recipientRole: recipient.role,
+              message: `${senderDisplayName} sent a new message`,
+            }),
+          })),
+        });
+      }
+
+      return { replay: false, thread, message };
+    });
+    thread = result.thread;
+    const message = result.message;
 
     const recipientIds = thread.participants.map((entry) => entry.userId);
-    await this.sideEffects.dispatchMessageOutboxForMessage(message.id);
+    void this.sideEffects.dispatchMessageOutboxForMessage(message.id).catch((error) => {
+      this.logger.warn(`Message outbox dispatch deferred messageId=${message.id}: ${String(error)}`);
+    });
+    if (!result.replay) {
     this.sideEffects.emitMessageCreated(thread, recipientIds, {
       id: message.id,
       senderRole: message.senderRole,
@@ -820,9 +811,11 @@ export class MessagingService {
       recipientIds,
     ).catch(() => undefined);
 
+    }
+
     return {
-      statusCode: 201,
-      replay: false,
+      statusCode: result.replay ? 200 : 201,
+      replay: result.replay,
       thread,
       message: {
         ...message,
@@ -1257,7 +1250,7 @@ export class MessagingService {
     const context = await this.loadOrderConversationContext(actorId, dto);
     const existing = await this.findExistingOrderConversation(actorId, context);
 
-    const thread = await this.prisma.$transaction(async (tx) => {
+    const thread = await withMessagingTransaction(this.prisma, async (tx) => {
       const pair = await this.getOrCreateBuyerBrandThreadInTx(tx, {
         brandId: context.brandId,
         buyerId: context.buyerId,
@@ -1886,74 +1879,31 @@ export class MessagingService {
     return 'active';
   }
 
-  async markThreadReadById(
-    actorId: string,
-    threadId: string,
-    dto: MarkThreadReadDto,
-  ) {
+  async markThreadReadById(actorId: string, threadId: string, dto: MarkThreadReadDto) {
     await this.access.assertCanReadThread(actorId, threadId);
-    const [thread, actorParticipant] = await Promise.all([
-      this.prisma.messageThread.findUnique({
-        where: { id: threadId },
-        include: { participants: true },
-      }),
-      this.prisma.messageThreadParticipant.findUnique({
-        where: { threadId_userId: { threadId, userId: actorId } },
-        select: { role: true },
-      }),
-    ]);
-    if (!thread) {
-      throw new NotFoundException('Message thread not found');
-    }
+    return this.advanceThreadRead(actorId, threadId, dto);
+  }
 
-    const upToMessage = dto.upToMessageId
-      ? await this.prisma.message.findFirst({
-          where: { id: dto.upToMessageId, threadId },
-          select: { id: true, createdAt: true },
-        })
-      : await this.prisma.message.findFirst({
-          where: { threadId },
-          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-          select: { id: true, createdAt: true },
-        });
-
-    await this.prisma.messageThreadParticipant.upsert({
-      where: { threadId_userId: { threadId, userId: actorId } },
-      update: {
-        lastReadMessageId: upToMessage?.id ?? null,
-        lastReadAt: upToMessage?.createdAt ?? new Date(),
-      },
-      create: {
-        threadId,
-        userId: actorId,
-        role: actorParticipant?.role ?? MessageParticipantRole.BRAND_OWNER,
-        lastReadMessageId: upToMessage?.id ?? null,
-        lastReadAt: upToMessage?.createdAt ?? new Date(),
-      },
+  private async advanceThreadRead(actorId: string, threadId: string, dto: MarkThreadReadDto, role?: MessageParticipantRole) {
+    const result = await withMessagingTransaction(this.prisma, async (tx) => {
+      const thread = await lockMessageThread(tx, threadId);
+      const target = await tx.message.findFirst({
+        where: { threadId, ...(dto.upToMessageId ? { id: dto.upToMessageId } : {}) },
+        ...(dto.upToMessageId ? {} : { orderBy: [{ createdAt: 'desc' as const }, { id: 'desc' as const }] }),
+        select: { id: true, createdAt: true },
+      });
+      if (dto.upToMessageId && !target) throw new NotFoundException('Message not found in this thread');
+      const actorRole = role ?? thread.participants.find((participant) => participant.userId === actorId)?.role ?? MessageParticipantRole.BRAND_OWNER;
+      const watermark = await advanceMessageReadState(tx, threadId, actorId, actorRole, target);
+      return { thread, watermark };
     });
-
-    // Create read receipts for all messages up to this point
-    if (upToMessage) {
-      await this.query.markMessagesRead(threadId, actorId, upToMessage.id);
+    if (result.watermark.lastReadMessageId) {
+      await this.query.markMessagesRead(threadId, actorId, result.watermark.lastReadMessageId);
     }
-
-    // Emit read event to ALL participants so senders can update their tick status
-    const allParticipantIds = Array.from(
-      new Set([...thread.participants.map((p) => p.userId), actorId]),
-    );
-    this.sideEffects.emitThreadInvalidation(thread, allParticipantIds);
-    this.sideEffects.emitMessageRead(
-      thread as any,
-      actorId,
-      upToMessage?.id ?? null,
-      allParticipantIds,
-    );
-
-    return {
-      success: true,
-      threadId,
-      lastReadMessageId: upToMessage?.id ?? null,
-    };
+    const participantIds = Array.from(new Set([...result.thread.participants.map((participant) => participant.userId), actorId]));
+    this.sideEffects.emitThreadInvalidation(result.thread, participantIds);
+    this.sideEffects.emitMessageRead(result.thread, actorId, result.watermark.lastReadMessageId, participantIds);
+    return { success: true, threadId, lastReadMessageId: result.watermark.lastReadMessageId };
   }
 
   async respondToOrderExtensionForBuyer(
@@ -2323,55 +2273,7 @@ export class MessagingService {
       return { success: true, threadId: null };
     }
 
-    const participants = await this.prisma.messageThreadParticipant.findMany({
-      where: { threadId: thread.id },
-      select: { userId: true },
-    });
-    const participantIds = participants.map((entry) => entry.userId);
-
-    const upToMessage = dto.upToMessageId
-      ? await this.prisma.message.findFirst({
-          where: { id: dto.upToMessageId, threadId: thread.id },
-          select: { id: true, createdAt: true },
-        })
-      : await this.prisma.message.findFirst({
-          where: { threadId: thread.id },
-          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-          select: { id: true, createdAt: true },
-        });
-
-    await this.prisma.messageThreadParticipant.upsert({
-      where: { threadId_userId: { threadId: thread.id, userId: actorId } },
-      update: {
-        role,
-        lastReadMessageId: upToMessage?.id ?? null,
-        lastReadAt: upToMessage?.createdAt ?? new Date(),
-      },
-      create: {
-        threadId: thread.id,
-        userId: actorId,
-        role,
-        lastReadMessageId: upToMessage?.id ?? null,
-        lastReadAt: upToMessage?.createdAt ?? new Date(),
-      },
-    });
-
-    if (upToMessage) {
-      await this.query.markMessagesRead(thread.id, actorId, upToMessage.id);
-    }
-
-    this.sideEffects.emitThreadInvalidation(thread, participantIds);
-    this.sideEffects.emitMessageRead(
-      thread as any,
-      actorId,
-      upToMessage?.id ?? null,
-      participantIds,
-    );
-    return {
-      success: true,
-      threadId: thread.id,
-      lastReadMessageId: upToMessage?.id ?? null,
-    };
+    return this.advanceThreadRead(actorId, thread.id, dto, role);
   }
 
   async updateThreadPreferencesForContext(
@@ -2917,71 +2819,65 @@ export class MessagingService {
   }
 
   async reopenThread(actorId: string, threadId: string, req?: Request) {
-    const before = await this.prisma.messageThread.findUnique({
-      where: { id: threadId },
-      select: {
-        id: true,
-        status: true,
-        readOnlyAt: true,
-        archivedAt: true,
-      },
-    });
-    if (!before) {
-      throw new NotFoundException('Thread not found');
-    }
+    const { before, thread, reopenMessage, recipients } = await withMessagingTransaction(this.prisma, async (tx) => {
+      const locked = await lockMessageThread(tx, threadId);
+      const before = { id: locked.id, status: locked.status, readOnlyAt: locked.readOnlyAt, archivedAt: locked.archivedAt };
+      const thread = await tx.messageThread.update({
+        where: { id: threadId },
+        data: { status: MessageThreadStatus.OPEN, readOnlyAt: null },
+        include: { participants: true },
+      });
 
-    const thread = await this.prisma.messageThread.update({
-      where: { id: threadId },
-      data: { status: MessageThreadStatus.OPEN, readOnlyAt: null },
-      include: { participants: true },
-    });
-
-    const reopenMessage = await this.prisma.message.create({
-      data: {
-        threadId: thread.id,
-        senderUserId: null,
-        senderRole: MessageParticipantRole.SYSTEM,
-        kind: MessageKind.SYSTEM,
-        bodyText: 'Thread reopened by admin',
-        metadataJson: {
-          action: 'THREAD_REOPENED',
-          adminId: actorId,
-        } as Prisma.InputJsonValue,
-      },
-    });
-
-    await this.prisma.messageThread.update({
-      where: { id: thread.id },
-      data: {
-        lastMessageId: reopenMessage.id,
-        lastMessageAt: reopenMessage.createdAt,
-        lastVisibleMessageAt: reopenMessage.createdAt,
-        lastMessagePreview: reopenMessage.bodyText?.slice(0, 200) ?? null,
-        lastSenderUserId: null,
-      },
-    });
-
-    const recipients = thread.participants.map((p) => ({
-      userId: p.userId,
-      role: p.role,
-    }));
-    for (const recipient of recipients) {
-      await this.prisma.messageNotificationOutbox.create({
+      const reopenMessage = await tx.message.create({
         data: {
           threadId: thread.id,
-          messageId: reopenMessage.id,
-          recipientId: recipient.userId,
-          notificationType: NotificationType.MESSAGE_THREAD_REOPENED,
-          payloadJson: this.buildMessageNotificationPayload({
-            thread,
-            messageId: reopenMessage.id,
-            recipientRole: recipient.role,
-            actorUserId: actorId,
-            actionType: 'THREAD_REOPENED',
-          }),
+          senderUserId: null,
+          senderRole: MessageParticipantRole.SYSTEM,
+          kind: MessageKind.SYSTEM,
+          createdAt: await nextMessageTimestamp(tx, thread.lastMessageAt),
+          bodyText: 'Thread reopened by admin',
+          metadataJson: {
+            action: 'THREAD_REOPENED',
+            adminId: actorId,
+          } as Prisma.InputJsonValue,
         },
       });
-    }
+
+      await tx.messageThread.update({
+        where: { id: thread.id },
+        data: {
+          lastMessageId: reopenMessage.id,
+          lastMessageAt: reopenMessage.createdAt,
+          lastVisibleMessageAt: reopenMessage.createdAt,
+          lastMessagePreview: reopenMessage.bodyText?.slice(0, 200) ?? null,
+          lastSenderUserId: null,
+        },
+      });
+
+      const recipients = thread.participants.map((p) => ({
+        userId: p.userId,
+        role: p.role,
+      }));
+      if (recipients.length) {
+        await tx.messageNotificationOutbox.createMany({
+          data: recipients.map((recipient) => ({
+            threadId: thread.id,
+            messageId: reopenMessage.id,
+            recipientId: recipient.userId,
+            notificationType: NotificationType.MESSAGE_THREAD_REOPENED,
+            payloadJson: this.buildMessageNotificationPayload({
+              thread,
+              messageId: reopenMessage.id,
+              recipientRole: recipient.role,
+              actorUserId: actorId,
+              actionType: 'THREAD_REOPENED',
+            }),
+          })),
+        });
+      }
+
+      return { before, thread, reopenMessage, recipients };
+    });
 
     this.sideEffects.emitThreadInvalidation(
       thread,
@@ -3022,30 +2918,35 @@ export class MessagingService {
     dto: AdminSystemMessageDto,
     req?: Request,
   ) {
-    const thread = await this.getThreadOrThrow(threadId);
-    const message = await this.prisma.message.create({
-      data: {
-        threadId: thread.id,
-        senderUserId: null,
-        senderRole: MessageParticipantRole.SYSTEM,
-        kind: MessageKind.SYSTEM,
-        bodyText: dto.bodyText.trim(),
-        metadataJson: {
-          source: 'ADMIN',
-          adminId: actorId,
-        } as Prisma.InputJsonValue,
-      },
-    });
+    const { thread, message } = await withMessagingTransaction(this.prisma, async (tx) => {
+      const thread = await lockMessageThread(tx, threadId);
+      const message = await tx.message.create({
+        data: {
+          threadId: thread.id,
+          senderUserId: null,
+          senderRole: MessageParticipantRole.SYSTEM,
+          kind: MessageKind.SYSTEM,
+          createdAt: await nextMessageTimestamp(tx, thread.lastMessageAt),
+          bodyText: dto.bodyText.trim(),
+          metadataJson: {
+            source: 'ADMIN',
+            adminId: actorId,
+          } as Prisma.InputJsonValue,
+        },
+      });
 
-    await this.prisma.messageThread.update({
-      where: { id: thread.id },
-      data: {
-        lastMessageId: message.id,
-        lastMessageAt: message.createdAt,
-        lastVisibleMessageAt: message.createdAt,
-        lastMessagePreview: dto.bodyText.trim().slice(0, 200),
-        lastSenderUserId: null,
-      },
+      await tx.messageThread.update({
+        where: { id: thread.id },
+        data: {
+          lastMessageId: message.id,
+          lastMessageAt: message.createdAt,
+          lastVisibleMessageAt: message.createdAt,
+          lastMessagePreview: dto.bodyText.trim().slice(0, 200),
+          lastSenderUserId: null,
+        },
+      });
+
+      return { thread, message };
     });
 
     const participants = await this.prisma.messageThreadParticipant.findMany({
@@ -3164,7 +3065,8 @@ export class MessagingService {
 
     this.policy.assertCanSend(params.threadStatus);
 
-    const result = await this.prisma.$transaction(async (tx) => {
+    const result = await withMessagingTransaction(this.prisma, async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${'wiez-message-sender-' + params.actorId}, 0))`;
       const effectiveStatus = await this.resolveCurrentThreadStatusInTx(
         tx,
         params.contextType,
@@ -3172,7 +3074,7 @@ export class MessagingService {
       );
       this.policy.assertCanSend(effectiveStatus);
 
-      const thread = await this.getOrCreateThreadInTx(
+      let thread = await this.getOrCreateThreadInTx(
         tx,
         params.contextType,
         params.contextId,
@@ -3182,6 +3084,7 @@ export class MessagingService {
         effectiveStatus,
       );
 
+      thread = await lockMessageThread(tx, thread.id);
       if (thread.status !== MessageThreadStatus.OPEN) {
         throw new ForbiddenException('Thread is read-only');
       }
@@ -3274,6 +3177,7 @@ export class MessagingService {
           senderRole: params.actorRole,
           kind: MessageKind.USER,
           clientMessageId: params.dto.clientMessageId,
+          createdAt: await nextMessageTimestamp(tx, thread.lastMessageAt),
           bodyText: bodyText || null,
           attachments: {
             create: attachments,
@@ -3315,23 +3219,7 @@ export class MessagingService {
         },
       });
 
-      await tx.messageThreadParticipant.upsert({
-        where: {
-          threadId_userId: { threadId: thread.id, userId: params.actorId },
-        },
-        update: {
-          role: params.actorRole,
-          lastReadMessageId: message.id,
-          lastReadAt: message.createdAt,
-        },
-        create: {
-          threadId: thread.id,
-          userId: params.actorId,
-          role: params.actorRole,
-          lastReadMessageId: message.id,
-          lastReadAt: message.createdAt,
-        },
-      });
+      await advanceMessageReadState(tx, thread.id, params.actorId, params.actorRole, message);
 
       const recipients = [
         params.buyerId
@@ -3406,8 +3294,10 @@ export class MessagingService {
       (id): id is string => Boolean(id),
     );
 
+    void this.sideEffects.dispatchMessageOutboxForMessage(result.message.id).catch((error) => {
+      this.logger.warn(`Message outbox dispatch deferred messageId=${result.message.id}: ${String(error)}`);
+    });
     if (!result.replay) {
-      await this.sideEffects.dispatchMessageOutboxForMessage(result.message.id);
       this.sideEffects.emitMessageCreated(result.thread, recipientIds, {
         id: result.message.id,
         senderRole: result.message.senderRole,
@@ -3445,7 +3335,7 @@ export class MessagingService {
     );
     if (existing) {
       if (!existing.pairKey && !existing.conversationType) {
-        return this.prisma.$transaction((tx) =>
+        return withMessagingTransaction(this.prisma, (tx) =>
           this.getOrCreateThreadInTx(
             tx,
             MessageContextType.CUSTOM_ORDER,
@@ -3464,7 +3354,7 @@ export class MessagingService {
     const status = this.policy.resolveThreadStatusForCustomOrder(
       context.status,
     );
-    return this.prisma.$transaction((tx) =>
+    return withMessagingTransaction(this.prisma, (tx) =>
       this.getOrCreateThreadInTx(
         tx,
         MessageContextType.CUSTOM_ORDER,
@@ -3493,7 +3383,7 @@ export class MessagingService {
     );
     if (existing) {
       if (context.buyerId && !existing.pairKey && !existing.conversationType) {
-        return this.prisma.$transaction((tx) =>
+        return withMessagingTransaction(this.prisma, (tx) =>
           this.getOrCreateThreadInTx(
             tx,
             MessageContextType.STANDARD_ORDER,
@@ -3510,7 +3400,7 @@ export class MessagingService {
     if (!createWhenMissing) return existing;
 
     const status = this.policy.resolveThreadStatusForOrder(context.status);
-    return this.prisma.$transaction((tx) =>
+    return withMessagingTransaction(this.prisma, (tx) =>
       this.getOrCreateThreadInTx(
         tx,
         MessageContextType.STANDARD_ORDER,
@@ -3613,6 +3503,7 @@ export class MessagingService {
     },
   ) {
     const pairKey = this.buildBuyerBrandPairKey(params.buyerId, params.brandId);
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${'wiez-message-pair-' + pairKey}, 0))`;
     const existing = await tx.messageThread.findFirst({
       where: { pairKey },
       include: { participants: true },
@@ -3667,48 +3558,29 @@ export class MessagingService {
       return updated;
     }
 
-    try {
-      return await tx.messageThread.create({
-        data: {
-          contextType: params.contextType ?? MessageContextType.DIRECT,
-          conversationType: MessageConversationType.BUYER_BRAND,
-          brandId: params.brandId,
-          buyerId: params.buyerId,
-          buyerUserId: params.buyerId,
-          brandOwnerUserId: params.brandOwnerUserId,
-          pairKey,
-          status: MessageThreadStatus.OPEN,
-          subjectSnapshotJson: params.subjectSnapshotJson,
-          participants: {
-            create: [
-              { userId: params.buyerId, role: MessageParticipantRole.BUYER },
-              {
-                userId: params.brandOwnerUserId,
-                role: MessageParticipantRole.BRAND_OWNER,
-              },
-            ],
-          },
+    return await tx.messageThread.create({
+      data: {
+        contextType: params.contextType ?? MessageContextType.DIRECT,
+        conversationType: MessageConversationType.BUYER_BRAND,
+        brandId: params.brandId,
+        buyerId: params.buyerId,
+        buyerUserId: params.buyerId,
+        brandOwnerUserId: params.brandOwnerUserId,
+        pairKey,
+        status: MessageThreadStatus.OPEN,
+        subjectSnapshotJson: params.subjectSnapshotJson,
+        participants: {
+          create: [
+            { userId: params.buyerId, role: MessageParticipantRole.BUYER },
+            {
+              userId: params.brandOwnerUserId,
+              role: MessageParticipantRole.BRAND_OWNER,
+            },
+          ],
         },
-        include: { participants: true },
-      });
-    } catch (error) {
-      if ((error as { code?: string }).code !== 'P2002') {
-        throw error;
-      }
-      const concurrent = await tx.messageThread.findFirst({
-        where: { pairKey },
-        include: { participants: true },
-      });
-      if (!concurrent) throw error;
-      await this.ensureThreadParticipantsInTx(tx, concurrent.id, [
-        { userId: params.buyerId, role: MessageParticipantRole.BUYER },
-        {
-          userId: params.brandOwnerUserId,
-          role: MessageParticipantRole.BRAND_OWNER,
-        },
-      ]);
-      return concurrent;
-    }
+      },
+      include: { participants: true },
+    });
   }
 
   private async getOrCreateBrandBrandThreadInTx(
@@ -3724,6 +3596,8 @@ export class MessagingService {
       params.actorBrandId,
       params.targetBrandId,
     );
+
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${'wiez-message-pair-' + pairKey}, 0))`;
 
     const existing = await tx.messageThread.findFirst({
       where: { pairKey },
@@ -3748,35 +3622,22 @@ export class MessagingService {
       });
     }
 
-    try {
-      return await tx.messageThread.create({
-        data: {
-          contextType: MessageContextType.DIRECT,
-          conversationType: MessageConversationType.BRAND_BRAND,
-          brandAId,
-          brandBId,
-          brandId: params.targetBrandId,
-          pairKey,
-          status: MessageThreadStatus.OPEN,
-          subjectSnapshotJson: {
-            type: 'BRAND_BRAND_DIRECT',
-          } as Prisma.InputJsonValue,
-          participants: { create: participants },
-        },
-        include: { participants: true },
-      });
-    } catch (error) {
-      if ((error as { code?: string }).code !== 'P2002') {
-        throw error;
-      }
-      const concurrent = await tx.messageThread.findFirst({
-        where: { pairKey },
-        include: { participants: true },
-      });
-      if (!concurrent) throw error;
-      await this.ensureThreadParticipantsInTx(tx, concurrent.id, participants);
-      return concurrent;
-    }
+    return await tx.messageThread.create({
+      data: {
+        contextType: MessageContextType.DIRECT,
+        conversationType: MessageConversationType.BRAND_BRAND,
+        brandAId,
+        brandBId,
+        brandId: params.targetBrandId,
+        pairKey,
+        status: MessageThreadStatus.OPEN,
+        subjectSnapshotJson: {
+          type: 'BRAND_BRAND_DIRECT',
+        } as Prisma.InputJsonValue,
+        participants: { create: participants },
+      },
+      include: { participants: true },
+    });
   }
 
   private async getOrCreateThreadInTx(
@@ -3861,7 +3722,7 @@ export class MessagingService {
     contextType: MessageContextType,
     contextId: string,
   ) {
-    const thread = await this.prisma.$transaction((tx) =>
+    const thread = await withMessagingTransaction(this.prisma, (tx) =>
       this.findThreadByContextInTx(tx, contextType, contextId),
     );
     if (!thread) {
@@ -4450,76 +4311,82 @@ export class MessagingService {
     metadata: Record<string, unknown>;
     origin: 'BUYER' | 'BRAND';
   }) {
-    const thread = await this.getOrCreateThreadInTx(
-      this.prisma,
-      params.contextType,
-      params.contextId,
-      params.brandId,
-      params.buyerId,
-      params.brandOwnerUserId,
-      params.threadStatus,
-    );
+    const { thread, actionMessage, participants } = await withMessagingTransaction(this.prisma, async (tx) => {
+      let thread = await this.getOrCreateThreadInTx(
+        tx,
+        params.contextType,
+        params.contextId,
+        params.brandId,
+        params.buyerId,
+        params.brandOwnerUserId,
+        params.threadStatus,
+      );
 
-    const actionMessage = await this.prisma.message.create({
-      data: {
-        threadId: thread.id,
-        contextType: params.contextType,
-        orderId:
-          params.contextType === MessageContextType.STANDARD_ORDER
-            ? params.contextId
-            : null,
-        customOrderId:
-          params.contextType === MessageContextType.CUSTOM_ORDER
-            ? params.contextId
-            : null,
-        senderUserId: null,
-        senderRole: MessageParticipantRole.SYSTEM,
-        kind: MessageKind.SYSTEM,
-        bodyText: params.bodyText,
-        metadataJson: {
-          ...params.metadata,
-          source: 'MESSAGING_ACTION',
-          origin: params.origin,
-          actorId: params.actorId,
-        } as Prisma.InputJsonValue,
-      },
-    });
-
-    await this.prisma.messageThread.update({
-      where: { id: thread.id },
-      data: {
-        lastMessageId: actionMessage.id,
-        lastMessageAt: actionMessage.createdAt,
-        lastVisibleMessageAt: actionMessage.createdAt,
-        lastMessagePreview: (params.bodyText || '').slice(0, 200),
-        lastSenderUserId: null,
-      },
-    });
-
-    const participants = await this.prisma.messageThreadParticipant.findMany({
-      where: { threadId: thread.id },
-      select: { userId: true, role: true },
-    });
-
-    const recipients = participants.filter(
-      (participant) => participant.userId !== params.actorId,
-    );
-    if (recipients.length > 0) {
-      await this.prisma.messageNotificationOutbox.createMany({
-        data: recipients.map((recipient) => ({
+      thread = await lockMessageThread(tx, thread.id);
+      const actionMessage = await tx.message.create({
+        data: {
           threadId: thread.id,
-          messageId: actionMessage.id,
-          recipientId: recipient.userId,
-          notificationType: NotificationType.MESSAGE_RECEIVED,
-          payloadJson: this.buildMessageNotificationPayload({
-            thread,
-            messageId: actionMessage.id,
-            recipientRole: recipient.role,
-            actionType: params.metadata.eventType ?? null,
-          }),
-        })),
+          contextType: params.contextType,
+          orderId:
+            params.contextType === MessageContextType.STANDARD_ORDER
+              ? params.contextId
+              : null,
+          customOrderId:
+            params.contextType === MessageContextType.CUSTOM_ORDER
+              ? params.contextId
+              : null,
+          senderUserId: null,
+          senderRole: MessageParticipantRole.SYSTEM,
+          kind: MessageKind.SYSTEM,
+          createdAt: await nextMessageTimestamp(tx, thread.lastMessageAt),
+          bodyText: params.bodyText,
+          metadataJson: {
+            ...params.metadata,
+            source: 'MESSAGING_ACTION',
+            origin: params.origin,
+            actorId: params.actorId,
+          } as Prisma.InputJsonValue,
+        },
       });
-    }
+
+      await tx.messageThread.update({
+        where: { id: thread.id },
+        data: {
+          lastMessageId: actionMessage.id,
+          lastMessageAt: actionMessage.createdAt,
+          lastVisibleMessageAt: actionMessage.createdAt,
+          lastMessagePreview: (params.bodyText || '').slice(0, 200),
+          lastSenderUserId: null,
+        },
+      });
+
+      const participants = await tx.messageThreadParticipant.findMany({
+        where: { threadId: thread.id },
+        select: { userId: true, role: true },
+      });
+
+      const recipients = participants.filter(
+        (participant) => participant.userId !== params.actorId,
+      );
+      if (recipients.length > 0) {
+        await tx.messageNotificationOutbox.createMany({
+          data: recipients.map((recipient) => ({
+            threadId: thread.id,
+            messageId: actionMessage.id,
+            recipientId: recipient.userId,
+            notificationType: NotificationType.MESSAGE_RECEIVED,
+            payloadJson: this.buildMessageNotificationPayload({
+              thread,
+              messageId: actionMessage.id,
+              recipientRole: recipient.role,
+              actionType: params.metadata.eventType ?? null,
+            }),
+          })),
+        });
+      }
+
+      return { thread, actionMessage, participants };
+    });
 
     const recipientIds = participants.map((participant) => participant.userId);
     await this.sideEffects.dispatchMessageOutboxForMessage(actionMessage.id);

@@ -1,0 +1,18 @@
+{
+  "generatedAt": "2026-10-21T17:02:38.093Z",
+  "scope": "isolated local PostgreSQL, actual cart transaction/consumption helpers",
+  "logicalConcurrentAdds": 20,
+  "connectionLimit": 10,
+  "finalQuantity": 20,
+  "duplicateRows": 0,
+  "passed": [
+    "no lost increments",
+    "NULL-safe selection identity",
+    "paid snapshot subtraction retains later additions",
+    "combined duplicate paid lines",
+    "cross-buyer isolation",
+    "exact consumption removes row"
+  ],
+  "elapsedMs": 335,
+  "databaseVersion": "PostgreSQL 17.6"
+}

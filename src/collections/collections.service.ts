@@ -1,4 +1,6 @@
+import { lockMembershipProducts, readProductMemberships, synchronizePrimaryMemberships } from './collection-membership-query';
 import { privateCollectionCountsForOwners } from './collection-counts.util';
+import { retryDatabaseTransaction } from 'src/common/transaction-retry.util';
 import {
   Injectable,
   BadRequestException,
@@ -1058,42 +1060,14 @@ export class CollectionsService {
     });
   }
 
-  private async enforcePrimaryMembership(
+  private async lockMembershipCollection(
     tx: Prisma.TransactionClient,
-    productId: string,
+    collectionId: string,
   ) {
-    const links = await tx.storeCollectionProduct.findMany({
-      where: { productId },
-      orderBy: [
-        { isPrimary: 'desc' },
-        { createdAt: 'asc' },
-        { orderIndex: 'asc' },
-        { collectionId: 'asc' },
-      ],
-      select: { collectionId: true, isPrimary: true },
-    });
-
-    if (links.length === 0) {
-      await tx.product.update({
-        where: { id: productId },
-        data: { collectionId: null },
-      });
-      return;
-    }
-
-    const primary = links.find((l) => l.isPrimary) ?? links[0];
-    await tx.storeCollectionProduct.updateMany({
-      where: { productId },
-      data: { isPrimary: false },
-    });
-    await tx.storeCollectionProduct.updateMany({
-      where: { productId, collectionId: primary.collectionId },
-      data: { isPrimary: true },
-    });
-    await tx.product.update({
-      where: { id: productId },
-      data: { collectionId: primary.collectionId },
-    });
+    await tx.$queryRaw(Prisma.sql`
+      SELECT "_id" FROM "StoreCollection" WHERE "_id" = ${collectionId}::uuid
+      FOR NO KEY UPDATE
+    `);
   }
 
   private async countActiveOrdersForCollection(
@@ -2736,6 +2710,8 @@ export class CollectionsService {
             expectedKey: (presign as any).key,
             uploadUrl: (presign as any).url,
             uploadFields: (presign as any).fields,
+            method: (presign as any).method ?? 'POST',
+            uploadHeaders: (presign as any).uploadHeaders,
             expiresIn: (presign as any).expiresIn || 600,
           };
         }),
@@ -2897,6 +2873,8 @@ export class CollectionsService {
           expectedKey: (presign as any).key,
           uploadUrl: (presign as any).url,
           uploadFields: (presign as any).fields,
+          method: (presign as any).method ?? 'POST',
+          uploadHeaders: (presign as any).uploadHeaders,
           expiresIn: (presign as any).expiresIn || 600, // default 10 minutes
         };
       }),
@@ -2976,6 +2954,8 @@ export class CollectionsService {
           expectedKey: (presign as any).key,
           uploadUrl: (presign as any).url,
           uploadFields: (presign as any).fields,
+          method: (presign as any).method ?? 'POST',
+          uploadHeaders: (presign as any).uploadHeaders,
           expiresIn: (presign as any).expiresIn || 600,
         };
       }),
@@ -5200,13 +5180,19 @@ export class CollectionsService {
     if (!Array.isArray(productIds) || productIds.length === 0) {
       throw new BadRequestException('productIds is required');
     }
+    if (productIds.length > this.maxProductsPerCollection) {
+      throw new BadRequestException(
+        `Collections can contain maximum ${this.maxProductsPerCollection} products.`,
+      );
+    }
 
-    const result = await this.prisma.$transaction(
+    const result = await retryDatabaseTransaction(() => this.prisma.$transaction(
       async (tx) => {
-        await this.lockCollectionForUpdate(tx, collectionId, 'STORE');
+        await this.lockMembershipCollection(tx, collectionId);
+        await lockMembershipProducts(tx, productIds);
         const products = await tx.product.findMany({
           where: { id: { in: productIds }, deletedAt: null },
-          include: { brand: true },
+          select: { id: true, brand: { select: { ownerId: true } } },
         });
 
         if (products.length !== productIds.length) {
@@ -5225,9 +5211,12 @@ export class CollectionsService {
         });
         const existingSet = new Set(existingLinks.map((l) => l.productId));
 
-        const existingCount = await tx.storeCollectionProduct.count({
+        const membershipRange = await tx.storeCollectionProduct.aggregate({
           where: { collectionId },
+          _count: { _all: true },
+          _max: { orderIndex: true },
         });
+        const existingCount = membershipRange._count._all;
         const newIds = productIds.filter((id) => !existingSet.has(id));
         if (existingCount + newIds.length > this.maxProductsPerCollection) {
           throw new BadRequestException(
@@ -5235,53 +5224,33 @@ export class CollectionsService {
           );
         }
 
-        let nextOrderIndex = existingCount;
-
-        for (const productId of productIds) {
-          if (existingSet.has(productId)) continue;
-
-          const memberships = await tx.storeCollectionProduct.findMany({
-            where: { productId },
-            select: { collectionId: true },
-          });
-          const memberCollectionIds = memberships.map((m) => m.collectionId);
-          if (memberCollectionIds.length >= 3) {
+        let nextOrderIndex = (membershipRange._max.orderIndex ?? -1) + 1;
+        const membershipsByProduct = await readProductMemberships(tx, newIds);
+        const linksToCreate = newIds.map((productId) => {
+          const memberships = membershipsByProduct.get(productId) ?? [];
+          if (memberships.length >= 3) {
             throw new ConflictException({
               code: 'COLLECTION_MAX_MEMBERSHIP',
               message: 'Product already belongs to maximum 3 collections.',
-              conflictingCollectionIds: memberCollectionIds,
-            } as any);
+              conflictingCollectionIds: memberships.map((link) => link.collectionId),
+            });
           }
-
-          const orderIndex = nextOrderIndex;
-          nextOrderIndex += 1;
-
-          const existingPrimary = await tx.storeCollectionProduct.findFirst({
-            where: { productId, isPrimary: true },
-            select: { collectionId: true },
-          });
-          const shouldBePrimary = !existingPrimary;
-
-          await tx.storeCollectionProduct.create({
-            data: {
-              id: uuidv4(),
-              collectionId,
-              productId,
-              orderIndex,
-              isPrimary: shouldBePrimary,
-            },
-          });
-
-          if (shouldBePrimary) {
-            await this.enforcePrimaryMembership(tx, productId);
-          }
+          return {
+            id: uuidv4(), collectionId, productId,
+            orderIndex: nextOrderIndex++,
+            isPrimary: !memberships.some((link) => link.isPrimary),
+          };
+        });
+        if (linksToCreate.length) {
+          await tx.storeCollectionProduct.createMany({ data: linksToCreate });
+          await synchronizePrimaryMemberships(tx, newIds);
         }
 
         await this.touchDraftActivity(tx, collectionId, 'STORE');
         return { success: true };
       },
       { timeout: 15000 },
-    );
+    ));
 
     // Do non-critical recompute work asynchronously to keep add-to-collection fast.
     void Promise.allSettled([
@@ -5301,34 +5270,28 @@ export class CollectionsService {
       throw new BadRequestException('productIds is required');
     }
 
-    const result = await this.prisma.$transaction(
+    const result = await retryDatabaseTransaction(() => this.prisma.$transaction(
       async (tx) => {
-        await this.lockCollectionForUpdate(tx, collectionId, 'STORE');
+        await this.lockMembershipCollection(tx, collectionId);
         const existingLinks = await tx.storeCollectionProduct.findMany({
           where: { collectionId, productId: { in: productIds } },
-          select: { productId: true, isPrimary: true },
+          select: { productId: true },
         });
+        await lockMembershipProducts(tx, existingLinks.map((link) => link.productId));
 
         await tx.storeCollectionProduct.deleteMany({
           where: { collectionId, productId: { in: productIds } },
         });
 
-        for (const productId of productIds) {
-          const removedPrimary = existingLinks.find(
-            (l) => l.productId === productId && l.isPrimary,
-          );
-          if (removedPrimary) {
-            await this.enforcePrimaryMembership(tx, productId);
-          } else {
-            await this.enforcePrimaryMembership(tx, productId);
-          }
-        }
+        await synchronizePrimaryMemberships(
+          tx, existingLinks.map((link) => link.productId),
+        );
 
         await this.touchDraftActivity(tx, collectionId, 'STORE');
         return { success: true };
       },
       { timeout: 15000 },
-    );
+    ));
 
     // Do non-critical recompute work asynchronously to keep remove flow fast.
     void Promise.allSettled([
@@ -7518,24 +7481,6 @@ export class CollectionsService {
         select: { productId: true, orderIndex: true },
       });
 
-      const maxMembershipConflicts: string[] = [];
-      for (const link of sourceLinks) {
-        const membershipCount = await this.prisma.storeCollectionProduct.count({
-          where: { productId: link.productId },
-        });
-        if (membershipCount >= 3) {
-          maxMembershipConflicts.push(link.productId);
-        }
-      }
-      if (maxMembershipConflicts.length > 0) {
-        throw new ConflictException({
-          code: 'COLLECTION_MAX_MEMBERSHIP',
-          message:
-            'One or more products already belong to maximum 3 collections.',
-          productIds: maxMembershipConflicts,
-        } as any);
-      }
-
       const baseTitle = String(source.title || 'Untitled collection').trim();
       const copiedTags = Array.isArray(source.tags)
         ? sanitizeTags(source.tags, 30)
@@ -7546,7 +7491,18 @@ export class CollectionsService {
         ? `Copy of ${baseTitle}`
         : 'Copy of collection';
 
-      await this.prisma.$transaction(async (tx) => {
+      await retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
+        const productIds = sourceLinks.map((link) => link.productId);
+        await lockMembershipProducts(tx, productIds);
+        const memberships = await readProductMemberships(tx, productIds);
+        const conflicts = productIds.filter((id) => (memberships.get(id)?.length ?? 0) >= 3);
+        if (conflicts.length) {
+          throw new ConflictException({
+            code: 'COLLECTION_MAX_MEMBERSHIP',
+            message: 'One or more products already belong to maximum 3 collections.',
+            productIds: conflicts,
+          });
+        }
         await tx.storeCollection.create({
           data: {
             id: duplicateId,
@@ -7583,7 +7539,7 @@ export class CollectionsService {
             skipDuplicates: true,
           });
         }
-      });
+      }));
 
       await this.recalculateCollectionPriceRange(duplicateId);
 
@@ -7673,22 +7629,11 @@ export class CollectionsService {
       select: { productId: true, orderIndex: true },
     });
 
-    const maxMembershipConflicts: string[] = [];
-    for (const link of sourceLinks) {
-      const membershipCount = await this.prisma.storeCollectionProduct.count({
-        where: { productId: link.productId },
-      });
-      if (membershipCount >= 3) {
-        maxMembershipConflicts.push(link.productId);
-      }
-    }
-    if (maxMembershipConflicts.length > 0) {
+    if (sourceLinks.length) {
       throw new ConflictException({
-        code: 'COLLECTION_MAX_MEMBERSHIP',
-        message:
-          'One or more products already belong to maximum 3 collections.',
-        productIds: maxMembershipConflicts,
-      } as any);
+        code: 'COLLECTION_DOMAIN_INTEGRITY',
+        message: 'A design cannot contain store product memberships. Repair its domain records before duplicating it.',
+      });
     }
 
     const baseTitle = String(source.title || 'Untitled collection').trim();
@@ -7705,7 +7650,18 @@ export class CollectionsService {
         ? 'STORE'
         : 'DESIGN';
 
-    await this.prisma.$transaction(async (tx) => {
+    await retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
+        const productIds = sourceLinks.map((link) => link.productId);
+        await lockMembershipProducts(tx, productIds);
+        const memberships = await readProductMemberships(tx, productIds);
+        const conflicts = productIds.filter((id) => (memberships.get(id)?.length ?? 0) >= 3);
+        if (conflicts.length) {
+          throw new ConflictException({
+            code: 'COLLECTION_MAX_MEMBERSHIP',
+            message: 'One or more products already belong to maximum 3 collections.',
+            productIds: conflicts,
+          });
+        }
       await tx.collection.create({
         data: {
           id: duplicateId,
@@ -7744,7 +7700,7 @@ export class CollectionsService {
           skipDuplicates: true,
         });
       }
-    });
+    }));
 
     await this.recalculateCollectionPriceRange(duplicateId);
 
@@ -8259,77 +8215,43 @@ export class CollectionsService {
         },
       },
     });
-    if (collection && collection.visibility !== CollectionVisibility.PUBLIC) {
+    if (!collection) throw new NotFoundException('Collection not found');
+    if (collection.visibility !== CollectionVisibility.PUBLIC) {
       throw new ForbiddenException('Cannot interact with private collection');
     }
 
-    const existing = await this.prisma.collectionReaction.findUnique({
-      where: { collectionId_userId: { collectionId, userId } },
-    });
-
-    let delta = 0;
-    let nowThreaded = false;
-    if (existing) {
-      if (existing.type === type) {
-        // Remove reaction
-        await this.prisma.collectionReaction.delete({
-          where: { id: existing.id },
-        });
-        if (type === ReactionType.THREAD) {
-          delta = -1;
-          nowThreaded = false;
-        }
-      } else {
-        // Change reaction type
-        await this.prisma.collectionReaction.update({
-          where: { id: existing.id },
-          data: { type },
-        });
-        if (
-          existing.type === ReactionType.DISLIKE &&
-          type === ReactionType.THREAD
-        ) {
-          delta = +1;
-        }
-        if (
-          existing.type === ReactionType.THREAD &&
-          type === ReactionType.DISLIKE
-        ) {
-          // Moving from THREAD to DISLIKE decrements threads for analytics
-          delta = -1;
-        }
-        nowThreaded = type === ReactionType.THREAD;
+    const { delta, nowThreaded, updated } = await retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<Array<{ id: string; visibility: CollectionVisibility; threadsCount: number; dislikesCount: number }>>`
+        SELECT "_id" AS id, "visibility", "threadsCount", "dislikesCount"
+        FROM "Collection" WHERE "_id"=${collectionId}::uuid FOR UPDATE
+      `;
+      if (!locked.length) throw new NotFoundException('Collection not found');
+      if (locked[0].visibility !== CollectionVisibility.PUBLIC) {
+        throw new ForbiddenException('Cannot interact with private collection');
       }
-    } else {
-      // Create new reaction
-      await this.prisma.collectionReaction.create({
+      const existing = await tx.collectionReaction.findUnique({
+        where: { collectionId_userId: { collectionId, userId } },
+      });
+      const nextType = existing?.type === type ? null : type;
+      if (!nextType) {
+        await tx.collectionReaction.delete({ where: { id: existing!.id } });
+      } else if (existing) {
+        await tx.collectionReaction.update({ where: { id: existing.id }, data: { type: nextType } });
+      } else {
+        await tx.collectionReaction.create({ data: { id: uuidv4(), collectionId, userId, type: nextType } });
+      }
+      const delta = Number(nextType === ReactionType.THREAD) - Number(existing?.type === ReactionType.THREAD);
+      const dislikeDelta = Number(nextType === ReactionType.DISLIKE) - Number(existing?.type === ReactionType.DISLIKE);
+      // The target lock makes these constant-time deltas safe across different users.
+      const updated = await tx.collection.update({
+        where: { id: collectionId },
         data: {
-          id: uuidv4(),
-          collectionId,
-          userId,
-          type,
+          threadsCount: Math.max(0, locked[0].threadsCount + delta),
+          dislikesCount: Math.max(0, locked[0].dislikesCount + dislikeDelta),
         },
       });
-      if (type === ReactionType.THREAD) {
-        delta = +1;
-        nowThreaded = true;
-      }
-    }
-
-    // Update denormalized counts
-    const [threads, dislikes] = await Promise.all([
-      this.prisma.collectionReaction.count({
-        where: { collectionId, type: ReactionType.THREAD },
-      }),
-      this.prisma.collectionReaction.count({
-        where: { collectionId, type: ReactionType.DISLIKE },
-      }),
-    ]);
-
-    const updated = await this.prisma.collection.update({
-      where: { id: collectionId },
-      data: { threadsCount: threads, dislikesCount: dislikes },
-    });
+      return { delta, nowThreaded: nextType === ReactionType.THREAD, updated };
+    }));
 
     // Update analytics daily threads if changed
     if (this.analytics && delta !== 0) {
@@ -8972,37 +8894,25 @@ export class CollectionsService {
     const can = await this.canViewMedia(mediaId, userId);
     if (!can) throw new NotFoundException('Media not found');
 
-    const existing = await this.prisma.collectionMediaReaction.findUnique({
-      where: {
-        collectionMediaId_userId: { collectionMediaId: mediaId, userId },
-      },
-    });
-
-    let delta = 0;
-    let nowThreaded = false;
-    if (existing) {
-      await this.prisma.collectionMediaReaction.delete({
-        where: { id: existing.id },
+    const { nowThreaded, updated } = await retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<Array<{ id: string; threadsCount: number }>>`
+        SELECT "_id" AS id, "threadsCount" FROM "CollectionMedia" WHERE "_id"=${mediaId}::uuid FOR UPDATE
+      `;
+      if (!locked.length) throw new NotFoundException('Media not found');
+      const existing = await tx.collectionMediaReaction.findUnique({
+        where: { collectionMediaId_userId: { collectionMediaId: mediaId, userId } },
       });
-      delta = -1;
-      nowThreaded = false;
-    } else {
-      await this.prisma.collectionMediaReaction.create({
-        data: {
-          id: uuidv4(),
-          collectionMediaId: mediaId,
-          userId,
-          type: ReactionType.THREAD,
-        },
+      if (existing) {
+        await tx.collectionMediaReaction.delete({ where: { id: existing.id } });
+      } else {
+        await tx.collectionMediaReaction.create({ data: { id: uuidv4(), collectionMediaId: mediaId, userId, type: ReactionType.THREAD } });
+      }
+      const updated = await tx.collectionMedia.update({
+        where: { id: mediaId },
+        data: { threadsCount: Math.max(0, locked[0].threadsCount + (existing ? -1 : 1)) },
       });
-      delta = +1;
-      nowThreaded = true;
-    }
-
-    const updated = await this.prisma.collectionMedia.update({
-      where: { id: mediaId },
-      data: { threadsCount: { increment: delta } },
-    });
+      return { nowThreaded: !existing, updated };
+    }));
 
     if (nowThreaded && this.notifications) {
       const media = await this.prisma.collectionMedia.findUnique({

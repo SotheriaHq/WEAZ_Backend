@@ -157,7 +157,8 @@ export class BrandVerificationService {
       expectedKey: presign.key,
       uploadUrl: presign.url,
       uploadFields: presign.fields ?? null,
-      method: 'POST' as const,
+      method: presign.method ?? 'POST',
+      uploadHeaders: presign.uploadHeaders ?? null,
       expiresIn: presign.expiresIn,
     };
   }

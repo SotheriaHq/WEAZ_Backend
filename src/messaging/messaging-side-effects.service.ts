@@ -1,4 +1,6 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
+import { randomUUID } from 'crypto';
+import type { MessageNotificationOutbox } from '@prisma/client';
 import {
   FileType,
   MessageContextType,
@@ -9,6 +11,7 @@ import {
   MessageThread,
   MessageVisibilityState,
   NotificationType,
+  Prisma,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationsQueueService } from 'src/queue/notifications.queue.service';
@@ -36,93 +39,85 @@ export class MessagingSideEffectsService {
   ) {}
 
   async dispatchMessageOutboxForMessage(messageId: string): Promise<void> {
-    const rows = await this.prisma.messageNotificationOutbox.findMany({
-      where: {
-        messageId,
-        status: {
-          in: [MessageOutboxStatus.PENDING, MessageOutboxStatus.FAILED],
-        },
-        availableAt: { lte: new Date() },
-        attempts: { lt: MAX_MESSAGE_OUTBOX_ATTEMPTS },
-      },
-    });
-
-    for (const row of rows) {
-      const claim = await this.prisma.messageNotificationOutbox.updateMany({
-        where: { id: row.id, status: row.status },
-        data: {
-          status: MessageOutboxStatus.PROCESSING,
-          attempts: { increment: 1 },
-          lastError: null,
-        },
-      });
-      if (claim.count === 0) continue;
-
-      try {
-        const payload = this.asRecord(row.payloadJson);
-        await this.notificationsQueue.enqueueFanout({
-          recipientIds: [row.recipientId],
-          notificationType: row.notificationType,
-          actorId:
-            typeof payload?.actorUserId === 'string'
-              ? payload.actorUserId
-              : undefined,
-          payload,
-        });
-
-        await this.prisma.messageNotificationOutbox.update({
-          where: { id: row.id },
-          data: {
-            status: MessageOutboxStatus.COMPLETED,
-            processedAt: new Date(),
-            lastError: null,
-          },
-        });
-      } catch (error) {
-        const current = await this.prisma.messageNotificationOutbox.findUnique({
-          where: { id: row.id },
-          select: { attempts: true, threadId: true },
-        });
-        const exhausted =
-          (current?.attempts ?? 0) >= MAX_MESSAGE_OUTBOX_ATTEMPTS;
-
-        await this.prisma.messageNotificationOutbox.update({
-          where: { id: row.id },
-          data: {
-            status: MessageOutboxStatus.FAILED,
-            lastError: exhausted
-              ? `DLQ_EXHAUSTED:${this.formatError(error)}`
-              : this.formatError(error),
-          },
-        });
-        if (exhausted) {
-          this.logger.error(
-            `Messaging outbox exhausted retries rowId=${row.id} threadId=${current?.threadId ?? 'unknown'}`,
-          );
-        }
-      }
-    }
+    await this.claimAndDispatchMessageOutbox(messageId, 100);
   }
 
   @Cron(CronExpression.EVERY_MINUTE)
   async dispatchPendingMessageOutbox(batchSize = 100): Promise<void> {
-    const rows = await this.prisma.messageNotificationOutbox.findMany({
-      where: {
-        status: {
-          in: [MessageOutboxStatus.PENDING, MessageOutboxStatus.FAILED],
-        },
-        availableAt: { lte: new Date() },
-        attempts: { lt: MAX_MESSAGE_OUTBOX_ATTEMPTS },
-      },
-      orderBy: { createdAt: 'asc' },
-      take: batchSize,
-    });
+    await this.claimAndDispatchMessageOutbox(null, batchSize);
+  }
 
-    const uniqueMessageIds = Array.from(
-      new Set(rows.map((row) => row.messageId)),
-    );
-    for (const messageId of uniqueMessageIds) {
-      await this.dispatchMessageOutboxForMessage(messageId);
+  private async claimAndDispatchMessageOutbox(messageId: string | null, batchSize: number) {
+    const take = Math.min(100, Math.max(1, Math.trunc(batchSize) || 100));
+    const token = randomUUID();
+    const messageScope = messageId === null ? Prisma.empty : Prisma.sql`AND "messageId"=${messageId}::uuid`;
+    const rows = await this.prisma.$queryRaw<MessageNotificationOutbox[]>`
+      WITH due AS (
+        SELECT "id" FROM "MessageNotificationOutbox"
+        WHERE "availableAt"<=CURRENT_TIMESTAMP ${messageScope}
+          AND (
+            ("status" IN ('PENDING','FAILED') AND "attempts"<${MAX_MESSAGE_OUTBOX_ATTEMPTS})
+            OR ("status"='PROCESSING' AND (
+              "processingLeaseUntil"<=CURRENT_TIMESTAMP
+              OR ("processingLeaseUntil" IS NULL AND "updatedAt"<=CURRENT_TIMESTAMP-INTERVAL '5 minutes')
+            ))
+          )
+        ORDER BY "createdAt","id" LIMIT ${take} FOR UPDATE SKIP LOCKED
+      )
+      UPDATE "MessageNotificationOutbox" o
+      SET "status"='PROCESSING',"processingLeaseToken"=${token}::uuid,
+          "processingLeaseUntil"=CURRENT_TIMESTAMP+INTERVAL '5 minutes',
+          "attempts"=o."attempts"+1,"lastError"=NULL,"updatedAt"=CURRENT_TIMESTAMP
+      FROM due WHERE o."id"=due."id" RETURNING o.*
+    `;
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(4, rows.length) }, async () => {
+      while (next < rows.length) {
+        const row = rows[next++];
+        await this.dispatchClaimedMessageOutbox(row, token);
+      }
+    }));
+  }
+
+  private async dispatchClaimedMessageOutbox(row: MessageNotificationOutbox, token: string) {
+    const ownership = { id: row.id, status: MessageOutboxStatus.PROCESSING, processingLeaseToken: token };
+    if (row.attempts > MAX_MESSAGE_OUTBOX_ATTEMPTS) {
+      await this.prisma.messageNotificationOutbox.updateMany({
+        where: ownership,
+        data: { status: MessageOutboxStatus.FAILED, lastError: 'DLQ_EXHAUSTED:worker lease expired', processingLeaseToken: null, processingLeaseUntil: null },
+      });
+      this.logger.error(`Messaging outbox exhausted retries rowId=${row.id} threadId=${row.threadId}`);
+      return;
+    }
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const payload = this.asRecord(row.payloadJson);
+      await Promise.race([
+        this.notificationsQueue.enqueueFanout({
+          recipientIds: [row.recipientId], notificationType: row.notificationType,
+          actorId: typeof payload?.actorUserId === 'string' ? payload.actorUserId : undefined,
+          payload, notificationId: row.id,
+        }, { jobId: `message-outbox-${row.id}` }),
+        new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('Notification enqueue timed out')), 5000); }),
+      ]);
+      await this.prisma.messageNotificationOutbox.updateMany({
+        where: ownership,
+        data: { status: MessageOutboxStatus.COMPLETED, processedAt: new Date(), lastError: null, processingLeaseToken: null, processingLeaseUntil: null },
+      });
+    } catch (error) {
+      const exhausted = row.attempts >= MAX_MESSAGE_OUTBOX_ATTEMPTS;
+      await this.prisma.messageNotificationOutbox.updateMany({
+        where: ownership,
+        data: {
+          status: MessageOutboxStatus.FAILED,
+          lastError: exhausted ? `DLQ_EXHAUSTED:${this.formatError(error)}` : this.formatError(error),
+          availableAt: new Date(Date.now() + Math.min(15 * 60 * 1000, 1000 * 2 ** row.attempts)),
+          processingLeaseToken: null, processingLeaseUntil: null,
+        },
+      });
+      if (exhausted) this.logger.error(`Messaging outbox exhausted retries rowId=${row.id} threadId=${row.threadId}`);
+    } finally {
+      if (timeout) clearTimeout(timeout);
     }
   }
 

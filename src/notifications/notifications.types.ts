@@ -14,6 +14,8 @@ export type NotificationTarget = {
 };
 
 export interface CreateNotificationOptions {
+  /** Server-assigned per-recipient UUID for durable delivery retries. */
+  notificationId?: string;
   actorId?: string | null;
   target?: NotificationTarget | null;
   payload?: Record<string, any> | null;

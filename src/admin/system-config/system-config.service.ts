@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { AdminAuditAction } from '@prisma/client';
+import { AdminAuditAction, Prisma } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
 
@@ -80,6 +80,8 @@ export class SystemConfigService {
   /** In-memory cache — refreshed on write and periodically */
   private cache: Map<string, string> = new Map();
   private cacheLoadedAt = 0;
+  private cacheRevision = 0;
+  private cacheRefresh: Promise<void> | null = null;
   private readonly CACHE_TTL_MS = 60_000; // 1 minute
 
   constructor(private readonly prisma: PrismaService) {}
@@ -89,45 +91,21 @@ export class SystemConfigService {
   /* ------------------------------------------------------------------ */
 
   async seedDefaults(): Promise<void> {
-    await Promise.all(
-      Object.entries(DEFAULT_FILE_SIZE_LIMITS).map(([key, value]) =>
-        this.prisma.systemConfig.upsert({
-          where: { key },
-          create: {
-            key,
-            value: String(value),
-            description: KEY_DESCRIPTIONS[key] ?? null,
-          },
-          update: {}, // don't overwrite admin customisations
-        }),
-      ),
-    );
-    await Promise.all(
-      Object.entries(DEFAULT_BOOLEAN_CONFIGS).map(([key, value]) =>
-        this.prisma.systemConfig.upsert({
-          where: { key },
-          create: {
-            key,
-            value: value ? 'true' : 'false',
-            description: KEY_DESCRIPTIONS[key] ?? null,
-          },
-          update: {},
-        }),
-      ),
-    );
-    await Promise.all(
-      Object.entries(DEFAULT_NUMBER_CONFIGS).map(([key, value]) =>
-        this.prisma.systemConfig.upsert({
-          where: { key },
-          create: {
-            key,
-            value: String(value),
-            description: KEY_DESCRIPTIONS[key] ?? null,
-          },
-          update: {},
-        }),
-      ),
-    );
+    const defaults = {
+      ...DEFAULT_FILE_SIZE_LIMITS,
+      ...DEFAULT_BOOLEAN_CONFIGS,
+      ...DEFAULT_NUMBER_CONFIGS,
+    };
+    await this.prisma.$transaction(async (tx) => {
+      await this.lockSettingsWrites(tx);
+      await tx.systemConfig.createMany({
+        data: Object.entries(defaults).map(([key, value]) => ({
+          key, value: String(value), description: KEY_DESCRIPTIONS[key] ?? null,
+        })),
+        skipDuplicates: true,
+      });
+    });
+    this.invalidateCache();
     this.logger.log('SystemConfig defaults seeded');
     await this.refreshCache();
   }
@@ -137,20 +115,30 @@ export class SystemConfigService {
   /* ------------------------------------------------------------------ */
 
   private async refreshCache(): Promise<void> {
-    const rows = await this.prisma.systemConfig.findMany();
-    this.cache = new Map(rows.map((r) => [r.key, r.value]));
-    this.cacheLoadedAt = Date.now();
-  }
-
-  private async ensureCache(): Promise<void> {
-    if (Date.now() - this.cacheLoadedAt > this.CACHE_TTL_MS) {
-      await this.refreshCache();
+    if (this.cacheRefresh) return this.cacheRefresh;
+    this.cacheRefresh = (async () => {
+      // A committed administrative write invalidates any earlier read snapshot.
+      for (;;) {
+        const revision = this.cacheRevision;
+        const rows = await this.prisma.systemConfig.findMany();
+        if (revision !== this.cacheRevision) continue;
+        this.cache = new Map(rows.map((row) => [row.key, row.value]));
+        this.cacheLoadedAt = Date.now();
+        return;
+      }
+    })();
+    try {
+      await this.cacheRefresh;
+    } finally {
+      this.cacheRefresh = null;
     }
   }
 
-  /* ------------------------------------------------------------------ */
-  /*  Public getters                                                     */
-  /* ------------------------------------------------------------------ */
+  private async ensureCache(): Promise<void> {
+    if (!this.cacheLoadedAt || Date.now() - this.cacheLoadedAt > this.CACHE_TTL_MS) {
+      await this.refreshCache();
+    }
+  }
 
   /** Get a raw config value (string). Returns null if missing. */
   async getValue(key: string): Promise<string | null> {
@@ -208,67 +196,68 @@ export class SystemConfigService {
   /*  Admin write                                                        */
   /* ------------------------------------------------------------------ */
 
-  async updateConfig(
-    key: string,
-    value: string,
-    actorId: string,
-    req: Request,
-  ) {
-    const existing = await this.prisma.systemConfig.findUnique({
-      where: { key },
-    });
-    const previousValue = existing?.value ?? null;
-
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const result = await tx.systemConfig.upsert({
-        where: { key },
-        create: {
-          key,
-          value,
-          description: KEY_DESCRIPTIONS[key] ?? null,
-          updatedById: actorId,
-        },
-        update: {
-          value,
-          updatedById: actorId,
-        },
-      });
-
-      await (tx as any).adminAuditLog.create({
-        data: {
-          id: uuidv4(),
-          actorUserId: actorId,
-          action: AdminAuditAction.ADMIN_SYSTEM_SETTINGS_UPDATE,
-          targetType: 'SystemConfig',
-          targetId: key,
-          previousState: { key, value: previousValue },
-          newState: { key, value },
-          ipAddress: req.socket?.remoteAddress ?? null,
-          userAgent: req.headers['user-agent'] ?? null,
-        },
-      });
-
-      return result;
-    });
-
-    // Invalidate cache immediately
-    this.cache.set(key, value);
-
-    return updated;
+  private async lockSettingsWrites(tx: Prisma.TransactionClient): Promise<void> {
+    // Administrative writes only; normal configuration reads never acquire this lock.
+    await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(23711, 0)`);
   }
 
-  /** Bulk update multiple config keys at once. */
-  async bulkUpdate(
+  private invalidateCache(): void {
+    this.cacheRevision += 1;
+    this.cacheLoadedAt = 0;
+  }
+
+  private async updateEntries(
     entries: { key: string; value: string }[],
     actorId: string,
     req: Request,
   ) {
-    const results = [];
-    for (const entry of entries) {
-      results.push(
-        await this.updateConfig(entry.key, entry.value, actorId, req),
-      );
-    }
-    return results;
+    if (!entries.length) return [];
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await this.lockSettingsWrites(tx);
+      const keys = [...new Set(entries.map((entry) => entry.key))];
+      const previous = new Map<string, string>();
+      for (let offset = 0; offset < keys.length; offset += 500) {
+        const rows = await tx.systemConfig.findMany({
+          where: { key: { in: keys.slice(offset, offset + 500) } },
+          select: { key: true, value: true },
+        });
+        for (const row of rows) previous.set(row.key, row.value);
+      }
+      const results: Prisma.SystemConfigGetPayload<{}>[] = [];
+      for (const { key, value } of entries) {
+        const previousValue = previous.get(key) ?? null;
+        const result = await tx.systemConfig.upsert({
+          where: { key },
+          create: { key, value, description: KEY_DESCRIPTIONS[key] ?? null, updatedById: actorId },
+          update: { value, updatedById: actorId },
+        });
+        await tx.adminAuditLog.create({
+          data: {
+            id: uuidv4(), actorUserId: actorId,
+            action: AdminAuditAction.ADMIN_SYSTEM_SETTINGS_UPDATE,
+            targetType: 'SystemConfig', targetId: key,
+            previousState: { key, value: previousValue },
+            newState: { key, value },
+            ipAddress: req.socket?.remoteAddress ?? null,
+            userAgent: req.headers['user-agent'] ?? null,
+          },
+        });
+        previous.set(key, value);
+        results.push(result);
+      }
+      return results;
+    });
+    this.invalidateCache();
+    return updated;
+  }
+
+  async updateConfig(key: string, value: string, actorId: string, req: Request) {
+    const [updated] = await this.updateEntries([{ key, value }], actorId, req);
+    return updated;
+  }
+
+  /** A bulk save and its per-key audit records commit together. */
+  async bulkUpdate(entries: { key: string; value: string }[], actorId: string, req: Request) {
+    return this.updateEntries(entries, actorId, req);
   }
 }

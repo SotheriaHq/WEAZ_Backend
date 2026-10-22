@@ -9,6 +9,8 @@ import {
 } from '@prisma/client';
 import { MessagingSideEffectsService } from './messaging-side-effects.service';
 
+jest.mock('src/upload/upload.service', () => ({ UploadService: class {} }));
+
 describe('MessagingSideEffectsService', () => {
   const buildService = () => {
     const prisma = {
@@ -32,6 +34,7 @@ describe('MessagingSideEffectsService', () => {
         findMany: jest.fn(),
       },
       $transaction: jest.fn(),
+      $queryRaw: jest.fn().mockResolvedValue([]),
     } as any;
 
     const notificationsQueue = {
@@ -55,19 +58,20 @@ describe('MessagingSideEffectsService', () => {
       uploadService,
     );
 
-    return { service, prisma };
+    return { service, prisma, notificationsQueue };
   };
 
-  it('dispatchPendingMessageOutbox de-duplicates message ids before dispatch', async () => {
-    const { service, prisma } = buildService();
+  it('dispatchPendingMessageOutbox claims each recipient row once in a bounded batch', async () => {
+    const { service, prisma, notificationsQueue } = buildService();
 
-    prisma.messageNotificationOutbox.findMany.mockResolvedValue([
+    prisma.$queryRaw.mockResolvedValue([
       {
         id: 'outbox_1',
         messageId: 'msg_1',
         status: MessageOutboxStatus.PENDING,
         availableAt: new Date(),
         attempts: 0,
+        recipientId: 'recipient_1', notificationType: NotificationType.MESSAGE_RECEIVED,
       },
       {
         id: 'outbox_2',
@@ -75,6 +79,7 @@ describe('MessagingSideEffectsService', () => {
         status: MessageOutboxStatus.PENDING,
         availableAt: new Date(),
         attempts: 0,
+        recipientId: 'recipient_2', notificationType: NotificationType.MESSAGE_RECEIVED,
       },
       {
         id: 'outbox_3',
@@ -82,18 +87,85 @@ describe('MessagingSideEffectsService', () => {
         status: MessageOutboxStatus.PENDING,
         availableAt: new Date(),
         attempts: 0,
+        recipientId: 'recipient_3', notificationType: NotificationType.MESSAGE_RECEIVED,
       },
     ]);
 
-    const dispatchSpy = jest
-      .spyOn(service, 'dispatchMessageOutboxForMessage')
-      .mockResolvedValue(undefined);
-
     await service.dispatchPendingMessageOutbox();
 
-    expect(dispatchSpy).toHaveBeenCalledTimes(2);
-    expect(dispatchSpy).toHaveBeenCalledWith('msg_1');
-    expect(dispatchSpy).toHaveBeenCalledWith('msg_2');
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(notificationsQueue.enqueueFanout).toHaveBeenCalledTimes(3);
+    expect(prisma.messageNotificationOutbox.findMany).not.toHaveBeenCalled();
+  });
+
+  const deliveryRow = (attempts = 1) => ({
+    id: '4465a9a3-b218-4710-81cd-56c671c8a332', messageId: 'message', threadId: 'thread',
+    recipientId: 'recipient', notificationType: NotificationType.MESSAGE_RECEIVED,
+    payloadJson: { messageId: 'message', actorUserId: 'sender' }, attempts,
+  });
+
+  it('uses the same durable IDs after enqueue succeeds but acknowledgement fails', async () => {
+    const { service, prisma, notificationsQueue } = buildService();
+    prisma.$queryRaw.mockResolvedValue([deliveryRow()]);
+    prisma.messageNotificationOutbox.updateMany.mockRejectedValueOnce(new Error('database connection lost')).mockResolvedValue({ count: 1 });
+    await service.dispatchPendingMessageOutbox();
+    await service.dispatchPendingMessageOutbox();
+    expect(notificationsQueue.enqueueFanout.mock.calls[0]).toEqual(notificationsQueue.enqueueFanout.mock.calls[1]);
+    expect(notificationsQueue.enqueueFanout.mock.calls[0]).toEqual([
+      expect.objectContaining({ notificationId: deliveryRow().id, recipientIds: ['recipient'], actorId: 'sender' }),
+      { jobId: `message-outbox-${deliveryRow().id}` },
+    ]);
+    expect(prisma.messageNotificationOutbox.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: MessageOutboxStatus.FAILED, processingLeaseToken: null }),
+    }));
+  });
+
+  it('fences completion by the current lease so a stale worker cannot overwrite a new owner', async () => {
+    const { service, prisma } = buildService();
+    prisma.$queryRaw.mockResolvedValue([deliveryRow()]);
+    prisma.messageNotificationOutbox.updateMany.mockResolvedValue({ count: 0 });
+    await service.dispatchPendingMessageOutbox();
+    expect(prisma.messageNotificationOutbox.updateMany).toHaveBeenCalledWith({
+      where: { id: deliveryRow().id, status: MessageOutboxStatus.PROCESSING, processingLeaseToken: expect.any(String) },
+      data: expect.objectContaining({ status: MessageOutboxStatus.COMPLETED, processingLeaseToken: null, processingLeaseUntil: null }),
+    });
+  });
+
+  it('includes stale processing leases in the claim and caps every claim at 100 rows', async () => {
+    const { service, prisma } = buildService();
+    await service.dispatchPendingMessageOutbox(1000000);
+    const [sql, ...parameters] = prisma.$queryRaw.mock.calls[0];
+    expect(sql.join(' ')).toContain('FOR UPDATE SKIP LOCKED');
+    expect(sql.join(' ')).toContain('"processingLeaseUntil"<=CURRENT_TIMESTAMP');
+    expect(parameters).toContain(100);
+    expect(parameters).not.toContain(1000000);
+  });
+
+  it('records a recoverable failure when enqueue fails before accepting the job', async () => {
+    const { service, prisma, notificationsQueue } = buildService();
+    prisma.$queryRaw.mockResolvedValue([deliveryRow()]);
+    notificationsQueue.enqueueFanout.mockRejectedValue(new Error('Redis unavailable'));
+    await service.dispatchPendingMessageOutbox();
+    expect(prisma.messageNotificationOutbox.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ processingLeaseToken: expect.any(String) }),
+      data: expect.objectContaining({ status: MessageOutboxStatus.FAILED, lastError: 'Redis unavailable', availableAt: expect.any(Date), processingLeaseUntil: null }),
+    }));
+  });
+
+  it('bounds a hung enqueue and releases its lease for later retry', async () => {
+    jest.useFakeTimers();
+    try {
+      const { service, prisma, notificationsQueue } = buildService();
+      prisma.$queryRaw.mockResolvedValue([deliveryRow()]);
+      notificationsQueue.enqueueFanout.mockImplementation(() => new Promise(() => undefined));
+      const dispatch = service.dispatchPendingMessageOutbox();
+      await jest.advanceTimersByTimeAsync(5001);
+      await dispatch;
+      expect(prisma.messageNotificationOutbox.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ status: MessageOutboxStatus.FAILED, lastError: 'Notification enqueue timed out' }),
+      }));
+      expect(jest.getTimerCount()).toBe(0);
+    } finally { jest.useRealTimers(); }
   });
 
   it('enqueueUnreadMessageReminders skips participants with a recent reminder', async () => {

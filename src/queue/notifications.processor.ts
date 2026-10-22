@@ -26,12 +26,16 @@ export class NotificationsProcessor extends WorkerHost {
       payload,
       target,
       dedupeMs,
+      notificationId,
     } = job.data;
 
     const uniqueRecipients = Array.from(
       new Set((recipientIds || []).filter(Boolean)),
     );
     if (uniqueRecipients.length === 0) return;
+    if (notificationId && uniqueRecipients.length !== 1) {
+      throw new Error('notificationId requires exactly one recipient');
+    }
 
     const chunkSize = 25;
     for (let i = 0; i < uniqueRecipients.length; i += chunkSize) {
@@ -44,8 +48,11 @@ export class NotificationsProcessor extends WorkerHost {
               payload,
               target,
               dedupeMs,
+              ...(notificationId ? { notificationId } : {}),
             });
           } catch (error) {
+            // Durable outbox jobs are idempotent and must let BullMQ retry a failed write.
+            if (notificationId) throw error;
             this.logger.warn(
               `Failed notification fanout to ${recipientId}: ${String(error)}`,
             );

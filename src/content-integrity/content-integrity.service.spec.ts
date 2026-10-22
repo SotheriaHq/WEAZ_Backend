@@ -241,7 +241,8 @@ describe('ContentIntegrityService', () => {
       expect(prisma.brand.update).toHaveBeenCalledWith({
         where: { id: 'brand-1' },
         data: {
-          contentReviewModeOverride: BrandContentReviewMode.AUTO_PUBLISH_ALLOWED,
+          contentReviewModeOverride:
+            BrandContentReviewMode.AUTO_PUBLISH_ALLOWED,
         },
       });
       expect(prisma.adminAuditLog.create).toHaveBeenCalledWith(
@@ -418,6 +419,7 @@ describe('ContentIntegrityService', () => {
     const rawStorageUrl =
       'https://wiez-private.s3.amazonaws.com/POST_IMAGE/owner-1/front.jpg';
     const uploadService = {
+      getBatchVariantDisplayUrls: jest.fn().mockResolvedValue(new Map()),
       getPublicDisplayUrl: jest.fn().mockReturnValue(null),
       getTemporarySignedDisplayUrl: jest
         .fn()
@@ -631,5 +633,163 @@ describe('ContentIntegrityService', () => {
       expect(statuses).not.toContain(ContentSubmissionStatus.REJECTED);
       expect(statuses).not.toContain(ContentSubmissionStatus.CANCELLED);
     });
+  });
+  it('loads a fifty-submission review queue with shared minimal reads and processed previews', async () => {
+    const at = new Date('2026-10-21T12:00:00Z');
+    const rows = Array.from({ length: 50 }, (_, index) => ({
+      id: `submission-${index}`,
+      entityType: 'PRODUCT',
+      productId: `product-${index}`,
+      brandId: `brand-${index}`,
+      submittedById: `user-${index}`,
+      reviewedById: null,
+      status: 'IN_REVIEW',
+      submittedAt: at,
+    }));
+    const products = rows.map((row) => ({
+      id: row.productId,
+      name: row.productId,
+      brandId: row.brandId,
+      publicationStatus: 'IN_REVIEW',
+      isActive: true,
+      createdAt: at,
+      updatedAt: at,
+      price: 100,
+      salePrice: null,
+    }));
+    const media = rows.map((row, index) => ({
+      id: `media-${index}`,
+      productId: row.productId,
+      fileUploadId: `file-${index}`,
+      viewSlot: 'FRONT',
+      orderIndex: 0,
+      file: readyFile(`file-${index}`),
+    }));
+    const uploadService = {
+      getBatchVariantDisplayUrls: jest.fn(
+        async (_ids: string[], kind: string) =>
+          new Map(
+            media.map((item) => [
+              item.fileUploadId,
+              `https://processed.test/${kind}/${item.fileUploadId}`,
+            ]),
+          ),
+      ),
+      getPublicDisplayUrl: jest.fn(() => null),
+      getTemporarySignedDisplayUrl: jest.fn(
+        async () => 'https://signed.test/private-original',
+      ),
+    };
+    const { prisma, service } = createService(
+      {
+        $queryRaw: jest
+          .fn()
+          .mockResolvedValue(
+            rows.map((row) => ({
+              id: row.brandId,
+              name: row.brandId,
+              trustTier: null,
+              reviewMode: null,
+            })),
+          ),
+        product: {
+          findMany: jest.fn().mockResolvedValue(products),
+          findUnique: jest.fn(),
+        },
+        productMedia: { findMany: jest.fn().mockResolvedValue(media) },
+        contentSubmission: {
+          findMany: jest.fn().mockResolvedValue(rows),
+          count: jest.fn().mockResolvedValue(50),
+        },
+        user: {
+          findMany: jest
+            .fn()
+            .mockResolvedValue(
+              rows.map((row) => ({
+                id: row.submittedById,
+                username: row.submittedById,
+              })),
+            ),
+          findUnique: jest.fn(),
+        },
+      },
+      { uploadService },
+    );
+    const result = await service.listSubmissions({ take: 50 });
+    expect(result.items).toHaveLength(50);
+    expect(result.items[0].media[0].previewUrl).toBe(
+      'https://processed.test/CARD/file-0',
+    );
+    expect(prisma.product.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.product.findUnique).not.toHaveBeenCalled();
+    expect(prisma.productMedia.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.user.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    expect(uploadService.getBatchVariantDisplayUrls).toHaveBeenCalledTimes(2);
+  });
+  it('batches report identities and keeps deleted or domain-mismatched targets distinguishable', async () => {
+    const reports = [
+      {
+        id: 'r1',
+        targetType: 'PRODUCT',
+        targetId: 'missing',
+        reporterId: 'u1',
+      },
+      { id: 'r2', targetType: 'DESIGN', targetId: 'store', reporterId: 'u1' },
+      {
+        id: 'r3',
+        targetType: 'COLLECTION',
+        targetId: 'store',
+        reporterId: 'u2',
+      },
+    ];
+    const { prisma, service } = createService({
+      contentReport: {
+        findMany: jest.fn().mockResolvedValue(reports),
+        count: jest.fn().mockResolvedValue(3),
+      },
+      product: {
+        findMany: jest.fn().mockResolvedValue([]),
+        findUnique: jest.fn(),
+      },
+      collection: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            {
+              id: 'store',
+              domain: 'STORE',
+              title: 'Store',
+              status: 'PUBLISHED',
+              ownerId: 'owner',
+            },
+          ]),
+        findFirst: jest.fn(),
+        findUnique: jest.fn(),
+      },
+      user: {
+        findMany: jest.fn().mockResolvedValue([
+          { id: 'u1', username: 'Ada' },
+          { id: 'u2', username: 'Nne' },
+        ]),
+        findUnique: jest.fn(),
+      },
+    });
+    const result = await service.listReports({});
+    expect(result.items.map((item) => item.target.title)).toEqual([
+      'Deleted product',
+      'Deleted design',
+      'Store',
+    ]);
+    expect(result.items.map((item) => item.reporter?.username)).toEqual([
+      'Ada',
+      'Ada',
+      'Nne',
+    ]);
+    expect(prisma.user.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    expect(prisma.collection.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.collection.findFirst).not.toHaveBeenCalled();
   });
 });

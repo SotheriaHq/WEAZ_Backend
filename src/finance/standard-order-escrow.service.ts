@@ -11,7 +11,10 @@ import { BrandBalanceService } from './brand-balance.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { SystemConfigService } from 'src/admin/system-config/system-config.service';
 import { LedgerService } from './ledger.service';
-import { SettlementCalculatorService } from './settlement-calculator.service';
+import {
+  SettlementCalculationInput,
+  SettlementCalculatorService,
+} from './settlement-calculator.service';
 import { SettlementSnapshotService } from './settlement-snapshot.service';
 
 type OrderSettlementInput = {
@@ -58,31 +61,40 @@ export class StandardOrderEscrowService {
 
     let remainingSettlement = this.roundMoney(settlementAmount);
 
-    for (const [index, order] of orders.entries()) {
-      const effectiveAt = order.createdAt
-        ? new Date(order.createdAt)
-        : undefined;
-      const proportionalAmount =
-        index === orders.length - 1
-          ? remainingSettlement
-          : this.roundMoney(
-              (settlementAmount * orderGrossAmounts[index]) / totalGross,
-            );
-      remainingSettlement = this.roundMoney(
-        remainingSettlement - proportionalAmount,
-      );
+    const calculationInputs: SettlementCalculationInput[] = orders.map(
+      (order, index) => {
+        const effectiveAt = order.createdAt
+          ? new Date(order.createdAt)
+          : undefined;
+        const proportionalAmount =
+          index === orders.length - 1
+            ? remainingSettlement
+            : this.roundMoney(
+                (settlementAmount * orderGrossAmounts[index]) / totalGross,
+              );
+        remainingSettlement = this.roundMoney(
+          remainingSettlement - proportionalAmount,
+        );
 
-      const calculation = await this.settlementCalculatorService.calculate({
-        orderType: SettlementOrderType.STANDARD_ORDER,
-        orderId: order.id,
-        brandId: order.brandId,
-        grossAmount: proportionalAmount,
-        currency,
-        effectiveAt:
-          effectiveAt && !Number.isNaN(effectiveAt.getTime())
-            ? effectiveAt
-            : new Date(),
-      });
+        return {
+          orderType: SettlementOrderType.STANDARD_ORDER,
+          orderId: order.id,
+          brandId: order.brandId,
+          grossAmount: proportionalAmount,
+          currency,
+          effectiveAt:
+            effectiveAt && !Number.isNaN(effectiveAt.getTime())
+              ? effectiveAt
+              : new Date(),
+        };
+      },
+    );
+    const calculations = await this.settlementCalculatorService.calculateBatch(
+      calculationInputs,
+      tx,
+    );
+    for (const [index, order] of orders.entries()) {
+      const calculation = calculations[index];
       const snapshot =
         await this.settlementSnapshotService.createFromCalculation(
           calculation,
@@ -389,8 +401,8 @@ export class StandardOrderEscrowService {
       a refund retried or a webhook delivered twice bills it once.
     */
     const releasedToBrand =
-      Number(hold.firstReleasedAt ? hold.firstReleaseNetAmount ?? 0 : 0) +
-      Number(hold.secondReleasedAt ? hold.secondReleaseNetAmount ?? 0 : 0);
+      Number(hold.firstReleasedAt ? (hold.firstReleaseNetAmount ?? 0) : 0) +
+      Number(hold.secondReleasedAt ? (hold.secondReleaseNetAmount ?? 0) : 0);
     if (releasedToBrand > 0) {
       await this.brandBalance.raiseAdjustment(tx, {
         brandId: hold.brandId,

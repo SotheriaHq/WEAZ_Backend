@@ -71,13 +71,13 @@ export class ImageProcessingProcessor extends WorkerHost {
 
     if (job.name === IMAGE_PROCESS_BATCH_JOB) {
       const data = job.data as ImageProcessBatchJob;
+      const failures: unknown[] = [];
       for (const fileId of data.fileIds || []) {
-        await this.processOne(
-          fileId,
-          Boolean(data.force),
-          Boolean(data.newVersion),
-        );
+        try {
+          await this.processOne(fileId, Boolean(data.force), Boolean(data.newVersion));
+        } catch (error) { failures.push(error); }
       }
+      if (failures.length) throw new AggregateError(failures, 'Some legacy batch images failed; retained for retry');
     }
   }
 
@@ -134,10 +134,10 @@ export class ImageProcessingProcessor extends WorkerHost {
     try {
       const originalBuffer = await this.uploadService.getObjectBufferByKey(file.s3Key);
       const probe = await this.mediaProcessing.probeImage(originalBuffer);
-      const variants = await this.mediaProcessing.generateVariants(originalBuffer, { mimeType: file.mimeType });
+      const variants = this.mediaProcessing.generateVariantsIter(originalBuffer, { mimeType: file.mimeType });
       const nextVersion = file.assetVersion + (reencode ? 1 : 0);
       const encoded: Prisma.FileVariantUncheckedCreateInput[] = [];
-      for (const variant of variants) {
+      for await (const variant of variants) {
         if (lostLease()) throw new Error('Image processing lease lost');
         const baseKey = this.uploadService.buildVariantS3Key({ variantKind: variant.kind, fileId, assetVersion: nextVersion, ext: variant.ext });
         // A stale encoder cannot overwrite another attempt's objects, including after lease expiry.
@@ -185,7 +185,7 @@ export class ImageProcessingProcessor extends WorkerHost {
       }
       if (reencode) {
         this.logger.warn(`Image re-encode skipped for ${fileId}; current version kept: ${String(error)}`);
-        return;
+        throw error;
       }
       await this.prisma.fileUpload.updateMany({
         where: { id: fileId, processingLeaseToken: token },

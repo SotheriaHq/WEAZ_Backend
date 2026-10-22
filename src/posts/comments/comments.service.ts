@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { retryDatabaseTransaction } from '../../common/transaction-retry.util';
 import { Comment } from '@prisma/client';
 import {
   CreateCommentDto,
@@ -197,43 +198,47 @@ export class CommentsService {
     });
     if (!comment) throw new NotFoundException('Comment not found');
 
-    const existing = await this.prisma.commentReaction
-      .findUnique({
+    return retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "_id" AS id FROM "Comment" WHERE "_id"=${commentId}::uuid FOR UPDATE
+      `;
+      if (!locked.length) throw new NotFoundException('Comment not found');
+      const existing = await tx.commentReaction.findUnique({
         where: { commentId_userId: { commentId, userId } },
-      })
-      .catch(() => null);
+      });
 
-    if (existing) {
-      if (existing.type === type) {
-        // Remove reaction (toggle off)
-        await this.prisma.commentReaction.delete({
-          where: { id: existing.id },
-        });
+      if (existing) {
+        if (existing.type === type) {
+          // Remove reaction (toggle off)
+          await tx.commentReaction.delete({
+            where: { id: existing.id },
+          });
+        } else {
+          // Switch reaction type
+          await tx.commentReaction.update({
+            where: { id: existing.id },
+            data: { type },
+          });
+        }
       } else {
-        // Switch reaction type
-        await this.prisma.commentReaction.update({
-          where: { id: existing.id },
-          data: { type },
+        // Create reaction
+        await tx.commentReaction.create({
+          data: { id: uuidv4(), commentId, userId, type },
         });
       }
-    } else {
-      // Create reaction
-      await this.prisma.commentReaction.create({
-        data: { id: uuidv4(), commentId, userId, type },
-      });
-    }
 
-    // Return counts
-    const [threads, dislikes] = await Promise.all([
-      this.prisma.commentReaction.count({
-        where: { commentId, type: ReactionType.THREAD },
-      }),
-      this.prisma.commentReaction.count({
-        where: { commentId, type: ReactionType.DISLIKE },
-      }),
-    ]);
+      // Return counts
+      const [threads, dislikes] = await Promise.all([
+        tx.commentReaction.count({
+          where: { commentId, type: ReactionType.THREAD },
+        }),
+        tx.commentReaction.count({
+          where: { commentId, type: ReactionType.DISLIKE },
+        }),
+      ]);
 
-    return { reacted: true, type, threads, dislikes };
+      return { reacted: true, type, threads, dislikes };
+    }));
   }
 
   // Get users who reacted to a comment (latest N)

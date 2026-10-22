@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { retryDatabaseTransaction } from '../common/transaction-retry.util';
 import { CreatePostDto, UpdatePostDto, GetPostsDto } from './dto/post.dto';
 import {
   Post,
@@ -308,151 +309,115 @@ export class PostsService {
       throw new NotFoundException('Post not found');
     }
 
-    const existingThread = await this.prisma.thread.findUnique({
-      where: {
-        postId_userId: {
-          postId,
-          userId,
-        },
-      },
-    });
-
-    if (existingThread) {
-      // Unthread
-      await this.prisma.thread.delete({
-        where: {
-          postId_userId: {
-            postId,
-            userId,
-          },
-        },
+    const { threaded, updatedPost } = await retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<Array<{ id: string; threadsCount: number }>>`
+        SELECT "_id" AS id, "threadsCount" FROM "Post" WHERE "_id"=${postId}::uuid FOR UPDATE
+      `;
+      if (!locked.length) throw new NotFoundException('Post not found');
+      const existingThread = await tx.thread.findUnique({
+        where: { postId_userId: { postId, userId } },
       });
-
-      const updatedPost = await this.prisma.post.update({
-        where: { id: postId },
-        data: {
-          threadsCount: {
-            decrement: 1,
-          },
-        },
-      });
-
-      if (this.analytics) {
-        await this.analytics.updateDailyThread(ContentTarget.POST, postId, -1);
-      }
-
-      return {
-        threaded: false,
-        threadsCount: updatedPost.threadsCount,
-      };
-    } else {
-      // Thread
-      await this.prisma.thread.create({
-        data: {
-          id: uuidv4(),
-          post: {
-            connect: { id: postId },
-          },
-          user: {
-            connect: { id: userId },
-          },
-        },
-      });
-
-      const updatedPost = await this.prisma.post.update({
-        where: { id: postId },
-        data: {
-          threadsCount: {
-            increment: 1,
-          },
-        },
-      });
-
-      if (this.analytics) {
-        await this.analytics.updateDailyThread(ContentTarget.POST, postId, +1);
-      }
-
-      // Notify post owner
-      try {
-        if (
-          updatedPost.userId &&
-          updatedPost.userId !== userId &&
-          this.notifications
-        ) {
-          await this.notifications.create(
-            updatedPost.userId,
-            NotificationType.THREAD,
-            {
-              actorId: userId,
-              payload: { postId, targetType: 'POST' },
-              dedupeMs: 5 * 60 * 1000,
-            },
-          );
-        }
-      } catch {}
-
-      // Notify patchers about engagement on brand content
-      if (this.notifications && post.user?.type === UserType.BRAND) {
-        const patchers = await this.prisma.patchConnection.findMany({
-          where: {
-            targetId: post.userId,
-            status: PatchStatus.ACCEPTED,
-            mode: PatchMode.USER_TO_BRAND,
-          },
-          select: { requesterId: true },
+      if (existingThread) {
+        await tx.thread.delete({ where: { postId_userId: { postId, userId } } });
+      } else {
+        await tx.thread.create({
+          data: { id: uuidv4(), post: { connect: { id: postId } }, user: { connect: { id: userId } } },
         });
-        const message = 'threaded post';
+      }
+      const updatedPost = await tx.post.update({
+        where: { id: postId },
+        data: { threadsCount: Math.max(0, locked[0].threadsCount + (existingThread ? -1 : 1)) },
+      });
+      return { threaded: !existingThread, updatedPost };
+    }));
 
-        const recipientIds = patchers
-          .map((p) => p.requesterId)
-          .filter((id) => id && id !== userId);
+    if (this.analytics) {
+      await this.analytics.updateDailyThread(ContentTarget.POST, postId, threaded ? 1 : -1);
+    }
+    if (!threaded) {
+      return { threaded, threadsCount: updatedPost.threadsCount };
+    }
 
-        if (recipientIds.length > 0 && this.notificationsQueue) {
+    // Notify post owner
+    try {
+      if (
+        updatedPost.userId &&
+        updatedPost.userId !== userId &&
+        this.notifications
+      ) {
+        await this.notifications.create(
+          updatedPost.userId,
+          NotificationType.THREAD,
+          {
+            actorId: userId,
+            payload: { postId, targetType: 'POST' },
+            dedupeMs: 5 * 60 * 1000,
+          },
+        );
+      }
+    } catch {}
+
+    // Notify patchers about engagement on brand content
+    if (this.notifications && post.user?.type === UserType.BRAND) {
+      const patchers = await this.prisma.patchConnection.findMany({
+        where: {
+          targetId: post.userId,
+          status: PatchStatus.ACCEPTED,
+          mode: PatchMode.USER_TO_BRAND,
+        },
+        select: { requesterId: true },
+      });
+      const message = 'threaded post';
+
+      const recipientIds = patchers
+        .map((p) => p.requesterId)
+        .filter((id) => id && id !== userId);
+
+      if (recipientIds.length > 0 && this.notificationsQueue) {
+        try {
+          await this.notificationsQueue.enqueueFanout({
+            recipientIds,
+            notificationType: NotificationType.THREAD,
+            actorId: userId,
+            payload: {
+              postId,
+              targetType: 'POST',
+              targetUrl: `/posts/${postId}`,
+              message,
+            },
+            dedupeMs: 2 * 60 * 1000,
+          });
+        } catch (e) {
+          console.warn('Failed to enqueue thread fanout', e);
+        }
+      } else if (recipientIds.length > 0) {
+        for (const recipientId of recipientIds) {
           try {
-            await this.notificationsQueue.enqueueFanout({
-              recipientIds,
-              notificationType: NotificationType.THREAD,
-              actorId: userId,
-              payload: {
-                postId,
-                targetType: 'POST',
-                targetUrl: `/posts/${postId}`,
-                message,
-              },
-              dedupeMs: 2 * 60 * 1000,
-            });
-          } catch (e) {
-            console.warn('Failed to enqueue thread fanout', e);
-          }
-        } else if (recipientIds.length > 0) {
-          for (const recipientId of recipientIds) {
-            try {
-              await this.notifications.create(
-                recipientId,
-                NotificationType.THREAD,
-                {
-                  actorId: userId,
-                  payload: {
-                    postId,
-                    targetType: 'POST',
-                    targetUrl: `/posts/${postId}`,
-                    message,
-                  },
-                  dedupeMs: 2 * 60 * 1000,
+            await this.notifications.create(
+              recipientId,
+              NotificationType.THREAD,
+              {
+                actorId: userId,
+                payload: {
+                  postId,
+                  targetType: 'POST',
+                  targetUrl: `/posts/${postId}`,
+                  message,
                 },
-              );
-            } catch (e) {
-              console.warn('Failed to notify patcher of post thread', e);
-            }
+                dedupeMs: 2 * 60 * 1000,
+              },
+            );
+          } catch (e) {
+            console.warn('Failed to notify patcher of post thread', e);
           }
         }
       }
-
-      return {
-        threaded: true,
-        threadsCount: updatedPost.threadsCount,
-      };
     }
+
+    return {
+      threaded: true,
+      threadsCount: updatedPost.threadsCount,
+    };
   }
 
   async getThreads(postId: string): Promise<{ users: any[]; total: number }> {

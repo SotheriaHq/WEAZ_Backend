@@ -1,17 +1,23 @@
 import { loadActiveDisplayVariants } from './variant-display.util';
 import {
+  resolveStorageProviderSettings, storageObjectUrl, isRawStorageUrl,
+  signPublicGatewayUrl, type StorageProviderSettings,
+} from './storage-provider.config';
+import {
   Injectable,
   Logger,
   BadRequestException,
   ForbiddenException,
   Optional,
   ServiceUnavailableException,
+  ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { FileUpload } from '@prisma/client';
 import {
   S3Client,
   PutObjectCommand,
+  CopyObjectCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
   HeadObjectCommand,
@@ -40,6 +46,7 @@ import {
   normalizeUploadContentType,
 } from './upload-policy';
 import { MonitoringService } from 'src/monitoring/monitoring.service';
+import { Readable } from 'stream';
 
 type VariantView = {
   url: string;
@@ -85,6 +92,7 @@ type S3ObjectMetadata = {
   exists: boolean;
   contentLength: number;
   contentType: string | null;
+  etag?: string;
 };
 
 @Injectable()
@@ -93,6 +101,7 @@ export class UploadService {
   private readonly s3: S3Client;
   private readonly bucketName: string;
   private readonly region: string;
+  private readonly storageSettings: StorageProviderSettings;
 
   /**
    * TTL for signed URLs that back PUBLIC display media (feeds, collections,
@@ -141,29 +150,17 @@ export class UploadService {
     @Optional()
     private readonly imageQueue?: ImageProcessingQueueService,
   ) {
-    this.bucketName =
-      this.configService.get<string>('AWS_S3_BUCKET') ??
-      this.configService.get<string>('S3_BUCKET');
-
-    if (!this.bucketName) {
-      throw new Error('AWS_S3_BUCKET (or S3_BUCKET) must be configured.');
-    }
-
-    this.region =
-      this.configService.get<string>('AWS_REGION') ??
-      this.configService.get<string>('REGION') ??
-      'eu-north-1';
-
-    const accessKeyId =
-      this.configService.get<string>('AWS_ACCESS_KEY_ID') ??
-      this.configService.get<string>('ACCESS_KEY_ID');
-
-    const secretAccessKey =
-      this.configService.get<string>('AWS_SECRET_ACCESS_KEY') ??
-      this.configService.get<string>('SECRET_ACCESS_KEY');
-
+    this.storageSettings = resolveStorageProviderSettings(this.configService);
+    this.bucketName = this.storageSettings.bucket;
+    this.region = this.storageSettings.region;
     const s3Config: any = {
       region: this.region,
+      endpoint: this.storageSettings.endpoint,
+      forcePathStyle: this.storageSettings.forcePathStyle,
+      ...(this.storageSettings.provider === 'R2' ? {
+        requestChecksumCalculation: 'WHEN_REQUIRED',
+        responseChecksumValidation: 'WHEN_REQUIRED',
+      } : {}),
       /*
         Two defaults are wrong for this workload, and both were measured rather
         than assumed.
@@ -192,12 +189,7 @@ export class UploadService {
       }),
     };
 
-    if (accessKeyId && secretAccessKey) {
-      s3Config.credentials = {
-        accessKeyId,
-        secretAccessKey,
-      };
-    }
+    if (this.storageSettings.credentials) s3Config.credentials = this.storageSettings.credentials;
 
     this.s3 = new S3Client(s3Config);
   }
@@ -210,7 +202,7 @@ export class UploadService {
   }
 
   private buildS3ObjectUrl(key: string): string {
-    return `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${this.encodeS3KeyForUrl(key)}`;
+    return storageObjectUrl(this.storageSettings, key);
   }
 
   private buildS3BucketUrl(): string {
@@ -268,12 +260,7 @@ export class UploadService {
   }
 
   private isRawS3ObjectUrl(value: string): boolean {
-    try {
-      const parsed = new URL(value);
-      return parsed.hostname.toLowerCase().includes('amazonaws.com');
-    } catch {
-      return false;
-    }
+    return isRawStorageUrl(this.storageSettings, value);
   }
 
   private isBucketPublicForDisplay(): boolean {
@@ -306,6 +293,11 @@ export class UploadService {
     s3Key?: string | null;
   }): string | null {
     const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
+    if (this.storageSettings.provider === 'R2') {
+      return key && this.storageSettings.publicGateway
+        ? signPublicGatewayUrl(this.storageSettings.publicGateway, key)
+        : null;
+    }
     const publicBase = this.getConfiguredPublicBaseUrl();
 
     if (publicBase && key) {
@@ -325,6 +317,9 @@ export class UploadService {
     s3Key?: string | null;
     isPublic?: boolean | null;
   }): string | null {
+    // Generic callers include private previews. Only publication-checked paths
+    // may mint a public gateway token.
+    if (this.storageSettings.provider === 'R2') return null;
     const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
     const publicBase = this.getConfiguredPublicBaseUrl();
 
@@ -762,7 +757,9 @@ export class UploadService {
     const maxSize = await this.getMaxFileSize(fileType);
 
     const fileId = uuidv4();
-    const key = this.generateS3Key(fileType, userId, fileId, originalName);
+    // A presigned request remains reusable until expiry. Never publish this key.
+    const generatedKey = this.generateS3Key(fileType, userId, fileId, originalName);
+    const key = generatedKey.replace(`${fileType}/${userId}/`, `${fileType}/${userId}/pending/`);
 
     // Build fields and conditions for AWS v3 createPresignedPost
     const baseConditions: any[] = [
@@ -792,6 +789,15 @@ export class UploadService {
       },
     } as any);
 
+    if (this.storageSettings?.provider === 'R2') {
+      const uploadHeaders = { 'Content-Type': trustedContentType, 'Cache-Control': 'private, max-age=0, no-store' };
+      const url = await getSignedUrl(this.s3, new PutObjectCommand({
+        Bucket: this.bucketName, Key: key, ContentType: trustedContentType,
+        CacheControl: 'private, max-age=0, no-store',
+      }), { expiresIn: 600, signableHeaders: new Set(['content-type']) });
+      return { url, key, fileId, fields: {}, method: 'PUT', uploadHeaders, expiresIn: 600 };
+    }
+
     const presigned = await createPresignedPost(this.s3, {
       Bucket: this.bucketName,
       Key: key,
@@ -808,6 +814,7 @@ export class UploadService {
       url: uploadUrl,
       key,
       fileId,
+        method: 'POST',
       expiresIn: 600,
     } as any;
   }
@@ -1020,6 +1027,73 @@ export class UploadService {
    * Used when the frontend only has a raw S3 URL / storage key and needs a
    * signed version (market rails, content-review previews, catalog cards).
    */
+  /** Resolve only stored aliases or configured media origins. Never fetch caller URLs. */
+  async resolveMediaSourceKey(source: string): Promise<string | null> {
+    return (await this.resolveMediaSourceKeys([source])).get(source) ?? null;
+  }
+
+  private async resolveMediaSourceKeys(sources: string[]): Promise<Map<string, string>> {
+    const result = new Map<string, string>();
+    const aliases = new Map<string, string[]>();
+    const bases = [this.storageSettings?.publicGateway?.baseUrl, this.getConfiguredPublicBaseUrl()]
+      .filter((value): value is string => Boolean(value)).map((value) => new URL(value));
+    for (const source of sources) {
+      if (typeof source !== 'string' || source.length > 8192) continue;
+      let url: URL;
+      try { url = new URL(source); } catch { continue; }
+      if (url.username || url.password || !['https:', 'http:'].includes(url.protocol)) continue;
+      for (const base of bases) {
+        const prefix = `${base.pathname.replace(/\/+$/, '')}/`;
+        if (url.origin !== base.origin || !url.pathname.startsWith(prefix)) continue;
+        try {
+          const key = decodeURIComponent(url.pathname.slice(prefix.length));
+          if (key && !key.includes('..') && !key.includes('\\') && !key.startsWith('/')) result.set(source, key);
+        } catch { /* Invalid escaping cannot identify a media object. */ }
+      }
+      if (result.has(source)) continue;
+      const identity = `${url.origin}${url.pathname}`;
+      aliases.set(identity, [...(aliases.get(identity) ?? []), source]);
+    }
+    if (aliases.size) {
+      const identities = [...aliases.keys()];
+      const [files, variants] = await Promise.all([
+        this.prisma.fileUpload.findMany({ where: { s3Url: { in: identities } }, select: { s3Url: true, s3Key: true } }),
+        this.prisma.fileVariant.findMany({ where: { s3Url: { in: identities } }, select: { s3Url: true, s3Key: true } }),
+      ]);
+      for (const row of [...files, ...variants]) for (const source of aliases.get(row.s3Url) ?? []) result.set(source, row.s3Key);
+    }
+    return result;
+  }
+
+  async getBatchSignedUrlsBySource(sources: string[], user?: { id?: string; role?: string }): Promise<Array<{ source: string; url: string | null }>> {
+    if (sources.length > 50) throw new BadRequestException('At most 50 media sources are allowed');
+    const keys = await this.resolveMediaSourceKeys(sources);
+    const uniqueKeys = [...new Set(keys.values())];
+    if (!uniqueKeys.length) return sources.map((source) => ({ source, url: null }));
+    const variants = await this.prisma.fileVariant.findMany({ where: { s3Key: { in: uniqueKeys } } });
+    const files = await this.prisma.fileUpload.findMany({
+      where: { OR: [{ s3Key: { in: uniqueKeys } }, { id: { in: [...new Set(variants.map((row) => row.fileUploadId))] } }] },
+      include: this.publicFileAccessInclude(),
+    });
+    const filesById = new Map(files.map((file) => [file.id, file]));
+    const filesByKey = new Map(files.map((file) => [file.s3Key, file]));
+    const variantsByKey = new Map(variants.map((variant) => [variant.s3Key, variant]));
+    const urls = new Map<string, string>();
+    await Promise.all(uniqueKeys.map(async (key) => {
+      const variant = variantsByKey.get(key);
+      const file = filesByKey.get(key) ?? (variant ? filesById.get(variant.fileUploadId) : undefined);
+      if (!file || !this.isDisplayableStoredFile(file)) return;
+      if (variant && variant.assetVersion !== file.assetVersion) return;
+      const isPublic = this.canReturnPublicFileUrl(file);
+      const isOwnerOrAdmin = user?.id && (file.userId === user.id || ['Admin', 'SuperAdmin'].includes(user.role ?? ''));
+      if (!isPublic && !isOwnerOrAdmin) return;
+      const gatewayUrl = isPublic ? this.getStablePublicDisplayUrl({ s3Key: key }) : null;
+      urls.set(key, gatewayUrl ?? await getSignedUrl(this.s3, new GetObjectCommand({ Bucket: this.bucketName, Key: key }),
+        { expiresIn: isPublic ? UploadService.PUBLIC_DISPLAY_SIGNED_URL_TTL_SECONDS : 3600 }));
+    }));
+    return sources.map((source) => ({ source, url: urls.get(keys.get(source) ?? '') ?? null }));
+  }
+
   async getPublicSignedUrlByKey(s3Key: string): Promise<string | null> {
     const normalizedKey = typeof s3Key === 'string' ? s3Key.trim() : '';
     if (!normalizedKey || normalizedKey.includes('..')) {
@@ -1052,6 +1126,11 @@ export class UploadService {
       return null;
     }
 
+    // A URL for a superseded variant must not bypass the active asset version.
+    if (variant && Number(variant.assetVersion) !== Number(sourceFile.assetVersion ?? 1)) {
+      return null;
+    }
+
     const stablePublicUrl = this.getStablePublicDisplayUrl({
       s3Key: normalizedKey,
       s3Url: directFile?.s3Url,
@@ -1060,10 +1139,8 @@ export class UploadService {
       return stablePublicUrl;
     }
 
-    // Prefer the DB key when present (canonical), else the requested key.
-    const signKey =
-      (typeof sourceFile.s3Key === 'string' && sourceFile.s3Key.trim()) ||
-      normalizedKey;
+    // Authorize against the parent, but retain the requested variant's size.
+    const signKey = variant?.s3Key || directFile?.s3Key || normalizedKey;
 
     const command = new GetObjectCommand({
       Bucket: this.bucketName,
@@ -1421,6 +1498,7 @@ export class UploadService {
         contentLength:
           typeof result.ContentLength === 'number' ? result.ContentLength : 0,
         contentType: this.normalizeContentType(result.ContentType),
+        etag: result.ETag,
       };
     } catch (err) {
       const details = this.summarizeAwsError(err);
@@ -1502,21 +1580,18 @@ export class UploadService {
       throw new BadRequestException('S3 key mismatch for presign record');
     }
 
-    const now = new Date();
-    if (presign.expiresAt && presign.expiresAt < now) {
-      await (this.prisma as any)['presignedUpload'].update({
-        where: { id },
-        data: { status: 'EXPIRED' },
-      } as any);
-      throw new BadRequestException('Presign has expired');
-    }
-
     if (presign.status === 'USED') {
       const existing = await this.prisma.fileUpload.findUnique({
         where: { id },
       });
       if (existing) return existing;
       throw new BadRequestException('Presign already used');
+    }
+
+    // An expired upload capability does not invalidate an already committed file.
+    const now = new Date();
+    if (presign.expiresAt && presign.expiresAt < now) {
+      throw new BadRequestException('Presign has expired');
     }
 
     if (presign.status === 'EXPIRED') {
@@ -1619,33 +1694,106 @@ export class UploadService {
       );
     }
 
-    // Mark presign as USED
-    await (this.prisma as any)['presignedUpload'].update({
-      where: { id },
-      data: { status: 'USED', finalizedAt: new Date() },
-    } as any);
+    return this.finalizeStoredUpload(presign, userId, actualMetadata, actualContentType, originalId);
+  }
 
-    const fileName = key.split('/').pop() || key;
-    const url = this.buildS3ObjectUrl(key);
-
-    const record = await this.prisma.fileUpload.create({
-      data: {
-        id: id,
-        userId,
-        originalName: presign.originalName || originalId || fileName,
-        fileName,
-        s3Key: key,
-        s3Url: url,
-        fileType: presign.fileType as any,
-        mimeType: actualContentType,
-        size: actualMetadata.contentLength,
-        processingStatus: 'READY',
-      } as any,
+  private async finalizeStoredUpload(
+    presign: any, userId: string, metadata: S3ObjectMetadata, mimeType: string, originalId?: string,
+  ): Promise<FileUpload> {
+    if (!metadata.etag) throw new BadRequestException('Storage returned no object version identifier');
+    const token = uuidv4();
+    const targetKey = `${presign.fileType}/${userId}/final/${presign.id}/${token}.${getUploadFileExtension(presign.originalName)}`;
+    const now = new Date();
+    const claimed = await this.prisma.presignedUpload.updateMany({
+      where: {
+        id: presign.id, userId, status: { in: ['PENDING', 'READY'] }, expiresAt: { gt: now },
+        OR: [{ finalizeLeaseUntil: null }, { finalizeLeaseUntil: { lte: now } }],
+      },
+      data: { finalizeLeaseToken: token, finalizeLeaseUntil: new Date(now.getTime() + 300_000), finalizeTargetKey: targetKey },
     });
+    if (!claimed.count) {
+      const existing = await this.prisma.fileUpload.findUnique({ where: { id: presign.id } });
+      if (existing?.userId === userId) return existing;
+      throw new ConflictException({ code: 'UPLOAD_FINALIZING', message: 'Upload completion is in progress. Please retry shortly.' });
+    }
+    // Register cleanup before external I/O: a crash after COPY cannot strand the object.
+    // The dispatcher also excludes actively leased targets before deleting anything.
+    try {
+      await this.prisma.storageObjectDeletion.createMany({
+        data: [{ s3Key: targetKey, nextAttemptAt: new Date(Date.now() + 86_400_000) }], skipDuplicates: true,
+      });
+      await this.assertStoredUploadSignature(presign.s3Key, metadata.etag, mimeType, metadata.contentLength);
+      await this.s3.send(new CopyObjectCommand({
+        Bucket: this.bucketName, Key: targetKey,
+        CopySource: `${encodeURIComponent(this.bucketName)}/${presign.s3Key.split('/').map(encodeURIComponent).join('/')}`,
+        CopySourceIfMatch: metadata.etag,
+        MetadataDirective: 'REPLACE', ContentType: mimeType,
+        CacheControl: 'private, max-age=300',
+      }));
+      const record = await this.prisma.$transaction(async (tx) => {
+        const owned = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "_id" AS id FROM "PresignedUpload"
+          WHERE "_id" = ${presign.id}::uuid AND "userId" = ${userId}::uuid
+            AND "finalizeLeaseToken" = ${token}::uuid AND "finalizeLeaseUntil" > clock_timestamp()
+            AND status IN ('PENDING', 'READY') FOR UPDATE
+        `;
+        if (!owned.length) throw new ConflictException({ code: 'UPLOAD_FINALIZING', message: 'Upload completion lease expired. Please retry.' });
+        const fileName = targetKey.split('/').pop()!;
+        const created = await tx.fileUpload.create({ data: {
+          id: presign.id, userId, originalName: presign.originalName || originalId || fileName, fileName,
+          s3Key: targetKey, s3Url: this.buildS3ObjectUrl(targetKey), fileType: presign.fileType,
+          mimeType, size: metadata.contentLength, processingStatus: 'READY',
+        } });
+        await tx.presignedUpload.update({ where: { id: presign.id }, data: {
+          status: 'USED', finalizedAt: new Date(), processingRequestedAt: mimeType.startsWith('image/') ? new Date() : null,
+          finalizeLeaseToken: null, finalizeLeaseUntil: null, finalizeTargetKey: null,
+        } });
+        await tx.storageObjectDeletion.deleteMany({ where: { s3Key: targetKey } });
+        await tx.storageObjectDeletion.createMany({ data: [{
+          s3Key: presign.s3Key, nextAttemptAt: new Date(Math.max(Date.now(), new Date(presign.expiresAt).getTime()) + 60_000),
+        }], skipDuplicates: true });
+        return created;
+      });
+      if (mimeType.startsWith('image/')) await this.dispatchPresignedImageProcessing(record.id);
+      return record;
+    } catch (error: any) {
+      if (Number(error?.$metadata?.httpStatusCode) === 412) {
+        throw new ConflictException({ code: 'UPLOAD_CHANGED', message: 'The uploaded file changed during validation. Please retry completion.' });
+      }
+      throw error;
+    } finally {
+      await this.prisma.presignedUpload.updateMany({ where: { id: presign.id, finalizeLeaseToken: token },
+        data: { finalizeLeaseToken: null, finalizeLeaseUntil: null, finalizeTargetKey: null } })
+        .catch(() => this.logger.warn(`Upload completion lease will expire naturally fileId=${presign.id}`));
+    }
+  }
 
-    await this.enqueueImageProcessing(record.id, true);
+  private async assertStoredUploadSignature(key: string, etag: string, expectedMime: string, size: number): Promise<void> {
+    // Stream the signature rather than downloading the full image/video into RAM.
+    // DOCX identification may inspect later ZIP entries; other formats need only a prefix.
+    const length = expectedMime.includes('wordprocessingml') ? size : Math.min(size, 65_536);
+    const response = await this.s3.send(new GetObjectCommand({
+      Bucket: this.bucketName, Key: key, IfMatch: etag, Range: `bytes=0-${length - 1}`,
+    }));
+    const body = response.Body as Readable | undefined;
+    if (!body) throw new BadRequestException('Uploaded object has no readable content');
+    try {
+      // Node 22 loads this ESM package through require; keep it off non-upload paths.
+      const { fileTypeFromStream } = require('file-type') as typeof import('file-type');
+      const detected = await fileTypeFromStream(body);
+      const compoundWord = expectedMime === 'application/msword' && detected?.mime === 'application/x-cfb';
+      if (!detected || (!compoundWord && normalizeUploadContentType(detected.mime) !== expectedMime)) {
+        throw new BadRequestException('Uploaded bytes do not match the selected file type');
+      }
+    } finally {
+      body.destroy();
+    }
+  }
 
-    return record;
+  async dispatchPresignedImageProcessing(fileId: string): Promise<void> {
+    const sent = await this.enqueueImageProcessing(fileId, true);
+    if (sent) await this.prisma.presignedUpload.updateMany({ where: { id: fileId, status: 'USED', processingEnqueuedAt: null },
+      data: { processingEnqueuedAt: new Date() } });
   }
 
   private emitUploadAlert(
@@ -1772,28 +1920,25 @@ export class UploadService {
       throw new BadRequestException('File not found');
     }
 
-    await this.prisma.fileUpload.update({
-      where: { id: fileId },
-      data: {
-        processingStatus: 'PENDING',
-        processingError: null,
-      } as any,
-    } as any);
-
-    await this.enqueueImageProcessing(fileId, true);
+    // Keep a published version readable while the replacement is encoded.
+    if (!await this.enqueueImageProcessing(fileId, true)) {
+      throw new ServiceUnavailableException('Image processing is temporarily unavailable. Please retry.');
+    }
     return { fileId, processingStatus: 'PENDING' };
   }
 
-  async enqueueImageProcessing(fileId: string, force = false): Promise<void> {
+  async enqueueImageProcessing(fileId: string, force = false): Promise<boolean> {
     if (!fileId || !this.imageQueue || !this.isImageOptimizationEnabled()) {
-      return;
+      return false;
     }
     try {
       await this.imageQueue.enqueueSingle(fileId, force);
+      return true;
     } catch (error) {
       this.logger.warn(
         `Failed to enqueue image processing for ${fileId}: ${String(error)}`,
       );
+      return false;
     }
   }
 
@@ -1819,8 +1964,9 @@ export class UploadService {
         Key: params.key,
         Body: params.body,
         ContentType: params.contentType,
-        CacheControl: 'public, max-age=31536000, immutable',
-        ...(withAcl && params.isPublic ? { ACL: 'public-read' } : {}),
+        CacheControl: this.storageSettings?.provider === 'R2'
+          ? 'private, max-age=300' : 'public, max-age=31536000, immutable',
+        ...(withAcl && params.isPublic && this.storageSettings?.provider !== 'R2' ? { ACL: 'public-read' } : {}),
       } as any);
     try {
       await this.s3.send(buildCommand(true));

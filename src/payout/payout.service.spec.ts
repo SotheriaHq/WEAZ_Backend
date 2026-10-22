@@ -53,7 +53,7 @@ describe('PayoutService', () => {
           provide: StandardOrderEscrowService,
           useValue: { getReleasedBalance: jest.fn() },
         },
-        { provide: CommissionService, useValue: { resolveRule: jest.fn() } },
+        { provide: CommissionService, useValue: { resolveRule: jest.fn(), resolveRulesBatch: jest.fn() } },
         {
           provide: StandardOrderFinanceSyncService,
           useValue: { syncPaidOrdersByOrderIds: jest.fn() },
@@ -109,6 +109,18 @@ describe('PayoutService', () => {
       email: 'brand@example.com',
       isEmailVerified: true,
     });
+
+  it('resolves distinct payout currencies in one commission batch', async () => {
+    const commission = (service as any).commissionService;
+    commission.resolveRulesBatch.mockResolvedValue([{ ratePercent: 12 }, { ratePercent: 8 }]);
+    const rates = await (service as any).getCommissionRateMap(BRAND_ID, ['ngn', 'NGN', ' usd ']);
+    expect(commission.resolveRulesBatch).toHaveBeenCalledWith([
+      { brandId: BRAND_ID, currency: 'NGN' },
+      { brandId: BRAND_ID, currency: 'USD' },
+    ]);
+    expect([...rates]).toEqual([['NGN', 12], ['USD', 8]]);
+    expect(commission.resolveRule).not.toHaveBeenCalled();
+  });
 
   describe('requestPayout', () => {
     it('emails a code and creates NO payout', async () => {

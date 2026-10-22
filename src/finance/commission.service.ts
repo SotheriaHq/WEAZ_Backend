@@ -127,12 +127,100 @@ export class CommissionService {
     };
   }
 
+  async resolveRulesBatch(
+    params: ResolveCommissionRuleParams[],
+    tx?: Prisma.TransactionClient,
+  ) {
+    const result: Awaited<ReturnType<CommissionService['resolveRule']>>[] = [];
+    const fallback = new Map<string, Promise<number>>();
+    const client = this.getClient(tx);
+    for (let offset = 0; offset < params.length; offset += 500) {
+      const batch = params.slice(offset, offset + 500);
+      const requests = batch.map((request, position) => ({
+        position,
+        brandId: request.brandId ?? null,
+        currency: request.currency ?? null,
+        at: (request.at ?? new Date()).toISOString(),
+      }));
+      const rows = await client.$queryRaw<
+        Array<{
+          position: number;
+          id: string | null;
+          scope: CommissionRuleScope;
+          ratePercent: Prisma.Decimal;
+          minFeeAmount: Prisma.Decimal | null;
+          maxFeeAmount: Prisma.Decimal | null;
+        }>
+      >(Prisma.sql`
+        SELECT r.position, c.id, c.scope, c."ratePercent", c."minFeeAmount", c."maxFeeAmount"
+        FROM jsonb_to_recordset(${JSON.stringify(requests)}::jsonb) AS r(position int, "brandId" uuid, currency text, at timestamp)
+        LEFT JOIN LATERAL (
+          SELECT c.id, c.scope, c."ratePercent", c."minFeeAmount", c."maxFeeAmount"
+          FROM "CommissionRule" c
+          WHERE c."isActive"=true AND c."effectiveFrom"<=r.at AND (c."effectiveTo" IS NULL OR c."effectiveTo">=r.at)
+            AND ((c.scope='BRAND' AND c."brandId"=r."brandId") OR c.scope='PLATFORM')
+            AND (c.currency=r.currency OR c.currency IS NULL)
+          ORDER BY CASE WHEN c.scope='BRAND' THEN 0 ELSE 1 END,
+            CASE WHEN c.currency=r.currency THEN 0 ELSE 1 END, c."isDefault" DESC, c."effectiveFrom" DESC, c.id
+          LIMIT 1
+        ) c ON true ORDER BY r.position
+      `);
+      for (const row of rows) {
+        if (row.id) {
+          result.push({
+            ruleId: row.id,
+            scope: row.scope,
+            ratePercent: Number(row.ratePercent),
+            minFeeAmount:
+              row.minFeeAmount === null ? null : Number(row.minFeeAmount),
+            maxFeeAmount:
+              row.maxFeeAmount === null ? null : Number(row.maxFeeAmount),
+            source: 'RULE',
+          });
+        } else {
+          const key = this.getFallbackConfigKey(batch[row.position].orderType);
+          if (!fallback.has(key))
+            fallback.set(key, this.systemConfigService.getNumber(key));
+          result.push({
+            ruleId: null,
+            scope: COMMISSION_RULE_SCOPE.PLATFORM,
+            ratePercent: await fallback.get(key)!,
+            minFeeAmount: null,
+            maxFeeAmount: null,
+            source: 'SYSTEM_CONFIG',
+          });
+        }
+      }
+    }
+    return result;
+  }
+
+  async calculateBreakdownsBatch(
+    inputs: Array<{ amount: number; params: ResolveCommissionRuleParams }>,
+    tx?: Prisma.TransactionClient,
+  ) {
+    const rules = await this.resolveRulesBatch(
+      inputs.map((input) => input.params),
+      tx,
+    );
+    return rules.map((rule, index) =>
+      this.applyBreakdown(inputs[index].amount, rule),
+    );
+  }
+
   async calculateBreakdown(
     amount: number,
     params: ResolveCommissionRuleParams,
     tx?: Prisma.TransactionClient,
   ) {
     const resolved = await this.resolveRule(params, tx);
+    return this.applyBreakdown(amount, resolved);
+  }
+
+  private applyBreakdown(
+    amount: number,
+    resolved: Awaited<ReturnType<CommissionService['resolveRule']>>,
+  ) {
     let commissionAmount = this.roundMoney(
       (amount * resolved.ratePercent) / 100,
     );

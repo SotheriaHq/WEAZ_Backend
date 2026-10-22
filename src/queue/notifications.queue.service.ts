@@ -15,6 +15,8 @@ export interface NotificationFanoutJob {
   payload?: Record<string, any>;
   target?: NotificationTarget;
   dedupeMs?: number;
+  /** Stable per-recipient UUID for durable outbox retries. Requires one recipient. */
+  notificationId?: string;
 }
 
 @Injectable()
@@ -23,8 +25,12 @@ export class NotificationsQueueService {
     @InjectQueue(NOTIFICATIONS_QUEUE) private readonly queue: Queue,
   ) {}
 
-  async enqueueFanout(job: NotificationFanoutJob): Promise<void> {
+  async enqueueFanout(job: NotificationFanoutJob, options?: { jobId?: string }): Promise<void> {
     if (!job.recipientIds || job.recipientIds.length === 0) return;
-    await this.queue.add(NOTIFICATION_FANOUT_JOB, job);
+    if (job.notificationId && new Set(job.recipientIds.filter(Boolean)).size !== 1) {
+      throw new Error('notificationId requires exactly one recipient');
+    }
+    if (options) await this.queue.add(NOTIFICATION_FANOUT_JOB, job, options);
+    else await this.queue.add(NOTIFICATION_FANOUT_JOB, job);
   }
 }

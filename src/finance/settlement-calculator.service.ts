@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import {
+  Prisma,
   SettlementFinalReleaseTrigger,
   SettlementOrderType,
   SettlementReleaseMode,
@@ -73,6 +74,48 @@ export class SettlementCalculatorService {
       }),
     ]);
 
+    return this.calculateResolved(normalized, policy, commission);
+  }
+
+  async calculateBatch(
+    inputs: SettlementCalculationInput[],
+    tx?: Prisma.TransactionClient,
+  ) {
+    const normalized = inputs.map((input) => this.normalizeInput(input));
+    if (!normalized.length) return [];
+    const [policies, commissions] = await Promise.all([
+      this.settlementPolicyService.resolveActivePoliciesBatch(
+        normalized.map((input) => ({
+          orderType: input.orderType,
+          brandId: input.brandId,
+          currency: input.currency,
+          at: input.effectiveAt,
+        })),
+        tx,
+      ),
+      this.commissionService.calculateBreakdownsBatch(
+        normalized.map((input) => ({
+          amount: input.grossAmount,
+          params: {
+            orderType: input.orderType,
+            brandId: input.brandId,
+            currency: input.currency,
+            at: input.effectiveAt,
+          },
+        })),
+        tx,
+      ),
+    ]);
+    return normalized.map((input, index) =>
+      this.calculateResolved(input, policies[index], commissions[index]),
+    );
+  }
+
+  private calculateResolved(
+    normalized: ReturnType<SettlementCalculatorService['normalizeInput']>,
+    policy: Awaited<ReturnType<SettlementPolicyService['resolveActivePolicy']>>,
+    commission: Awaited<ReturnType<CommissionService['calculateBreakdown']>>,
+  ): SettlementCalculationResult {
     const grossAmount = this.roundMoney(commission.grossAmount);
     const commissionAmount = this.roundMoney(commission.commissionAmount);
     const brandNetAmount = this.roundMoney(commission.netAmount);

@@ -13,6 +13,7 @@ import { FittingFreshnessPolicy } from './fitting-freshness.policy';
 
 describe('BagEligibilityService', () => {
   const prisma = {
+    $queryRaw: jest.fn(),
     product: { findFirst: jest.fn() },
     customOrderConfiguration: {
       findFirst: jest.fn(),
@@ -81,6 +82,17 @@ describe('BagEligibilityService', () => {
     prisma.customOrder.findFirst.mockResolvedValue(null);
     prisma.customOrder.findMany.mockResolvedValue([]);
     prisma.customOrderCheckoutSession.findMany.mockResolvedValue([]);
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        productId: 'product_1',
+        cartItem: null,
+        customConfiguration: null,
+        previousStandardOrder: null,
+        previousCustomOrder: null,
+        checkoutSessions: [],
+        customOrders: [],
+      },
+    ]);
     prisma.storeCollection.findFirst.mockResolvedValue(null);
     prisma.user.findUnique.mockResolvedValue({ type: 'REGULAR' });
   });
@@ -256,7 +268,10 @@ describe('BagEligibilityService', () => {
   it('prevents brand accounts from bagging any product', async () => {
     prisma.user.findUnique.mockResolvedValue({ type: 'BRAND' });
 
-    const result = await service.getProductBagStatus('product_1', 'brand_buyer');
+    const result = await service.getProductBagStatus(
+      'product_1',
+      'brand_buyer',
+    );
 
     expect(result.canBag).toBe(false);
     expect(result.ui.defaultAction).toBe('DISABLED');
@@ -447,5 +462,86 @@ describe('BagEligibilityService', () => {
       defaultAction: 'ADD_STANDARD',
       canBag: true,
     });
+  });
+  const collectionWith = (products: any[]) => ({
+    id: 'collection_1',
+    ownerId: 'brand_owner',
+    title: 'Capsule',
+    status: 'PUBLISHED',
+    visibility: 'PUBLIC',
+    isAvailableInStore: true,
+    deletedAt: null,
+    owner: {
+      brand: {
+        id: 'brand_1',
+        name: 'Brand',
+        ownerId: 'brand_owner',
+        currency: 'NGN',
+        isStoreOpen: true,
+        verificationStatus: BrandVerificationStatus.APPROVED,
+      },
+    },
+    products: products.map((product) => ({ product })),
+  });
+  it('reads readiness once for a fifty-product collection and preserves buyer-specific blockers', async () => {
+    const products = Array.from({ length: 50 }, (_, index) => ({
+      ...baseProduct,
+      id: `product_${index}`,
+      price: 100,
+      currency: 'NGN',
+    }));
+    prisma.storeCollection.findFirst.mockResolvedValue(
+      collectionWith(products),
+    );
+    prisma.$queryRaw.mockResolvedValue(
+      products.map((product, index) => ({
+        productId: product.id,
+        cartItem:
+          index === 0
+            ? {
+                id: 'cart_1',
+                quantity: 1,
+                selectedSize: null,
+                selectedColor: null,
+              }
+            : null,
+        customConfiguration: null,
+        previousStandardOrder: null,
+        previousCustomOrder: null,
+        checkoutSessions: [],
+        customOrders: [],
+      })),
+    );
+    const result = await service.getCollectionBagStatus(
+      'collection_1',
+      'buyer_1',
+    );
+    expect(result.products).toHaveLength(50);
+    expect(result.products[0].defaultAction).toBe('ALREADY_IN_BAG');
+    expect(result.products[1].defaultAction).toBe('ADD_STANDARD');
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.user.findUnique).toHaveBeenCalledTimes(1);
+    expect(prisma.userSizeFitProfile.findUnique).toHaveBeenCalledTimes(1);
+    expect(prisma.cartItem.findFirst).not.toHaveBeenCalled();
+    expect(prisma.customOrderConfiguration.findFirst).not.toHaveBeenCalled();
+    expect(prisma.customOrderCheckoutSession.findMany).not.toHaveBeenCalled();
+  });
+  it('skips the joined projection for an empty guest collection', async () => {
+    prisma.storeCollection.findFirst.mockResolvedValue(collectionWith([]));
+    const result = await service.getCollectionBagStatus('collection_1');
+    expect(result.products).toEqual([]);
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    expect(prisma.userSizeFitProfile.findUnique).not.toHaveBeenCalled();
+  });
+  it('rejects another owners private collection before reading buyer readiness', async () => {
+    prisma.storeCollection.findFirst.mockResolvedValue({
+      ...collectionWith([baseProduct]),
+      visibility: 'PRIVATE',
+    });
+    await expect(
+      service.getCollectionBagStatus('collection_1', 'buyer_1'),
+    ).rejects.toThrow('Collection not found');
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 });

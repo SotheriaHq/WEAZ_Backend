@@ -10,6 +10,11 @@ import {
   isBrandStoreVerified,
 } from 'src/brand-verification/verification-truth.util';
 import { BagReadinessPresenter } from './bag-readiness.presenter';
+import {
+  loadCollectionReadiness,
+  CollectionReadinessRow,
+  CollectionSizeFitProfile,
+} from './collection-readiness-query';
 import { BagValidationService } from './bag-validation.service';
 import { FittingFreshnessPolicy } from './fitting-freshness.policy';
 import type {
@@ -224,6 +229,11 @@ export class BagEligibilityService {
         return true;
       });
 
+      const readiness = await loadCollectionReadiness(
+        this.prisma,
+        visibleLinks.map((link: any) => link.product.id),
+        userId,
+      );
       const products: CollectionBagProductStatus[] = [];
       for (const link of visibleLinks) {
         const product = link.product;
@@ -231,6 +241,7 @@ export class BagEligibilityService {
           product,
           product.id,
           userId,
+          { row: readiness.get(product.id)!, isBrandAccount, sizeFitProfile },
         );
         products.push(
           this.presentCollectionProductStatus(
@@ -374,9 +385,16 @@ export class BagEligibilityService {
     product: any,
     productId: string,
     userId?: string,
+    prefetch?: {
+      row: CollectionReadinessRow;
+      isBrandAccount: boolean;
+      sizeFitProfile: CollectionSizeFitProfile;
+    },
   ): Promise<BagReadinessContract> {
     const isOwner = Boolean(userId && product.brand?.ownerId === userId);
-    const isBrandAccount = await this.isBrandAccount(userId);
+    const isBrandAccount = prefetch
+      ? prefetch.isBrandAccount
+      : await this.isBrandAccount(userId);
     const brandOrderVerified = isBrandStoreVerified(
       product.brand?.verificationStatus,
     );
@@ -427,21 +445,23 @@ export class BagEligibilityService {
       ]),
     );
 
-    const customConfigurationPromise =
-      this.prisma.customOrderConfiguration.findFirst({
-        where: {
-          sourceType: CustomOrderSourceType.PRODUCT,
-          sourceId: productId,
-          isActive: true,
-        },
-        select: {
-          id: true,
-          sourceType: true,
-          sourceId: true,
-          requiredMeasurementKeys: true,
-          requiredFreeformPointIds: true,
-        },
-      });
+    const customConfigurationPromise = prefetch
+      ? Promise.resolve(prefetch.row.customConfiguration)
+      : this.prisma.customOrderConfiguration.findFirst({
+          where: {
+            sourceType: CustomOrderSourceType.PRODUCT,
+            sourceId: productId,
+            isActive: true,
+          },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          select: {
+            id: true,
+            sourceType: true,
+            sourceId: true,
+            requiredMeasurementKeys: true,
+            requiredFreeformPointIds: true,
+          },
+        });
 
     const [
       cartItem,
@@ -449,48 +469,56 @@ export class BagEligibilityService {
       sizeFitProfile,
       previousStandardOrder,
       previousCustomOrder,
-    ] = userId
-      ? await Promise.all([
-          this.prisma.cartItem.findFirst({
-            where: { userId, productId },
-            select: {
-              id: true,
-              selectedSize: true,
-              selectedColor: true,
-              quantity: true,
-            },
-            orderBy: { createdAt: 'desc' },
-          }),
-          customConfigurationPromise,
-          this.prisma.userSizeFitProfile.findUnique({
-            where: { userId },
-            select: {
-              measurements: true,
-              lastUpdatedAt: true,
-              updatedAt: true,
-              requireUpdateEveryDays: true,
-            },
-          }),
-          this.prisma.orderItem.findFirst({
-            where: { buyerId: userId, productId },
-            select: { id: true },
-          }),
-          this.prisma.customOrder.findFirst({
-            where: {
-              buyerId: userId,
-              sourceType: CustomOrderSourceType.PRODUCT,
-              sourceId: productId,
-            },
-            select: { id: true },
-          }),
-        ])
-      : await Promise.all([
-          Promise.resolve(null),
-          customConfigurationPromise,
-          Promise.resolve(null),
-          Promise.resolve(null),
-          Promise.resolve(null),
-        ]);
+    ] = prefetch
+      ? [
+          prefetch.row.cartItem,
+          prefetch.row.customConfiguration,
+          prefetch.sizeFitProfile,
+          prefetch.row.previousStandardOrder,
+          prefetch.row.previousCustomOrder,
+        ]
+      : userId
+        ? await Promise.all([
+            this.prisma.cartItem.findFirst({
+              where: { userId, productId },
+              select: {
+                id: true,
+                selectedSize: true,
+                selectedColor: true,
+                quantity: true,
+              },
+              orderBy: { createdAt: 'desc' },
+            }),
+            customConfigurationPromise,
+            this.prisma.userSizeFitProfile.findUnique({
+              where: { userId },
+              select: {
+                measurements: true,
+                lastUpdatedAt: true,
+                updatedAt: true,
+                requireUpdateEveryDays: true,
+              },
+            }),
+            this.prisma.orderItem.findFirst({
+              where: { buyerId: userId, productId },
+              select: { id: true },
+            }),
+            this.prisma.customOrder.findFirst({
+              where: {
+                buyerId: userId,
+                sourceType: CustomOrderSourceType.PRODUCT,
+                sourceId: productId,
+              },
+              select: { id: true },
+            }),
+          ])
+        : await Promise.all([
+            Promise.resolve(null),
+            customConfigurationPromise,
+            Promise.resolve(null),
+            Promise.resolve(null),
+            Promise.resolve(null),
+          ]);
 
     const standardEnabled =
       product.standardCheckoutEnabled !== false &&
@@ -519,13 +547,17 @@ export class BagEligibilityService {
             requiredFreeformPointIds: [],
           }
         : null);
-    const { customBagLine, duplicateState } =
-      await this.resolveDuplicateContext({
-        userId,
-        sourceType: CustomOrderSourceType.PRODUCT,
-        sourceId: productId,
-        activeConfigurationId: customConfiguration?.id ?? null,
-      });
+    const { customBagLine, duplicateState } = prefetch
+      ? this.presentDuplicateContext(
+          prefetch.row.checkoutSessions,
+          prefetch.row.customOrders,
+        )
+      : await this.resolveDuplicateContext({
+          userId,
+          sourceType: CustomOrderSourceType.PRODUCT,
+          sourceId: productId,
+          activeConfigurationId: customConfiguration?.id ?? null,
+        });
     const fittingFreshness = this.resolveFittingFreshness(
       fittingConfiguration,
       sizeFitProfile,
@@ -554,17 +586,16 @@ export class BagEligibilityService {
       duplicateState,
       previousStandardOrder,
       previousCustomOrder,
-      disabledReason:
-        isBrandAccount
-          ? 'Brand accounts cannot bag items. Use a buyer account to shop.'
-          : !isOwner && publicProduct && !brandOrderVerified
-            ? BRAND_ORDER_VERIFICATION_MESSAGE
-            : !standardEnabled &&
-                !customEnabled &&
-                product.customOrderEnabled === true &&
-                !customConfiguration
-              ? 'This product needs an active custom-order configuration before it can be bagged.'
-              : null,
+      disabledReason: isBrandAccount
+        ? 'Brand accounts cannot bag items. Use a buyer account to shop.'
+        : !isOwner && publicProduct && !brandOrderVerified
+          ? BRAND_ORDER_VERIFICATION_MESSAGE
+          : !standardEnabled &&
+              !customEnabled &&
+              product.customOrderEnabled === true &&
+              !customConfiguration
+            ? 'This product needs an active custom-order configuration before it can be bagged.'
+            : null,
     });
   }
 
@@ -601,8 +632,8 @@ export class BagEligibilityService {
     // A design's id is its collection id; configs are keyed by that id.
     const configSourceIds = Array.from(
       new Set(
-        [sourceId, design.id].filter(
-          (value): value is string => Boolean(value),
+        [sourceId, design.id].filter((value): value is string =>
+          Boolean(value),
         ),
       ),
     );
@@ -814,23 +845,7 @@ export class BagEligibilityService {
         }),
       ]);
 
-      const customBagLine =
-        checkoutSessions.find((session) => session.customOrderId === null) ??
-        null;
-
-      return {
-        customBagLine: customBagLine
-          ? {
-              id: customBagLine.id,
-              checkoutIntentId: customBagLine.checkoutIntentId,
-            }
-          : null,
-        duplicateState: this.validationService.classifyDuplicateState({
-          checkoutSessions,
-          customOrders,
-          completedPolicy: 'ALLOW_REPEAT',
-        }),
-      };
+      return this.presentDuplicateContext(checkoutSessions, customOrders);
     } finally {
       this.debugTiming('duplicate_classification', startedAt, {
         sourceType: input.sourceType,
@@ -838,6 +853,28 @@ export class BagEligibilityService {
         authenticated: true,
       });
     }
+  }
+
+  private presentDuplicateContext(
+    checkoutSessions: any[],
+    customOrders: any[],
+  ) {
+    const customBagLine =
+      checkoutSessions.find((session) => session.customOrderId === null) ??
+      null;
+    return {
+      customBagLine: customBagLine
+        ? {
+            id: customBagLine.id,
+            checkoutIntentId: customBagLine.checkoutIntentId,
+          }
+        : null,
+      duplicateState: this.validationService.classifyDuplicateState({
+        checkoutSessions,
+        customOrders,
+        completedPolicy: 'ALLOW_REPEAT',
+      }),
+    };
   }
 
   private presentCollectionProductStatus(

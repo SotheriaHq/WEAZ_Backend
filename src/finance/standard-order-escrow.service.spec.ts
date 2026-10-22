@@ -373,6 +373,9 @@ function buildHarness(mode: 'HOLD' | 'SPLIT' = 'HOLD') {
 
   const calculatorService = {
     calculate: jest.fn(async (input: any) => buildCalculation(input, mode)),
+    calculateBatch: jest.fn(async (inputs: any[]) =>
+      inputs.map((input) => buildCalculation(input, mode)),
+    ),
   };
 
   const snapshotService = {

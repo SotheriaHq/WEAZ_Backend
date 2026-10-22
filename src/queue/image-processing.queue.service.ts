@@ -4,7 +4,6 @@ import type { Queue } from 'bullmq';
 import {
   IMAGE_PROCESSING_QUEUE,
   IMAGE_PROCESS_SINGLE_JOB,
-  IMAGE_PROCESS_BATCH_JOB,
   IMAGE_REPROCESS_JOB,
 } from './queue.constants';
 
@@ -35,6 +34,7 @@ export class ImageProcessingQueueService {
       { fileId, force } as ImageProcessSingleJob,
       {
         attempts: 4,
+        deduplication: { id: `image-${fileId}-${force ? 'forced' : 'normal'}` },
         backoff: { type: 'exponential', delay: 1500 },
       },
     );
@@ -43,14 +43,17 @@ export class ImageProcessingQueueService {
   async enqueueBatch(fileIds: string[], force = false): Promise<void> {
     const unique = Array.from(new Set((fileIds || []).filter(Boolean)));
     if (unique.length === 0) return;
-    await this.queue.add(
-      IMAGE_PROCESS_BATCH_JOB,
-      { fileIds: unique, force } as ImageProcessBatchJob,
-      {
-        attempts: 2,
-        backoff: { type: 'exponential', delay: 2000 },
-      },
-    );
+    for (let offset = 0; offset < unique.length; offset += 500) {
+      await this.queue.addBulk(unique.slice(offset, offset + 500).map((fileId) => ({
+        name: IMAGE_PROCESS_SINGLE_JOB,
+        data: { fileId, force } as ImageProcessSingleJob,
+        opts: {
+          attempts: 4,
+          backoff: { type: 'exponential' as const, delay: 1500 },
+          deduplication: { id: `image-${fileId}-${force ? 'forced' : 'normal'}` },
+        },
+      })));
+    }
   }
 
   async enqueueReprocess(fileId: string): Promise<void> {
@@ -60,6 +63,7 @@ export class ImageProcessingQueueService {
       { fileId, force: true } as ImageProcessSingleJob,
       {
         attempts: 4,
+        deduplication: { id: `image-${fileId}-forced` },
         backoff: { type: 'exponential', delay: 1500 },
       },
     );

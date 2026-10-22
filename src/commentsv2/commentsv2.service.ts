@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { retryDatabaseTransaction } from 'src/common/transaction-retry.util';
 import { v4 as uuidv4 } from 'uuid';
 type CommentTarget =
   | 'POST'
@@ -719,18 +720,21 @@ export class CommentsV2Service {
     });
     if (!comment) throw new NotFoundException('Comment not found');
 
-    const existing = await this.prisma.commentV2Thread
-      .findUnique({ where: { commentId_userId: { commentId, userId } } })
-      .catch(() => null);
-
-    const threaded = await this.prisma.$transaction(async (tx) => {
+    const threaded = await retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<Array<{ id: string; threadsCount: number }>>`
+        SELECT "_id" AS id, "threadsCount" FROM "CommentV2" WHERE "_id"=${commentId}::uuid FOR UPDATE
+      `;
+      if (!locked.length) throw new NotFoundException('Comment not found');
+      const existing = await tx.commentV2Thread.findUnique({
+        where: { commentId_userId: { commentId, userId } },
+      });
       if (existing) {
         await tx.commentV2Thread.delete({
           where: { commentId_userId: { commentId, userId } },
         });
         const updated = await tx.commentV2.update({
           where: { id: commentId },
-          data: { threadsCount: { decrement: 1 } },
+          data: { threadsCount: Math.max(0, locked[0].threadsCount - 1) },
         });
         return { threaded: false, threadCount: updated.threadsCount };
       } else {
@@ -739,11 +743,11 @@ export class CommentsV2Service {
         });
         const updated = await tx.commentV2.update({
           where: { id: commentId },
-          data: { threadsCount: { increment: 1 } },
+          data: { threadsCount: Math.max(0, locked[0].threadsCount + 1) },
         });
         return { threaded: true, threadCount: updated.threadsCount };
       }
-    });
+    }));
 
     const room = `COMMENT:${commentId}`;
     this.events.server?.to(room).emit('comment.threaded', {
@@ -774,42 +778,46 @@ export class CommentsV2Service {
       throw new ForbiddenException('Not allowed to delete this comment');
     }
 
-    await this.prisma.$transaction(async (tx) => {
-      // Soft delete by setting deletedAt and clearing sanitized text
-      await tx.commentV2.update({
-        where: { id: commentId },
+    const deleted = await retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
+      // Only the request that changes a live comment may adjust its counters.
+      const changed = await tx.commentV2.updateMany({
+        where: { id: commentId, deletedAt: null },
         data: { deletedAt: new Date(), contentSanitized: '[deleted]' },
       });
+      if (!changed.count) return false;
 
       if (c.parentId) {
-        await tx.commentV2.update({
-          where: { id: c.parentId },
+        await tx.commentV2.updateMany({
+          where: { id: c.parentId, replyCount: { gt: 0 } },
           data: { replyCount: { decrement: 1 } },
         });
       }
 
       if (c.targetType === 'POST') {
-        await tx.post.update({
-          where: { id: c.targetId },
+        await tx.post.updateMany({
+          where: { id: c.targetId, commentsCount: { gt: 0 } },
           data: { commentsCount: { decrement: 1 } },
         });
       } else if (c.targetType === 'COLLECTION') {
-        await tx.collection.update({
-          where: { id: c.targetId },
+        await tx.collection.updateMany({
+          where: { id: c.targetId, commentsCount: { gt: 0 } },
           data: { commentsCount: { decrement: 1 } },
         });
       } else if (c.targetType === 'COLLECTION_MEDIA') {
-        await tx.collectionMedia.update({
-          where: { id: c.targetId },
+        await tx.collectionMedia.updateMany({
+          where: { id: c.targetId, commentsCount: { gt: 0 } },
           data: { commentsCount: { decrement: 1 } },
         });
       } else if (c.targetType === 'DESIGN') {
-        await tx.collection.update({
-          where: { id: c.targetId },
+        await tx.collection.updateMany({
+          where: { id: c.targetId, commentsCount: { gt: 0 } },
           data: { commentsCount: { decrement: 1 } },
         });
       }
-    });
+      return true;
+    }));
+
+    if (!deleted) return { success: true };
 
     const room = `${c.targetType}:${c.targetId}`;
     try {

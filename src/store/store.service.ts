@@ -387,7 +387,7 @@ export class StoreService {
     collectionId: string,
   ) {
     await tx.$executeRaw(
-      Prisma.sql`SELECT "_id" FROM "StoreCollection" WHERE "_id" = ${collectionId} FOR UPDATE`,
+      Prisma.sql`SELECT "_id" FROM "StoreCollection" WHERE "_id" = ${collectionId} FOR NO KEY UPDATE`,
     );
   }
 
@@ -3160,6 +3160,8 @@ export class StoreService {
         }
 
         if (finalCollectionId) {
+          await this.lockCollectionForUpdate(tx, finalCollectionId);
+          await this.lockProductForUpdate(tx, productId);
           const existingLinks = await tx.storeCollectionProduct.findMany({
             where: { productId },
             select: { collectionId: true },
@@ -3174,7 +3176,6 @@ export class StoreService {
               finalCollectionId !== product.collectionId);
 
           if (shouldCheckCollectionCapacity) {
-            await this.lockCollectionForUpdate(tx, finalCollectionId);
             await this.assertCollectionCapacity(tx, finalCollectionId);
           }
 
@@ -3189,9 +3190,6 @@ export class StoreService {
               } as any);
             }
 
-            if (!shouldCheckCollectionCapacity) {
-              await this.lockCollectionForUpdate(tx, finalCollectionId);
-            }
             const orderIndex = await tx.storeCollectionProduct.count({
               where: { collectionId: finalCollectionId },
             });

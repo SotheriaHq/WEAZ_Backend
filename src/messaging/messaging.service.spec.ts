@@ -12,6 +12,8 @@ import { MessagingAccessService } from './messaging-access.service';
 import { MessagingPolicyService } from './messaging-policy.service';
 import { MessagingService } from './messaging.service';
 
+jest.mock('src/custom-orders/custom-orders.service', () => ({ CustomOrdersService: class {} }));
+
 describe('MessagingService', () => {
   const buildService = (overrides?: {
     prisma?: any;
@@ -51,6 +53,12 @@ describe('MessagingService', () => {
         $transaction: jest.fn(),
       } as any);
 
+    prisma.$executeRaw = jest.fn().mockResolvedValue(1);
+    prisma.$queryRaw = jest.fn(async (sql: TemplateStringsArray) => sql.join('').includes('clock_timestamp')
+      ? [{ now: new Date() }] : [{ id: 'thread_1' }]);
+    prisma.$transaction.mockImplementation(async (callback: (tx: any) => Promise<unknown>) => callback(prisma));
+    prisma.messageThread.findUnique.mockImplementation((args: unknown) => prisma.messageThread.findFirst(args));
+
     const query =
       overrides?.query ??
       ({
@@ -67,7 +75,7 @@ describe('MessagingService', () => {
       } as any);
 
     const sideEffects = {
-      dispatchMessageOutboxForMessage: jest.fn(),
+      dispatchMessageOutboxForMessage: jest.fn().mockResolvedValue(undefined),
       emitMessageCreated: jest.fn(),
       emitThreadInvalidation: jest.fn(),
       emitMessageRead: jest.fn(),
@@ -127,6 +135,8 @@ describe('MessagingService', () => {
     prisma.$transaction.mockImplementation(
       async (callback: (tx: any) => Promise<unknown>) =>
         callback({
+          $executeRaw: jest.fn().mockResolvedValue(1),
+          $queryRaw: jest.fn().mockResolvedValue([{ id: 'thread_1' }]),
           messageThreadOrderLink: {
             findUnique: jest.fn().mockResolvedValue(null),
           },
@@ -193,6 +203,9 @@ describe('MessagingService', () => {
           customOrder: {
             findUnique: prisma.customOrder.findUnique,
           },
+          $executeRaw: jest.fn().mockResolvedValue(1),
+          $queryRaw: jest.fn().mockResolvedValue([{ id: 'thread_1' }]),
+          messageThread: { findUnique: jest.fn().mockResolvedValue({ id: 'thread_1', status: MessageThreadStatus.BLOCKED, participants: [] }) },
           order: {
             findUnique: jest.fn(),
           },
