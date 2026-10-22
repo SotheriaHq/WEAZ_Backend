@@ -35,8 +35,15 @@ const eventAlertBody = {
         ['http.status_code', '500'],
         ['requestId', 'req-42'],
       ],
-      user: { id: 'user-uuid-1', email: 'person@example.com', ip_address: '1.2.3.4' },
-      contexts: { runtime: { name: 'node', version: 'v22.19.0' }, os: { name: 'Linux' } },
+      user: {
+        id: 'user-uuid-1',
+        email: 'person@example.com',
+        ip_address: '1.2.3.4',
+      },
+      contexts: {
+        runtime: { name: 'node', version: 'v22.19.0' },
+        os: { name: 'Linux' },
+      },
       exception: {
         values: [
           {
@@ -45,9 +52,22 @@ const eventAlertBody = {
             mechanism: { type: 'onunhandledrejection', handled: false },
             stacktrace: {
               frames: [
-                { filename: 'node:internal/process', function: 'tick', in_app: false },
-                { filename: 'src/auth/auth.service.ts', function: 'AuthService.CreateUser', lineno: 612, in_app: true },
-                { filename: 'node_modules/@prisma/client/runtime.js', function: 'request', in_app: false },
+                {
+                  filename: 'node:internal/process',
+                  function: 'tick',
+                  in_app: false,
+                },
+                {
+                  filename: 'src/auth/auth.service.ts',
+                  function: 'AuthService.CreateUser',
+                  lineno: 612,
+                  in_app: true,
+                },
+                {
+                  filename: 'node_modules/@prisma/client/runtime.js',
+                  function: 'request',
+                  in_app: false,
+                },
               ],
             },
           },
@@ -60,16 +80,29 @@ const eventAlertBody = {
 
 describe('verifySentrySignature', () => {
   const raw = JSON.stringify(eventAlertBody);
-  const sign = (body: string) => createHmac('sha256', SECRET).update(body, 'utf8').digest('hex');
+  const sign = (body: string) =>
+    createHmac('sha256', SECRET).update(body, 'utf8').digest('hex');
 
   it('accepts a correct HMAC of the raw body', () => {
-    expect(verifySentrySignature({ secret: SECRET, signature: sign(raw), rawBody: raw, parsedBody: eventAlertBody })).toBe(true);
+    expect(
+      verifySentrySignature({
+        secret: SECRET,
+        signature: sign(raw),
+        rawBody: raw,
+        parsedBody: eventAlertBody,
+      }),
+    ).toBe(true);
   });
 
   it('accepts the JSON.stringify form Sentry documents', () => {
     const spaced = JSON.stringify(eventAlertBody, null, 2);
     expect(
-      verifySentrySignature({ secret: SECRET, signature: sign(JSON.stringify(eventAlertBody)), rawBody: spaced, parsedBody: eventAlertBody }),
+      verifySentrySignature({
+        secret: SECRET,
+        signature: sign(JSON.stringify(eventAlertBody)),
+        rawBody: spaced,
+        parsedBody: eventAlertBody,
+      }),
     ).toBe(true);
   });
 
@@ -80,11 +113,43 @@ describe('verifySentrySignature', () => {
     ['not hex', 'z'.repeat(64)],
     ['short', 'abcd'],
   ])('rejects %s', (_label, signature) => {
-    expect(verifySentrySignature({ secret: SECRET, signature: signature as any, rawBody: raw, parsedBody: { other: true } })).toBe(false);
+    expect(
+      verifySentrySignature({
+        secret: SECRET,
+        signature: signature as any,
+        rawBody: raw,
+        parsedBody: { other: true },
+      }),
+    ).toBe(false);
   });
 
   it('rejects everything when no secret is configured', () => {
-    expect(verifySentrySignature({ secret: '', signature: sign(raw), rawBody: raw, parsedBody: eventAlertBody })).toBe(false);
+    expect(
+      verifySentrySignature({
+        secret: '',
+        signature: sign(raw),
+        rawBody: raw,
+        parsedBody: eventAlertBody,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('verifySentrySignature with Sentry-style (Python json.dumps) bodies', () => {
+  // Sentry sends `{"a": 1, "b": [1, 2]}` — spaces after separators.
+  const pythonBody = '{"action": "triggered", "data": {"event": {"level": "error", "tags": [["a", "b"]]}}}';
+  const signature = createHmac('sha256', SECRET).update(pythonBody, 'utf8').digest('hex');
+
+  it('verifies when the raw bytes are available', () => {
+    expect(
+      verifySentrySignature({ secret: SECRET, signature, rawBody: pythonBody, parsedBody: JSON.parse(pythonBody) }),
+    ).toBe(true);
+  });
+
+  it('cannot verify from the parsed body alone (the raw body must be captured for /webhooks/sentry)', () => {
+    expect(
+      verifySentrySignature({ secret: SECRET, signature, rawBody: undefined, parsedBody: JSON.parse(pythonBody) }),
+    ).toBe(false);
   });
 });
 
@@ -112,16 +177,32 @@ describe('parseSentryWebhook(event_alert)', () => {
 
   it('drops query strings, cookies, headers, bodies, breadcrumbs, user email/ip and frames', () => {
     const serialized = JSON.stringify(alert);
-    for (const secret of ['SECRETTOKEN', 'very-secret', 'hunter2', 'SELECT *', 'person@example.com', '1.2.3.4', 'node_modules', 'token=abcdef']) {
+    for (const secret of [
+      'SECRETTOKEN',
+      'very-secret',
+      'hunter2',
+      'SELECT *',
+      'person@example.com',
+      '1.2.3.4',
+      'node_modules',
+      'token=abcdef',
+    ]) {
       expect(serialized).not.toContain(secret);
     }
     expect(alert.details?.errorMessage).toContain('<email>');
   });
 
   it('keeps only safe https links', () => {
-    expect(alert.webUrl).toBe('https://wiez.sentry.io/issues/6123456789/events/abc123/');
+    expect(alert.webUrl).toBe(
+      'https://wiez.sentry.io/issues/6123456789/events/abc123/',
+    );
     const evil = parseSentryWebhook('event_alert', {
-      data: { event: { ...eventAlertBody.data.event, web_url: 'https://evil.example/phish' } },
+      data: {
+        event: {
+          ...eventAlertBody.data.event,
+          web_url: 'https://evil.example/phish',
+        },
+      },
     })!;
     expect(evil.webUrl).toBeNull();
   });
@@ -132,7 +213,14 @@ describe('parseSentryWebhook(other resources)', () => {
     const alert = parseSentryWebhook('metric_alert', {
       action: 'critical',
       data: {
-        metric_alert: { id: '77', alert_rule: { name: 'Error spike', environment: 'sit', projects: ['node-nestjs'] } },
+        metric_alert: {
+          id: '77',
+          alert_rule: {
+            name: 'Error spike',
+            environment: 'sit',
+            projects: ['node-nestjs'],
+          },
+        },
         description_title: 'Critical: Error spike',
         description_text: '120 events in the last 10 minutes',
         web_url: 'https://wiez.sentry.io/alerts/rules/details/77/',
@@ -145,24 +233,32 @@ describe('parseSentryWebhook(other resources)', () => {
   });
 
   it('issue webhooks carry no environment, so they cannot be attributed to SIT', () => {
-    const alert = parseSentryWebhook('issue', { action: 'created', data: { issue: { id: '1', title: 'x' } } })!;
+    const alert = parseSentryWebhook('issue', {
+      action: 'created',
+      data: { issue: { id: '1', title: 'x' } },
+    })!;
     expect(alert.environment).toBeNull();
   });
 
   it('ignores unknown resources', () => {
-    expect(parseSentryWebhook('installation', { action: 'created' })).toBeNull();
+    expect(
+      parseSentryWebhook('installation', { action: 'created' }),
+    ).toBeNull();
   });
 });
 
 describe('scrubbing helpers', () => {
   it('endpointPath strips query and fragment', () => {
-    expect(endpointPath('https://api.weaz.me/a/b?x=1#y')).toBe('api.weaz.me/a/b');
+    expect(endpointPath('https://api.weaz.me/a/b?x=1#y')).toBe(
+      'api.weaz.me/a/b',
+    );
     expect(endpointPath('/orders/123?token=1')).toBe('/orders/123');
   });
 
   it('scrubSentryText redacts emails, credentials and long tokens', () => {
     const text = scrubSentryText(
-      'failed for a.b@c.io password=hunter2 postgres://u:p@db/x ' + 'x'.repeat(48),
+      'failed for a.b@c.io password=hunter2 postgres://u:p@db/x ' +
+        'x'.repeat(48),
     )!;
     expect(text).not.toContain('a.b@c.io');
     expect(text).not.toContain('hunter2');

@@ -54,6 +54,9 @@ const rawBodySaver = (
     (path.includes('/payment/webhook/') ||
       path.includes('/webhooks/paystack') ||
       path.includes('/webhooks/flutterwave') ||
+      // Sentry signs the exact bytes of Python's json.dumps (", " / ": "
+      // separators); a JSON.stringify re-serialisation can never match it.
+      path.includes('/webhooks/sentry') ||
       path.includes('/admin/payouts/webhook/'))
   ) {
     req.rawBody = buf.toString('utf8');
