@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
-const { Client, Pool } = require('pg');
+const { Client } = require('pg');
 const { PrismaClient } = require('@prisma/client');
 const { PrismaPg } = require('@prisma/adapter-pg');
 require('dotenv').config({ quiet: true });
@@ -21,7 +21,7 @@ async function main() {
   const adminUrl = new URL(source); adminUrl.pathname = '/postgres';
   const testUrl = new URL(source); testUrl.pathname = `/${database}`; testUrl.searchParams.set('options', '-c timezone=UTC');
   const admin = new Client({ connectionString: adminUrl.toString() });
-  let created = false, prisma, pool;
+  let created = false, prisma;
   const evidence = { checkedAt: new Date().toISOString(), passed: false, cleanupPassed: false, cases: [] };
   const waitForBlocked = async () => {
     for (let i=0;i<300;i++) {
@@ -41,9 +41,9 @@ async function main() {
       }); child.once('error',reject); child.once('close',resolve);
     });
     assert.equal(code,0,'Disposable migrations must succeed');
-    pool = new Pool({ connectionString:testUrl.toString() });
-    pool.on('error',(error)=>{ console.error('Disposable pool error:',error.code);process.exitCode=1; });
-    prisma = new PrismaClient({adapter:new PrismaPg(pool)});
+    // The adapter owns this pool and closes it on $disconnect. Passing an
+    // external pg.Pool relies on instanceof across dependency copies in CI.
+    prisma = new PrismaClient({adapter:new PrismaPg({ connectionString:testUrl.toString() })});
     const buyer = await prisma.user.create({data:{id:randomUUID(),username:'race-buyer',email:'race-buyer@example.invalid'}});
     const owner = await prisma.user.create({data:{id:randomUUID(),username:'race-maker',email:'race-maker@example.invalid',type:'BRAND'}});
     const brand = await prisma.brand.create({data:{id:randomUUID(),name:'Race fixture',ownerId:owner.id}});
@@ -98,7 +98,7 @@ async function main() {
     evidence.cases.push('completion commits while complaint waits: post-lock window check rejects late complaint');
     evidence.passed=true;
   } finally {
-    if(prisma) await prisma.$disconnect(); if(pool) await pool.end();
+    if(prisma) await prisma.$disconnect();
     if(created) {
       assert(/^wiez_issue_race_[a-f0-9]{32}$/.test(database));
       await admin.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()',[database]);

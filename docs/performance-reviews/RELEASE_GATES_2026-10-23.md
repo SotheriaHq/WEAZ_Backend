@@ -67,3 +67,5 @@ PostgreSQL recommends consistent object lock ordering and documents that a subse
 - [PostgreSQL explicit locks and deadlocks](https://www.postgresql.org/docs/current/explicit-locking.html)
 
 These backend changes serve desktop, tablet, mobile web and native API consumers. No new UI or physical-device delivery claim is included in this tranche.
+
+The first e93eebf GitHub validation passed ledger and complaint scenarios but failed when the complaint fixture terminated leftover pool connections during cleanup (57P01). The fixtures now let PrismaPg own and dispose its pool from connection options, removing external-pool lifetime ambiguity. Both fixtures were rerun locally and passed with successful cleanup. A new GitHub validation is required; the initial failed run is not a release pass.
