@@ -1,0 +1,15 @@
+{
+  "checkedAt": "2026-10-23T16:13:12.258Z",
+  "passed": true,
+  "cleanupPassed": true,
+  "cases": [
+    "competing duplicate key waits, replays complete winner and posts once",
+    "same key with a different amount fails without extra entries",
+    "thirty cold-account postings with opposite line order retain every cent without deadlock",
+    "outer transaction rollback removes claim, entries and balance changes together",
+    "large stored decimal balance retains a one-cent increment",
+    "repeated account lines preserve each intermediate balance snapshot",
+    "non-finite, negative, unbalanced and mismatched-account input rolls back",
+    "forty lines use bounded account reads (3) and batch entries/balances"
+  ]
+}

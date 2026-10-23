@@ -7,19 +7,19 @@
     "Static frozen AST/call-graph inventory, not production telemetry or a universal N+1/race proof.",
     "Scanner excludes tests and follows its supported receivers/call graph only; aliases/runtime dispatch can be missed.",
     "Source line numbers refer to the frozen scan; locate by class/method/call.",
-    "All 15 explicitly open read-fanout entries are resolved with focused evidence. The 46 recipient-policy and 60 stateful-command entries remain an open semantic audit, not automatic approval.",
+    "All 15 explicitly open read-fanout entries are resolved with focused evidence. The 46 recipient-policy and 59 stateful-command entries remain an open semantic audit, not automatic approval.",
     "Product bulk mutation still executes guarded per-product effects; incidental taxonomy/media/index reads in those commands require review before the overall N+1 gate can clear.",
     "Tag sync/merge competing counts are tested. Reindex-versus-write and stale source publication ordering remain open race findings."
   ],
   "counts": {
     "NOTIFICATION_POLICY_FANOUT": 46,
-    "FIXED_AFTER_CAPTURE": 33,
+    "FIXED_AFTER_CAPTURE": 34,
     "BOUNDED_BULK_QUERY": 8,
     "DEPENDENT_RETRY": 12,
     "PREFETCHED_CONTEXT": 3,
     "FIXED_SOURCE_PROJECTION": 2,
     "STATIC_SEED": 6,
-    "STATEFUL_ENTITY_WORK": 60,
+    "STATEFUL_ENTITY_WORK": 59,
     "PAGINATED_BATCH": 7,
     "HTTP_COMPATIBILITY_FALLBACK": 1,
     "READ_FANOUT_OPEN": 0
@@ -1648,8 +1648,8 @@
       "queries": [
         "(tx as any).ledgerAccount.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Ledger posting bulk-hydrates and conflict-safely creates missing accounts, locks in code order, batches balances and entries, and preserves intermediate per-line balance snapshots with Decimal arithmetic. Real generated-Prisma PostgreSQL fixture verifies duplicate-key contention, cold concurrent accounts, opposite line orders, rollback, precision and forty lines with three account reads. Currency normalization and multi-post transaction lock graphs remain separate open review items."
     },
     {
       "id": 89,

@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
 import { PrismaService } from 'src/prisma/prisma.service';
 
 const LedgerAccountType = {
@@ -67,100 +68,193 @@ export class LedgerService {
     tx: Prisma.TransactionClient,
     params: PostLedgerTransactionParams,
   ) {
-    const existing = await (tx as any).ledgerTransaction.findUnique({
-      where: { idempotencyKey: params.idempotencyKey },
-      include: {
-        entries: {
-          include: {
-            account: true,
-          },
-        },
-      },
-    });
-    if (existing) {
-      return existing;
+    const roundedTotal = this.ledgerMoney(params.totalAmount);
+    const lines = params.lines.map((line) => ({
+      ...line,
+      amount: this.ledgerMoney(line.amount),
+    }));
+    let debitTotal = new Prisma.Decimal(0);
+    let creditTotal = new Prisma.Decimal(0);
+    for (const line of lines) {
+      if (line.direction === LedgerEntryDirection.DEBIT) {
+        debitTotal = debitTotal.plus(line.amount);
+      } else if (line.direction === LedgerEntryDirection.CREDIT) {
+        creditTotal = creditTotal.plus(line.amount);
+      } else {
+        throw new BadRequestException('LEDGER_INVALID_DIRECTION');
+      }
     }
 
-    const roundedTotal = this.roundMoney(params.totalAmount);
-    const debitTotal = this.roundMoney(
-      params.lines
-        .filter((line) => line.direction === LedgerEntryDirection.DEBIT)
-        .reduce((sum, line) => sum + this.roundMoney(line.amount), 0),
-    );
-    const creditTotal = this.roundMoney(
-      params.lines
-        .filter((line) => line.direction === LedgerEntryDirection.CREDIT)
-        .reduce((sum, line) => sum + this.roundMoney(line.amount), 0),
-    );
-
-    if (debitTotal !== creditTotal) {
+    if (!debitTotal.equals(creditTotal)) {
       throw new BadRequestException('LEDGER_UNBALANCED_TRANSACTION');
     }
 
-    const transaction = await (tx as any).ledgerTransaction.create({
+    // A uniqueness violation aborts a PostgreSQL transaction, so do not catch
+    // P2002 and continue. ON CONFLICT elects one writer without aborting it.
+    const transactionId = randomUUID();
+    const claim = await tx.ledgerTransaction.createMany({
+      skipDuplicates: true,
       data: {
+        id: transactionId,
         idempotencyKey: params.idempotencyKey,
         type: params.type,
         description: params.description,
         referenceType: params.referenceType ?? null,
         referenceId: params.referenceId ?? null,
-        totalAmount: new Prisma.Decimal(roundedTotal.toFixed(2)),
+        totalAmount: roundedTotal,
         currency: params.currency,
         baseCurrency: params.baseCurrency ?? params.currency,
-        baseCurrencyAmount: new Prisma.Decimal(
-          this.roundMoney(params.baseCurrencyAmount ?? roundedTotal).toFixed(2),
+        baseCurrencyAmount: this.ledgerMoney(
+          params.baseCurrencyAmount ?? params.totalAmount,
         ),
         fxRateSnapshotId: params.fxRateSnapshotId ?? null,
         metadata: params.metadata ?? Prisma.JsonNull,
         createdById: params.createdById ?? null,
       },
     });
-
-    for (const line of params.lines) {
-      const amount = this.roundMoney(line.amount);
-      if (amount <= 0) {
-        continue;
-      }
-
-      const account = await this.ensureAccount(tx, line);
-      const [lockedAccount] = await tx.$queryRaw<
-        Array<{ currentBalance: Prisma.Decimal }>
-      >`
-        SELECT "currentBalance"
-        FROM "LedgerAccount"
-        WHERE "id" = ${account.id}::uuid
-        FOR UPDATE
-      `;
-
-      if (!lockedAccount) {
-        throw new BadRequestException('LEDGER_ACCOUNT_LOCK_FAILED');
-      }
-
-      const nextBalance = this.roundMoney(
-        Number(lockedAccount.currentBalance) +
-          this.getBalanceDelta(account.type, line.direction, amount),
-      );
-
-      await (tx as any).ledgerAccount.update({
-        where: { id: account.id },
-        data: {
-          currentBalance: new Prisma.Decimal(nextBalance.toFixed(2)),
-        },
+    if (claim.count === 0) {
+      // Separate READ COMMITTED statement sees the winner after INSERT waits.
+      const existing = await tx.ledgerTransaction.findUniqueOrThrow({
+        where: { idempotencyKey: params.idempotencyKey },
+        include: { entries: { include: { account: true } } },
       });
-
-      await (tx as any).ledgerEntry.create({
-        data: {
-          transactionId: transaction.id,
-          accountId: account.id,
-          direction: line.direction,
-          amount: new Prisma.Decimal(amount.toFixed(2)),
-          balanceAfter: new Prisma.Decimal(nextBalance.toFixed(2)),
-        },
-      });
+      const signature = (
+        items: Array<{
+          code: string;
+          direction: string;
+          amount: Prisma.Decimal;
+        }>,
+      ) =>
+        items
+          .filter((item) => item.amount.greaterThan(0))
+          .map(
+            (item) =>
+              `${item.code}|${item.direction}|${item.amount.toFixed(2)}`,
+          )
+          .sort()
+          .join('\n');
+      if (
+        existing.type !== params.type ||
+        existing.currency !== params.currency ||
+        existing.referenceType !== (params.referenceType ?? null) ||
+        existing.referenceId !== (params.referenceId ?? null) ||
+        !existing.totalAmount.equals(roundedTotal) ||
+        signature(
+          existing.entries.map((entry) => ({
+            ...entry,
+            code: entry.account.code,
+          })),
+        ) !== signature(lines)
+      ) {
+        throw new BadRequestException('LEDGER_IDEMPOTENCY_CONFLICT');
+      }
+      return existing;
     }
 
-    return (tx as any).ledgerTransaction.findUnique({
-      where: { id: transaction.id },
+    const positiveLines = lines.filter((line) => line.amount.greaterThan(0));
+    const definitions = new Map<string, LedgerLine>();
+    for (const line of positiveLines) {
+      const previous = definitions.get(line.code);
+      if (previous && !this.sameAccountDefinition(previous, line)) {
+        throw new BadRequestException('LEDGER_ACCOUNT_DEFINITION_MISMATCH');
+      }
+      definitions.set(line.code, { ...line, amount: 0 });
+    }
+    const codes = [...definitions.keys()].sort();
+    if (codes.length > 0) {
+      const existing = await tx.ledgerAccount.findMany({
+        where: { code: { in: codes } },
+        select: { code: true },
+      });
+      const existingCodes = new Set(existing.map((account) => account.code));
+      const missing = codes.filter((code) => !existingCodes.has(code));
+      if (missing.length > 0) {
+        await tx.ledgerAccount.createMany({
+          skipDuplicates: true,
+          data: missing.map((code) => {
+            const line = definitions.get(code)!;
+            return {
+              code,
+              name: line.name,
+              type: line.type,
+              subType: line.subType,
+              entityType: line.entityType ?? null,
+              entityId: line.entityId ?? null,
+              currency: 'NGN',
+              currentBalance: new Prisma.Decimal(0),
+              isSystemAccount: Boolean(line.isSystemAccount),
+              isActive: true,
+            };
+          }),
+        });
+      }
+      // All accounts are locked in the same code order, regardless of debit /
+      // credit order. A separate statement reads balances after any wait.
+      const accounts = await tx.$queryRaw<
+        Array<{
+          id: string;
+          code: string;
+          type: LedgerAccountType;
+          subType: string;
+          entityType: string | null;
+          entityId: string | null;
+          isSystemAccount: boolean;
+          currentBalance: Prisma.Decimal;
+        }>
+      >(Prisma.sql`
+        SELECT "id", "code", "type", "subType", "entityType", "entityId",
+               "isSystemAccount", "currentBalance"
+        FROM "LedgerAccount" WHERE "code" IN (${Prisma.join(codes)})
+        ORDER BY "code" FOR UPDATE
+      `);
+      if (accounts.length !== codes.length) {
+        throw new BadRequestException('LEDGER_ACCOUNT_LOCK_FAILED');
+      }
+      for (const account of accounts) {
+        if (
+          !this.sameAccountDefinition(account, definitions.get(account.code)!)
+        ) {
+          throw new BadRequestException('LEDGER_ACCOUNT_DEFINITION_MISMATCH');
+        }
+      }
+      const byCode = new Map(
+        accounts.map((account) => [account.code, account]),
+      );
+      const entries: Prisma.LedgerEntryCreateManyInput[] = [];
+      for (const line of positiveLines) {
+        const account = byCode.get(line.code)!;
+        const nextBalance = account.currentBalance.plus(
+          this.getBalanceDelta(account.type, line.direction, line.amount),
+        );
+        if (nextBalance.abs().greaterThan('9999999999999999.99')) {
+          throw new BadRequestException('LEDGER_BALANCE_OUT_OF_RANGE');
+        }
+        account.currentBalance = nextBalance;
+        entries.push({
+          transactionId,
+          accountId: account.id,
+          direction: line.direction,
+          amount: line.amount,
+          balanceAfter: nextBalance,
+        });
+      }
+      const balances = accounts.map(
+        (account) => Prisma.sql`
+        (${account.id}::uuid, ${account.currentBalance.toFixed(2)}::numeric)
+      `,
+      );
+      await tx.$executeRaw(Prisma.sql`
+        UPDATE "LedgerAccount" AS account
+        SET "currentBalance" = balances.amount,
+            "updatedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+        FROM (VALUES ${Prisma.join(balances)}) AS balances(id, amount)
+        WHERE account."id" = balances.id
+      `);
+      await tx.ledgerEntry.createMany({ data: entries });
+    }
+
+    return tx.ledgerTransaction.findUniqueOrThrow({
+      where: { id: transactionId },
       include: {
         entries: {
           include: {
@@ -709,28 +803,37 @@ export class LedgerService {
     });
   }
 
-  private async ensureAccount(tx: Prisma.TransactionClient, line: LedgerLine) {
-    const existing = await (tx as any).ledgerAccount.findUnique({
-      where: { code: line.code },
-    });
-    if (existing) {
-      return existing;
-    }
+  private sameAccountDefinition(
+    left: Pick<
+      LedgerLine,
+      'type' | 'subType' | 'entityType' | 'entityId' | 'isSystemAccount'
+    >,
+    right: Pick<
+      LedgerLine,
+      'type' | 'subType' | 'entityType' | 'entityId' | 'isSystemAccount'
+    >,
+  ) {
+    return (
+      left.type === right.type &&
+      left.subType === right.subType &&
+      (left.entityType ?? null) === (right.entityType ?? null) &&
+      (left.entityId ?? null) === (right.entityId ?? null) &&
+      Boolean(left.isSystemAccount) === Boolean(right.isSystemAccount)
+    );
+  }
 
-    return (tx as any).ledgerAccount.create({
-      data: {
-        code: line.code,
-        name: line.name,
-        type: line.type,
-        subType: line.subType,
-        entityType: line.entityType ?? null,
-        entityId: line.entityId ?? null,
-        currency: 'NGN',
-        currentBalance: new Prisma.Decimal('0.00'),
-        isSystemAccount: Boolean(line.isSystemAccount),
-        isActive: true,
-      },
-    });
+  private ledgerMoney(value: number) {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new BadRequestException('LEDGER_INVALID_AMOUNT');
+    }
+    const amount = new Prisma.Decimal(value).toDecimalPlaces(
+      2,
+      Prisma.Decimal.ROUND_HALF_UP,
+    );
+    if (amount.greaterThan('9999999999999999.99')) {
+      throw new BadRequestException('LEDGER_AMOUNT_OUT_OF_RANGE');
+    }
+    return amount;
   }
 
   private getBrandWalletCode(brandId: string) {
@@ -740,17 +843,17 @@ export class LedgerService {
   private getBalanceDelta(
     accountType: LedgerAccountType,
     direction: LedgerEntryDirection,
-    amount: number,
+    amount: Prisma.Decimal,
   ) {
     const isDebitIncrease =
       accountType === LedgerAccountType.ASSET ||
       accountType === LedgerAccountType.EXPENSE;
 
     if (direction === LedgerEntryDirection.DEBIT) {
-      return isDebitIncrease ? amount : -amount;
+      return isDebitIncrease ? amount : amount.negated();
     }
 
-    return isDebitIncrease ? -amount : amount;
+    return isDebitIncrease ? amount.negated() : amount;
   }
 
   private roundMoney(value: number) {
