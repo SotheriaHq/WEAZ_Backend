@@ -27,6 +27,8 @@ The three missing SIT columns are reminderDayBeforeAt, reminderHourBeforeAt and 
 
 Snapshots, caches, arrays and unbound IDs are review candidates, not automatically normalization defects. Purchase-time financial snapshots must retain their historical meaning. Sample counts of zero do not prove every writer preserves an invariant.
 
+Foreign-key candidates now come from PostgreSQL pg_constraint/pg_attribute. Prisma 7 runtime DMMF omits relationFromFields and mapped-column details; using it for this purpose incorrectly listed existing foreign keys as unbound. Both reports were rerun with the catalog query. An absent constraint may already be supplied by an unapplied release migration, such as cart/wishlist ownership; compare the migration history before proposing another constraint.
+
 ## Changes and evidence
 
 The combined focused regression run passed 14 suites / 103 tests, and the backend semantic TypeScript check passed. These checks are local; live API cutover and physical-device regression are pending.

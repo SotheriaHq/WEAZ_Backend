@@ -13,6 +13,17 @@ async function main() {
   await client.connect();
   try {
     await client.query('BEGIN READ ONLY');
+    // Prisma 7 runtime DMMF omits relationFromFields/dbName. Read actual constraints.
+    const uuidColumns = (await client.query(`SELECT columns.table_name, columns.column_name,
+      EXISTS (SELECT 1 FROM pg_constraint constraint_row
+        JOIN pg_class relation ON relation.oid=constraint_row.conrelid
+        JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+        JOIN pg_attribute attribute ON attribute.attrelid=relation.oid AND attribute.attnum=ANY(constraint_row.conkey)
+        WHERE constraint_row.contype IN ('f','p') AND namespace.nspname=columns.table_schema
+          AND relation.relname=columns.table_name AND attribute.attname=columns.column_name) AS bound
+      FROM information_schema.columns columns
+      WHERE columns.table_schema=current_schema() AND columns.udt_name='uuid'
+      ORDER BY columns.table_name,columns.column_name`)).rows;
     const report = {
       generatedAt: new Date().toISOString(), scope: local ? 'configured database via loopback (read-only)' : 'configured remote database (read-only)',
       serverVersion: (await client.query('SHOW server_version')).rows[0].server_version,
@@ -20,12 +31,11 @@ async function main() {
         models: models.length,
         relationalFields: models.flatMap((model) => model.fields.filter((field) => field.kind === 'object')).length,
         jsonFields: models.flatMap((model) => model.fields.filter((field) => field.type === 'Json')).length,
-        // These are review candidates, not automatic normalization defects.
-        unboundIdCandidates: models.flatMap((model) => {
-          const foreignFields = new Set(model.fields.flatMap((field) => field.relationFromFields ?? []));
-          return model.fields.filter((field) => field.kind === 'scalar' && /Id$/.test(field.name) && field.name !== 'id' && !foreignFields.has(field.name))
-            .map((field) => `${model.name}.${field.name}`);
-        }),
+        relationMetadataSource: 'PostgreSQL pg_constraint/pg_attribute; runtime DMMF omits relation fields',
+        uuidColumnsInspected: uuidColumns.length,
+        // Polymorphic IDs and immutable actor/source snapshots can be intentional.
+        unboundIdCandidates: uuidColumns.filter((column) => !column.bound && !['id','_id'].includes(column.column_name))
+          .map((column) => `${column.table_name}.${column.column_name}`),
       }, counts: {}, migrationHealth: {},
     };
     const queries = {
