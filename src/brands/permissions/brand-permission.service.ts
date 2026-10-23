@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { BrandMemberRole, BrandMemberStatus } from '@prisma/client';
+import { BrandMemberRole, BrandMemberStatus, Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import {
   BRAND_PERMISSION_CODES,
@@ -204,6 +204,25 @@ export class BrandPermissionService {
       ...ROLE_DEFAULT_PERMISSIONS[membership.role],
       ...explicitPermissions,
     ]);
+  }
+
+  /** SQL counterpart of getEffectivePermissions for bounded, joined resource reads. */
+  buildPermissionPredicate(userId: string, permission: BrandPermissionCode, brandId: Prisma.Sql, ownerId: Prisma.Sql): Prisma.Sql {
+    const validated = this.validatePermissionCode(permission);
+    const roles = [...new Set<BrandMemberRole>([
+      BrandMemberRole.OWNER,
+      ...Object.entries(ROLE_DEFAULT_PERMISSIONS)
+        .filter(([, permissions]) => permissions.some((permission) => permission === validated))
+        .map(([role]) => role as BrandMemberRole),
+    ])];
+    return Prisma.sql`(${ownerId} = ${userId}::uuid OR EXISTS (
+      SELECT 1 FROM "BrandMember" permission_member
+      WHERE permission_member."brandId" = ${brandId} AND permission_member."userId" = ${userId}::uuid
+        AND permission_member.status = 'ACTIVE'
+        AND (permission_member.role IN (${Prisma.join(roles.map((role) => Prisma.sql`${role}::"BrandMemberRole"`))})
+          OR EXISTS (SELECT 1 FROM "BrandPermissionGrant" permission_grant
+            WHERE permission_grant."brandMemberId" = permission_member.id AND permission_grant."permissionCode" = ${validated}))
+    ))`;
   }
 
   async getBrandIdsWithPermission(userId: string, permission: BrandPermissionCode): Promise<string[]> {

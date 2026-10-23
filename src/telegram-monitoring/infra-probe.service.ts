@@ -36,7 +36,14 @@ const WORKER_STALE_AFTER_SECONDS = 150;
 export type ProbeResult = { ok: boolean; detail: string; latencyMs?: number };
 
 export type QueueStat =
-  | { name: string; waiting: number; active: number; delayed: number; failed: number; paused: number }
+  | {
+      name: string;
+      waiting: number;
+      active: number;
+      delayed: number;
+      failed: number;
+      paused: number;
+    }
   | { name: string; error: string };
 
 export type InfraSnapshot = {
@@ -46,7 +53,12 @@ export type InfraSnapshot = {
   api: ProbeResult;
   worker: ProbeResult;
   queues: QueueStat[];
-  memory: { totalMb: number; availableMb: number; swapTotalMb: number; swapUsedPct: number | null } | null;
+  memory: {
+    totalMb: number;
+    availableMb: number;
+    swapTotalMb: number;
+    swapUsedPct: number | null;
+  } | null;
   disk: { usedPct: number; freeGb: number } | null;
   processRssMb: number;
 };
@@ -61,15 +73,16 @@ export class InfraProbeService {
   ) {}
 
   async snapshot(): Promise<InfraSnapshot> {
-    const [database, redis, api, worker, queues, memory, disk] = await Promise.all([
-      this.probeDatabase(),
-      this.probeRedis(),
-      this.probeApi(),
-      this.probeWorker(),
-      this.queueStats(),
-      this.memory(),
-      this.disk(),
-    ]);
+    const [database, redis, api, worker, queues, memory, disk] =
+      await Promise.all([
+        this.probeDatabase(),
+        this.probeRedis(),
+        this.probeApi(),
+        this.probeWorker(),
+        this.queueStats(),
+        this.memory(),
+        this.disk(),
+      ]);
     return {
       takenAt: new Date(),
       database,
@@ -89,7 +102,11 @@ export class InfraProbeService {
       await bounded(this.prisma.$queryRaw`SELECT 1`, 'database');
       return { ok: true, detail: 'reachable', latencyMs: Date.now() - started };
     } catch (error) {
-      return { ok: false, detail: describeProbeError(error), latencyMs: Date.now() - started };
+      return {
+        ok: false,
+        detail: describeProbeError(error),
+        latencyMs: Date.now() - started,
+      };
     }
   }
 
@@ -101,7 +118,11 @@ export class InfraProbeService {
       await bounded(redis.ping(), 'redis');
       return { ok: true, detail: 'reachable', latencyMs: Date.now() - started };
     } catch (error) {
-      return { ok: false, detail: describeProbeError(error), latencyMs: Date.now() - started };
+      return {
+        ok: false,
+        detail: describeProbeError(error),
+        latencyMs: Date.now() - started,
+      };
     }
   }
 
@@ -117,19 +138,28 @@ export class InfraProbeService {
         latencyMs: Date.now() - started,
       };
     } catch (error) {
-      return { ok: false, detail: describeProbeError(error), latencyMs: Date.now() - started };
+      return {
+        ok: false,
+        detail: describeProbeError(error),
+        latencyMs: Date.now() - started,
+      };
     }
   }
 
   async probeWorker(): Promise<ProbeResult> {
     try {
       const redis = await this.delivery.redis();
-      if (!redis) return { ok: false, detail: 'Redis unavailable; heartbeat unknown' };
-      const raw = await bounded(redis.get(PAYMENT_QUEUE_WORKER_HEARTBEAT_KEY), 'heartbeat');
+      if (!redis)
+        return { ok: false, detail: 'Redis unavailable; heartbeat unknown' };
+      const raw = await bounded(
+        redis.get(PAYMENT_QUEUE_WORKER_HEARTBEAT_KEY),
+        'heartbeat',
+      );
       if (!raw) return { ok: false, detail: 'no heartbeat seen' };
       const runAt = new Date(JSON.parse(raw)?.runAt ?? '');
       const ageSeconds = Math.round((Date.now() - runAt.getTime()) / 1000);
-      if (!Number.isFinite(ageSeconds)) return { ok: false, detail: 'heartbeat unreadable' };
+      if (!Number.isFinite(ageSeconds))
+        return { ok: false, detail: 'heartbeat unreadable' };
       return ageSeconds > WORKER_STALE_AFTER_SECONDS
         ? { ok: false, detail: `heartbeat stale (${ageSeconds}s old)` }
         : { ok: true, detail: `heartbeat ${ageSeconds}s ago` };
@@ -142,9 +172,17 @@ export class InfraProbeService {
     return Promise.all(
       MONITORED_QUEUES.map(async (name): Promise<QueueStat> => {
         try {
-          const queue = this.moduleRef.get<Queue>(getQueueToken(name), { strict: false });
+          const queue = this.moduleRef.get<Queue>(getQueueToken(name), {
+            strict: false,
+          });
           const counts = await bounded(
-            queue.getJobCounts('waiting', 'active', 'delayed', 'failed', 'paused'),
+            queue.getJobCounts(
+              'waiting',
+              'active',
+              'delayed',
+              'failed',
+              'paused',
+            ),
             `queue ${name}`,
           );
           return {
@@ -163,10 +201,18 @@ export class InfraProbeService {
   }
 
   /** Recent failed jobs for one queue: names and a short, scrubbed reason only. */
-  async recentFailures(name: string, limit = 3): Promise<Array<{ jobName: string; reason: string; at: Date | null }>> {
+  async recentFailures(
+    name: string,
+    limit = 3,
+  ): Promise<Array<{ jobName: string; reason: string; at: Date | null }>> {
     try {
-      const queue = this.moduleRef.get<Queue>(getQueueToken(name), { strict: false });
-      const jobs = await bounded(queue.getFailed(0, Math.max(0, limit - 1)), `failed ${name}`);
+      const queue = this.moduleRef.get<Queue>(getQueueToken(name), {
+        strict: false,
+      });
+      const jobs = await bounded(
+        queue.getFailed(0, Math.max(0, limit - 1)),
+        `failed ${name}`,
+      );
       return jobs.map((job) => ({
         jobName: String(job?.name ?? 'unknown'),
         reason: scrubReason(job?.failedReason),
@@ -188,12 +234,16 @@ export class InfraProbeService {
       const available = read('MemAvailable');
       const swapTotal = read('SwapTotal') ?? 0;
       const swapFree = read('SwapFree') ?? 0;
-      if (total === null || available === null) throw new Error('meminfo incomplete');
+      if (total === null || available === null)
+        throw new Error('meminfo incomplete');
       return {
         totalMb: Math.round(total),
         availableMb: Math.round(available),
         swapTotalMb: Math.round(swapTotal),
-        swapUsedPct: swapTotal > 0 ? Math.round(((swapTotal - swapFree) / swapTotal) * 100) : null,
+        swapUsedPct:
+          swapTotal > 0
+            ? Math.round(((swapTotal - swapFree) / swapTotal) * 100)
+            : null,
       };
     } catch {
       // Non-Linux (local dev): os.freemem() excludes reclaimable cache, so it
@@ -209,7 +259,9 @@ export class InfraProbeService {
 
   private async disk(): Promise<InfraSnapshot['disk']> {
     try {
-      const stats = await fs.statfs(process.platform === 'win32' ? process.cwd() : '/');
+      const stats = await fs.statfs(
+        process.platform === 'win32' ? process.cwd() : '/',
+      );
       const total = stats.blocks * stats.bsize;
       const free = stats.bavail * stats.bsize;
       if (!total) return null;
@@ -228,7 +280,10 @@ function bounded<T>(promise: Promise<T>, label: string): Promise<T> {
   return Promise.race([
     promise,
     new Promise<T>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`${label} probe timed out`)), PROBE_TIMEOUT_MS);
+      timer = setTimeout(
+        () => reject(new Error(`${label} probe timed out`)),
+        PROBE_TIMEOUT_MS,
+      );
       timer.unref?.();
     }),
   ]).finally(() => {

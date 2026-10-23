@@ -4386,58 +4386,6 @@ export class CollectionsService {
         if (presign.s3Key !== completion.s3Key) {
           throw new BadRequestException('S3 key mismatch for presign record');
         }
-        const now = new Date();
-        if (presign.expiresAt && presign.expiresAt < now) {
-          await this.prisma.presignedUpload.update({
-            where: { id: completion.fileId },
-            data: { status: 'EXPIRED' },
-          });
-          throw new BadRequestException('Presign has expired');
-        }
-        if (presign.status === 'USED') {
-          const existing = await this.prisma.fileUpload.findUnique({
-            where: { id: completion.fileId },
-          });
-          if (existing) {
-            return {
-              file: existing,
-              orderIndex: presign.orderIndex ?? null,
-              viewSlot:
-                (completion as any).viewSlot ??
-                (presign as any).viewSlot ??
-                null,
-            };
-          }
-          throw new BadRequestException('Presign already used');
-        }
-        if (presign.status === 'EXPIRED') {
-          throw new BadRequestException('Presign has expired');
-        }
-        if (presign.status !== 'PENDING' && presign.status !== 'READY') {
-          throw new BadRequestException('Presign is not ready for use');
-        }
-
-        const exists = await this.uploadService.verifyObjectExists(
-          completion.s3Key,
-        );
-        if (!exists) {
-          throw new BadRequestException(
-            `File not found in S3: ${completion.s3Key}`,
-          );
-        }
-
-        const existing = await this.prisma.fileUpload.findUnique({
-          where: { id: completion.fileId },
-        });
-        if (existing) {
-          return {
-            file: existing,
-            orderIndex: presign.orderIndex ?? null,
-            viewSlot:
-              (completion as any).viewSlot ?? (presign as any).viewSlot ?? null,
-          };
-        }
-
         const fileUpload = await this.uploadService.createFileRecordFromPresign(
           completion.fileId,
           userId,
@@ -4491,17 +4439,6 @@ export class CollectionsService {
         });
       }
     });
-
-    const enqueueAt = new Date();
-    for (const entry of verifiedFiles) {
-      const file = entry.file;
-      await (this.prisma as any).presignedUpload.updateMany({
-        where: { id: file.id, status: 'USED' },
-        data: { processingEnqueuedAt: enqueueAt },
-      });
-
-      await this.uploadService.enqueueImageProcessing(file.id);
-    }
 
     let coverMediaId: string | null = dto.coverMediaId ?? null;
     if (coverMediaId) {

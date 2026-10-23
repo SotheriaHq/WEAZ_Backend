@@ -723,9 +723,6 @@ enum SubscriptionTierKey {
   ASO_OKE
   ARU
   IGWE
-  /// Internal. Brands already on WIEZ keep today's unlimited caps until an
-  /// admin assigns a paid tier. Not sold.
-  LEGACY
 }
 
 enum BrandSubscriptionStatus {
@@ -2810,7 +2807,6 @@ model Brand {
   /// Super-admin / admin override of the tier's Active cap. Null uses the tier.
   activeOrderCapOverride        Int?
   activeOrderCapOverrideUntil   DateTime?
-  customOrderLegacyEligible     Boolean  @default(false)
   assignedSubscriptionTierKey   SubscriptionTierKey?
   queuePriorityStreak           Int      @default(0)
   /// Raised when one action cancels more than 5 pending custom orders.
@@ -6629,6 +6625,8 @@ model AdminEmailChangeRequest {
 // Durable storage side effects are committed together with the file-row deletion.
 model StorageObjectDeletion {
   s3Key         String    @id
+  processingFileId String? @db.Uuid
+  processingLeaseToken String? @db.Uuid
   attempts      Int       @default(0)
   nextAttemptAt DateTime  @default(now())
   leaseUntil    DateTime?

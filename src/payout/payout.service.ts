@@ -25,6 +25,7 @@ import { BrandBalanceService } from 'src/finance/brand-balance.service';
 import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-sync.service';
 import { assertBrandPayoutSafe } from 'src/finance/brand-financial-safety';
 import { PrismaService } from '../prisma/prisma.service';
+import { loadByIds } from '../common/bulk-read.util';
 import { AdminAuditService } from 'src/admin/services/admin-audit.service';
 import {
   canonicalUserProfileSelect,
@@ -1446,6 +1447,7 @@ export class PayoutService {
     });
 
     let remaining = this.roundMoney(requestedAmount);
+    const selectedEntries: Array<{ entry: (typeof creditEntries)[number]; amount: number }> = [];
     const rows: Array<{
       payoutId: string;
       ledgerEntryId: string;
@@ -1475,19 +1477,7 @@ export class PayoutService {
         continue;
       }
 
-      const metadata = await this.resolveEscrowSourceForLedgerEntry(tx, {
-        referenceType: entry.transaction?.referenceType,
-        referenceId: entry.transaction?.referenceId,
-        description: entry.transaction?.description,
-      });
-      rows.push({
-        payoutId,
-        ledgerEntryId: entry.id,
-        amount: new Prisma.Decimal(toReserve.toFixed(2)),
-        currency,
-        escrowHoldId: metadata.escrowHoldId,
-        releaseStage: metadata.releaseStage,
-      });
+      selectedEntries.push({ entry, amount: toReserve });
 
       remaining = this.roundMoney(remaining - toReserve);
       if (remaining <= 0) {
@@ -1501,6 +1491,29 @@ export class PayoutService {
           requestedAmount - remaining,
         )}.`,
       );
+    }
+
+    // Fetch only the sources actually selected for this payout, in bounded batches.
+    // ORDER is a polymorphic ledger reference, so it has no Prisma FK to join.
+    const orderIds = selectedEntries
+      .filter(({ entry }) => String(entry.transaction?.referenceType ?? '').trim().toUpperCase() === 'ORDER')
+      .map(({ entry }) => String(entry.transaction?.referenceId ?? '').trim())
+      .filter(Boolean);
+    const holdsByOrderId = await loadByIds(orderIds, async (ids) => {
+      const holds = await tx.escrowHold.findMany({
+        where: { orderId: { in: ids } },
+        select: { id: true, orderId: true, firstReleasedAt: true },
+      });
+      return holds.map((hold) => ({ ...hold, id: hold.orderId, escrowHoldId: hold.id }));
+    });
+    for (const { entry, amount } of selectedEntries) {
+      const metadata = this.resolveEscrowSourceForLedgerEntry({
+        referenceType: entry.transaction?.referenceType,
+        referenceId: entry.transaction?.referenceId,
+        description: entry.transaction?.description,
+      }, holdsByOrderId);
+      rows.push({ payoutId, ledgerEntryId: entry.id, amount: new Prisma.Decimal(amount.toFixed(2)),
+        currency, escrowHoldId: metadata.escrowHoldId, releaseStage: metadata.releaseStage });
     }
 
     if (rows.length === 0) {
@@ -1521,17 +1534,17 @@ export class PayoutService {
     });
   }
 
-  private async resolveEscrowSourceForLedgerEntry(
-    tx: Prisma.TransactionClient,
-    params?: {
+  private resolveEscrowSourceForLedgerEntry(
+    params: {
       referenceType?: string | null;
       referenceId?: string | null;
       description?: string | null;
     },
-  ): Promise<{
+    holdsByOrderId: ReadonlyMap<string, { escrowHoldId: string; firstReleasedAt: Date | null }>,
+  ): {
     escrowHoldId: string | null;
     releaseStage: 'SHIPMENT_PORTION' | 'FINAL_PORTION' | null;
-  }> {
+  } {
     if (
       String(params?.referenceType ?? '')
         .trim()
@@ -1545,10 +1558,7 @@ export class PayoutService {
       return { escrowHoldId: null, releaseStage: null };
     }
 
-    const hold = await tx.escrowHold.findUnique({
-      where: { orderId },
-      select: { id: true, firstReleasedAt: true, secondReleasedAt: true },
-    });
+    const hold = holdsByOrderId.get(orderId);
 
     if (!hold) {
       return { escrowHoldId: null, releaseStage: null };
@@ -1556,16 +1566,16 @@ export class PayoutService {
 
     const description = String(params?.description ?? '').toLowerCase();
     if (description.includes('shipment')) {
-      return { escrowHoldId: hold.id, releaseStage: 'SHIPMENT_PORTION' };
+      return { escrowHoldId: hold.escrowHoldId, releaseStage: 'SHIPMENT_PORTION' };
     }
     if (description.includes('final')) {
-      return { escrowHoldId: hold.id, releaseStage: 'FINAL_PORTION' };
+      return { escrowHoldId: hold.escrowHoldId, releaseStage: 'FINAL_PORTION' };
     }
     if (hold.firstReleasedAt) {
-      return { escrowHoldId: hold.id, releaseStage: 'SHIPMENT_PORTION' };
+      return { escrowHoldId: hold.escrowHoldId, releaseStage: 'SHIPMENT_PORTION' };
     }
 
-    return { escrowHoldId: hold.id, releaseStage: null };
+    return { escrowHoldId: hold.escrowHoldId, releaseStage: null };
   }
 
   async assertBrandOwnership(brandId: string, ownerId: string): Promise<void> {

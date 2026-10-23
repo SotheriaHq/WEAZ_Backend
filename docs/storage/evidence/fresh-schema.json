@@ -1,0 +1,31 @@
+{
+  "checkedAt": "2026-10-23T10:36:28.395Z",
+  "passed": true,
+  "appliedMigrations": 141,
+  "failures": [],
+  "cleanupPassed": true,
+  "subscriptionTierValues": [
+    "THREAD",
+    "ASO_OKE",
+    "ARU",
+    "IGWE"
+  ],
+  "grandfatherFlagRemoved": true,
+  "errorCodes": [],
+  "seedExitCodes": [
+    0,
+    0
+  ],
+  "seedCounts": {
+    "users": 1,
+    "admins": 1,
+    "uploads": 0,
+    "content": 0,
+    "measurements": 38,
+    "charts": 46,
+    "tags": 130,
+    "categories": 13,
+    "settings": 21,
+    "settlement_policies": 2
+  }
+}

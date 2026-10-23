@@ -1,0 +1,18 @@
+# Generated from verified SIT endpoint inputs; contains no credentials.
+name = "wiez-sit-media-gateway"
+main = "worker.mjs"
+compatibility_date = "2026-10-21"
+workers_dev = true
+preview_urls = false
+routes = []
+
+[[r2_buckets]]
+binding = "MEDIA_BUCKET"
+bucket_name = "wiez-sit-media"
+
+[vars]
+MEDIA_GATEWAY_BASE_URL = "https://wiez-sit-media-gateway.sotheria-hq.workers.dev"
+MEDIA_GATEWAY_ENVIRONMENT = "sit"
+MEDIA_GATEWAY_MAX_TTL_SECONDS = "900"
+MEDIA_GATEWAY_ALLOWED_ORIGINS = "https://weaz.me,http://localhost:3000,http://localhost:5173,http://localhost:5174,http://192.168.110.91:3000"
+MEDIA_GATEWAY_CACHE_VERSION = "v1"

@@ -1,0 +1,93 @@
+{
+  "source": "src/upload/upload.service.ts finalizeStoredUpload actual SQL and generated Prisma claims",
+  "fixtureTimeZone": "Africa/Lagos",
+  "checks": [
+    {
+      "category": "publish-fence",
+      "name": "active owner lease",
+      "expectedRows": 1,
+      "actualRows": 1,
+      "pass": true
+    },
+    {
+      "category": "publish-fence",
+      "name": "wrong owner",
+      "expectedRows": 0,
+      "actualRows": 0,
+      "pass": true
+    },
+    {
+      "category": "publish-fence",
+      "name": "stale token",
+      "expectedRows": 0,
+      "actualRows": 0,
+      "pass": true
+    },
+    {
+      "category": "publish-fence",
+      "name": "expired lease",
+      "expectedRows": 0,
+      "actualRows": 0,
+      "pass": true
+    },
+    {
+      "category": "publish-fence",
+      "name": "already finalized",
+      "expectedRows": 0,
+      "actualRows": 0,
+      "pass": true
+    },
+    {
+      "category": "publish-fence",
+      "name": "lease expires while waiting for unchanged row lock",
+      "expectedRows": 0,
+      "actualRows": 0,
+      "pass": true
+    },
+    {
+      "category": "claim",
+      "name": "20 generated-Prisma concurrent claims produce one winner",
+      "expectedRows": 1,
+      "actualRows": 1,
+      "pass": true
+    },
+    {
+      "category": "publish-fence",
+      "name": "fresh generated-Prisma lease is accepted by the raw publication fence",
+      "expectedRows": 1,
+      "actualRows": 1,
+      "pass": true
+    },
+    {
+      "category": "claim",
+      "name": "stale token cannot release the winning lease",
+      "expectedRows": 0,
+      "actualRows": 0,
+      "pass": true
+    },
+    {
+      "category": "claim",
+      "name": "claim denies wrong actor before storage I/O",
+      "expectedRows": 0,
+      "actualRows": 0,
+      "pass": true
+    },
+    {
+      "category": "claim",
+      "name": "claim denies expired upload before storage I/O",
+      "expectedRows": 0,
+      "actualRows": 0,
+      "pass": true
+    },
+    {
+      "category": "startup-policy",
+      "name": "canonical helper overrides prior URL timezone and preserves timeout",
+      "pass": true
+    },
+    {
+      "category": "startup-policy",
+      "name": "canonical helper overrides PGOPTIONS timezone and preserves lock timeout",
+      "pass": true
+    }
+  ]
+}

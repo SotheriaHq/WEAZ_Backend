@@ -35,8 +35,8 @@ describe('approved paid queue policy', () => {
   it('restricts paid jumps to Aru and Igwe', () => {
     expect(SUBSCRIPTION_TIERS.filter(t => t.queueJumpAllowed).map(t => t.key)).toEqual(['ARU', 'IGWE']);
   });
-  it('represents Legacy capacity as unlimited', () => {
-    expect(SUBSCRIPTION_TIERS.find(t => t.key === 'LEGACY')?.maxActive).toBeNull();
+  it('exposes exactly the four paid tiers', () => {
+    expect(SUBSCRIPTION_TIERS.map(t => t.key)).toEqual(['THREAD', 'ASO_OKE', 'ARU', 'IGWE']);
   });
   it('serves an ordinary order after two priority activations', () => {
     const rows = [{ id: 'jump-a', queuePriority: 1 }, { id: 'jump-b', queuePriority: 1 }, { id: 'normal', queuePriority: 0 }];

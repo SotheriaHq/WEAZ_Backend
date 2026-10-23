@@ -1,0 +1,180 @@
+{
+  "source": "exact UploadService.loadSharedViewerFileIds and BrandPermissionService.buildPermissionPredicate",
+  "checks": [
+    {
+      "name": "participant plus approved access extends to another collection from the same brand",
+      "pass": true,
+      "expectedCount": 2,
+      "actualCount": 2,
+      "sqlCalls": 1
+    },
+    {
+      "name": "brand owner without participant membership",
+      "pass": true,
+      "expectedCount": 1,
+      "actualCount": 1,
+      "sqlCalls": 1
+    },
+    {
+      "name": "unrelated brand owner denied",
+      "pass": true,
+      "expectedCount": 0,
+      "actualCount": 0,
+      "sqlCalls": 1
+    },
+    {
+      "name": "manager default read permission",
+      "pass": true,
+      "expectedCount": 1,
+      "actualCount": 1,
+      "sqlCalls": 1
+    },
+    {
+      "name": "support default read permission",
+      "pass": true,
+      "expectedCount": 1,
+      "actualCount": 1,
+      "sqlCalls": 1
+    },
+    {
+      "name": "explicit read grant for catalog manager",
+      "pass": true,
+      "expectedCount": 1,
+      "actualCount": 1,
+      "sqlCalls": 1
+    },
+    {
+      "name": "viewer role without messages.read denied",
+      "pass": true,
+      "expectedCount": 0,
+      "actualCount": 0,
+      "sqlCalls": 1
+    },
+    {
+      "name": "inactive membership denied",
+      "pass": true,
+      "expectedCount": 0,
+      "actualCount": 0,
+      "sqlCalls": 1
+    },
+    {
+      "name": "another brand membership denied",
+      "pass": true,
+      "expectedCount": 0,
+      "actualCount": 0,
+      "sqlCalls": 1
+    },
+    {
+      "name": "revoked explicit permission denied",
+      "pass": true,
+      "expectedCount": 0,
+      "actualCount": 0,
+      "sqlCalls": 1
+    },
+    {
+      "name": "HIDDEN attachment denied to participant",
+      "pass": true,
+      "expectedCount": 0,
+      "actualCount": 0,
+      "sqlCalls": 1
+    },
+    {
+      "name": "HIDDEN attachment denied to brand reader",
+      "pass": true,
+      "expectedCount": 0,
+      "actualCount": 0,
+      "sqlCalls": 1
+    },
+    {
+      "name": "REDACTED attachment denied to participant",
+      "pass": true,
+      "expectedCount": 0,
+      "actualCount": 0,
+      "sqlCalls": 1
+    },
+    {
+      "name": "REDACTED attachment denied to brand reader",
+      "pass": true,
+      "expectedCount": 0,
+      "actualCount": 0,
+      "sqlCalls": 1
+    },
+    {
+      "name": "legacy order brand fallback",
+      "pass": true,
+      "expectedCount": 1,
+      "actualCount": 1,
+      "sqlCalls": 1
+    },
+    {
+      "name": "legacy custom order brand fallback",
+      "pass": true,
+      "expectedCount": 1,
+      "actualCount": 1,
+      "sqlCalls": 1
+    },
+    {
+      "name": "brand owner alias resolves owner grant",
+      "pass": true,
+      "expectedCount": 1,
+      "actualCount": 1,
+      "sqlCalls": 1
+    },
+    {
+      "name": "brand owner alias resolves team grant",
+      "pass": true,
+      "expectedCount": 1,
+      "actualCount": 1,
+      "sqlCalls": 1
+    },
+    {
+      "name": "direct brand takes precedence over legacy order brand",
+      "pass": true,
+      "expectedCount": 0,
+      "actualCount": 0,
+      "sqlCalls": 1
+    },
+    {
+      "name": "revoked private collection approval",
+      "pass": true,
+      "expectedCount": 0,
+      "actualCount": 0,
+      "sqlCalls": 1
+    },
+    {
+      "name": "deleted approval source collection denied",
+      "pass": true,
+      "expectedCount": 0,
+      "actualCount": 0,
+      "sqlCalls": 1
+    },
+    {
+      "name": "draft target collection denied",
+      "pass": true,
+      "expectedCount": 0,
+      "actualCount": 0,
+      "sqlCalls": 1
+    },
+    {
+      "name": "deleted target collection denied",
+      "pass": true,
+      "expectedCount": 0,
+      "actualCount": 0,
+      "sqlCalls": 1
+    },
+    {
+      "name": "private collection feature disabled",
+      "pass": true,
+      "expectedCount": 0,
+      "actualCount": 0,
+      "sqlCalls": 1
+    },
+    {
+      "name": "empty batch performs no query",
+      "pass": true,
+      "expectedCount": 0,
+      "actualCount": 0,
+      "sqlCalls": 0
+    }
+  ]
+}

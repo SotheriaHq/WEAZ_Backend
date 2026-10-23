@@ -61,7 +61,8 @@ export class SentryApiClient {
       `/api/0/organizations/${encodeURIComponent(this.config.sentryOrgSlug)}/issues/${issueId}/events/latest/`,
     );
     const entries: any[] = Array.isArray(event?.entries) ? event.entries : [];
-    const entry = (type: string) => entries.find((candidate) => candidate?.type === type)?.data;
+    const entry = (type: string) =>
+      entries.find((candidate) => candidate?.type === type)?.data;
     return extractEventDetails({
       event_id: event?.eventID ?? event?.id,
       exception: entry('exception'),
@@ -104,7 +105,9 @@ export class SentryApiClient {
 
   private async get<T>(path: string): Promise<T> {
     if (!this.isConfigured()) {
-      throw new SentryApiUnavailableError('SENTRY_API_TOKEN/SENTRY_ORG_SLUG not configured');
+      throw new SentryApiUnavailableError(
+        'SENTRY_API_TOKEN/SENTRY_ORG_SLUG not configured',
+      );
     }
     let response: Response;
     try {
@@ -115,11 +118,15 @@ export class SentryApiClient {
     } catch (error) {
       const name = error instanceof Error ? error.name : 'Error';
       throw new SentryApiUnavailableError(
-        name === 'TimeoutError' ? `Sentry API timed out after ${SENTRY_TIMEOUT_MS}ms` : `Sentry API network failure (${name})`,
+        name === 'TimeoutError'
+          ? `Sentry API timed out after ${SENTRY_TIMEOUT_MS}ms`
+          : `Sentry API network failure (${name})`,
       );
     }
     if (!response.ok) {
-      throw new SentryApiUnavailableError(`Sentry API responded ${response.status}`);
+      throw new SentryApiUnavailableError(
+        `Sentry API responded ${response.status}`,
+      );
     }
     return (await response.json()) as T;
   }

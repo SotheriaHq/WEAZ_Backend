@@ -7,10 +7,7 @@ import * as argon2 from 'argon2';
 // An explicit SYSTEM_ADMIN_EMAIL env var always overrides these defaults.
 export const DEFAULT_SYSTEM_ADMIN_EMAIL_TEST = 'adminoversee@test.com';
 export const DEFAULT_SYSTEM_ADMIN_EMAIL_NON_TEST = 'adminoversee@wiez.com';
-// Backwards-compatible alias for existing imports.
-export const DEFAULT_SYSTEM_ADMIN_EMAIL = DEFAULT_SYSTEM_ADMIN_EMAIL_TEST;
 export const SYSTEM_ADMIN_EMAIL_ENV_KEY = 'SYSTEM_ADMIN_EMAIL';
-export const SYSTEM_ADMIN_PASSWORD = 'Password@123';
 export const SYSTEM_ADMIN_USERNAME = 'systemadmin';
 
 function resolveEnvironmentMarker(env: NodeJS.ProcessEnv = process.env): string {
@@ -42,26 +39,22 @@ export async function ensureSystemAdmin(prisma: PrismaClient) {
   const systemAdminEmail = resolveSystemAdminEmail();
   const existing = await prisma.user.findUnique({
     where: { email: systemAdminEmail },
-    select: { id: true },
+    select: { id: true, role: true },
   });
 
   let userId = existing?.id;
 
   if (userId) {
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        username: SYSTEM_ADMIN_USERNAME,
-        role: 'SuperAdmin',
-        type: 'REGULAR',
-        status: 'ACTIVE',
-        isActive: 'Active',
-        isEmailVerified: true,
-        mustResetPassword: false,
-      },
-    });
+    // Reseeding must never reactivate a suspended account or clear its reset requirement.
+    if (existing.role !== 'SuperAdmin') {
+      throw new Error('Configured system admin email belongs to a different account role.');
+    }
   } else {
-    const hashedPassword = await argon2.hash(SYSTEM_ADMIN_PASSWORD);
+    const password = process.env.SYSTEM_ADMIN_PASSWORD;
+    if (!password || password.length < 16 || password.length > 128 || !password.trim()) {
+      throw new Error('Set SYSTEM_ADMIN_PASSWORD securely (16–128 characters) before creating the system admin.');
+    }
+    const hashedPassword = await argon2.hash(password);
     const created = await prisma.user.create({
       data: {
         id: randomUUID(),
@@ -95,7 +88,7 @@ export async function ensureSystemAdmin(prisma: PrismaClient) {
 
   console.log(
     existing
-      ? `System SuperAdmin updated: ${systemAdminEmail}`
+      ? `System SuperAdmin already exists: ${systemAdminEmail}`
       : `System SuperAdmin created: ${systemAdminEmail}`,
   );
 

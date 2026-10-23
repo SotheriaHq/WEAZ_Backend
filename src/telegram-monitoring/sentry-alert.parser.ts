@@ -80,7 +80,9 @@ export function verifySentrySignature(params: {
   }
   return candidates.some((body) => {
     const expected = createHmac('sha256', secret).update(body, 'utf8').digest();
-    return expected.length === provided.length && timingSafeEqual(expected, provided);
+    return (
+      expected.length === provided.length && timingSafeEqual(expected, provided)
+    );
   });
 }
 
@@ -109,7 +111,10 @@ export function scrubSentryText(value: unknown, max = 300): string | null {
     text
       .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s/@]+:[^\s/@]+@/gi, '<credentials>@')
       .replace(/[^\s@"'<>]+@[^\s@"'<>]+\.[a-z]{2,}/gi, '<email>')
-      .replace(/\b(bearer|token|secret|password|authorization)\b\s*[:=]\s*\S+/gi, '$1=<redacted>')
+      .replace(
+        /\b(bearer|token|secret|password|authorization)\b\s*[:=]\s*\S+/gi,
+        '$1=<redacted>',
+      )
       .replace(/\b[A-Za-z0-9_-]{40,}\b/g, '<redacted>'),
     max,
   );
@@ -150,7 +155,9 @@ function firstInAppFrame(exception: any): string | null {
 }
 
 export function extractEventDetails(event: any): SentryEventDetails {
-  const exceptionValues = Array.isArray(event?.exception?.values) ? event.exception.values : [];
+  const exceptionValues = Array.isArray(event?.exception?.values)
+    ? event.exception.values
+    : [];
   // The last exception value is the outermost/primary error in Sentry payloads.
   const primary = exceptionValues[exceptionValues.length - 1] ?? null;
   const request = event?.request ?? {};
@@ -160,22 +167,42 @@ export function extractEventDetails(event: any): SentryEventDetails {
   return {
     eventId: str(event?.event_id ?? event?.id, 40),
     errorType: str(primary?.type ?? event?.metadata?.type, 120),
-    errorMessage: scrubSentryText(primary?.value ?? event?.metadata?.value ?? event?.message),
-    handled: handledFlag === true ? 'yes' : handledFlag === false ? 'no (unhandled)' : null,
+    errorMessage: scrubSentryText(
+      primary?.value ?? event?.metadata?.value ?? event?.message,
+    ),
+    handled:
+      handledFlag === true
+        ? 'yes'
+        : handledFlag === false
+          ? 'no (unhandled)'
+          : null,
     mechanism: str(primary?.mechanism?.type, 40),
-    method: str(request.method ?? tagValue(tags, 'http.method'), 10)?.toUpperCase() ?? null,
-    endpoint: endpointPath(request.url) ?? endpointPath(tagValue(tags, 'http.path')) ?? endpointPath(tagValue(tags, 'url')),
+    method:
+      str(request.method ?? tagValue(tags, 'http.method'), 10)?.toUpperCase() ??
+      null,
+    endpoint:
+      endpointPath(request.url) ??
+      endpointPath(tagValue(tags, 'http.path')) ??
+      endpointPath(tagValue(tags, 'url')),
     statusCode:
       tagValue(tags, 'http.status_code') ??
       str(contexts?.response?.status_code, 6) ??
       str(contexts?.trace?.data?.['http.response.status_code'], 6),
-    requestId: tagValue(tags, 'requestId') ?? tagValue(tags, 'request_id') ?? tagValue(tags, 'correlationId'),
+    requestId:
+      tagValue(tags, 'requestId') ??
+      tagValue(tags, 'request_id') ??
+      tagValue(tags, 'correlationId'),
     transaction: str(event?.transaction ?? tagValue(tags, 'transaction'), 160),
     inAppFrame: firstInAppFrame(primary),
     runtime: contextLabel(contexts.runtime),
     os: contextLabel(contexts.os) ?? contextLabel(contexts.client_os),
     browser: contextLabel(contexts.browser),
-    device: str([contexts.device?.brand, contexts.device?.model].filter(Boolean).join(' '), 60),
+    device: str(
+      [contexts.device?.brand, contexts.device?.model]
+        .filter(Boolean)
+        .join(' '),
+      60,
+    ),
     userId: str(event?.user?.id, 64),
     serverName: str(event?.server_name ?? tagValue(tags, 'server_name'), 60),
     logger: str(event?.logger, 60),
@@ -198,8 +225,14 @@ export function parseSentryWebhook(
       level: (str(event.level, 16) ?? 'error').toLowerCase(),
       title: str(event.title ?? event.message, 200) ?? 'Untitled Sentry event',
       culprit: str(event.culprit, 160),
-      environment: (str(event.environment, 64) ?? tagValue(event.tags, 'environment'))?.toLowerCase() ?? null,
-      project: str(event.project_slug ?? event.project_name ?? event.project, 64),
+      environment:
+        (
+          str(event.environment, 64) ?? tagValue(event.tags, 'environment')
+        )?.toLowerCase() ?? null,
+      project: str(
+        event.project_slug ?? event.project_name ?? event.project,
+        64,
+      ),
       issueId,
       ruleName: str(data.triggered_rule ?? data.issue_alert?.title, 120),
       webUrl: safeUrl(event.web_url) ?? null,
@@ -213,13 +246,22 @@ export function parseSentryWebhook(
   if (resource === 'metric_alert') {
     const metric = data.metric_alert ?? {};
     const rule = metric.alert_rule ?? {};
-    const projects = Array.isArray(rule.projects) ? rule.projects.join(', ') : null;
+    const projects = Array.isArray(rule.projects)
+      ? rule.projects.join(', ')
+      : null;
     return {
       resource,
       action,
       // action is critical | warning | resolved for metric alerts.
-      level: action === 'critical' ? 'fatal' : action === 'warning' ? 'warning' : 'info',
-      title: str(data.description_title ?? metric.title ?? rule.name, 200) ?? 'Metric alert',
+      level:
+        action === 'critical'
+          ? 'fatal'
+          : action === 'warning'
+            ? 'warning'
+            : 'info',
+      title:
+        str(data.description_title ?? metric.title ?? rule.name, 200) ??
+        'Metric alert',
       culprit: null,
       environment: str(rule.environment, 64)?.toLowerCase() ?? null,
       project: str(projects, 120),
@@ -258,7 +300,9 @@ export function parseSentryWebhook(
   return null;
 }
 
-export function sentrySeverity(level: string): 'critical' | 'error' | 'warning' | 'info' {
+export function sentrySeverity(
+  level: string,
+): 'critical' | 'error' | 'warning' | 'info' {
   switch ((level || '').toLowerCase()) {
     case 'fatal':
       return 'critical';

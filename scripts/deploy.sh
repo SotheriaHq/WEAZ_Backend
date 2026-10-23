@@ -206,9 +206,7 @@ echo "==> [6/11] Applying database migrations"
 npx prisma migrate deploy
 
 echo "==> [7/11] Seeding platform data (idempotent)"
-TS_NODE_TRANSPILE_ONLY=1 npx ts-node prisma/seed_measurement_points_only.ts
-TS_NODE_TRANSPILE_ONLY=1 npx ts-node prisma/seed_tags.ts
-TS_NODE_TRANSPILE_ONLY=1 npx ts-node prisma/seed_admin.ts
+TS_NODE_TRANSPILE_ONLY=1 npm run prisma:seed
 
 echo "==> [8/11] Building (previous dist/ kept until the new one succeeds)"
 rm -rf "$APP_DIR/dist.prev"

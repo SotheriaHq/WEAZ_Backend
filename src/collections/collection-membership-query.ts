@@ -31,10 +31,14 @@ export async function readProductMemberships(
   productIds: string[],
 ): Promise<Map<string, CollectionMembership[]>> {
   const ids = uniqueIds(productIds);
-  const grouped = new Map<string, CollectionMembership[]>(ids.map((id) => [id, []]));
+  const grouped = new Map<string, CollectionMembership[]>(
+    ids.map((id) => [id, []]),
+  );
   for (let offset = 0; offset < ids.length; offset += MEMBERSHIP_BATCH_SIZE) {
     const rows = await tx.storeCollectionProduct.findMany({
-      where: { productId: { in: ids.slice(offset, offset + MEMBERSHIP_BATCH_SIZE) } },
+      where: {
+        productId: { in: ids.slice(offset, offset + MEMBERSHIP_BATCH_SIZE) },
+      },
       orderBy: [
         { isPrimary: 'desc' },
         { createdAt: 'asc' },
@@ -42,8 +46,11 @@ export async function readProductMemberships(
         { collectionId: 'asc' },
       ],
       select: {
-        productId: true, collectionId: true, isPrimary: true,
-        createdAt: true, orderIndex: true,
+        productId: true,
+        collectionId: true,
+        isPrimary: true,
+        createdAt: true,
+        orderIndex: true,
       },
     });
     for (const row of rows) grouped.get(row.productId)?.push(row);
@@ -72,18 +79,26 @@ export async function synchronizePrimaryMemberships(
     if (winners.length) {
       await tx.$executeRaw(Prisma.sql`
         UPDATE "StoreCollectionProduct" AS membership SET "isPrimary" = TRUE
-        FROM (VALUES ${Prisma.join(winners.map((choice) => Prisma.sql`
+        FROM (VALUES ${Prisma.join(
+          winners.map(
+            (choice) => Prisma.sql`
           (${choice.productId}::uuid, ${choice.collectionId}::uuid)
-        `))}) AS chosen("productId", "collectionId")
+        `,
+          ),
+        )}) AS chosen("productId", "collectionId")
         WHERE membership."productId" = chosen."productId"
           AND membership."collectionId" = chosen."collectionId"
       `);
     }
     await tx.$executeRaw(Prisma.sql`
       UPDATE "Product" AS product SET "collectionId" = chosen."collectionId", "updatedAt" = NOW()
-      FROM (VALUES ${Prisma.join(choices.map((choice) => Prisma.sql`
+      FROM (VALUES ${Prisma.join(
+        choices.map(
+          (choice) => Prisma.sql`
         (${choice.productId}::uuid, ${choice.collectionId}::uuid)
-      `))}) AS chosen("productId", "collectionId")
+      `,
+        ),
+      )}) AS chosen("productId", "collectionId")
       WHERE product."_id" = chosen."productId"
         AND product."collectionId" IS DISTINCT FROM chosen."collectionId"
     `);

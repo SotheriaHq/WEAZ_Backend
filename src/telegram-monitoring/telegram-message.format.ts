@@ -1,7 +1,10 @@
 import { formatZoned } from './report-window';
 import { MonitoringSeverity, SEVERITY_ICON } from './monitoring-events';
 
-export type MessageField = [label: string, value: string | number | boolean | null | undefined];
+export type MessageField = [
+  label: string,
+  value: string | number | boolean | null | undefined,
+];
 
 export type UserIdentity = {
   userId?: string | null;
@@ -10,7 +13,10 @@ export type UserIdentity = {
   accountType?: string | null;
 };
 
-export type TimelineEntry = [label: string, at: Date | string | null | undefined];
+export type TimelineEntry = [
+  label: string,
+  at: Date | string | null | undefined,
+];
 
 export type RenderableMessage = {
   environment: string;
@@ -48,7 +54,10 @@ export function cleanText(value: unknown, max = MAX_VALUE_LENGTH): string {
  * `<org>.sentry.io`) may appear in a message. Anything else is dropped rather
  * than shown, so a forged payload cannot plant a phishing link in the chat.
  */
-export function safeUrl(raw: unknown, allowedHosts: string[] = SAFE_LINK_HOSTS): string | null {
+export function safeUrl(
+  raw: unknown,
+  allowedHosts: string[] = SAFE_LINK_HOSTS,
+): string | null {
   if (typeof raw !== 'string' || !raw.trim()) return null;
   let url: URL;
   try {
@@ -58,7 +67,9 @@ export function safeUrl(raw: unknown, allowedHosts: string[] = SAFE_LINK_HOSTS):
   }
   if (url.protocol !== 'https:' || url.username || url.password) return null;
   const host = url.hostname.toLowerCase();
-  const allowed = allowedHosts.some((candidate) => host === candidate || host.endsWith(`.${candidate}`));
+  const allowed = allowedHosts.some(
+    (candidate) => host === candidate || host.endsWith(`.${candidate}`),
+  );
   return allowed ? url.toString() : null;
 }
 
@@ -84,15 +95,22 @@ export function formatDuration(ms: number): string {
   return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
-export function renderMessage(message: RenderableMessage, options: RenderOptions): string {
+export function renderMessage(
+  message: RenderableMessage,
+  options: RenderOptions,
+): string {
   const lines: string[] = [];
-  lines.push(`${SEVERITY_ICON[message.severity]} [${cleanText(message.environment, 16)}] ${cleanText(message.title, 120)}`);
+  lines.push(
+    `${SEVERITY_ICON[message.severity]} [${cleanText(message.environment, 16)}] ${cleanText(message.title, 120)}`,
+  );
   if (message.summary) {
     lines.push(cleanText(message.summary, 400));
   }
 
   const present = (list: MessageField[] | undefined) =>
-    (list ?? []).filter(([, value]) => value !== null && value !== undefined && value !== '');
+    (list ?? []).filter(
+      ([, value]) => value !== null && value !== undefined && value !== '',
+    );
   const fields = present(message.fields);
   if (fields.length > 0) {
     lines.push('');
@@ -115,13 +133,19 @@ export function renderMessage(message: RenderableMessage, options: RenderOptions
     lines.push('');
     lines.push('👤 User');
     if (options.includeIdentity) {
-      if (identity.username) lines.push(`• Username: @${cleanText(identity.username, 80)}`);
-      if (identity.email) lines.push(`• Email: ${cleanText(identity.email, 120)}`);
-      if (identity.userId) lines.push(`• ID: ${cleanText(identity.userId, 64)}`);
+      if (identity.username)
+        lines.push(`• Username: @${cleanText(identity.username, 80)}`);
+      if (identity.email)
+        lines.push(`• Email: ${cleanText(identity.email, 120)}`);
+      if (identity.userId)
+        lines.push(`• ID: ${cleanText(identity.userId, 64)}`);
     } else if (identity.userId) {
-      lines.push(`• ID: ${shortId(identity.userId)}… (identity hidden by config)`);
+      lines.push(
+        `• ID: ${shortId(identity.userId)}… (identity hidden by config)`,
+      );
     }
-    if (identity.accountType) lines.push(`• Account type: ${cleanText(identity.accountType, 40)}`);
+    if (identity.accountType)
+      lines.push(`• Account type: ${cleanText(identity.accountType, 40)}`);
   }
 
   const timeline = (message.timeline ?? [])
@@ -131,7 +155,9 @@ export function renderMessage(message: RenderableMessage, options: RenderOptions
     lines.push('');
     lines.push('🕒 Timeline');
     for (const [label, at] of timeline) {
-      lines.push(`• ${cleanText(label, 60)}: ${formatZoned(at, options.timeZone)}`);
+      lines.push(
+        `• ${cleanText(label, 60)}: ${formatZoned(at, options.timeZone)}`,
+      );
     }
   }
 

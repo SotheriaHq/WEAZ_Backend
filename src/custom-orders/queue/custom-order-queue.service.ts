@@ -98,7 +98,7 @@ export class CustomOrderQueueService {
     const tier =
       agreement?.tier ??
       (await tx.subscriptionTier.findUnique({
-        where: { key: brand.customOrderLegacyEligible ? 'LEGACY' : 'THREAD' },
+        where: { key: 'THREAD' },
       }));
     if (!tier)
       throw new ConflictException('CUSTOM_ORDER_TIER_CONFIGURATION_MISSING');
@@ -125,7 +125,6 @@ export class CustomOrderQueueService {
       brand.verificationStatus === 'APPROVED' &&
       brand.owner.status === 'ACTIVE';
     const entitled =
-      brand.customOrderLegacyEligible ||
       Boolean(
         agreement?.status === 'ACTIVE' && agreement.currentPeriodEnd > now,
       );
@@ -313,10 +312,6 @@ export class CustomOrderQueueService {
               createdAt: refund.createdAt.toISOString(),
             })),
             lane: row.lane,
-            needsLaneReconciliation:
-              row.lane === null &&
-              !row.queuePolicyVersion &&
-              ['DISPUTED', 'DELIVERY_ISSUE_REPORTED'].includes(row.status),
             orderRevision: row.orderRevision,
             queueExpiresAt: row.queueExpiresAt?.toISOString() ?? null,
             serverNow: now.toISOString(),
@@ -562,14 +557,6 @@ export class CustomOrderQueueService {
   async drain(tx: Tx, brandId: string, now: Date) {
     const cap = await this.capacity(tx, brandId, now);
     if (!cap.safetyAllowed) return;
-    const ambiguous = await tx.customOrder.count({
-      where: {
-        brandId,
-        lane: null,
-        status: { in: ['DISPUTED', 'DELIVERY_ISSUE_REPORTED'] },
-      },
-    });
-    if (ambiguous) return;
     let active = await tx.customOrder.count({
       where: { brandId, lane: 'ACTIVE' },
     });
@@ -1569,56 +1556,6 @@ export class CustomOrderQueueService {
       );
       await this.audit(tx, actorId, `queue.${action}`, id, { reason });
       await this.drain(tx, row.brandId, now);
-    });
-    return { queue: (await this.present([id]))[id] };
-  }
-
-  async reconcileHistoricalLane(
-    id: string,
-    lane: 'ACTIVE' | 'IN_DELIVERY',
-    evidence: string,
-    expectedRevision: number,
-    actorId: string,
-  ) {
-    const source = await this.prisma.customOrder.findUniqueOrThrow({
-      where: { id },
-    });
-    await this.prisma.$transaction(async (tx) => {
-      const now = await this.lockBrand(tx, source.brandId);
-      const current = await tx.customOrder.findUniqueOrThrow({ where: { id } });
-      this.checkRevision(current.orderRevision, expectedRevision);
-      if (
-        current.queuePolicyVersion ||
-        current.lane !== null ||
-        current.paymentStatus !== 'PAID' ||
-        !['DISPUTED', 'DELIVERY_ISSUE_REPORTED'].includes(current.status)
-      )
-        throw new ConflictException(
-          'Only quarantined paid historical orders can be reconciled',
-        );
-      await tx.customOrder.update({
-        where: { id },
-        data: {
-          lane,
-          activatedAt: current.acceptedAt ?? current.createdAt,
-          adminPromotionHeld: false,
-          orderRevision: { increment: 1 },
-        },
-      });
-      await this.audit(tx, actorId, 'queue.historical-lane.reconcile', id, {
-        lane,
-        evidence,
-        previousStatus: current.status,
-      });
-      await this.record(
-        tx,
-        current,
-        'HISTORICAL_LANE_RECONCILED',
-        `An admin reconciled this historical order to ${lane === 'ACTIVE' ? 'Active' : 'In Delivery'} from fulfilment evidence. Existing promises, money and dispute status are preserved.`,
-        'ADMIN',
-        actorId,
-      );
-      await this.drain(tx, current.brandId, now);
     });
     return { queue: (await this.present([id]))[id] };
   }

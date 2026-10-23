@@ -91,12 +91,15 @@ export class MonitoringService {
     try {
       const event = operationalAlertEvent(
         alert,
-        alert.severity === 'critical' || ADMIN_NOTIFICATION_EVENTS.has(alert.event),
+        alert.severity === 'critical' ||
+          ADMIN_NOTIFICATION_EVENTS.has(alert.event),
       );
       if ('countOnly' in event) this.telegramEvents.count(event.countOnly);
       else this.telegramEvents.record(event);
     } catch (error) {
-      this.logger.warn(`Telegram forward skipped for ${alert.event}: ${error instanceof Error ? error.message : error}`);
+      this.logger.warn(
+        `Telegram forward skipped for ${alert.event}: ${error instanceof Error ? error.message : error}`,
+      );
     }
   }
 

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
+import { withUtcDatabaseUrl } from '../src/prisma/database-connection';
 import { seedMeasurementPoints } from './seed_measurement_points';
 
 const datasourceUrl = process.env.DATABASE_URL;
@@ -10,7 +11,7 @@ if (!datasourceUrl) {
   throw new Error('DATABASE_URL must be set to seed measurement points.');
 }
 
-const pool = new Pool({ connectionString: datasourceUrl });
+const pool = new Pool({ connectionString: withUtcDatabaseUrl(datasourceUrl) });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 

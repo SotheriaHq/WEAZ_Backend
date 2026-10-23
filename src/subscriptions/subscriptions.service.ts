@@ -245,7 +245,6 @@ export class SubscriptionsService {
     const [current, tiers, invoices, brand] = await Promise.all([
       this.current(this.prisma, resolved.brandId),
       this.prisma.subscriptionTier.findMany({
-        where: { key: { not: 'LEGACY' } },
         orderBy: { monthlyPriceNgn: 'asc' },
       }),
       this.prisma.brandSubscriptionInvoice.findMany({
@@ -270,7 +269,6 @@ export class SubscriptionsService {
       this.prisma.brand.findUnique({
         where: { id: resolved.brandId },
         select: {
-          customOrderLegacyEligible: true,
           assignedSubscriptionTierKey: true,
         },
       }),
@@ -283,7 +281,6 @@ export class SubscriptionsService {
         });
     return {
       subscription: this.presentSubscription(current ?? pending, now),
-      legacyEligible: brand?.customOrderLegacyEligible ?? false,
       assignedTierKey: brand?.assignedSubscriptionTierKey ?? null,
       tiers: tiers.map((tier) => ({
         ...tier,
@@ -404,24 +401,16 @@ export class SubscriptionsService {
     return this.prisma.$transaction(async (tx) => {
       await this.lock(tx, resolved.brandId);
       const now = new Date();
-      const [subscription, brand, receipt] = await Promise.all([
+      const [subscription, receipt] = await Promise.all([
         this.current(tx, resolved.brandId),
-        tx.brand.findUnique({
-          where: { id: resolved.brandId },
-          select: { customOrderLegacyEligible: true },
-        }),
         tx.subscriptionNoticeReceipt.findUnique({
           where: { userId_brandId: { userId, brandId: resolved.brandId } },
         }),
       ]);
       const paid =
         subscription?.status === 'ACTIVE' &&
-        subscription.currentPeriodEnd > now &&
-        subscription.tierKey !== 'LEGACY';
+        subscription.currentPeriodEnd > now;
       if (
-        (!paid &&
-          (brand?.customOrderLegacyEligible ||
-            subscription?.tierKey === 'LEGACY')) ||
         (paid && subscription.tierKey === 'IGWE') ||
         (receipt &&
           now.getTime() - receipt.lastShownAt.getTime() < 24 * 60 * 60_000)
@@ -496,7 +485,7 @@ export class SubscriptionsService {
     await this.prisma.$transaction(async (tx) => {
       await this.lock(tx, resolved.brandId);
       const current = await this.current(tx, resolved.brandId);
-      if (!current || current.tierKey === 'LEGACY')
+      if (!current)
         throw new NotFoundException(
           'Choose a paid subscription before setting a renewal card.',
         );
@@ -589,7 +578,6 @@ export class SubscriptionsService {
       );
     const current = await this.current(tx, brandId);
     if (
-      current?.tierKey !== 'LEGACY' &&
       current?.status === 'ACTIVE' &&
       current.currentPeriodEnd > now
     ) {
@@ -630,7 +618,6 @@ export class SubscriptionsService {
     }
     if (
       current &&
-      current.tierKey !== 'LEGACY' &&
       current.currentPeriodEnd <= now &&
       now <= recoveryDeadline(current.currentPeriodEnd) &&
       current.tierKey === tierKey &&
@@ -757,7 +744,6 @@ export class SubscriptionsService {
     const existingPeriod = await this.current(this.prisma, resolved.brandId);
     if (
       existingPeriod &&
-      existingPeriod.tierKey !== 'LEGACY' &&
       existingPeriod.currentPeriodEnd <= new Date()
     )
       await this.prepareRenewal(
@@ -1527,10 +1513,6 @@ export class SubscriptionsService {
             : {}),
         },
       });
-      await tx.brand.update({
-        where: { id: invoice.subscription.brandId },
-        data: { customOrderLegacyEligible: false },
-      });
       await tx.brandSubscriptionInvoice.update({
         where: { id: invoice.id },
         data: {
@@ -1565,10 +1547,6 @@ export class SubscriptionsService {
       const current = await this.current(tx, resolved.brandId);
       if (!current)
         throw new NotFoundException('No active subscription was found.');
-      if (current.tierKey === 'LEGACY')
-        throw new BadRequestException(
-          'Legacy access has no recurring payment to cancel.',
-        );
       await tx.brandSubscription.update({
         where: { id: current.id },
         data: {
@@ -1605,7 +1583,6 @@ export class SubscriptionsService {
     const expired = await this.prisma.brandSubscription.findMany({
       where: {
         status: { in: ['ACTIVE', 'PAST_DUE'] },
-        tierKey: { not: 'LEGACY' },
         currentPeriodEnd: { lte: now },
       },
       orderBy: { currentPeriodEnd: 'asc' },

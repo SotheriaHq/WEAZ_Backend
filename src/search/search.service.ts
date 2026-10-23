@@ -47,6 +47,16 @@ interface SearchParams {
 
 type ParsedSearchQuery = SearchQueryAnalysis;
 
+const PRODUCT_SUGGESTION_SELECT = {
+  id: true, name: true, description: true, tags: true, thumbnail: true,
+  images: true, price: true, salePrice: true, currency: true, slug: true,
+  brandId: true, isActive: true, publicationStatus: true, publishAt: true,
+  deletedAt: true, archivedAt: true,
+  brand: { select: { ownerId: true, name: true, isStoreOpen: true } },
+} satisfies Prisma.ProductSelect;
+type ProductSuggestionSource = Prisma.ProductGetPayload<{ select: typeof PRODUCT_SUGGESTION_SELECT }>;
+const SEARCH_SYNC_WRITE_CONCURRENCY = 8;
+
 interface SuggestionPayload {
   id: string;
   type: SearchEntityType | 'recent' | 'trending';
@@ -2905,33 +2915,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
   private async syncProductSuggestionById(id: string) {
     const row = await this.prisma.product.findUnique({
       where: { id },
-      select: {
-        id: true,
-        name: true,
-        description: true,
-        tags: true,
-        thumbnail: true,
-        images: true,
-        price: true,
-        salePrice: true,
-        currency: true,
-        slug: true,
-        brandId: true,
-        isActive: true,
-        publicationStatus: true,
-        publishAt: true,
-        deletedAt: true,
-        archivedAt: true,
-        brand: {
-          select: {
-            ownerId: true,
-            name: true,
-            isStoreOpen: true,
-          },
-        },
-      },
+      select: PRODUCT_SUGGESTION_SELECT,
     });
+    await this.syncProductSuggestionRow(id, row);
+  }
 
+  private async syncProductSuggestionRow(id: string, row: ProductSuggestionSource | null) {
     if (
       !row ||
       !row.isActive ||
@@ -2961,14 +2950,23 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async syncProductsForBrand(brandId: string) {
-    const rows = await this.prisma.product.findMany({
-      where: { brandId },
-      select: { id: true },
-    });
-
-    await Promise.all(
-      rows.map((row) => this.syncProductSuggestionById(row.id)),
-    );
+    let afterId: string | undefined;
+    for (;;) {
+      const rows = await this.prisma.product.findMany({
+        where: { brandId, ...(afterId ? { id: { gt: afterId } } : {}) },
+        select: PRODUCT_SUGGESTION_SELECT,
+        orderBy: { id: 'asc' },
+        take: SEARCH_REBUILD_BATCH_SIZE,
+      });
+      if (!rows.length) return;
+      // Hydrate once per page; cap Redis write pressure independently of catalog size.
+      for (let offset = 0; offset < rows.length; offset += SEARCH_SYNC_WRITE_CONCURRENCY) {
+        await Promise.all(rows.slice(offset, offset + SEARCH_SYNC_WRITE_CONCURRENCY)
+          .map((row) => this.syncProductSuggestionRow(row.id, row)));
+      }
+      if (rows.length < SEARCH_REBUILD_BATCH_SIZE) return;
+      afterId = rows[rows.length - 1].id;
+    }
   }
 
   private async syncBrandSuggestionById(id: string) {

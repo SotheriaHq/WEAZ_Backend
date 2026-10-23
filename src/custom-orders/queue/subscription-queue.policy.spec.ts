@@ -14,7 +14,7 @@ describe('subscription queue policy', () => {
   const now = new Date('2026-10-18T12:00:00.000Z');
 
   it('seeds the four sold tiers at the opening naira prices', () => {
-    const sold = SUBSCRIPTION_TIERS.filter((tier) => tier.key !== 'LEGACY');
+    const sold = SUBSCRIPTION_TIERS;
     expect(sold.map((tier) => [tier.name, tier.monthlyPriceNgn, tier.maxActive, tier.maxInDelivery])).toEqual([
       ['Thread', 10_000, 2, 2],
       ['Aso-oke', 15_000, 3, 4],

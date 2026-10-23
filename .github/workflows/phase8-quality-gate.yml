@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - SIT
 
 permissions:
   contents: read
@@ -28,6 +29,9 @@ jobs:
 
       - name: NestJS module cycle guard
         run: npm run check:module-cycles
+
+      - name: Destructive reset safety checks
+        run: node --test scripts/reset-safety.test.cjs
 
       - name: Focused upload and design mapper tests
         run: npm test -- src/upload/upload.service.spec.ts src/designs/mappers/design-response.mapper.spec.ts --runInBand

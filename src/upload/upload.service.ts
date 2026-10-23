@@ -11,9 +11,10 @@ import {
   Optional,
   ServiceUnavailableException,
   ConflictException,
+  HttpException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { FileUpload } from '@prisma/client';
+import { FileUpload, Prisma } from '@prisma/client';
 import {
   S3Client,
   PutObjectCommand,
@@ -32,9 +33,7 @@ import { GetFilesDto } from './dto/get-files.dto';
 import { PaginatedResult } from './dto/pagination.dto';
 import { ConfigService } from '@nestjs/config';
 import { FileType } from './upload.enums';
-import * as path from 'path';
 import { createHash } from 'crypto';
-import { mkdir, writeFile } from 'fs/promises';
 import { ImageProcessingQueueService } from 'src/queue/image-processing.queue.service';
 import { SystemConfigService } from 'src/admin/system-config/system-config.service';
 import {
@@ -47,6 +46,8 @@ import {
 } from './upload-policy';
 import { MonitoringService } from 'src/monitoring/monitoring.service';
 import { Readable } from 'stream';
+import { BrandPermissionService } from 'src/brands/permissions/brand-permission.service';
+import { BRAND_PERMISSIONS } from 'src/brands/permissions/brand-permissions';
 
 type VariantView = {
   url: string;
@@ -149,6 +150,8 @@ export class UploadService {
     private readonly monitoring?: MonitoringService,
     @Optional()
     private readonly imageQueue?: ImageProcessingQueueService,
+    @Optional()
+    private readonly brandPermissions?: BrandPermissionService,
   ) {
     this.storageSettings = resolveStorageProviderSettings(this.configService);
     this.bucketName = this.storageSettings.bucket;
@@ -550,190 +553,58 @@ export class UploadService {
     fileType: FileType,
     validationOptions: UploadValidationOptions = {},
   ): Promise<FileUploadResult> {
-    await this.validateFile(file, fileType, validationOptions);
-
-    const fileId = uuidv4();
-    const key = this.generateS3Key(fileType, userId, fileId, file.originalname);
-
-    const nodeEnv = (this.configService.get<string>('NODE_ENV') ?? '').trim();
-    const isProduction = nodeEnv.toLowerCase() === 'production';
-
-    try {
-      this.logger.debug(
-        `Uploading file to S3 bucket ${this.bucketName} with keyHash ${this.hashStorageKey(key)}`,
-      );
-      const command = new PutObjectCommand({
-        Bucket: this.bucketName,
-        Key: key,
-        Body: file.buffer,
-        ContentType: file.mimetype,
-        ContentDisposition: 'inline',
-      });
-
-      await this.s3.send(command);
-
-      // Construct S3 URL
-      const s3Url = this.buildS3ObjectUrl(key);
-
-      // Save to database
-      const uploadRecord = await this.prisma.fileUpload.create({
-        data: {
-          id: fileId,
-          userId,
-          originalName: file.originalname,
-          fileName: key.split('/').pop()!,
-          s3Key: key,
-          s3Url: s3Url,
-          fileType: fileType,
-          mimeType: file.mimetype,
-          size: file.size,
-          processingStatus: 'READY',
-        } as any,
-      });
-
-      await this.enqueueImageProcessing(uploadRecord.id, true);
-
-      return {
-        id: uploadRecord.id,
-        url: uploadRecord.s3Url,
-        key: uploadRecord.s3Key,
-        fileName: uploadRecord.fileName,
-        originalName: uploadRecord.originalName,
-        size: uploadRecord.size,
-        mimeType: uploadRecord.mimeType,
-        fileType: uploadRecord.fileType as FileType,
-        processingStatus: (uploadRecord as any).processingStatus,
-        createdAt: uploadRecord.createdAt.toISOString(),
-        updatedAt: uploadRecord.updatedAt.toISOString(),
-      };
-    } catch (error) {
-      const details = this.summarizeAwsError(error);
-      this.logger.error(
-        `S3 file upload failed (${details.name ?? 'UnknownError'}): ${details.message ?? ''}`,
-        details as any,
-      );
-
-      // Dev fallback: if S3 isn't configured/available locally, still allow uploads
-      // by writing to disk under the API's /uploads static route.
-      if (!isProduction) {
-        this.logger.warn('Falling back to local disk upload (non-production).');
-        return this.uploadFileToLocalDisk(file, userId, fileType, fileId, key);
-      }
-
-      throw new BadRequestException('File upload failed');
-    }
-  }
-
-  private getLocalPublicBaseUrl(): string {
-    const explicit =
-      this.configService.get<string>('APP_PUBLIC_URL') ??
-      this.configService.get<string>('PUBLIC_BASE_URL') ??
-      this.configService.get<string>('APP_URL');
-
-    if (explicit && explicit.trim().length > 0) {
-      return explicit.trim().replace(/\/+$/, '');
-    }
-
-    const port =
-      this.configService.get<string>('APP_PORT') ??
-      this.configService.get<string>('PORT') ??
-      '3040';
-    return `http://localhost:${port}`;
-  }
-
-  private isProductionRuntime(): boolean {
-    return (
-      String(this.configService.get<string>('NODE_ENV') ?? '')
-        .trim()
-        .toLowerCase() === 'production'
-    );
-  }
-
-  private isPrivateNetworkHost(hostname: string): boolean {
-    const normalized = hostname.trim().toLowerCase();
-    if (
-      normalized === 'localhost' ||
-      normalized === '127.0.0.1' ||
-      normalized === '0.0.0.0' ||
-      normalized === '::1' ||
-      normalized.startsWith('10.') ||
-      normalized.startsWith('192.168.')
-    ) {
-      return true;
-    }
-
-    const match = normalized.match(/^172\.(\d{1,2})\./);
-    if (!match) return false;
-    const secondOctet = Number(match[1]);
-    return secondOctet >= 16 && secondOctet <= 31;
-  }
-
-  private getLocalDevSignedDisplayUrl(file: {
-    s3Url?: string | null;
-  }): string | null {
-    if (this.isProductionRuntime()) return null;
-
-    const directUrl = typeof file.s3Url === 'string' ? file.s3Url.trim() : '';
-    if (!directUrl) return null;
-
-    try {
-      const parsed = new URL(directUrl);
-      if (!['http:', 'https:'].includes(parsed.protocol)) return null;
-      if (!parsed.pathname.startsWith('/uploads/')) return null;
-      if (!this.isPrivateNetworkHost(parsed.hostname)) return null;
-      return directUrl;
-    } catch {
-      return null;
-    }
-  }
-
-  private async uploadFileToLocalDisk(
-    file: Express.Multer.File,
-    userId: string,
-    fileType: FileType,
-    fileId: string,
-    key: string,
-  ): Promise<FileUploadResult> {
-    const uploadsRoot = path.join(process.cwd(), 'uploads');
-    const diskPath = path.join(uploadsRoot, key);
-    const diskDir = path.dirname(diskPath);
-
-    await mkdir(diskDir, { recursive: true });
-    await writeFile(diskPath, file.buffer);
-
-    const baseUrl = this.getLocalPublicBaseUrl();
-    const publicUrl = `${baseUrl}/uploads/${key.split(path.sep).join('/')}`;
-
-    const uploadRecord = await this.prisma.fileUpload.create({
-      data: {
-        id: fileId,
-        userId,
-        originalName: file.originalname,
-        fileName: key.split('/').pop()!,
-        s3Key: key,
-        s3Url: publicUrl,
-        fileType: fileType,
-        mimeType: file.mimetype,
-        size: file.size,
-        processingStatus: 'READY',
-      } as any,
-    });
-
-    await this.enqueueImageProcessing(uploadRecord.id, true);
-
+    const record = await this.storeServerUpload(file, userId, fileType, validationOptions);
     return {
-      id: uploadRecord.id,
-      url: uploadRecord.s3Url,
-      key: uploadRecord.s3Key,
-      fileName: uploadRecord.fileName,
-      originalName: uploadRecord.originalName,
-      size: uploadRecord.size,
-      mimeType: uploadRecord.mimeType,
-      fileType: uploadRecord.fileType as FileType,
-      processingStatus: (uploadRecord as any).processingStatus,
-      createdAt: uploadRecord.createdAt.toISOString(),
-      updatedAt: uploadRecord.updatedAt.toISOString(),
+      id: record.id, url: record.s3Url, key: record.s3Key, fileName: record.fileName,
+      originalName: record.originalName, size: record.size, mimeType: record.mimeType,
+      fileType: record.fileType as FileType, processingStatus: record.processingStatus,
+      createdAt: record.createdAt.toISOString(), updatedAt: record.updatedAt.toISOString(),
     };
+  }
+
+  private async storeServerUpload(
+    file: Express.Multer.File, userId: string, fileType: FileType,
+    validationOptions: UploadValidationOptions = {},
+  ): Promise<FileUpload> {
+    await this.validateFile(file, fileType, validationOptions);
+    if (!Buffer.isBuffer(file.buffer) || !file.buffer.length || file.buffer.length !== file.size) {
+      throw new BadRequestException('Uploaded file is empty or incomplete');
+    }
+    const mimeType = this.normalizeContentType(file.mimetype)!;
+    const intent = await this.createUploadIntent(userId, file.originalname, fileType, mimeType);
+    try {
+      await this.s3.send(new PutObjectCommand({
+        Bucket: this.bucketName, Key: intent.s3Key, Body: file.buffer,
+        ContentType: mimeType, ContentDisposition: 'inline', CacheControl: 'private, max-age=0, no-store',
+      }));
+      return await this.createFileRecordFromPresign(
+        intent.id, userId, intent.s3Key, mimeType, file.size, undefined, validationOptions,
+      );
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      const details = this.summarizeAwsError(error);
+      this.logger.error('Media upload could not complete', { name: details.name, httpStatusCode: details.httpStatusCode });
+      throw new ServiceUnavailableException('Upload could not complete. Please retry.');
+    }
+  }
+
+  private async createUploadIntent(
+    userId: string, originalName: string, fileType: FileType, contentType: string,
+    options?: { collectionId?: string; orderIndex?: number; viewSlot?: string | null },
+  ) {
+    const id = uuidv4();
+    const generatedKey = this.generateS3Key(fileType, userId, id, originalName);
+    const s3Key = generatedKey.replace(`${fileType}/${userId}/`, `${fileType}/${userId}/pending/`);
+    const data = {
+      id, userId, originalName, contentType, fileType, s3Key,
+      collectionId: options?.collectionId,
+      orderIndex: typeof options?.orderIndex === 'number' ? options.orderIndex : null,
+      viewSlot: options?.viewSlot ?? null,
+      expiresAt: new Date(Date.now() + 600_000),
+    };
+    // The intent is durable before any external storage write; expired staging is recoverable.
+    await this.prisma.presignedUpload.create({ data: data as any });
+    return data;
   }
 
   // Generate presigned POST data for client direct-to-S3 uploads
@@ -756,38 +627,13 @@ export class UploadService {
     this.assertAllowedMimeType(trustedContentType, fileType);
     const maxSize = await this.getMaxFileSize(fileType);
 
-    const fileId = uuidv4();
-    // A presigned request remains reusable until expiry. Never publish this key.
-    const generatedKey = this.generateS3Key(fileType, userId, fileId, originalName);
-    const key = generatedKey.replace(`${fileType}/${userId}/`, `${fileType}/${userId}/pending/`);
-
-    // Build fields and conditions for AWS v3 createPresignedPost
+    const intent = await this.createUploadIntent(userId, originalName, fileType, trustedContentType, options);
+    const fileId = intent.id;
+    const key = intent.s3Key;
     const baseConditions: any[] = [
-      ['eq', '$Content-Type', trustedContentType],
-      ['content-length-range', 1, maxSize],
+      ['eq', '$Content-Type', trustedContentType], ['content-length-range', 1, maxSize],
     ];
-    const fields: Record<string, string> = {
-      key,
-      'Content-Type': trustedContentType,
-    };
-
-    // create DB presign record
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-    await (this.prisma as any)['presignedUpload'].create({
-      data: {
-        id: fileId,
-        userId,
-        collectionId: options?.collectionId,
-        orderIndex:
-          typeof options?.orderIndex === 'number' ? options.orderIndex : null,
-        viewSlot: options?.viewSlot ?? null,
-        originalName,
-        contentType: trustedContentType,
-        fileType,
-        s3Key: key,
-        expiresAt,
-      },
-    } as any);
+    const fields = { key, 'Content-Type': trustedContentType };
 
     if (this.storageSettings?.provider === 'R2') {
       const uploadHeaders = { 'Content-Type': trustedContentType, 'Cache-Control': 'private, max-age=0, no-store' };
@@ -975,13 +821,9 @@ export class UploadService {
     const normalizedRole = String(role ?? '');
     const isAdmin =
       normalizedRole === 'Admin' || normalizedRole === 'SuperAdmin';
-    if (!isOwner && !isAdmin && !this.canReturnPublicFileUrl(file)) {
+    if (!isOwner && !isAdmin && !this.canReturnPublicFileUrl(file) &&
+      (!userId || !(await this.loadSharedViewerFileIds([file.id], userId)).has(file.id))) {
       throw new BadRequestException('File not found');
-    }
-
-    const localDevUrl = this.getLocalDevSignedDisplayUrl(file);
-    if (localDevUrl) {
-      return localDevUrl;
     }
 
     const command = new GetObjectCommand({
@@ -1078,6 +920,9 @@ export class UploadService {
     const filesById = new Map(files.map((file) => [file.id, file]));
     const filesByKey = new Map(files.map((file) => [file.s3Key, file]));
     const variantsByKey = new Map(variants.map((variant) => [variant.s3Key, variant]));
+    const sharedIds = user?.id && !['Admin', 'SuperAdmin'].includes(user.role ?? '')
+      ? await this.loadSharedViewerFileIds(files.filter((file) => file.userId !== user.id && !this.canReturnPublicFileUrl(file)).map((file) => file.id), user.id)
+      : new Set<string>();
     const urls = new Map<string, string>();
     await Promise.all(uniqueKeys.map(async (key) => {
       const variant = variantsByKey.get(key);
@@ -1086,12 +931,48 @@ export class UploadService {
       if (variant && variant.assetVersion !== file.assetVersion) return;
       const isPublic = this.canReturnPublicFileUrl(file);
       const isOwnerOrAdmin = user?.id && (file.userId === user.id || ['Admin', 'SuperAdmin'].includes(user.role ?? ''));
-      if (!isPublic && !isOwnerOrAdmin) return;
+      if (!isPublic && !isOwnerOrAdmin && !sharedIds.has(file.id)) return;
       const gatewayUrl = isPublic ? this.getStablePublicDisplayUrl({ s3Key: key }) : null;
       urls.set(key, gatewayUrl ?? await getSignedUrl(this.s3, new GetObjectCommand({ Bucket: this.bucketName, Key: key }),
         { expiresIn: isPublic ? UploadService.PUBLIC_DISPLAY_SIGNED_URL_TTL_SECONDS : 3600 }));
     }));
     return sources.map((source) => ({ source, url: urls.get(keys.get(source) ?? '') ?? null }));
+  }
+
+  private async loadSharedViewerFileIds(fileIds: string[], viewerId: string): Promise<Set<string>> {
+    const ids = [...new Set(fileIds)].filter((id) => /^[0-9a-f-]{36}$/i.test(id));
+    if (!ids.length) return new Set();
+    const privateCollectionsEnabled = String(this.configService.get('FEATURE_PRIVATE_COLLECTIONS') ?? 'true') !== 'false';
+    const brandRead = this.brandPermissions?.buildPermissionPredicate(viewerId, BRAND_PERMISSIONS.MESSAGES_READ,
+      Prisma.sql`resolved_brand."_id"`, Prisma.sql`resolved_brand."ownerId"`) ?? Prisma.sql`FALSE`;
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT file."_id" AS id FROM "FileUpload" file
+      WHERE file."_id" IN (${Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`))})
+        AND (
+          (${privateCollectionsEnabled} AND EXISTS (
+            SELECT 1 FROM "CollectionMedia" media
+            JOIN "Collection" target ON target."_id" = media."collectionId"
+            JOIN "CollectionAccess" approval ON approval."viewerId" = ${viewerId}::uuid AND approval.state = 'APPROVED'
+            JOIN "Collection" granted ON granted."_id" = approval."collectionId" AND granted."ownerId" = target."ownerId"
+            WHERE media."fileUploadId" = file."_id"
+              AND target.status = 'PUBLISHED' AND target.visibility = 'PRIVATE' AND target."deletedAt" IS NULL
+              AND granted.status = 'PUBLISHED' AND granted.visibility = 'PRIVATE' AND granted."deletedAt" IS NULL
+          )) OR EXISTS (
+            SELECT 1 FROM "MessageAttachment" attachment
+            JOIN "Message" message ON message.id = attachment."messageId"
+            JOIN "MessageThread" thread ON thread.id = message."threadId"
+            LEFT JOIN "Order" standard_order ON standard_order."_id" = thread."orderId"
+            LEFT JOIN "CustomOrder" custom_order ON custom_order.id = thread."customOrderId"
+            LEFT JOIN "Brand" resolved_brand ON resolved_brand."_id" = COALESCE(thread."brandId", standard_order."brandId", custom_order."brandId")
+              OR resolved_brand."ownerId" = COALESCE(thread."brandId", standard_order."brandId", custom_order."brandId")
+            WHERE attachment."fileUploadId" = file."_id" AND message."visibilityState" = 'VISIBLE'
+              AND (EXISTS (SELECT 1 FROM "MessageThreadParticipant" participant
+                WHERE participant."threadId" = message."threadId" AND participant."userId" = ${viewerId}::uuid)
+                OR ${brandRead})
+          )
+        )
+    `);
+    return new Set(rows.map((row) => row.id));
   }
 
   async getPublicSignedUrlByKey(s3Key: string): Promise<string | null> {
@@ -1230,23 +1111,29 @@ export class UploadService {
     if (!user?.id) return null;
 
     const accessInclude = this.publicFileAccessInclude();
-    const file = await this.prisma.fileUpload.findUnique({
+    const directFile = await this.prisma.fileUpload.findUnique({
       where: { s3Key: normalizedKey },
       include: accessInclude as any,
     });
+    const variant = directFile ? null : await this.prisma.fileVariant.findFirst({
+      where: { s3Key: normalizedKey }, include: { file: { include: accessInclude } },
+    });
+    const file = directFile ?? variant?.file;
     if (!file || !this.isDisplayableStoredFile(file)) {
       return null;
     }
+    if (variant && variant.assetVersion !== file.assetVersion) return null;
 
     const role = String(user.role ?? '');
     const isAdmin = role === 'Admin' || role === 'SuperAdmin';
     const isOwner = file.userId === user.id;
-    if (!isAdmin && !isOwner && !this.canReturnPublicFileUrl(file)) {
+    if (!isAdmin && !isOwner && !this.canReturnPublicFileUrl(file) &&
+      !(await this.loadSharedViewerFileIds([file.id], user.id)).has(file.id)) {
       return null;
     }
 
     const signKey =
-      (typeof file.s3Key === 'string' && file.s3Key.trim()) || normalizedKey;
+      variant?.s3Key || (typeof file.s3Key === 'string' && file.s3Key.trim()) || normalizedKey;
     const command = new GetObjectCommand({
       Bucket: this.bucketName,
       Key: signKey,
@@ -1550,6 +1437,7 @@ export class UploadService {
     mimeType: string,
     size: number,
     originalId?: string,
+    validationOptions: UploadValidationOptions = {},
   ) {
     // Look up presign record to get originalName and fileType
     const presign = await (this.prisma as any)['presignedUpload'].findUnique({
@@ -1622,7 +1510,7 @@ export class UploadService {
       this.inferContentType(sourceName);
     this.assertAllowedMimeType(expectedMimeType, presign.fileType as FileType);
 
-    const maxSize = await this.getMaxFileSize(presign.fileType as FileType);
+    const maxSize = await this.getMaxFileSize(presign.fileType as FileType, validationOptions);
     const actualMetadata = await this.headObjectMetadata(key);
     if (!actualMetadata.exists) {
       throw new BadRequestException('Uploaded object was not found in storage');
@@ -1731,11 +1619,16 @@ export class UploadService {
         CacheControl: 'private, max-age=300',
       }));
       const record = await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`
+          SELECT "_id" FROM "PresignedUpload"
+          WHERE "_id" = ${presign.id}::uuid AND "userId" = ${userId}::uuid FOR UPDATE
+        `;
+        // A lock wait can outlive the lease. Check the DB clock in a new statement.
         const owned = await tx.$queryRaw<Array<{ id: string }>>`
           SELECT "_id" AS id FROM "PresignedUpload"
           WHERE "_id" = ${presign.id}::uuid AND "userId" = ${userId}::uuid
-            AND "finalizeLeaseToken" = ${token}::uuid AND "finalizeLeaseUntil" > clock_timestamp()
-            AND status IN ('PENDING', 'READY') FOR UPDATE
+            AND "finalizeLeaseToken" = ${token}::uuid AND "finalizeLeaseUntil" > (clock_timestamp() AT TIME ZONE 'UTC')
+            AND status IN ('PENDING', 'READY')
         `;
         if (!owned.length) throw new ConflictException({ code: 'UPLOAD_FINALIZING', message: 'Upload completion lease expired. Please retry.' });
         const fileName = targetKey.split('/').pop()!;
@@ -1830,47 +1723,23 @@ export class UploadService {
     mimeType: string,
     fileType: FileType,
   ) {
-    const fileId = uuidv4();
-    const key = this.generateS3Key(fileType, userId, fileId, originalName);
-
-    const command = new PutObjectCommand({
-      Bucket: this.bucketName,
-      Key: key,
-      Body: buffer,
-      ContentType: mimeType,
-    });
-
-    await this.s3.send(command);
-
-    // Construct S3 URL
-    const s3Url = this.buildS3ObjectUrl(key);
-
-    const record = await this.prisma.fileUpload.create({
-      data: {
-        id: fileId,
-        userId,
-        originalName,
-        fileName: key.split('/').pop()!,
-        s3Key: key,
-        s3Url: s3Url,
-        fileType,
-        mimeType,
-        size: buffer.length,
-        processingStatus: 'READY',
-      } as any,
-    });
-    await this.enqueueImageProcessing(record.id, true);
-    return record;
+    return this.storeServerUpload({ originalname: originalName, buffer, size: buffer.length, mimetype: mimeType } as Express.Multer.File,
+      userId, fileType);
   }
 
-  async getFileVariants(fileId: string, userId?: string) {
+  async getFileVariants(fileId: string, userId: string) {
+    if (!userId) throw new ForbiddenException('Authentication required');
     const file = await this.prisma.fileUpload.findFirst({
-      where: userId ? { id: fileId, userId } : { id: fileId },
+      where: { id: fileId, userId },
     });
     if (!file) {
       throw new BadRequestException('File not found');
     }
 
+    if (!this.isDisplayableStoredFile(file)) return {
+      fileId: file.id, processingStatus: file.processingStatus, version: file.assetVersion,
+      variants: {}, fallbackUrl: null, s3Url: null,
+    };
     const variantRows = await (this.prisma as any).fileVariant.findMany({
       where: {
         fileUploadId: fileId,
@@ -1894,20 +1763,21 @@ export class UploadService {
       if (!mapped) continue;
       if ((variants as any)[mapped]) continue;
       (variants as any)[mapped] = {
-        url: row.s3Url,
+        url: await this.getTemporarySignedDisplayUrl({ s3Key: row.s3Key }, 3600),
         width: row.width,
         height: row.height,
         format: row.format,
       } as VariantView;
     }
 
+    const fallbackUrl = await this.getTemporarySignedDisplayUrl(file, 3600);
     return {
       fileId: file.id,
       processingStatus: (file as any).processingStatus ?? 'READY',
       version: (file as any).assetVersion ?? 1,
       variants,
-      fallbackUrl: file.s3Url,
-      s3Url: file.s3Url,
+      fallbackUrl,
+      s3Url: fallbackUrl,
     };
   }
 

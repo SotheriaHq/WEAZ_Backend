@@ -296,7 +296,7 @@ export class MessagingQueryService {
       const ids = unique.slice(index, index + 500);
       await this.prisma.$executeRaw`
         INSERT INTO "MessageDeliveryReceipt"("id","messageId","recipientId","deliveredAt","createdAt")
-        SELECT gen_random_uuid(),m."id",${recipientId}::uuid,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
+        SELECT gen_random_uuid(),m."id",${recipientId}::uuid,(CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
         FROM "Message" m
         WHERE m."threadId"=${threadId}::uuid AND m."id" IN (${Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`))})
           AND m."senderUserId" IS DISTINCT FROM ${recipientId}::uuid
@@ -324,7 +324,7 @@ export class MessagingQueryService {
     // Join directly to the requested watermark and existing receipts; no per-message query loop.
     await this.prisma.$executeRaw`
       INSERT INTO "MessageDeliveryReceipt"("id","messageId","recipientId","deliveredAt","readAt","createdAt")
-      SELECT gen_random_uuid(),m."id",${recipientId}::uuid,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
+      SELECT gen_random_uuid(),m."id",${recipientId}::uuid,(CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),(CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
       FROM "Message" m
       JOIN "Message" watermark ON watermark."id"=${upToMessageId}::uuid AND watermark."threadId"=${threadId}::uuid
       LEFT JOIN "MessageDeliveryReceipt" receipt ON receipt."messageId"=m."id" AND receipt."recipientId"=${recipientId}::uuid

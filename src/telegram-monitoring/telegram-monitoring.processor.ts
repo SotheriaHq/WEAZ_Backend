@@ -13,7 +13,10 @@ import { MonitoringReportService } from './monitoring-report.service';
 import type { ReportKind } from './report-window';
 import { SentryAlertHandler } from './sentry-alert.handler';
 import { describe, TelegramDeliveryService } from './telegram-delivery.service';
-import type { SendJobData, SentryAlertJobData } from './telegram-events.service';
+import type {
+  SendJobData,
+  SentryAlertJobData,
+} from './telegram-events.service';
 import { TelegramDeliveryError } from './telegram.client';
 import { TelegramMonitoringConfig } from './telegram-monitoring.config';
 
@@ -52,11 +55,17 @@ export class TelegramMonitoringProcessor extends WorkerHost {
         }
         case TELEGRAM_SENTRY_ALERT_JOB: {
           const data = job.data as SentryAlertJobData;
-          return await this.sentryHandler.handle(data.alert, data.idempotencyId);
+          return await this.sentryHandler.handle(
+            data.alert,
+            data.idempotencyId,
+          );
         }
         case TELEGRAM_REPORT_JOB: {
-          if (!this.config.reportsEnabled) return { skipped: 'reports disabled' };
-          const kind = (job.data?.kind === 'evening' ? 'evening' : 'morning') as ReportKind;
+          if (!this.config.reportsEnabled)
+            return { skipped: 'reports disabled' };
+          const kind = (
+            job.data?.kind === 'evening' ? 'evening' : 'morning'
+          ) as ReportKind;
           return await this.reports.deliverScheduled(kind);
         }
         case TELEGRAM_WATCHDOG_JOB:
@@ -74,7 +83,9 @@ export class TelegramMonitoringProcessor extends WorkerHost {
           throw new RateLimitError();
         }
         if (error.kind === 'fatal' || error.kind === 'inactive') {
-          this.logger.error(`Telegram delivery permanently failed (${job.name}): ${error.message}`);
+          this.logger.error(
+            `Telegram delivery permanently failed (${job.name}): ${error.message}`,
+          );
           throw new UnrecoverableError(error.message);
         }
       }

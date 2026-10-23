@@ -21,9 +21,12 @@ name: Backend Deploy (EC2)
 on:
   push:
     branches: [main, SIT]
-  # No inputs needed: the "Run workflow" branch picker sets `github.ref_name`,
-  # which is already what the deploy step checks out and passes to deploy.sh.
   workflow_dispatch:
+    inputs:
+      validate_only:
+        description: Build and verify this ref without changing the SIT server
+        type: boolean
+        default: false
 
 concurrency:
   group: backend-deploy-${{ github.ref }}
@@ -44,17 +47,25 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
       # Before the build, because a module cycle without forwardRef compiles
       # perfectly and only fails at boot — and only for whichever entry point
       # happens to load the graph first. That is how the SIT worker ended up
       # restarting 74,771 times over nine days while every check stayed green.
       - run: npm run check:module-cycles
+      - name: Destructive reset safety checks
+        run: node --test scripts/reset-safety.test.cjs
       - run: npx prisma generate
+      - name: Upload privacy and finalization regressions
+        run: npm test -- src/upload/upload.service.spec.ts src/designs/mappers/design-response.mapper.spec.ts --runInBand
+      - run: npm run check:perf-regressions
       - run: npm run build
 
   deploy:
     name: Deploy to EC2 (PM2)
     needs: build-check
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.validate_only }}
     runs-on: ubuntu-latest
     steps:
       - name: Deploy over SSH

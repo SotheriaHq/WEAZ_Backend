@@ -29,7 +29,9 @@ export class TelegramMonitoringConfig {
   constructor(private readonly config: ConfigService) {}
 
   private read(key: string): string {
-    return String(this.config.get<string>(key) ?? process.env[key] ?? '').trim();
+    return String(
+      this.config.get<string>(key) ?? process.env[key] ?? '',
+    ).trim();
   }
 
   private flag(key: string, fallback: boolean): boolean {
@@ -52,7 +54,8 @@ export class TelegramMonitoringConfig {
 
   /** Short label printed on every message, e.g. SIT / UAT / PROD. */
   get environment(): string {
-    const label = this.read('TELEGRAM_ENVIRONMENT') || this.read('APP_ENV') || 'UNKNOWN';
+    const label =
+      this.read('TELEGRAM_ENVIRONMENT') || this.read('APP_ENV') || 'UNKNOWN';
     return label.toUpperCase();
   }
 
@@ -122,10 +125,13 @@ export class TelegramMonitoringConfig {
     const problems: TelegramConfigProblem[] = [];
     if (!this.enabled) problems.push('disabled');
     if (!this.botToken) problems.push('missing_token');
-    else if (!BOT_TOKEN_PATTERN.test(this.botToken)) problems.push('malformed_token');
+    else if (!BOT_TOKEN_PATTERN.test(this.botToken))
+      problems.push('malformed_token');
     if (!this.chatId) problems.push('missing_chat_id');
-    else if (!CHAT_ID_PATTERN.test(this.chatId)) problems.push('malformed_chat_id');
-    if (!ENV_LABEL_PATTERN.test(this.environment)) problems.push('malformed_environment');
+    else if (!CHAT_ID_PATTERN.test(this.chatId))
+      problems.push('malformed_chat_id');
+    if (!ENV_LABEL_PATTERN.test(this.environment))
+      problems.push('malformed_environment');
     return problems;
   }
 

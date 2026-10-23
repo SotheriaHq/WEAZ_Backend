@@ -72,10 +72,10 @@ function resolveGateway(config: StorageConfigReader): PublicMediaGatewaySettings
   if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(environment)) {
     throw new Error('MEDIA_GATEWAY_ENVIRONMENT must be a lowercase environment identifier');
   }
-  if (ttl && !/^\d+$/.test(ttl)) throw new Error('MEDIA_GATEWAY_TTL_SECONDS must be an integer from 1 to 900');
+  if (ttl && !/^\d+$/.test(ttl)) throw new Error('MEDIA_GATEWAY_TTL_SECONDS must be an integer from 60 to 900');
   const ttlSeconds = ttl ? Number(ttl) : 300;
-  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 900) {
-    throw new Error('MEDIA_GATEWAY_TTL_SECONDS must be an integer from 1 to 900');
+  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 900) {
+    throw new Error('MEDIA_GATEWAY_TTL_SECONDS must be an integer from 60 to 900');
   }
   const baseUrl = parsed.href.replace(/\/+$/, '');
   // A route prefix must already have the same canonical encoding used by the Worker.
@@ -181,7 +181,7 @@ export function signPublicGatewayUrl(
   nowMs = Date.now(),
 ): string {
   if (!['GET', 'HEAD'].includes(method) || !Number.isFinite(nowMs) || !Number.isInteger(gateway.ttlSeconds)
-      || gateway.ttlSeconds < 1 || gateway.ttlSeconds > 900) throw new Error('Invalid media gateway signing parameters');
+      || gateway.ttlSeconds < 60 || gateway.ttlSeconds > 900) throw new Error('Invalid media gateway signing parameters');
   const url = new URL(`${gateway.baseUrl}/${encodeMediaObjectKey(key)}`);
   const expires = String(Math.floor(nowMs / 1000) + gateway.ttlSeconds);
   const canonical = ['WIEZ-MEDIA-V1', method, url.origin, url.pathname, key, gateway.environment, expires].join('\n');

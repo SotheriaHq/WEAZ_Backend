@@ -6,7 +6,6 @@ import {
 import {
   CustomOrderSourceType,
   CustomFabricRuleBasisStatus,
-  Gender,
   MeasurementPointSource,
   Prisma,
 } from '@prisma/client';
@@ -21,12 +20,28 @@ import {
   UpdateCustomOrderConfigurationDto,
 } from './dto/custom-order-configurations.dto';
 import {
-  measurementKeysContainOppositeGender,
   normalizeIdList as normalizeIdArray,
   normalizeMeasurementKeyList as normalizeMeasurementKeyArray,
-  resolveGarmentMeasurementTemplate,
-  resolveSourceMeasurementGender,
 } from '../custom-orders/custom-order-measurement-contract.util';
+
+const BUYER_MEASUREMENT_POINT_SELECT = {
+  id: true,
+  key: true,
+  label: true,
+  description: true,
+  minValueCm: true,
+  maxValueCm: true,
+  source: true,
+  brandId: true,
+} as const;
+type BuyerMeasurementPoint = Prisma.MeasurementPointGetPayload<{
+  select: typeof BUYER_MEASUREMENT_POINT_SELECT;
+}>;
+type MeasurementContractConfiguration = {
+  brandId: string;
+  requiredMeasurementKeys: string[];
+  requiredFreeformPointIds: string[];
+};
 
 @Injectable()
 export class CustomOrderConfigurationsService {
@@ -54,7 +69,10 @@ export class CustomOrderConfigurationsService {
       dto.sourceType,
       dto.sourceId,
     );
-    const resolvedTitle = this.resolveConfigurationTitle(dto.title, sourceTitle);
+    const resolvedTitle = this.resolveConfigurationTitle(
+      dto.title,
+      sourceTitle,
+    );
 
     const normalizedRules = this.pricingService.validateConfigurationRules(
       dto.rules,
@@ -391,10 +409,11 @@ export class CustomOrderConfigurationsService {
       }
     }
 
-    const normalizedConfiguration =
-      await this.withResolvedBuyerMeasurementContract(
-        await this.normalizeLegacyMeasurementContract(configuration),
-      );
+    const points = await this.loadBuyerMeasurementPoints([configuration]);
+    const normalizedConfiguration = this.withResolvedBuyerMeasurementContract(
+      configuration,
+      points,
+    );
 
     return {
       statusCode: 200,
@@ -455,10 +474,11 @@ export class CustomOrderConfigurationsService {
       }
     }
 
-    const normalizedConfiguration =
-      await this.withResolvedBuyerMeasurementContract(
-        await this.normalizeLegacyMeasurementContract(configuration),
-      );
+    const points = await this.loadBuyerMeasurementPoints([configuration]);
+    const normalizedConfiguration = this.withResolvedBuyerMeasurementContract(
+      configuration,
+      points,
+    );
 
     return {
       statusCode: 200,
@@ -509,7 +529,8 @@ export class CustomOrderConfigurationsService {
       }
     }
 
-    const scopedBrandId = query.brandId ?? (!hasSourceScope ? ownerBrand?.id : undefined);
+    const scopedBrandId =
+      query.brandId ?? (!hasSourceScope ? ownerBrand?.id : undefined);
 
     const where: Prisma.CustomOrderConfigurationWhereInput = {
       ...(hasSourceScope
@@ -547,33 +568,25 @@ export class CustomOrderConfigurationsService {
       this.prisma.customOrderConfiguration.count({ where }),
     ]);
 
-    // For source-scoped anonymous/public callers, drop configs whose source
-    // is not publicly readable (draft/private catalog).
-    const visibleItems: typeof items = [];
-    for (const item of items) {
-      const isOwner =
-        Boolean(authUserId) && item.brand.ownerId === authUserId;
-      if (isOwner) {
-        visibleItems.push(item);
-        continue;
-      }
-      if (!item.isActive) continue;
-      if (hasSourceScope || !scopedBrandId) {
-        const sourcePublic = await this.isSourcePubliclyReadable(
-          item.sourceType,
-          item.sourceId,
-        );
-        if (!sourcePublic) continue;
-      }
-      visibleItems.push(item);
-    }
-
-    const normalizedItems = await Promise.all(
-      visibleItems.map(async (item) =>
-        this.withResolvedBuyerMeasurementContract(
-          await this.normalizeLegacyMeasurementContract(item),
-        ),
-      ),
+    // Every public listing is constrained to one source. Read its visibility
+    // once regardless of how many versions/configurations share that source.
+    const publicReadNeeded =
+      hasSourceScope &&
+      items.some(
+        (item) =>
+          item.isActive && (!authUserId || item.brand.ownerId !== authUserId),
+      );
+    const sourcePublic = publicReadNeeded
+      ? await this.isSourcePubliclyReadable(query.sourceType!, query.sourceId!)
+      : false;
+    const visibleItems = items.filter(
+      (item) =>
+        (Boolean(authUserId) && item.brand.ownerId === authUserId) ||
+        (item.isActive && sourcePublic),
+    );
+    const points = await this.loadBuyerMeasurementPoints(visibleItems);
+    const normalizedItems = visibleItems.map((item) =>
+      this.withResolvedBuyerMeasurementContract(item, points),
     );
 
     return {
@@ -583,9 +596,10 @@ export class CustomOrderConfigurationsService {
         items: normalizedItems,
         page,
         limit: take,
-        total: scopedBrandId && ownerBrand?.id === scopedBrandId
-          ? total
-          : normalizedItems.length,
+        total:
+          scopedBrandId && ownerBrand?.id === scopedBrandId
+            ? total
+            : normalizedItems.length,
       },
     };
   }
@@ -691,6 +705,7 @@ export class CustomOrderConfigurationsService {
     const collection = await this.prisma.collection.findFirst({
       where: {
         id: sourceId,
+        domain: 'DESIGN',
         deletedAt: null,
         status: 'PUBLISHED',
         visibility: 'PUBLIC',
@@ -724,7 +739,7 @@ export class CustomOrderConfigurationsService {
       where: {
         id: sourceId,
         ownerId: ownerUserId,
-        OR: [{ domain: 'DESIGN' }, { isAvailableInStore: false }],
+        domain: 'DESIGN',
       },
       select: { id: true },
     });
@@ -1167,26 +1182,44 @@ export class CustomOrderConfigurationsService {
       .trim();
   }
 
-  private async withResolvedBuyerMeasurementContract<
-    T extends {
-      requiredMeasurementKeys: string[];
-      requiredFreeformPointIds: string[];
-    },
-  >(
-    configuration: T,
-  ): Promise<
-    T & {
-      resolvedRequiredMeasurementKeys: string[];
-      requiredMeasurementPoints: Array<{
-        id: string;
-        key: string;
-        label: string;
-        description: string | null;
-        minValueCm: number | null;
-        maxValueCm: number | null;
-      }>;
+  private async loadBuyerMeasurementPoints(
+    configurations: MeasurementContractConfiguration[],
+  ) {
+    const pointIds = Array.from(
+      new Set(
+        configurations.flatMap((configuration) =>
+          this.normalizeIdList(configuration.requiredFreeformPointIds),
+        ),
+      ),
+    );
+    const brandIds = Array.from(
+      new Set(configurations.map((configuration) => configuration.brandId)),
+    );
+    const points = new Map<string, BuyerMeasurementPoint>();
+    // DTO page limit is 100; bound the ID list too, including unusually wide
+    // explicit contracts, without introducing one query per configuration.
+    for (let offset = 0; offset < pointIds.length; offset += 500) {
+      const batch = await this.prisma.measurementPoint.findMany({
+        where: {
+          id: { in: pointIds.slice(offset, offset + 500) },
+          OR: [
+            { source: MeasurementPointSource.SYSTEM },
+            {
+              source: MeasurementPointSource.BRAND_FREEFORM,
+              brandId: { in: brandIds },
+            },
+          ],
+        },
+        select: BUYER_MEASUREMENT_POINT_SELECT,
+      });
+      for (const point of batch) points.set(point.id, point);
     }
-  > {
+    return points;
+  }
+
+  private withResolvedBuyerMeasurementContract<
+    T extends MeasurementContractConfiguration,
+  >(configuration: T, pointById: ReadonlyMap<string, BuyerMeasurementPoint>) {
     const requiredMeasurementKeys = this.normalizeMeasurementKeyList(
       configuration.requiredMeasurementKeys,
     );
@@ -1197,29 +1230,27 @@ export class CustomOrderConfigurationsService {
     if (!requiredFreeformPointIds.length) {
       return {
         ...configuration,
+        requiredMeasurementKeys,
+        requiredFreeformPointIds,
         resolvedRequiredMeasurementKeys: requiredMeasurementKeys,
         requiredMeasurementPoints: [],
       };
     }
 
-    const points = await this.prisma.measurementPoint.findMany({
-      where: { id: { in: requiredFreeformPointIds } },
-      select: {
-        id: true,
-        key: true,
-        label: true,
-        description: true,
-        minValueCm: true,
-        maxValueCm: true,
-      },
-    });
-    const pointById = new Map(points.map((point) => [point.id, point]));
     const orderedPoints = requiredFreeformPointIds
       .map((id) => pointById.get(id))
-      .filter((point): point is NonNullable<typeof point> => Boolean(point));
+      .filter(
+        (point): point is BuyerMeasurementPoint =>
+          Boolean(point) &&
+          (point!.source === MeasurementPointSource.SYSTEM ||
+            (point!.source === MeasurementPointSource.BRAND_FREEFORM &&
+              point!.brandId === configuration.brandId)),
+      );
 
     return {
       ...configuration,
+      requiredMeasurementKeys,
+      requiredFreeformPointIds,
       resolvedRequiredMeasurementKeys: this.normalizeMeasurementKeyList([
         ...requiredMeasurementKeys,
         ...orderedPoints.map((point) => point.key),
@@ -1233,204 +1264,6 @@ export class CustomOrderConfigurationsService {
         maxValueCm: point.maxValueCm == null ? null : Number(point.maxValueCm),
       })),
     };
-  }
-
-  private async normalizeLegacyMeasurementContract<
-    T extends {
-      brandId: string;
-      sourceType: CustomOrderSourceType;
-      sourceId: string;
-      requiredMeasurementKeys: string[];
-      requiredFreeformPointIds: string[];
-    },
-  >(configuration: T): Promise<T> {
-    const normalizedKeys = this.normalizeMeasurementKeyList(
-      configuration.requiredMeasurementKeys,
-    );
-    const normalizedFreeformPointIds = this.normalizeIdList(
-      configuration.requiredFreeformPointIds,
-    );
-
-    if (normalizedKeys.length === 0) {
-      return {
-        ...configuration,
-        requiredMeasurementKeys: normalizedKeys,
-        requiredFreeformPointIds: normalizedFreeformPointIds,
-      };
-    }
-
-    const sourceContract = await this.loadSourceMeasurementContract(
-      configuration.sourceType,
-      configuration.sourceId,
-    );
-    const sourceMeasurementKeys = this.normalizeMeasurementKeyList(
-      sourceContract.customMeasurementKeys,
-    );
-    const sourceGenderHint = resolveSourceMeasurementGender({
-      sourceType: configuration.sourceType,
-      categoryTypeSlug: sourceContract.categoryTypeSlug,
-      collectionType: sourceContract.collectionType,
-      customGender: sourceContract.customGender ?? null,
-    });
-
-    const sourceProvidesASmallerSubset =
-      sourceMeasurementKeys.length > 0 &&
-      sourceMeasurementKeys.length < normalizedKeys.length &&
-      sourceMeasurementKeys.every((key) => normalizedKeys.includes(key));
-
-    if (sourceProvidesASmallerSubset) {
-      return {
-        ...configuration,
-        requiredMeasurementKeys: sourceMeasurementKeys,
-        requiredFreeformPointIds: normalizedFreeformPointIds,
-      };
-    }
-
-    const registryKeys = await this.loadMeasurementPoolKeys(
-      configuration.brandId,
-      sourceGenderHint ?? sourceContract.customGender ?? null,
-    );
-    const LEGACY_REGISTRY_WIDTH_THRESHOLD = 8;
-    const looksLikeRegistryWideLegacySelection =
-      registryKeys.length >= LEGACY_REGISTRY_WIDTH_THRESHOLD &&
-      registryKeys.every((key) => normalizedKeys.includes(key));
-    const sourceLooksLikeRegistryWideLegacySelection =
-      registryKeys.length >= LEGACY_REGISTRY_WIDTH_THRESHOLD &&
-      registryKeys.every((key) => sourceMeasurementKeys.includes(key));
-    const templateMeasurementKeys = resolveGarmentMeasurementTemplate(
-      {
-        sourceType: configuration.sourceType,
-        categoryTypeSlug: sourceContract.categoryTypeSlug,
-        collectionType: sourceContract.collectionType,
-        customGender: sourceContract.customGender ?? null,
-      },
-      registryKeys,
-    );
-    const configurationContainsOppositeGenderKeys =
-      sourceGenderHint != null &&
-      measurementKeysContainOppositeGender(normalizedKeys, sourceGenderHint);
-    const sourceContainsOppositeGenderKeys =
-      sourceGenderHint != null &&
-      measurementKeysContainOppositeGender(
-        sourceMeasurementKeys,
-        sourceGenderHint,
-      );
-
-    if (
-      templateMeasurementKeys.length > 0 &&
-      templateMeasurementKeys.length < normalizedKeys.length &&
-      (looksLikeRegistryWideLegacySelection ||
-        sourceLooksLikeRegistryWideLegacySelection ||
-        configurationContainsOppositeGenderKeys ||
-        sourceContainsOppositeGenderKeys)
-    ) {
-      return {
-        ...configuration,
-        requiredMeasurementKeys: templateMeasurementKeys,
-        requiredFreeformPointIds: normalizedFreeformPointIds,
-      };
-    }
-
-    return {
-      ...configuration,
-      requiredMeasurementKeys: normalizedKeys,
-      requiredFreeformPointIds: normalizedFreeformPointIds,
-    };
-  }
-
-  private async loadSourceMeasurementContract(
-    sourceType: CustomOrderSourceType,
-    sourceId: string,
-  ) {
-    if (sourceType === CustomOrderSourceType.PRODUCT) {
-      const product = await this.prisma.product.findUnique({
-        where: { id: sourceId },
-        select: {
-          customMeasurementKeys: true,
-          customFreeformPointIds: true,
-          customGender: true,
-          gender: true,
-          categoryType: {
-            select: { slug: true },
-          },
-        },
-      });
-
-      if (!product) {
-        throw new NotFoundException(
-          'Product source was not found for this configuration',
-        );
-      }
-
-      return {
-        customMeasurementKeys: product.customMeasurementKeys,
-        customFreeformPointIds: product.customFreeformPointIds,
-        customGender: product.customGender,
-        categoryTypeSlug: product.categoryType?.slug ?? null,
-        collectionType: product.gender,
-      };
-    }
-
-    // Designs are DESIGN-domain collections; a design's id is its collection id.
-    const design = await this.prisma.collection.findUnique({
-      where: { id: sourceId },
-      select: {
-        customMeasurementKeys: true,
-        customFreeformPointIds: true,
-        customGender: true,
-        type: true,
-        categoryType: {
-          select: { slug: true },
-        },
-      },
-    });
-
-    if (!design) {
-      throw new NotFoundException(
-        'Design source was not found for this configuration',
-      );
-    }
-
-    return {
-      customMeasurementKeys: design.customMeasurementKeys,
-      customFreeformPointIds: design.customFreeformPointIds,
-      customGender: design.customGender,
-      categoryTypeSlug: design.categoryType?.slug ?? null,
-      collectionType: design.type,
-    };
-  }
-
-  private async loadMeasurementPoolKeys(
-    brandId: string,
-    gender: Gender | null,
-  ) {
-    const points = await this.prisma.measurementPoint.findMany({
-      where: {
-        isActive: true,
-        OR: [
-          {
-            source: MeasurementPointSource.SYSTEM,
-            status: 'APPROVED_GLOBAL',
-          },
-          {
-            source: MeasurementPointSource.BRAND_FREEFORM,
-            brandId,
-          },
-        ],
-        ...(gender && gender !== 'UNISEX'
-          ? {
-              AND: [
-                {
-                  OR: [{ gender }, { gender: 'UNISEX' }, { gender: null }],
-                },
-              ],
-            }
-          : {}),
-      },
-      select: { key: true },
-    });
-
-    return this.normalizeMeasurementKeyList(points.map((point) => point.key));
   }
 
   private async deactivateSiblingConfigurations(

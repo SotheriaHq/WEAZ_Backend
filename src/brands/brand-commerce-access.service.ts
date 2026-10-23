@@ -12,7 +12,6 @@ export class BrandCommerceAccessService {
         where: { id: brandId },
         select: {
           customerMinimumOrders: true,
-          customOrderLegacyEligible: true,
         },
       }),
       this.prisma.brandSubscription.findFirst({
@@ -36,11 +35,9 @@ export class BrandCommerceAccessService {
     const paid = Boolean(active && agreement.tier.monthlyPriceNgn > 0);
     const tierKey = active ? agreement.tierKey : 'FREE';
     const currentTierIndex = active ? TIER_ORDER.indexOf(agreement.tierKey) : -1;
-    const legacy = brand.customOrderLegacyEligible || tierKey === 'LEGACY';
     return {
       tierKey,
       canUpgrade:
-        !legacy &&
         tiers.some(
           (tier) => TIER_ORDER.indexOf(tier.key) > currentTierIndex,
         ),

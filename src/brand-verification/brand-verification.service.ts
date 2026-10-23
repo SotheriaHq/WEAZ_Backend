@@ -1944,13 +1944,22 @@ export class BrandVerificationService {
     const filteredKeys = keys.filter((value): value is string =>
       Boolean(value),
     );
-    const files = filteredKeys.length ? await this.prisma.fileUpload.findMany({
-      where: { userId: ownerId, s3Key: { in: [...new Set(filteredKeys)] }, fileType: FileType.BRAND_VERIFICATION as any },
-    }) : [];
+    const files = filteredKeys.length
+      ? await this.prisma.fileUpload.findMany({
+          where: {
+            userId: ownerId,
+            s3Key: { in: [...new Set(filteredKeys)] },
+            fileType: FileType.BRAND_VERIFICATION as any,
+          },
+        })
+      : [];
     const byKey = new Map(files.map((file) => [file.s3Key, file]));
     const rows = filteredKeys.map((key) => {
       const file = byKey.get(key);
-      if (!file) throw new BadRequestException(`Verification file does not belong to this brand owner: ${key}`);
+      if (!file)
+        throw new BadRequestException(
+          `Verification file does not belong to this brand owner: ${key}`,
+        );
       return file;
     });
 
@@ -2047,7 +2056,10 @@ export class BrandVerificationService {
     });
     const fileMap = new Map(files.map((file) => [file.s3Key, file]));
 
-    const signedUrls = await this.uploadService.getVerificationReviewSignedUrlsByKey(docConfig.map((item) => item.s3Key!));
+    const signedUrls =
+      await this.uploadService.getVerificationReviewSignedUrlsByKey(
+        docConfig.map((item) => item.s3Key!),
+      );
     return Promise.all(
       docConfig.map(async (item) => {
         const meta = fileMap.get(item.s3Key!);
@@ -2055,7 +2067,9 @@ export class BrandVerificationService {
         // returns null for every document — which is why reviewers saw "No
         // reviewer preview is available" on all evidence, including the signed
         // letter. Sign through the verification-review path instead.
-        const signedUrl = item.s3Key ? signedUrls.get(item.s3Key) ?? null : null;
+        const signedUrl = item.s3Key
+          ? (signedUrls.get(item.s3Key) ?? null)
+          : null;
 
         return {
           key: item.key,

@@ -29,10 +29,23 @@ export type ReportData = {
   window: ReportWindow;
   generatedAt: Date;
   platform: Record<string, Metric>;
-  payments: { succeeded: Array<{ currency: string; count: number; amount: number }> | null; failed: Metric };
+  payments: {
+    succeeded: Array<{
+      currency: string;
+      count: number;
+      amount: number;
+    }> | null;
+    failed: Metric;
+  };
   counters: Record<string, number> | null;
   sentry:
-    | { available: true; newIssues: SentryIssueSummary[]; regressed: SentryIssueSummary[]; fatal: SentryIssueSummary[]; top: SentryIssueSummary[] }
+    | {
+        available: true;
+        newIssues: SentryIssueSummary[];
+        regressed: SentryIssueSummary[];
+        fatal: SentryIssueSummary[];
+        top: SentryIssueSummary[];
+      }
     | { available: false; reason: string };
   infra: InfraSnapshot | null;
   queryMs: number;
@@ -96,7 +109,14 @@ export class MonitoringReportService {
    * window all find the record and stop; a crash mid-send resumes from the
    * first unsent part instead of repeating the ones already delivered.
    */
-  async deliverScheduled(kind: ReportKind, now = new Date()): Promise<{ status: 'sent' | 'duplicate'; parts: number; window: ReportWindow }> {
+  async deliverScheduled(
+    kind: ReportKind,
+    now = new Date(),
+  ): Promise<{
+    status: 'sent' | 'duplicate';
+    parts: number;
+    window: ReportWindow;
+  }> {
     const window = this.window(kind, now);
     const redis = await this.delivery.redis();
     const key = this.delivery.keys.report(kind, window.end.toISOString());
@@ -105,9 +125,15 @@ export class MonitoringReportService {
     if (redis) {
       const raw = await redis.get(key).catch(() => null);
       record = raw ? (JSON.parse(raw) as ReportRecord) : null;
-      if (record?.status === 'sent') return { status: 'duplicate', parts: record.totalParts ?? 0, window };
-      if (record?.status === 'sending' && (record.sendingUntil ?? 0) > Date.now()) {
-        throw new Error(`report ${kind} ${window.end.toISOString()} already being sent`);
+      if (record?.status === 'sent')
+        return { status: 'duplicate', parts: record.totalParts ?? 0, window };
+      if (
+        record?.status === 'sending' &&
+        (record.sendingUntil ?? 0) > Date.now()
+      ) {
+        throw new Error(
+          `report ${kind} ${window.end.toISOString()} already being sent`,
+        );
       }
     }
 
@@ -126,7 +152,9 @@ export class MonitoringReportService {
     };
     const save = async (value: ReportRecord) => {
       if (!redis) return;
-      await redis.set(key, JSON.stringify(value), 'EX', REPORT_RECORD_TTL_SECONDS).catch(() => undefined);
+      await redis
+        .set(key, JSON.stringify(value), 'EX', REPORT_RECORD_TTL_SECONDS)
+        .catch(() => undefined);
     };
     await save(base);
 
@@ -138,11 +166,21 @@ export class MonitoringReportService {
         await save(base);
       }
     } catch (error) {
-      await save({ ...base, status: 'failed', sendingUntil: undefined, lastError: describe(error) });
+      await save({
+        ...base,
+        status: 'failed',
+        sendingUntil: undefined,
+        lastError: describe(error),
+      });
       throw error;
     }
 
-    const done: ReportRecord = { ...base, status: 'sent', sendingUntil: undefined, sentAt: new Date().toISOString() };
+    const done: ReportRecord = {
+      ...base,
+      status: 'sent',
+      sendingUntil: undefined,
+      sentAt: new Date().toISOString(),
+    };
     await save(done);
     if (redis) {
       await redis
@@ -152,14 +190,18 @@ export class MonitoringReportService {
         .exec()
         .catch(() => undefined);
     }
-    this.logger.log(`Telegram ${kind} report sent for window ending ${window.end.toISOString()} (${parts.length} part(s))`);
+    this.logger.log(
+      `Telegram ${kind} report sent for window ending ${window.end.toISOString()} (${parts.length} part(s))`,
+    );
     return { status: 'sent', parts: parts.length, window };
   }
 
   async recentDeliveries(limit = 10): Promise<ReportRecord[]> {
     const redis = await this.delivery.redis();
     if (!redis) return [];
-    const rows = await redis.lrange(this.delivery.keys.reportLog(), 0, limit - 1).catch(() => []);
+    const rows = await redis
+      .lrange(this.delivery.keys.reportLog(), 0, limit - 1)
+      .catch(() => []);
     return rows.map((row) => JSON.parse(row) as ReportRecord);
   }
 
@@ -168,45 +210,120 @@ export class MonitoringReportService {
   private async bounded<T>(query: Prisma.PrismaPromise<T>): Promise<T> {
     // One short transaction per metric so SET LOCAL scopes the timeout to it.
     const [, result] = await this.prisma.$transaction([
-      this.prisma.$executeRawUnsafe(`SET LOCAL statement_timeout = ${QUERY_TIMEOUT_MS}`),
+      this.prisma.$executeRawUnsafe(
+        `SET LOCAL statement_timeout = ${QUERY_TIMEOUT_MS}`,
+      ),
       query,
     ]);
     return result as T;
   }
 
-  private async metric(label: string, query: () => Prisma.PrismaPromise<number>): Promise<Metric> {
+  private async metric(
+    label: string,
+    query: () => Prisma.PrismaPromise<number>,
+  ): Promise<Metric> {
     try {
       return Number(await this.bounded(query()));
     } catch (error) {
-      this.logger.warn(`Report metric "${label}" unavailable: ${describe(error)}`);
+      this.logger.warn(
+        `Report metric "${label}" unavailable: ${describe(error)}`,
+      );
       return null;
     }
   }
 
-  private async platformMetrics(window: ReportWindow): Promise<Record<string, Metric>> {
+  private async platformMetrics(
+    window: ReportWindow,
+  ): Promise<Record<string, Metric>> {
     const range = { gte: window.start, lt: window.end };
     const p = this.prisma;
     const entries: Array<[string, () => Prisma.PrismaPromise<number>]> = [
-      ['New shoppers', () => p.user.count({ where: { createdAt: range, type: 'REGULAR' } })],
-      ['New brand accounts', () => p.user.count({ where: { createdAt: range, type: 'BRAND' } })],
-      ['New brands (stores)', () => p.brand.count({ where: { createdAt: range } })],
-      ['Uploads started', () => p.fileUpload.count({ where: { createdAt: range } })],
-      ['Uploads processed OK', () => p.fileUpload.count({ where: { createdAt: range, processingStatus: 'READY' } })],
-      ['Uploads failed processing', () => p.fileUpload.count({ where: { createdAt: range, processingStatus: 'FAILED' } })],
-      ['Uploads still pending', () => p.fileUpload.count({ where: { createdAt: range, processingStatus: 'PENDING' } })],
-      ['New products now published', () => p.product.count({ where: { createdAt: range, publicationStatus: 'PUBLISHED' } })],
-      ['New designs now published', () => p.collection.count({ where: { createdAt: range, status: 'PUBLISHED' } })],
-      ['New designs failed/rejected', () => p.collection.count({ where: { createdAt: range, status: { in: ['FAILED', 'REJECTED'] } } })],
+      [
+        'New shoppers',
+        () => p.user.count({ where: { createdAt: range, type: 'REGULAR' } }),
+      ],
+      [
+        'New brand accounts',
+        () => p.user.count({ where: { createdAt: range, type: 'BRAND' } }),
+      ],
+      [
+        'New brands (stores)',
+        () => p.brand.count({ where: { createdAt: range } }),
+      ],
+      [
+        'Uploads started',
+        () => p.fileUpload.count({ where: { createdAt: range } }),
+      ],
+      [
+        'Uploads processed OK',
+        () =>
+          p.fileUpload.count({
+            where: { createdAt: range, processingStatus: 'READY' },
+          }),
+      ],
+      [
+        'Uploads failed processing',
+        () =>
+          p.fileUpload.count({
+            where: { createdAt: range, processingStatus: 'FAILED' },
+          }),
+      ],
+      [
+        'Uploads still pending',
+        () =>
+          p.fileUpload.count({
+            where: { createdAt: range, processingStatus: 'PENDING' },
+          }),
+      ],
+      [
+        'New products now published',
+        () =>
+          p.product.count({
+            where: { createdAt: range, publicationStatus: 'PUBLISHED' },
+          }),
+      ],
+      [
+        'New designs now published',
+        () =>
+          p.collection.count({
+            where: { createdAt: range, status: 'PUBLISHED' },
+          }),
+      ],
+      [
+        'New designs failed/rejected',
+        () =>
+          p.collection.count({
+            where: { createdAt: range, status: { in: ['FAILED', 'REJECTED'] } },
+          }),
+      ],
       ['Orders created', () => p.order.count({ where: { createdAt: range } })],
-      ['Custom orders created', () => p.customOrder.count({ where: { createdAt: range } })],
-      ['Design likes/reactions', () => p.collectionReaction.count({ where: { createdAt: range } })],
+      [
+        'Custom orders created',
+        () => p.customOrder.count({ where: { createdAt: range } }),
+      ],
+      [
+        'Design likes/reactions',
+        () => p.collectionReaction.count({ where: { createdAt: range } }),
+      ],
       ['Follows', () => p.follow.count({ where: { createdAt: range } })],
-      ['Comments', () => p.commentV2.count({ where: { createdAt: range, deletedAt: null } })],
-      ['Design comments', () => p.collectionComment.count({ where: { createdAt: range } })],
-      ['Wishlist adds', () => p.wishlistItem.count({ where: { createdAt: range } })],
+      [
+        'Comments',
+        () =>
+          p.commentV2.count({ where: { createdAt: range, deletedAt: null } }),
+      ],
+      [
+        'Design comments',
+        () => p.collectionComment.count({ where: { createdAt: range } }),
+      ],
+      [
+        'Wishlist adds',
+        () => p.wishlistItem.count({ where: { createdAt: range } }),
+      ],
       ['Saves', () => p.savedItem.count({ where: { createdAt: range } })],
     ];
-    const values = await Promise.all(entries.map(([label, query]) => this.metric(label, query)));
+    const values = await Promise.all(
+      entries.map(([label, query]) => this.metric(label, query)),
+    );
     const result: Record<string, Metric> = {};
     entries.forEach(([label], index) => {
       result[label] = values[index];
@@ -221,18 +338,26 @@ export class MonitoringReportService {
           SELECT COUNT(DISTINCT "userId")::int AS n FROM "RefreshToken"
           WHERE "lastUsedAt" >= ${window.start} AND "lastUsedAt" < ${window.end}`,
       );
-      result['Signed-in users (login/refresh, lower bound)'] = Number(rows?.[0]?.n ?? 0);
+      result['Signed-in users (login/refresh, lower bound)'] = Number(
+        rows?.[0]?.n ?? 0,
+      );
     } catch (error) {
-      this.logger.warn(`Report metric "active users" unavailable: ${describe(error)}`);
+      this.logger.warn(
+        `Report metric "active users" unavailable: ${describe(error)}`,
+      );
       result['Signed-in users (login/refresh, lower bound)'] = null;
     }
     return result;
   }
 
-  private async paymentMetrics(window: ReportWindow): Promise<ReportData['payments']> {
+  private async paymentMetrics(
+    window: ReportWindow,
+  ): Promise<ReportData['payments']> {
     // createdAt lower bound lets Postgres use @@index([status, createdAt]);
     // checkout attempts expire well within two days.
-    const createdFloor = new Date(window.start.getTime() - 2 * 24 * 60 * 60_000);
+    const createdFloor = new Date(
+      window.start.getTime() - 2 * 24 * 60 * 60_000,
+    );
     let succeeded: ReportData['payments']['succeeded'] = null;
     try {
       const groups = await this.bounded(
@@ -267,18 +392,23 @@ export class MonitoringReportService {
     return { succeeded, failed };
   }
 
-  private async counterTotals(window: ReportWindow): Promise<Record<string, number> | null> {
+  private async counterTotals(
+    window: ReportWindow,
+  ): Promise<Record<string, number> | null> {
     const redis = await this.delivery.redis();
     if (!redis) return null;
     try {
       const buckets = hourBucketsBetween(window.start, window.end);
       const pipeline = redis.multi();
-      for (const bucket of buckets) pipeline.hgetall(this.delivery.keys.counter(bucket));
+      for (const bucket of buckets)
+        pipeline.hgetall(this.delivery.keys.counter(bucket));
       const results = (await pipeline.exec()) ?? [];
       const totals: Record<string, number> = {};
       for (const [error, hash] of results) {
         if (error || !hash) continue;
-        for (const [field, value] of Object.entries(hash as Record<string, string>)) {
+        for (const [field, value] of Object.entries(
+          hash as Record<string, string>,
+        )) {
           totals[field] = (totals[field] ?? 0) + Number(value);
         }
       }
@@ -289,9 +419,14 @@ export class MonitoringReportService {
     }
   }
 
-  private async sentryMetrics(window: ReportWindow): Promise<ReportData['sentry']> {
+  private async sentryMetrics(
+    window: ReportWindow,
+  ): Promise<ReportData['sentry']> {
     if (!this.sentry.isConfigured()) {
-      return { available: false, reason: 'SENTRY_API_TOKEN / SENTRY_ORG_SLUG not configured' };
+      return {
+        available: false,
+        reason: 'SENTRY_API_TOKEN / SENTRY_ORG_SLUG not configured',
+      };
     }
     const environments = this.config.sentryAlertEnvironments;
     const iso = (date: Date) => date.toISOString().replace(/\.\d{3}Z$/, '');
@@ -305,9 +440,28 @@ export class MonitoringReportService {
           sort: 'freq',
           limit: 100,
         }),
-        this.sentry.searchIssues({ query: 'is:regressed', start: window.start, end: window.end, environments, limit: 25 }),
-        this.sentry.searchIssues({ query: 'level:fatal', start: window.start, end: window.end, environments, limit: 25 }),
-        this.sentry.searchIssues({ query: 'is:unresolved', start: window.start, end: window.end, environments, sort: 'freq', limit: 5 }),
+        this.sentry.searchIssues({
+          query: 'is:regressed',
+          start: window.start,
+          end: window.end,
+          environments,
+          limit: 25,
+        }),
+        this.sentry.searchIssues({
+          query: 'level:fatal',
+          start: window.start,
+          end: window.end,
+          environments,
+          limit: 25,
+        }),
+        this.sentry.searchIssues({
+          query: 'is:unresolved',
+          start: window.start,
+          end: window.end,
+          environments,
+          sort: 'freq',
+          limit: 5,
+        }),
       ]);
       return { available: true, newIssues, regressed, fatal, top };
     } catch (error) {
@@ -315,9 +469,13 @@ export class MonitoringReportService {
     }
   }
 
-  private sectionStatus(data: ReportData): Record<string, 'ok' | 'unavailable'> {
+  private sectionStatus(
+    data: ReportData,
+  ): Record<string, 'ok' | 'unavailable'> {
     return {
-      platform: Object.values(data.platform).some((value) => value !== null) ? 'ok' : 'unavailable',
+      platform: Object.values(data.platform).some((value) => value !== null)
+        ? 'ok'
+        : 'unavailable',
       payments: data.payments.succeeded !== null ? 'ok' : 'unavailable',
       counters: data.counters !== null ? 'ok' : 'unavailable',
       sentry: data.sentry.available ? 'ok' : 'unavailable',
@@ -330,8 +488,10 @@ export class MonitoringReportService {
   render(data: ReportData): string[] {
     const tz = this.config.reportTimeZone;
     const env = this.config.environment;
-    const title = data.window.kind === 'morning' ? 'Morning report' : 'Evening report';
-    const show = (value: Metric) => (value === null ? 'unavailable' : String(value));
+    const title =
+      data.window.kind === 'morning' ? 'Morning report' : 'Evening report';
+    const show = (value: Metric) =>
+      value === null ? 'unavailable' : String(value);
 
     const header = [
       `📊 [${env}] WIEZ ${title}`,
@@ -339,17 +499,26 @@ export class MonitoringReportService {
       `Generated: ${formatZoned(data.generatedAt, tz)} (${data.queryMs} ms)`,
     ].join('\n');
 
-    const platform = ['🛍️ Platform activity', ...Object.entries(data.platform).map(([label, value]) => `• ${label}: ${show(value)}`)];
+    const platform = [
+      '🛍️ Platform activity',
+      ...Object.entries(data.platform).map(
+        ([label, value]) => `• ${label}: ${show(value)}`,
+      ),
+    ];
     if (data.payments.succeeded === null) {
       platform.push('• Payments succeeded: unavailable');
     } else if (data.payments.succeeded.length === 0) {
       platform.push('• Payments succeeded: 0');
     } else {
       for (const row of data.payments.succeeded) {
-        platform.push(`• Payments succeeded: ${row.count} (${row.currency} ${row.amount.toLocaleString('en-NG', { maximumFractionDigits: 2 })})`);
+        platform.push(
+          `• Payments succeeded: ${row.count} (${row.currency} ${row.amount.toLocaleString('en-NG', { maximumFractionDigits: 2 })})`,
+        );
       }
     }
-    platform.push(`• Payments failed/cancelled/expired: ${show(data.payments.failed)}`);
+    platform.push(
+      `• Payments failed/cancelled/expired: ${show(data.payments.failed)}`,
+    );
 
     const failures = ['⚠️ Failed operations & alerts'];
     if (!data.counters) {
@@ -367,29 +536,40 @@ export class MonitoringReportService {
         'infra.alert',
       ];
       for (const key of counted) {
-        failures.push(`• ${EVENT_POLICY[key].reportLabel}: ${data.counters[key] ?? 0}`);
+        failures.push(
+          `• ${EVENT_POLICY[key].reportLabel}: ${data.counters[key] ?? 0}`,
+        );
       }
       const operational = Object.entries(data.counters)
         .filter(([field]) => field.startsWith('operational.alert:'))
         .sort((a, b) => b[1] - a[1])
         .slice(0, 5);
       for (const [field, count] of operational) {
-        failures.push(`   ◦ ${cleanText(field.slice('operational.alert:'.length), 60)}: ${count}`);
+        failures.push(
+          `   ◦ ${cleanText(field.slice('operational.alert:'.length), 60)}: ${count}`,
+        );
       }
     }
 
     const sentry = ['🐞 Sentry'];
     if (data.counters) {
-      sentry.push(`• Alerts received via webhook: ${data.counters['sentry.alert'] ?? 0}`);
+      sentry.push(
+        `• Alerts received via webhook: ${data.counters['sentry.alert'] ?? 0}`,
+      );
     }
     // `in` narrowing: this project compiles without strictNullChecks, where
     // boolean-discriminant narrowing does not apply.
     if ('reason' in data.sentry) {
-      sentry.push(`• Issue statistics: UNAVAILABLE — ${cleanText(data.sentry.reason, 160)}`);
+      sentry.push(
+        `• Issue statistics: UNAVAILABLE — ${cleanText(data.sentry.reason, 160)}`,
+      );
     } else {
       const fmt = (issue: SentryIssueSummary) =>
         `   ◦ ${issue.shortId ?? issue.id} ${cleanText(issue.title, 70)} — ${issue.count ?? '?'} events, ${issue.userCount ?? '?'} users`;
-      const newCount = data.sentry.newIssues.length >= 100 ? '100+' : String(data.sentry.newIssues.length);
+      const newCount =
+        data.sentry.newIssues.length >= 100
+          ? '100+'
+          : String(data.sentry.newIssues.length);
       sentry.push(`• New issues: ${newCount}`);
       sentry.push(`• Regressed issues: ${data.sentry.regressed.length}`);
       sentry.push(`• Fatal-level issues: ${data.sentry.fatal.length}`);
@@ -405,15 +585,29 @@ export class MonitoringReportService {
     } else {
       const s = data.infra;
       const mark = (ok: boolean) => (ok ? '✅' : '❌');
-      infra.push(`• API: ${mark(s.api.ok)} ${s.api.detail}${s.api.latencyMs !== undefined ? ` (${s.api.latencyMs} ms)` : ''}`);
+      infra.push(
+        `• API: ${mark(s.api.ok)} ${s.api.detail}${s.api.latencyMs !== undefined ? ` (${s.api.latencyMs} ms)` : ''}`,
+      );
       infra.push(`• Worker: ${mark(s.worker.ok)} ${s.worker.detail}`);
-      infra.push(`• PostgreSQL: ${mark(s.database.ok)} ${s.database.detail}${s.database.latencyMs !== undefined ? ` (${s.database.latencyMs} ms)` : ''}`);
-      infra.push(`• Redis: ${mark(s.redis.ok)} ${s.redis.detail}${s.redis.latencyMs !== undefined ? ` (${s.redis.latencyMs} ms)` : ''}`);
+      infra.push(
+        `• PostgreSQL: ${mark(s.database.ok)} ${s.database.detail}${s.database.latencyMs !== undefined ? ` (${s.database.latencyMs} ms)` : ''}`,
+      );
+      infra.push(
+        `• Redis: ${mark(s.redis.ok)} ${s.redis.detail}${s.redis.latencyMs !== undefined ? ` (${s.redis.latencyMs} ms)` : ''}`,
+      );
       if (s.memory) {
-        const swap = s.memory.swapUsedPct === null ? '' : `, swap ${s.memory.swapUsedPct}% used`;
-        infra.push(`• Memory: ${s.memory.availableMb} MB available of ${s.memory.totalMb} MB${swap}`);
+        const swap =
+          s.memory.swapUsedPct === null
+            ? ''
+            : `, swap ${s.memory.swapUsedPct}% used`;
+        infra.push(
+          `• Memory: ${s.memory.availableMb} MB available of ${s.memory.totalMb} MB${swap}`,
+        );
       }
-      if (s.disk) infra.push(`• Disk: ${s.disk.usedPct}% used (${s.disk.freeGb} GB free)`);
+      if (s.disk)
+        infra.push(
+          `• Disk: ${s.disk.usedPct}% used (${s.disk.freeGb} GB free)`,
+        );
       infra.push(`• Host uptime: ${formatDuration(os.uptime() * 1000)}`);
       infra.push('• Queues (waiting/active/delayed/failed):');
       for (const queue of s.queues) {
@@ -425,8 +619,16 @@ export class MonitoringReportService {
       }
     }
 
-    const footer = 'Counts cover the window above, start inclusive, end exclusive. "unavailable" means the source could not be read; it is not zero.';
-    const sections = [header, platform.join('\n'), failures.join('\n'), sentry.join('\n'), infra.join('\n'), footer];
+    const footer =
+      'Counts cover the window above, start inclusive, end exclusive. "unavailable" means the source could not be read; it is not zero.';
+    const sections = [
+      header,
+      platform.join('\n'),
+      failures.join('\n'),
+      sentry.join('\n'),
+      infra.join('\n'),
+      footer,
+    ];
 
     // Pack sections into as few Telegram messages as fit.
     const parts: string[] = [];
@@ -441,6 +643,8 @@ export class MonitoringReportService {
       }
     }
     if (current) parts.push(current);
-    return parts.length > 1 ? parts.map((part, index) => `${part}\n\n(${index + 1}/${parts.length})`) : parts;
+    return parts.length > 1
+      ? parts.map((part, index) => `${part}\n\n(${index + 1}/${parts.length})`)
+      : parts;
   }
 }

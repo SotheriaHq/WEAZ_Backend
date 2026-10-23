@@ -21,7 +21,7 @@ describe('private billing settings and shared notice tracker', () => {
       brand: {
         findUnique: jest
           .fn()
-          .mockResolvedValue({ customOrderLegacyEligible: false }),
+          .mockResolvedValue({}),
       },
       subscriptionTier: {
         findUnique: jest.fn(({ where }) => ({
@@ -77,17 +77,10 @@ describe('private billing settings and shared notice tracker', () => {
     ).toBe(expected);
     expect(prisma.subscriptionNoticeReceipt.upsert).toHaveBeenCalledTimes(1);
   });
-  it('offers Thread for no subscription, suppresses Legacy and Igwe, and enforces the exact shared 24-hour boundary', async () => {
+  it('offers Thread for no subscription, suppresses Igwe, and enforces the exact shared 24-hour boundary', async () => {
     expect(
       (await service.claimNotice('owner', 'brand-one')).notice?.tierKey,
     ).toBe('THREAD');
-    prisma.brand.findUnique.mockResolvedValue({
-      customOrderLegacyEligible: true,
-    });
-    expect((await service.claimNotice('owner', 'brand-one')).notice).toBeNull();
-    prisma.brand.findUnique.mockResolvedValue({
-      customOrderLegacyEligible: false,
-    });
     prisma.brandSubscription.findFirst.mockResolvedValue({
       tierKey: 'IGWE',
       status: 'ACTIVE',

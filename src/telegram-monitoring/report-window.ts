@@ -9,7 +9,10 @@ export type ReportKind = 'morning' | 'evening';
  * Windows are half-open and share their boundaries, so back-to-back reports
  * cover every instant exactly once.
  */
-export const REPORT_SCHEDULE: Record<ReportKind, { endHour: number; startHour: number; startDayOffset: number }> = {
+export const REPORT_SCHEDULE: Record<
+  ReportKind,
+  { endHour: number; startHour: number; startDayOffset: number }
+> = {
   morning: { endHour: 7, startHour: 22, startDayOffset: -1 },
   evening: { endHour: 22, startHour: 7, startDayOffset: 0 },
 };
@@ -21,7 +24,14 @@ export type ReportWindow = {
   timeZone: string;
 };
 
-type ZonedParts = { year: number; month: number; day: number; hour: number; minute: number; second: number };
+type ZonedParts = {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+};
 
 function zonedParts(instant: Date, timeZone: string): ZonedParts {
   const formatter = new Intl.DateTimeFormat('en-US', {
@@ -51,7 +61,14 @@ function zonedParts(instant: Date, timeZone: string): ZonedParts {
 /** Offset (ms) of `timeZone` from UTC at `instant`. */
 function zoneOffsetMs(instant: Date, timeZone: string): number {
   const p = zonedParts(instant, timeZone);
-  const asUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+  const asUtc = Date.UTC(
+    p.year,
+    p.month - 1,
+    p.day,
+    p.hour,
+    p.minute,
+    p.second,
+  );
   return asUtc - Math.floor(instant.getTime() / 1000) * 1000;
 }
 
@@ -85,9 +102,17 @@ export function resolveReportWindow(
 ): ReportWindow {
   const schedule = REPORT_SCHEDULE[kind];
   const local = zonedParts(now, timeZone);
-  let end = zonedWallTimeToUtc(local.year, local.month, local.day, schedule.endHour, timeZone);
+  let end = zonedWallTimeToUtc(
+    local.year,
+    local.month,
+    local.day,
+    schedule.endHour,
+    timeZone,
+  );
   if (end.getTime() > now.getTime()) {
-    const previous = new Date(Date.UTC(local.year, local.month - 1, local.day - 1));
+    const previous = new Date(
+      Date.UTC(local.year, local.month - 1, local.day - 1),
+    );
     end = zonedWallTimeToUtc(
       previous.getUTCFullYear(),
       previous.getUTCMonth() + 1,
@@ -98,7 +123,11 @@ export function resolveReportWindow(
   }
   const endLocal = zonedParts(end, timeZone);
   const startDay = new Date(
-    Date.UTC(endLocal.year, endLocal.month - 1, endLocal.day + schedule.startDayOffset),
+    Date.UTC(
+      endLocal.year,
+      endLocal.month - 1,
+      endLocal.day + schedule.startDayOffset,
+    ),
   );
   const start = zonedWallTimeToUtc(
     startDay.getUTCFullYear(),
@@ -127,7 +156,10 @@ export function hourBucket(instant: Date): string {
   return `${instant.getUTCFullYear()}${pad(instant.getUTCMonth() + 1)}${pad(instant.getUTCDate())}${pad(instant.getUTCHours())}`;
 }
 
-export function formatZoned(instant: Date | null | undefined, timeZone = 'Africa/Lagos'): string {
+export function formatZoned(
+  instant: Date | null | undefined,
+  timeZone = 'Africa/Lagos',
+): string {
   if (!instant || Number.isNaN(instant.getTime())) return 'n/a';
   return new Intl.DateTimeFormat('en-GB', {
     timeZone,

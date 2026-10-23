@@ -100,7 +100,9 @@ export class SystemConfigService {
       await this.lockSettingsWrites(tx);
       await tx.systemConfig.createMany({
         data: Object.entries(defaults).map(([key, value]) => ({
-          key, value: String(value), description: KEY_DESCRIPTIONS[key] ?? null,
+          key,
+          value: String(value),
+          description: KEY_DESCRIPTIONS[key] ?? null,
         })),
         skipDuplicates: true,
       });
@@ -135,7 +137,10 @@ export class SystemConfigService {
   }
 
   private async ensureCache(): Promise<void> {
-    if (!this.cacheLoadedAt || Date.now() - this.cacheLoadedAt > this.CACHE_TTL_MS) {
+    if (
+      !this.cacheLoadedAt ||
+      Date.now() - this.cacheLoadedAt > this.CACHE_TTL_MS
+    ) {
       await this.refreshCache();
     }
   }
@@ -196,7 +201,9 @@ export class SystemConfigService {
   /*  Admin write                                                        */
   /* ------------------------------------------------------------------ */
 
-  private async lockSettingsWrites(tx: Prisma.TransactionClient): Promise<void> {
+  private async lockSettingsWrites(
+    tx: Prisma.TransactionClient,
+  ): Promise<void> {
     // Administrative writes only; normal configuration reads never acquire this lock.
     await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(23711, 0)`);
   }
@@ -228,14 +235,21 @@ export class SystemConfigService {
         const previousValue = previous.get(key) ?? null;
         const result = await tx.systemConfig.upsert({
           where: { key },
-          create: { key, value, description: KEY_DESCRIPTIONS[key] ?? null, updatedById: actorId },
+          create: {
+            key,
+            value,
+            description: KEY_DESCRIPTIONS[key] ?? null,
+            updatedById: actorId,
+          },
           update: { value, updatedById: actorId },
         });
         await tx.adminAuditLog.create({
           data: {
-            id: uuidv4(), actorUserId: actorId,
+            id: uuidv4(),
+            actorUserId: actorId,
             action: AdminAuditAction.ADMIN_SYSTEM_SETTINGS_UPDATE,
-            targetType: 'SystemConfig', targetId: key,
+            targetType: 'SystemConfig',
+            targetId: key,
             previousState: { key, value: previousValue },
             newState: { key, value },
             ipAddress: req.socket?.remoteAddress ?? null,
@@ -251,13 +265,22 @@ export class SystemConfigService {
     return updated;
   }
 
-  async updateConfig(key: string, value: string, actorId: string, req: Request) {
+  async updateConfig(
+    key: string,
+    value: string,
+    actorId: string,
+    req: Request,
+  ) {
     const [updated] = await this.updateEntries([{ key, value }], actorId, req);
     return updated;
   }
 
   /** A bulk save and its per-key audit records commit together. */
-  async bulkUpdate(entries: { key: string; value: string }[], actorId: string, req: Request) {
+  async bulkUpdate(
+    entries: { key: string; value: string }[],
+    actorId: string,
+    req: Request,
+  ) {
     return this.updateEntries(entries, actorId, req);
   }
 }

@@ -5,7 +5,9 @@ import { MonitoringReportService } from './monitoring-report.service';
 import { FakeRedis, fakeConfig, fakeQueue, VALID_TOKEN } from './testing/fakes';
 
 const respond = (status: number, body: unknown) =>
-  jest.fn().mockResolvedValue({ ok: status < 400, status, json: async () => body });
+  jest
+    .fn()
+    .mockResolvedValue({ ok: status < 400, status, json: async () => body });
 
 describe('TelegramClient failure classification', () => {
   const realFetch = global.fetch;
@@ -25,11 +27,17 @@ describe('TelegramClient failure classification', () => {
     [429, { ok: false, parameters: { retry_after: 7 } }, 'rate_limited'],
     [401, { ok: false, description: 'Unauthorized' }, 'fatal'],
     [400, { ok: false, description: 'Bad Request: chat not found' }, 'fatal'],
-    [403, { ok: false, description: 'Forbidden: bot was blocked by the user' }, 'fatal'],
+    [
+      403,
+      { ok: false, description: 'Forbidden: bot was blocked by the user' },
+      'fatal',
+    ],
     [502, { ok: false, description: 'Bad Gateway' }, 'retryable'],
   ])('HTTP %s → %s, never leaking the token', async (status, body, kind) => {
     global.fetch = respond(status, body) as any;
-    const error = await new TelegramClient(fakeConfig()).sendMessage('x').catch((e) => e);
+    const error = await new TelegramClient(fakeConfig())
+      .sendMessage('x')
+      .catch((e) => e);
     expect(error).toBeInstanceOf(TelegramDeliveryError);
     expect(error.kind).toBe(kind);
     if (status === 429) expect(error.retryAfterSeconds).toBe(7);
@@ -37,15 +45,28 @@ describe('TelegramClient failure classification', () => {
   });
 
   it('network failure / timeout → retryable without the URL', async () => {
-    global.fetch = jest.fn().mockRejectedValue(Object.assign(new Error(`fetch https://api.telegram.org/bot${VALID_TOKEN}/x`), { name: 'TimeoutError' })) as any;
-    const error = await new TelegramClient(fakeConfig()).sendMessage('x').catch((e) => e);
+    global.fetch = jest
+      .fn()
+      .mockRejectedValue(
+        Object.assign(
+          new Error(`fetch https://api.telegram.org/bot${VALID_TOKEN}/x`),
+          { name: 'TimeoutError' },
+        ),
+      ) as any;
+    const error = await new TelegramClient(fakeConfig())
+      .sendMessage('x')
+      .catch((e) => e);
     expect(error.kind).toBe('retryable');
     expect(error.message).not.toContain(VALID_TOKEN);
   });
 
   it('invalid config → inactive, no network call', async () => {
     global.fetch = jest.fn() as any;
-    const error = await new TelegramClient(fakeConfig({ TELEGRAM_ADMIN_CHAT_ID: 'not-a-chat' })).sendMessage('x').catch((e) => e);
+    const error = await new TelegramClient(
+      fakeConfig({ TELEGRAM_ADMIN_CHAT_ID: 'not-a-chat' }),
+    )
+      .sendMessage('x')
+      .catch((e) => e);
     expect(error.kind).toBe('inactive');
     expect(global.fetch).not.toHaveBeenCalled();
   });
@@ -54,8 +75,14 @@ describe('TelegramClient failure classification', () => {
 describe('TelegramDeliveryService', () => {
   it('delivers once per idempotency id', async () => {
     const redis = new FakeRedis();
-    const client = { sendMessage: jest.fn().mockResolvedValue({ messageId: 1 }) } as any;
-    const delivery = new TelegramDeliveryService(fakeConfig(), client, fakeQueue(redis));
+    const client = {
+      sendMessage: jest.fn().mockResolvedValue({ messageId: 1 }),
+    } as any;
+    const delivery = new TelegramDeliveryService(
+      fakeConfig(),
+      client,
+      fakeQueue(redis),
+    );
     expect((await delivery.deliverOnce('id1', 'x')).status).toBe('sent');
     expect((await delivery.deliverOnce('id1', 'x')).status).toBe('duplicate');
     expect(client.sendMessage).toHaveBeenCalledTimes(1);
@@ -64,8 +91,14 @@ describe('TelegramDeliveryService', () => {
   it('still sends when Redis is down (duplicate beats silence)', async () => {
     const redis = new FakeRedis();
     redis.failAll = true;
-    const client = { sendMessage: jest.fn().mockResolvedValue({ messageId: 1 }) } as any;
-    const delivery = new TelegramDeliveryService(fakeConfig(), client, fakeQueue(redis));
+    const client = {
+      sendMessage: jest.fn().mockResolvedValue({ messageId: 1 }),
+    } as any;
+    const delivery = new TelegramDeliveryService(
+      fakeConfig(),
+      client,
+      fakeQueue(redis),
+    );
     expect((await delivery.deliverOnce('id1', 'x')).status).toBe('sent');
   });
 });
@@ -75,20 +108,29 @@ describe('TelegramEventsService never affects the caller', () => {
     const queue = fakeQueue(redis);
     const config = fakeConfig(env);
     const delivery = new TelegramDeliveryService(config, {} as any, queue);
-    const prisma = { user: { findUnique: jest.fn().mockResolvedValue(null) } } as any;
-    return { events: new TelegramEventsService(config, delivery, queue, prisma), queue };
+    const prisma = {
+      user: { findUnique: jest.fn().mockResolvedValue(null) },
+    } as any;
+    return {
+      events: new TelegramEventsService(config, delivery, queue, prisma),
+      queue,
+    };
   };
   const flush = () => new Promise((resolve) => setTimeout(resolve, 20));
 
   it('record() is synchronous and swallows queue failures', async () => {
     const { events, queue } = build(new FakeRedis());
     queue.add.mockRejectedValue(new Error('redis full'));
-    expect(() => events.record({ key: 'user.registered', idempotencyKey: 'u1' })).not.toThrow();
+    expect(() =>
+      events.record({ key: 'user.registered', idempotencyKey: 'u1' }),
+    ).not.toThrow();
     await flush();
   });
 
   it('does nothing when monitoring is disabled', async () => {
-    const { events, queue } = build(new FakeRedis(), { TELEGRAM_MONITORING_ENABLED: 'false' });
+    const { events, queue } = build(new FakeRedis(), {
+      TELEGRAM_MONITORING_ENABLED: 'false',
+    });
     events.record({ key: 'user.registered', idempotencyKey: 'u1' });
     await flush();
     expect(queue.add).not.toHaveBeenCalled();
@@ -105,14 +147,16 @@ describe('TelegramEventsService never affects the caller', () => {
 
   it('threshold events message exactly once, on the crossing', async () => {
     const { events, queue } = build(new FakeRedis());
-    for (let i = 0; i < 40; i += 1) events.record({ key: 'auth.signup_rejected', idempotencyKey: `x${i}` });
+    for (let i = 0; i < 40; i += 1)
+      events.record({ key: 'auth.signup_rejected', idempotencyKey: `x${i}` });
     await flush();
     expect(queue.add).toHaveBeenCalledTimes(1);
   });
 
   it('count-only events never message', async () => {
     const { events, queue } = build(new FakeRedis());
-    for (let i = 0; i < 50; i += 1) events.record({ key: 'http.auth_failure', idempotencyKey: `x${i}` });
+    for (let i = 0; i < 50; i += 1)
+      events.record({ key: 'http.auth_failure', idempotencyKey: `x${i}` });
     await flush();
     expect(queue.add).not.toHaveBeenCalled();
   });
@@ -129,24 +173,54 @@ describe('MonitoringReportService scheduled delivery', () => {
       {
         get: (_t, prop) => {
           if (prop === '$transaction') {
-            return () => (prismaOk ? Promise.resolve([0, 3]) : Promise.reject(new Error('db down')));
+            return () =>
+              prismaOk
+                ? Promise.resolve([0, 3])
+                : Promise.reject(new Error('db down'));
           }
-          if (prop === '$executeRawUnsafe' || prop === '$queryRaw') return () => Promise.resolve([]);
-          return { count: () => Promise.resolve(3), groupBy: () => Promise.resolve([]) };
+          if (prop === '$executeRawUnsafe' || prop === '$queryRaw')
+            return () => Promise.resolve([]);
+          return {
+            count: () => Promise.resolve(3),
+            groupBy: () => Promise.resolve([]),
+          };
         },
       },
     );
     const sentry = { isConfigured: () => false } as any;
-    const infra = { snapshot: jest.fn().mockRejectedValue(new Error('probe failed')) } as any;
+    const infra = {
+      snapshot: jest.fn().mockRejectedValue(new Error('probe failed')),
+    } as any;
     const client = { sendMessage: sendImpl } as any;
-    return new MonitoringReportService(prisma, config, delivery, client, sentry, infra);
+    return new MonitoringReportService(
+      prisma,
+      config,
+      delivery,
+      client,
+      sentry,
+      infra,
+    );
   };
 
   it('sends once per window; a second run (restart/retry) is a duplicate', async () => {
     const send = jest.fn().mockResolvedValue({ messageId: 5 });
     const service = build(send);
-    expect((await service.deliverScheduled('morning', new Date('2026-10-22T06:00:05Z'))).status).toBe('sent');
-    expect((await service.deliverScheduled('morning', new Date('2026-10-22T08:00:00Z'))).status).toBe('duplicate');
+    expect(
+      (
+        await service.deliverScheduled(
+          'morning',
+          new Date('2026-10-22T06:00:05Z'),
+        )
+      ).status,
+    ).toBe('sent');
+    expect(
+      (
+        await service.deliverScheduled(
+          'morning',
+          new Date('2026-10-22T08:00:00Z'),
+        )
+      ).status,
+    ).toBe('duplicate');
     expect(send).toHaveBeenCalledTimes(1);
   });
 
@@ -167,8 +241,12 @@ describe('MonitoringReportService scheduled delivery', () => {
       .mockResolvedValue({ messageId: 6 });
     const service = build(send);
     const at = new Date('2026-10-22T06:00:05Z');
-    await expect(service.deliverScheduled('morning', at)).rejects.toThrow('down');
+    await expect(service.deliverScheduled('morning', at)).rejects.toThrow(
+      'down',
+    );
     expect((await service.deliverScheduled('morning', at)).status).toBe('sent');
-    expect((await service.deliverScheduled('morning', at)).status).toBe('duplicate');
+    expect((await service.deliverScheduled('morning', at)).status).toBe(
+      'duplicate',
+    );
   });
 });

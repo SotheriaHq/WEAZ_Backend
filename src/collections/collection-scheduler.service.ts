@@ -261,7 +261,7 @@ export class CollectionSchedulerService {
       const rows = await tx.$queryRaw<Array<{ id: string; s3Key: string; finalizeTargetKey: string | null }>>`
         SELECT "_id" AS id, "s3Key", "finalizeTargetKey" FROM "PresignedUpload"
         WHERE status IN ('PENDING', 'READY', 'EXPIRED') AND "expiresAt" <= ${expiryThreshold}
-          AND ("finalizeLeaseUntil" IS NULL OR "finalizeLeaseUntil" <= clock_timestamp())
+          AND ("finalizeLeaseUntil" IS NULL OR "finalizeLeaseUntil" <= (clock_timestamp() AT TIME ZONE 'UTC'))
         ORDER BY "expiresAt", "_id" LIMIT 100 FOR UPDATE SKIP LOCKED
       `;
       if (!rows.length) return 0;
@@ -335,7 +335,11 @@ export class CollectionSchedulerService {
         SELECT "s3Key" FROM "StorageObjectDeletion" job
         WHERE "nextAttemptAt" <= ${now} AND ("leaseUntil" IS NULL OR "leaseUntil" <= ${now})
           AND NOT EXISTS (SELECT 1 FROM "PresignedUpload" intent
-            WHERE intent."finalizeTargetKey" = job."s3Key" AND intent."finalizeLeaseUntil" > clock_timestamp())
+            WHERE intent."finalizeTargetKey" = job."s3Key" AND intent."finalizeLeaseUntil" > (clock_timestamp() AT TIME ZONE 'UTC'))
+          AND NOT EXISTS (SELECT 1 FROM "FileUpload" processing_file
+            WHERE processing_file."_id" = job."processingFileId"
+              AND processing_file."processingLeaseToken" = job."processingLeaseToken"
+              AND processing_file."processingLeaseUntil" > (clock_timestamp() AT TIME ZONE 'UTC'))
         ORDER BY "nextAttemptAt", "s3Key" LIMIT 100 FOR UPDATE SKIP LOCKED
       )
       UPDATE "StorageObjectDeletion" job SET "leaseUntil" = ${leaseUntil}

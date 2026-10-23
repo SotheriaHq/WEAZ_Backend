@@ -1,0 +1,3323 @@
+{
+  "snapshotGeneratedAt": "2026-10-22T03:24:41.801Z",
+  "snapshotFilesScanned": 1696,
+  "candidateCount": 178,
+  "classificationCoverage": 178,
+  "limitations": [
+    "Static AST/call-graph inventory, not production telemetry or a universal N+1/race proof.",
+    "Scanner excludes specs/test fixtures and follows its supported query receivers/call graph only; aliases and runtime dispatch can be missed.",
+    "Source line numbers refer to the frozen scan and may have shifted after subsequent changes. Locate by class/method/call.",
+    "15 confirmed read-fanout sites remain open; 46 recipient-policy and 64 stateful-command sites require guarded follow-up, not blanket approval.",
+    "Latest membership query helper has unit coverage but has not yet received its own real-PostgreSQL concurrency fixture."
+  ],
+  "counts": {
+    "NOTIFICATION_POLICY_FANOUT": 46,
+    "READ_FANOUT_OPEN": 15,
+    "BOUNDED_BULK_QUERY": 8,
+    "FIXED_AFTER_CAPTURE": 14,
+    "DEPENDENT_RETRY": 12,
+    "PREFETCHED_CONTEXT": 3,
+    "FIXED_SOURCE_PROJECTION": 2,
+    "STATIC_SEED": 6,
+    "STATEFUL_ENTITY_WORK": 64,
+    "PAGINATED_BATCH": 7,
+    "HTTP_COMPATIBILITY_FALLBACK": 1
+  },
+  "verification": {
+    "earlierFocusedTestsPassed": 75,
+    "latestFocusedTestsPassed": 50,
+    "latestSuites": [
+      "collection-membership-query.spec.ts",
+      "system-config.service.spec.ts",
+      "payout.service.spec.ts",
+      "store.service.spec.ts"
+    ],
+    "localPostgresReadinessRulesFixture": "passed; temporary tables and rollback only",
+    "legacyDesignStoreLinkCount": 0,
+    "fullSemanticTypecheckAfterLatestEdits": "pending",
+    "currentReleaseTestsPassed": {
+      "backendQueryPaymentAndQueue": 88,
+      "uploadImageConfigSeedAndUtc": 106,
+      "backendTypecheck": "passed",
+      "webTypecheck": "passed"
+    }
+  },
+  "candidates": [
+    {
+      "id": 0,
+      "file": "bthreadly/src/admin/email-change/admin-email-change.service.ts",
+      "line": 158,
+      "loopLine": 157,
+      "class": "AdminEmailChangeService",
+      "method": "verifyOtp",
+      "call": "this.notificationsService.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 1,
+      "file": "bthreadly/src/admin/featured/admin-featured.service.ts",
+      "line": 817,
+      "loopLine": 814,
+      "class": "AdminFeaturedService",
+      "method": "processExpiredItems",
+      "call": "this.snapshotPerformance",
+      "queries": [
+        "this.prisma.product.findUnique",
+        "this.prisma.collection.findUnique"
+      ],
+      "disposition": "READ_FANOUT_OPEN",
+      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+    },
+    {
+      "id": 2,
+      "file": "bthreadly/src/admin/featured/admin-featured.service.ts",
+      "line": 833,
+      "loopLine": 814,
+      "class": "AdminFeaturedService",
+      "method": "processExpiredItems",
+      "call": "this.notifyBrandOwner",
+      "queries": [
+        "this.prisma.brand.findUnique",
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 3,
+      "file": "bthreadly/src/admin/featured/featured-auto-removal.service.ts",
+      "line": 76,
+      "loopLine": 75,
+      "class": "FeaturedAutoRemovalService",
+      "method": "onBrandOwnerSuspended",
+      "call": "this.notifyBrandOwner",
+      "queries": [
+        "this.prisma.brand.findUnique",
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 4,
+      "file": "bthreadly/src/admin/featured/featured-summary.util.ts",
+      "line": 20,
+      "loopLine": 19,
+      "class": null,
+      "method": null,
+      "call": "prisma.$queryRaw",
+      "queries": [
+        "prisma.$queryRaw"
+      ],
+      "disposition": "BOUNDED_BULK_QUERY",
+      "evidence": "Loop processes bounded ID batches or request-cached rule fallback types, rather than issuing one related-row lookup per result."
+    },
+    {
+      "id": 5,
+      "file": "bthreadly/src/admin/system-config/system-config.service.ts",
+      "line": 269,
+      "loopLine": 267,
+      "class": "SystemConfigService",
+      "method": "bulkUpdate",
+      "call": "this.updateConfig",
+      "queries": [
+        "this.prisma.systemConfig.findUnique"
+      ],
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Implemented after this frozen scan: collection membership bulk projections/locks, atomic settings batch, or payout currency rule batch. Latest four focused suites passed 50 tests. New membership SQL concurrency integration remains pending."
+    },
+    {
+      "id": 6,
+      "file": "bthreadly/src/auth/auth.service.ts",
+      "line": 2972,
+      "loopLine": 2967,
+      "class": "AuthService",
+      "method": "requestAccountReactivation",
+      "call": "tx.accountReactivationRequest.findFirst",
+      "queries": [
+        "tx.accountReactivationRequest.findFirst"
+      ],
+      "disposition": "DEPENDENT_RETRY",
+      "evidence": "Next identifier/attempt depends on previous result. Keep uniqueness/conflict checks. Industri-number generation has an unbounded retry loop and requires separate exhaustion/collision review."
+    },
+    {
+      "id": 7,
+      "file": "bthreadly/src/auth/auth.service.ts",
+      "line": 3050,
+      "loopLine": 3036,
+      "class": "AuthService",
+      "method": "requestAdminPasswordReset",
+      "call": "tx.passwordResetToken.findFirst",
+      "queries": [
+        "tx.passwordResetToken.findFirst"
+      ],
+      "disposition": "DEPENDENT_RETRY",
+      "evidence": "Next identifier/attempt depends on previous result. Keep uniqueness/conflict checks. Industri-number generation has an unbounded retry loop and requires separate exhaustion/collision review."
+    },
+    {
+      "id": 8,
+      "file": "bthreadly/src/auth/auth.service.ts",
+      "line": 3319,
+      "loopLine": 3305,
+      "class": "AuthService",
+      "method": "requestPasswordReset",
+      "call": "tx.passwordResetToken.findFirst",
+      "queries": [
+        "tx.passwordResetToken.findFirst"
+      ],
+      "disposition": "DEPENDENT_RETRY",
+      "evidence": "Next identifier/attempt depends on previous result. Keep uniqueness/conflict checks. Industri-number generation has an unbounded retry loop and requires separate exhaustion/collision review."
+    },
+    {
+      "id": 9,
+      "file": "bthreadly/src/auth/helper/user-helper.service.ts",
+      "line": 36,
+      "loopLine": 34,
+      "class": "UserHelperService",
+      "method": "generateUniqueUsername",
+      "call": "this.isUsernameAvailable",
+      "queries": [
+        "this.prisma.user.findUnique"
+      ],
+      "disposition": "DEPENDENT_RETRY",
+      "evidence": "Next identifier/attempt depends on previous result. Keep uniqueness/conflict checks. Industri-number generation has an unbounded retry loop and requires separate exhaustion/collision review."
+    },
+    {
+      "id": 10,
+      "file": "bthreadly/src/auth/helper/user-helper.service.ts",
+      "line": 60,
+      "loopLine": 58,
+      "class": "UserHelperService",
+      "method": "generateUsernameFromBrand",
+      "call": "this.isUsernameAvailable",
+      "queries": [
+        "this.prisma.user.findUnique"
+      ],
+      "disposition": "DEPENDENT_RETRY",
+      "evidence": "Next identifier/attempt depends on previous result. Keep uniqueness/conflict checks. Industri-number generation has an unbounded retry loop and requires separate exhaustion/collision review."
+    },
+    {
+      "id": 11,
+      "file": "bthreadly/src/auth/helper/user-helper.service.ts",
+      "line": 66,
+      "loopLine": 64,
+      "class": "UserHelperService",
+      "method": "generateUsernameFromBrand",
+      "call": "this.isUsernameAvailable",
+      "queries": [
+        "this.prisma.user.findUnique"
+      ],
+      "disposition": "DEPENDENT_RETRY",
+      "evidence": "Next identifier/attempt depends on previous result. Keep uniqueness/conflict checks. Industri-number generation has an unbounded retry loop and requires separate exhaustion/collision review."
+    },
+    {
+      "id": 12,
+      "file": "bthreadly/src/auth/helper/user-helper.service.ts",
+      "line": 94,
+      "loopLine": 85,
+      "class": "UserHelperService",
+      "method": "generateIndustriNumber",
+      "call": "this.prisma.brand.findUnique",
+      "queries": [
+        "this.prisma.brand.findUnique"
+      ],
+      "disposition": "DEPENDENT_RETRY",
+      "evidence": "Next identifier/attempt depends on previous result. Keep uniqueness/conflict checks. Industri-number generation has an unbounded retry loop and requires separate exhaustion/collision review."
+    },
+    {
+      "id": 13,
+      "file": "bthreadly/src/bagging/bag-eligibility.service.ts",
+      "line": 232,
+      "loopLine": 230,
+      "class": "BagEligibilityService",
+      "method": "getCollectionBagStatus",
+      "call": "this.resolveProductReadiness",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.customOrderConfiguration.findFirst",
+        "this.prisma.cartItem.findFirst",
+        "this.prisma.userSizeFitProfile.findUnique",
+        "this.prisma.orderItem.findFirst",
+        "this.prisma.customOrder.findFirst",
+        "this.prisma.customOrderConfiguration.findMany",
+        "this.prisma.customOrderCheckoutSession.findMany",
+        "this.prisma.customOrder.findMany"
+      ],
+      "disposition": "PREFETCHED_CONTEXT",
+      "evidence": "List caller supplies request-local prefetched context; single-item fallback queries remain. Bagging/content-review focused tests exercise 50-item constant-query paths."
+    },
+    {
+      "id": 14,
+      "file": "bthreadly/src/bagging/collection-readiness-query.ts",
+      "line": 24,
+      "loopLine": 22,
+      "class": null,
+      "method": null,
+      "call": "prisma.$queryRaw",
+      "queries": [
+        "prisma.$queryRaw"
+      ],
+      "disposition": "BOUNDED_BULK_QUERY",
+      "evidence": "Loop processes bounded ID batches or request-cached rule fallback types, rather than issuing one related-row lookup per result."
+    },
+    {
+      "id": 15,
+      "file": "bthreadly/src/brand-verification/brand-verification-cron.service.ts",
+      "line": 111,
+      "loopLine": 110,
+      "class": "BrandVerificationCronService",
+      "method": "cleanupExpiredVerificationState",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 16,
+      "file": "bthreadly/src/brand-verification/brand-verification-cron.service.ts",
+      "line": 170,
+      "loopLine": 169,
+      "class": "BrandVerificationCronService",
+      "method": "sendVerificationNudges",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 17,
+      "file": "bthreadly/src/brand-verification/physical-verification-cron.service.ts",
+      "line": 64,
+      "loopLine": 60,
+      "class": "PhysicalVerificationCronService",
+      "method": "remindBeforeVisit",
+      "call": "this.prisma.brandPhysicalVerification.findMany",
+      "queries": [
+        "this.prisma.brandPhysicalVerification.findMany"
+      ],
+      "disposition": "FIXED_SOURCE_PROJECTION",
+      "evidence": "One projection per reminder window or configured market source. Configuration size still needs operational bounds."
+    },
+    {
+      "id": 18,
+      "file": "bthreadly/src/brand-verification/physical-verification-cron.service.ts",
+      "line": 86,
+      "loopLine": 77,
+      "class": "PhysicalVerificationCronService",
+      "method": "remindBeforeVisit",
+      "call": "this.safeNotify",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 19,
+      "file": "bthreadly/src/brand-verification/physical-verification-cron.service.ts",
+      "line": 91,
+      "loopLine": 77,
+      "class": "PhysicalVerificationCronService",
+      "method": "remindBeforeVisit",
+      "call": "this.safeNotify",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 20,
+      "file": "bthreadly/src/brand-verification/physical-verification-cron.service.ts",
+      "line": 129,
+      "loopLine": 128,
+      "class": "PhysicalVerificationCronService",
+      "method": "nudgeAwaitingReply",
+      "call": "this.safeNotify",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 21,
+      "file": "bthreadly/src/brand-verification/physical-verification-cron.service.ts",
+      "line": 164,
+      "loopLine": 162,
+      "class": "PhysicalVerificationCronService",
+      "method": "nudgeAwaitingReply",
+      "call": "this.safeNotify",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 22,
+      "file": "bthreadly/src/brand-verification/physical-verification-cron.service.ts",
+      "line": 203,
+      "loopLine": 201,
+      "class": "PhysicalVerificationCronService",
+      "method": "flagOverdueVisits",
+      "call": "this.safeNotify",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 23,
+      "file": "bthreadly/src/categories/categories.service.ts",
+      "line": 197,
+      "loopLine": 196,
+      "class": "CategoriesService",
+      "method": "generateUniqueSlug",
+      "call": "this.prisma.collectionCategory.findUnique",
+      "queries": [
+        "this.prisma.collectionCategory.findUnique"
+      ],
+      "disposition": "DEPENDENT_RETRY",
+      "evidence": "Next identifier/attempt depends on previous result. Keep uniqueness/conflict checks. Industri-number generation has an unbounded retry loop and requires separate exhaustion/collision review."
+    },
+    {
+      "id": 24,
+      "file": "bthreadly/src/categories/categories.service.ts",
+      "line": 449,
+      "loopLine": 448,
+      "class": "CategoriesService",
+      "method": "generateUniqueSubCategorySlug",
+      "call": "this.prisma.collectionCategoryType.findFirst",
+      "queries": [
+        "this.prisma.collectionCategoryType.findFirst"
+      ],
+      "disposition": "DEPENDENT_RETRY",
+      "evidence": "Next identifier/attempt depends on previous result. Keep uniqueness/conflict checks. Industri-number generation has an unbounded retry loop and requires separate exhaustion/collision review."
+    },
+    {
+      "id": 25,
+      "file": "bthreadly/src/categories/categories.service.ts",
+      "line": 962,
+      "loopLine": 961,
+      "class": "CategoriesService",
+      "method": "ensureDefaultTaxonomy",
+      "call": "this.prisma.collectionCategory.findUnique",
+      "queries": [
+        "this.prisma.collectionCategory.findUnique"
+      ],
+      "disposition": "STATIC_SEED",
+      "evidence": "Taxonomy/filter/policy initialization read/write loop. Not a per-card feed lookup; not a claim that seeding cannot be optimized."
+    },
+    {
+      "id": 26,
+      "file": "bthreadly/src/categories/categories.service.ts",
+      "line": 1000,
+      "loopLine": 998,
+      "class": "CategoriesService",
+      "method": "ensureDefaultTaxonomy",
+      "call": "this.prisma.collectionCategory.findUnique",
+      "queries": [
+        "this.prisma.collectionCategory.findUnique"
+      ],
+      "disposition": "STATIC_SEED",
+      "evidence": "Taxonomy/filter/policy initialization read/write loop. Not a per-card feed lookup; not a claim that seeding cannot be optimized."
+    },
+    {
+      "id": 27,
+      "file": "bthreadly/src/categories/categories.service.ts",
+      "line": 1023,
+      "loopLine": 1022,
+      "class": "CategoriesService",
+      "method": "ensureDefaultTaxonomy",
+      "call": "this.prisma.collectionCategoryType.findFirst",
+      "queries": [
+        "this.prisma.collectionCategoryType.findFirst"
+      ],
+      "disposition": "STATIC_SEED",
+      "evidence": "Taxonomy/filter/policy initialization read/write loop. Not a per-card feed lookup; not a claim that seeding cannot be optimized."
+    },
+    {
+      "id": 28,
+      "file": "bthreadly/src/categories/categories.service.ts",
+      "line": 1116,
+      "loopLine": 1113,
+      "class": "CategoriesService",
+      "method": "seedFilterDimensions",
+      "call": "this.prisma.filterDimension.findUnique",
+      "queries": [
+        "this.prisma.filterDimension.findUnique"
+      ],
+      "disposition": "STATIC_SEED",
+      "evidence": "Taxonomy/filter/policy initialization read/write loop. Not a per-card feed lookup; not a claim that seeding cannot be optimized."
+    },
+    {
+      "id": 29,
+      "file": "bthreadly/src/categories/categories.service.ts",
+      "line": 1153,
+      "loopLine": 1152,
+      "class": "CategoriesService",
+      "method": "seedFilterDimensions",
+      "call": "this.prisma.filterValue.findFirst",
+      "queries": [
+        "this.prisma.filterValue.findFirst"
+      ],
+      "disposition": "STATIC_SEED",
+      "evidence": "Taxonomy/filter/policy initialization read/write loop. Not a per-card feed lookup; not a claim that seeding cannot be optimized."
+    },
+    {
+      "id": 30,
+      "file": "bthreadly/src/collections/collection-scheduler.service.ts",
+      "line": 180,
+      "loopLine": 175,
+      "class": "CollectionSchedulerService",
+      "method": "sendExpiryWarnings",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 31,
+      "file": "bthreadly/src/collections/collection-scheduler.service.ts",
+      "line": 234,
+      "loopLine": 232,
+      "class": "CollectionSchedulerService",
+      "method": "deleteExpiredDrafts",
+      "call": "this.deleteExpiredCollection",
+      "queries": [
+        "tx.$queryRaw"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 32,
+      "file": "bthreadly/src/collections/collection-scheduler.service.ts",
+      "line": 236,
+      "loopLine": 232,
+      "class": "CollectionSchedulerService",
+      "method": "deleteExpiredDrafts",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 33,
+      "file": "bthreadly/src/collections/collection-scheduler.service.ts",
+      "line": 287,
+      "loopLine": 285,
+      "class": "CollectionSchedulerService",
+      "method": "deleteExpiredSoftDeletedCollections",
+      "call": "this.deleteExpiredCollection",
+      "queries": [
+        "tx.$queryRaw"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 34,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 4397,
+      "loopLine": 4396,
+      "class": "CollectionsService",
+      "method": "finalizeCollection",
+      "call": "this.prisma.presignedUpload.findUnique",
+      "queries": [
+        "this.prisma.presignedUpload.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 35,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 4425,
+      "loopLine": 4396,
+      "class": "CollectionsService",
+      "method": "finalizeCollection",
+      "call": "this.prisma.fileUpload.findUnique",
+      "queries": [
+        "this.prisma.fileUpload.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 36,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 4456,
+      "loopLine": 4396,
+      "class": "CollectionsService",
+      "method": "finalizeCollection",
+      "call": "this.prisma.fileUpload.findUnique",
+      "queries": [
+        "this.prisma.fileUpload.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 37,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 4468,
+      "loopLine": 4396,
+      "class": "CollectionsService",
+      "method": "finalizeCollection",
+      "call": "this.uploadService.createFileRecordFromPresign",
+      "queries": [
+        "(this.prisma as any)['presignedUpload'].findUnique",
+        "this.prisma.fileUpload.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 38,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 4494,
+      "loopLine": 4486,
+      "class": "CollectionsService",
+      "method": "finalizeCollection",
+      "call": "tx.collectionMedia.findFirst",
+      "queries": [
+        "tx.collectionMedia.findFirst"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 39,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 4512,
+      "loopLine": 4486,
+      "class": "CollectionsService",
+      "method": "finalizeCollection",
+      "call": "tx.brand.findUnique",
+      "queries": [
+        "tx.brand.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 40,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 4851,
+      "loopLine": 4849,
+      "class": "CollectionsService",
+      "method": "finalizeCollection",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 41,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 5250,
+      "loopLine": 5247,
+      "class": "CollectionsService",
+      "method": "addProductsToCollection",
+      "call": "tx.storeCollectionProduct.findMany",
+      "queries": [
+        "tx.storeCollectionProduct.findMany"
+      ],
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Implemented after this frozen scan: collection membership bulk projections/locks, atomic settings batch, or payout currency rule batch. Latest four focused suites passed 50 tests. New membership SQL concurrency integration remains pending."
+    },
+    {
+      "id": 42,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 5266,
+      "loopLine": 5247,
+      "class": "CollectionsService",
+      "method": "addProductsToCollection",
+      "call": "tx.storeCollectionProduct.findFirst",
+      "queries": [
+        "tx.storeCollectionProduct.findFirst"
+      ],
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Implemented after this frozen scan: collection membership bulk projections/locks, atomic settings batch, or payout currency rule batch. Latest four focused suites passed 50 tests. New membership SQL concurrency integration remains pending."
+    },
+    {
+      "id": 43,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 5283,
+      "loopLine": 5247,
+      "class": "CollectionsService",
+      "method": "addProductsToCollection",
+      "call": "this.enforcePrimaryMembership",
+      "queries": [
+        "tx.storeCollectionProduct.findMany"
+      ],
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Implemented after this frozen scan: collection membership bulk projections/locks, atomic settings batch, or payout currency rule batch. Latest four focused suites passed 50 tests. New membership SQL concurrency integration remains pending."
+    },
+    {
+      "id": 44,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 5328,
+      "loopLine": 5323,
+      "class": "CollectionsService",
+      "method": "removeProductsFromCollection",
+      "call": "this.enforcePrimaryMembership",
+      "queries": [
+        "tx.storeCollectionProduct.findMany"
+      ],
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Implemented after this frozen scan: collection membership bulk projections/locks, atomic settings batch, or payout currency rule batch. Latest four focused suites passed 50 tests. New membership SQL concurrency integration remains pending."
+    },
+    {
+      "id": 45,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 5330,
+      "loopLine": 5323,
+      "class": "CollectionsService",
+      "method": "removeProductsFromCollection",
+      "call": "this.enforcePrimaryMembership",
+      "queries": [
+        "tx.storeCollectionProduct.findMany"
+      ],
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Implemented after this frozen scan: collection membership bulk projections/locks, atomic settings batch, or payout currency rule batch. Latest four focused suites passed 50 tests. New membership SQL concurrency integration remains pending."
+    },
+    {
+      "id": 46,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 6019,
+      "loopLine": 6015,
+      "class": "CollectionsService",
+      "method": "applyTemplateToCollectionProducts",
+      "call": "this.tagIndex.syncEntityTags",
+      "queries": [
+        "prismaClient.tag.findMany",
+        "(tx as any).tag.findMany",
+        "(tx as any).tagBinding.count"
+      ],
+      "disposition": "READ_FANOUT_OPEN",
+      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+    },
+    {
+      "id": 47,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 7530,
+      "loopLine": 7529,
+      "class": "CollectionsService",
+      "method": "duplicateCollection",
+      "call": "this.prisma.storeCollectionProduct.count",
+      "queries": [
+        "this.prisma.storeCollectionProduct.count"
+      ],
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Implemented after this frozen scan: collection membership bulk projections/locks, atomic settings batch, or payout currency rule batch. Latest four focused suites passed 50 tests. New membership SQL concurrency integration remains pending."
+    },
+    {
+      "id": 48,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 7685,
+      "loopLine": 7684,
+      "class": "CollectionsService",
+      "method": "duplicateCollection",
+      "call": "this.prisma.storeCollectionProduct.count",
+      "queries": [
+        "this.prisma.storeCollectionProduct.count"
+      ],
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Implemented after this frozen scan: collection membership bulk projections/locks, atomic settings batch, or payout currency rule batch. Latest four focused suites passed 50 tests. New membership SQL concurrency integration remains pending."
+    },
+    {
+      "id": 49,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 8378,
+      "loopLine": 8376,
+      "class": "CollectionsService",
+      "method": "toggleReaction",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 50,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 9044,
+      "loopLine": 9042,
+      "class": "CollectionsService",
+      "method": "toggleMediaThread",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 51,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 9191,
+      "loopLine": 9180,
+      "class": "CollectionsService",
+      "method": "autoPublishPendingCollections",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 52,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 9238,
+      "loopLine": 9180,
+      "class": "CollectionsService",
+      "method": "autoPublishPendingCollections",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 53,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 9258,
+      "loopLine": 9180,
+      "class": "CollectionsService",
+      "method": "autoPublishPendingCollections",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 54,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 9317,
+      "loopLine": 9301,
+      "class": "CollectionsService",
+      "method": "handleRejectedCategory",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 55,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 10483,
+      "loopLine": 10472,
+      "class": "CollectionsService",
+      "method": "processBulkUploadJob",
+      "call": "this.storeService.createProduct",
+      "queries": [
+        "this.prisma.brand.findMany",
+        "this.prisma.brandMember.findMany",
+        "this.prisma.brand.findFirst",
+        "this.prisma.brandMember.findUnique",
+        "this.prisma.brand.findUnique",
+        "this.prisma.storeCollection.findFirst",
+        "this.prisma.fileUpload.findMany",
+        "this.prisma.entityFilter.findMany",
+        "this.prisma.filterValue.findMany",
+        "tx.product.findMany",
+        "tx.storeCollection.findFirst",
+        "tx.collectionCategoryType.findUnique",
+        "tx.storeCollection.findUnique",
+        "tx.collectionCategory.findUnique",
+        "tx.storeCollectionProduct.count",
+        "tx.product.findUnique",
+        "(tx as any).productMedia.findMany",
+        "tx.collection.findUnique",
+        "(tx as any).collectionMedia.findMany",
+        "(tx as any).contentSubmission.findFirst",
+        "prismaClient.tag.findMany",
+        "(tx as any).tag.findMany",
+        "(tx as any).tagBinding.count",
+        "this.prisma.storeCollectionProduct.findMany",
+        "this.prisma.patchConnection.findMany",
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany",
+        "this.prisma.collection.findUnique",
+        "this.prisma.product.findUnique",
+        "(this.prisma as any).productMedia.findMany",
+        "(this.prisma as any).fileVariant.findMany"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 56,
+      "file": "bthreadly/src/collections/collections.service.ts",
+      "line": 10667,
+      "loopLine": 10656,
+      "class": "CollectionsService",
+      "method": "processBulkUploadRetry",
+      "call": "this.storeService.createProduct",
+      "queries": [
+        "this.prisma.brand.findMany",
+        "this.prisma.brandMember.findMany",
+        "this.prisma.brand.findFirst",
+        "this.prisma.brandMember.findUnique",
+        "this.prisma.brand.findUnique",
+        "this.prisma.storeCollection.findFirst",
+        "this.prisma.fileUpload.findMany",
+        "this.prisma.entityFilter.findMany",
+        "this.prisma.filterValue.findMany",
+        "tx.product.findMany",
+        "tx.storeCollection.findFirst",
+        "tx.collectionCategoryType.findUnique",
+        "tx.storeCollection.findUnique",
+        "tx.collectionCategory.findUnique",
+        "tx.storeCollectionProduct.count",
+        "tx.product.findUnique",
+        "(tx as any).productMedia.findMany",
+        "tx.collection.findUnique",
+        "(tx as any).collectionMedia.findMany",
+        "(tx as any).contentSubmission.findFirst",
+        "prismaClient.tag.findMany",
+        "(tx as any).tag.findMany",
+        "(tx as any).tagBinding.count",
+        "this.prisma.storeCollectionProduct.findMany",
+        "this.prisma.patchConnection.findMany",
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany",
+        "this.prisma.collection.findUnique",
+        "this.prisma.product.findUnique",
+        "(this.prisma as any).productMedia.findMany",
+        "(this.prisma as any).fileVariant.findMany"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 57,
+      "file": "bthreadly/src/commentsv2/commentsv2.service.ts",
+      "line": 533,
+      "loopLine": 531,
+      "class": "CommentsV2Service",
+      "method": "createForTarget",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 58,
+      "file": "bthreadly/src/content-integrity/content-integrity.service.ts",
+      "line": 933,
+      "loopLine": 933,
+      "class": "ContentIntegrityService",
+      "method": "listSubmissions",
+      "call": "this.mapSubmissionDetail",
+      "queries": [
+        "this.prisma.product.findUnique",
+        "this.prisma.collection.findUnique",
+        "(this.prisma as any).productMedia.findMany",
+        "(this.prisma as any).collectionMedia.findMany",
+        "this.prisma.brand.findUnique",
+        "(this.prisma as any).brandTrustEvent.findFirst",
+        "this.prisma.user.findUnique",
+        "(this.prisma as any).contentSubmission.findMany",
+        "this.prisma.user.findMany",
+        "(this.prisma as any).contentReport.findMany",
+        "this.prisma.product.findMany",
+        "this.prisma.collection.findMany",
+        "this.prisma.brand.findMany",
+        "this.prisma.collection.findFirst"
+      ],
+      "disposition": "PREFETCHED_CONTEXT",
+      "evidence": "List caller supplies request-local prefetched context; single-item fallback queries remain. Bagging/content-review focused tests exercise 50-item constant-query paths."
+    },
+    {
+      "id": 59,
+      "file": "bthreadly/src/content-integrity/content-integrity.service.ts",
+      "line": 1424,
+      "loopLine": 1424,
+      "class": "ContentIntegrityService",
+      "method": "mapReports",
+      "call": "this.mapReport",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.product.findUnique",
+        "this.prisma.collection.findFirst",
+        "this.prisma.collection.findUnique",
+        "this.prisma.brand.findUnique"
+      ],
+      "disposition": "PREFETCHED_CONTEXT",
+      "evidence": "List caller supplies request-local prefetched context; single-item fallback queries remain. Bagging/content-review focused tests exercise 50-item constant-query paths."
+    },
+    {
+      "id": 60,
+      "file": "bthreadly/src/custom-order-admin/custom-order-admin.service.ts",
+      "line": 1995,
+      "loopLine": 1980,
+      "class": "CustomOrderAdminService",
+      "method": "releaseEligibleLedgerAllocations",
+      "call": "this.brandBalance.applyEarningsToDebt",
+      "queries": [
+        "tx.brandBalanceAdjustment.findMany",
+        "this.prisma.brand.findUnique",
+        "this.prisma.brandBalanceAdjustment.findMany",
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 61,
+      "file": "bthreadly/src/custom-order-configurations/custom-order-configurations.service.ts",
+      "line": 562,
+      "loopLine": 553,
+      "class": "CustomOrderConfigurationsService",
+      "method": "listVisibleConfigurations",
+      "call": "this.isSourcePubliclyReadable",
+      "queries": [
+        "this.prisma.product.findFirst",
+        "this.prisma.collection.findFirst"
+      ],
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Removed old-data measurement shrinking; single source visibility lookup plus tenant-isolated500-ID point hydration. Query/visibility/read behavior covered in current passing88-test batch."
+    },
+    {
+      "id": 62,
+      "file": "bthreadly/src/custom-order-configurations/custom-order-configurations.service.ts",
+      "line": 573,
+      "loopLine": 572,
+      "class": "CustomOrderConfigurationsService",
+      "method": "listVisibleConfigurations",
+      "call": "this.withResolvedBuyerMeasurementContract",
+      "queries": [
+        "this.prisma.measurementPoint.findMany"
+      ],
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Removed old-data measurement shrinking; single source visibility lookup plus tenant-isolated500-ID point hydration. Query/visibility/read behavior covered in current passing88-test batch."
+    },
+    {
+      "id": 63,
+      "file": "bthreadly/src/custom-order-configurations/custom-order-configurations.service.ts",
+      "line": 574,
+      "loopLine": 572,
+      "class": "CustomOrderConfigurationsService",
+      "method": "listVisibleConfigurations",
+      "call": "this.normalizeLegacyMeasurementContract",
+      "queries": [
+        "this.prisma.product.findUnique",
+        "this.prisma.collection.findUnique",
+        "this.prisma.measurementPoint.findMany"
+      ],
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Removed old-data measurement shrinking; single source visibility lookup plus tenant-isolated500-ID point hydration. Query/visibility/read behavior covered in current passing88-test batch."
+    },
+    {
+      "id": 64,
+      "file": "bthreadly/src/custom-order-ops/custom-order-ops.cron.service.ts",
+      "line": 145,
+      "loopLine": 136,
+      "class": "CustomOrderOpsCronService",
+      "method": "reconcilePendingCustomOrderPayments",
+      "call": "this.customOrdersPaymentsService.verifyPaymentByReference",
+      "queries": [
+        "this.prisma.paymentAttempt.findUnique",
+        "this.prisma.customOrder.findFirst",
+        "tx.paymentAttempt.findUnique",
+        "tx.customOrder.findUnique",
+        "tx.customOrderCheckoutIntent.findUnique",
+        "this.prisma.customOrderConfiguration.findUnique",
+        "this.prisma.measurementPoint.findMany",
+        "this.prisma.product.findUnique",
+        "this.prisma.collection.findUnique",
+        "tx.customOrder.findUniqueOrThrow",
+        "tx.customOrder.aggregate",
+        "tx.user.findUnique",
+        "tx.customOrderLedgerAllocation.findMany",
+        "tx.brand.findUnique",
+        "tx.customOrderTimelineEvent.findFirst",
+        "tx.customOrderProgressEvent.findFirst",
+        "tx.messageThreadOrderLink.findUnique",
+        "tx.messageThread.findFirst",
+        "this.prisma.message.findFirst",
+        "this.prisma.messageNotificationOutbox.findMany",
+        "this.prisma.messageNotificationOutbox.findUnique",
+        "this.prisma.user.findMany",
+        "this.prisma.brand.findUnique",
+        "tx.brandSubscription.findFirst",
+        "tx.subscriptionTier.findUnique",
+        "tx.capacityCampaign.findFirst",
+        "tx.paymentAttempt.findFirst",
+        "tx.customOrderQueueRefund.aggregate",
+        "tx.customOrder.count",
+        "tx.customOrder.findFirst",
+        "this.prisma.customOrderCheckoutIntent.findFirst",
+        "this.prisma.customOrder.findUnique",
+        "this.prisma.paymentAttempt.findFirst"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 65,
+      "file": "bthreadly/src/custom-order-ops/custom-order-ops.cron.service.ts",
+      "line": 357,
+      "loopLine": 340,
+      "class": "CustomOrderOpsCronService",
+      "method": "processAcceptanceSlaRisk",
+      "call": "this.notifyBrandOwner",
+      "queries": [
+        "this.prisma.brand.findUnique"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 66,
+      "file": "bthreadly/src/custom-order-ops/custom-order-ops.cron.service.ts",
+      "line": 585,
+      "loopLine": 565,
+      "class": "CustomOrderOpsCronService",
+      "method": "autoCompleteExpiredAcceptanceWindows",
+      "call": "this.queue.drain",
+      "queries": [
+        "tx.brand.findUnique",
+        "tx.brandSubscription.findFirst",
+        "tx.subscriptionTier.findUnique",
+        "tx.capacityCampaign.findFirst",
+        "tx.customOrder.count",
+        "tx.customOrder.findFirst",
+        "tx.customOrder.findUnique",
+        "this.prisma.settlementPolicy.findFirst",
+        "tx.customOrderLedgerAllocation.findMany",
+        "(tx as any).ledgerTransaction.findUnique",
+        "(tx as any).ledgerAccount.findUnique",
+        "tx.customOrderLedgerAllocation.findFirst"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 67,
+      "file": "bthreadly/src/custom-order-ops/custom-order-ops.cron.service.ts",
+      "line": 586,
+      "loopLine": 565,
+      "class": "CustomOrderOpsCronService",
+      "method": "autoCompleteExpiredAcceptanceWindows",
+      "call": "this.queue.capacity",
+      "queries": [
+        "tx.brand.findUnique",
+        "tx.brandSubscription.findFirst",
+        "tx.subscriptionTier.findUnique",
+        "tx.capacityCampaign.findFirst"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 68,
+      "file": "bthreadly/src/custom-order-ops/custom-order-ops.cron.service.ts",
+      "line": 599,
+      "loopLine": 565,
+      "class": "CustomOrderOpsCronService",
+      "method": "autoCompleteExpiredAcceptanceWindows",
+      "call": "tx.customOrderLedgerAllocation.findFirst",
+      "queries": [
+        "tx.customOrderLedgerAllocation.findFirst"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 69,
+      "file": "bthreadly/src/custom-order-ops/custom-order-ops.cron.service.ts",
+      "line": 627,
+      "loopLine": 565,
+      "class": "CustomOrderOpsCronService",
+      "method": "autoCompleteExpiredAcceptanceWindows",
+      "call": "this.ledgerService.postCustomOrderFinalRelease",
+      "queries": [
+        "(tx as any).ledgerTransaction.findUnique",
+        "(tx as any).ledgerAccount.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 70,
+      "file": "bthreadly/src/custom-order-ops/custom-order-ops.cron.service.ts",
+      "line": 650,
+      "loopLine": 565,
+      "class": "CustomOrderOpsCronService",
+      "method": "autoCompleteExpiredAcceptanceWindows",
+      "call": "this.notifyBrandOwner",
+      "queries": [
+        "this.prisma.brand.findUnique"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 71,
+      "file": "bthreadly/src/custom-orders/custom-order-side-effects.service.ts",
+      "line": 148,
+      "loopLine": 148,
+      "class": "CustomOrderSideEffectsService",
+      "method": "dispatchPendingNotifications",
+      "call": "this.dispatchNotificationEvent",
+      "queries": [
+        "this.prisma.customOrder.findUnique",
+        "this.prisma.customOrderNotificationOutbox.findUnique"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 72,
+      "file": "bthreadly/src/custom-orders/custom-orders.service.ts",
+      "line": 1625,
+      "loopLine": 1624,
+      "class": "CustomOrdersService",
+      "method": "listCheckoutBagLines",
+      "call": "this.mapCheckoutBagLine",
+      "queries": [
+        "this.prisma.product.findUnique",
+        "this.prisma.collection.findUnique"
+      ],
+      "disposition": "READ_FANOUT_OPEN",
+      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+    },
+    {
+      "id": 73,
+      "file": "bthreadly/src/custom-orders/queue/custom-order-queue-refunds.service.ts",
+      "line": 59,
+      "loopLine": 58,
+      "class": "CustomOrderQueueRefundsService",
+      "method": "processPending",
+      "call": "this.attention",
+      "queries": [
+        "tx.customOrderQueueRefund.findUniqueOrThrow"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 74,
+      "file": "bthreadly/src/custom-orders/queue/custom-order-queue-refunds.service.ts",
+      "line": 93,
+      "loopLine": 91,
+      "class": "CustomOrderQueueRefundsService",
+      "method": "processPending",
+      "call": "this.processOne",
+      "queries": [
+        "this.prisma.customOrderQueueRefund.findUnique",
+        "tx.customOrderQueueRefund.findUniqueOrThrow",
+        "(tx as any).ledgerTransaction.findUnique",
+        "(tx as any).ledgerAccount.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 75,
+      "file": "bthreadly/src/custom-orders/queue/custom-order-queue-refunds.service.ts",
+      "line": 619,
+      "loopLine": 619,
+      "class": "CustomOrderQueueRefundsService",
+      "method": "handleWebhook",
+      "call": "this.poll",
+      "queries": [
+        "tx.customOrderQueueRefund.findUniqueOrThrow",
+        "(tx as any).ledgerTransaction.findUnique",
+        "(tx as any).ledgerAccount.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 76,
+      "file": "bthreadly/src/custom-orders/queue/custom-order-queue.service.ts",
+      "line": 269,
+      "loopLine": 268,
+      "class": "CustomOrderQueueService",
+      "method": "batch",
+      "call": "this.permissions.assertPermission",
+      "queries": [
+        "this.prisma.brand.findFirst",
+        "this.prisma.brandMember.findUnique"
+      ],
+      "disposition": "READ_FANOUT_OPEN",
+      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+    },
+    {
+      "id": 77,
+      "file": "bthreadly/src/custom-orders/queue/custom-order-queue.service.ts",
+      "line": 578,
+      "loopLine": 577,
+      "class": "CustomOrderQueueService",
+      "method": "drain",
+      "call": "tx.customOrder.findFirst",
+      "queries": [
+        "tx.customOrder.findFirst"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 78,
+      "file": "bthreadly/src/custom-orders/queue/custom-order-queue.service.ts",
+      "line": 584,
+      "loopLine": 583,
+      "class": "CustomOrderQueueService",
+      "method": "drain",
+      "call": "tx.customOrder.findFirst",
+      "queries": [
+        "tx.customOrder.findFirst"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 79,
+      "file": "bthreadly/src/custom-orders/queue/custom-order-queue.service.ts",
+      "line": 612,
+      "loopLine": 577,
+      "class": "CustomOrderQueueService",
+      "method": "drain",
+      "call": "this.record",
+      "queries": [
+        "tx.brand.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 80,
+      "file": "bthreadly/src/custom-orders/queue/custom-order-queue.service.ts",
+      "line": 649,
+      "loopLine": 577,
+      "class": "CustomOrderQueueService",
+      "method": "drain",
+      "call": "this.finance.applyPaidSettlement",
+      "queries": [
+        "tx.customOrder.findUnique",
+        "this.prisma.settlementPolicy.findFirst",
+        "tx.customOrderLedgerAllocation.findMany",
+        "(tx as any).ledgerTransaction.findUnique",
+        "(tx as any).ledgerAccount.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 81,
+      "file": "bthreadly/src/custom-orders/queue/custom-order-queue.service.ts",
+      "line": 659,
+      "loopLine": 577,
+      "class": "CustomOrderQueueService",
+      "method": "drain",
+      "call": "this.releaseJump",
+      "queries": [
+        "tx.customOrderLedgerAllocation.findFirst",
+        "(tx as any).ledgerTransaction.findUnique",
+        "(tx as any).ledgerAccount.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 82,
+      "file": "bthreadly/src/custom-orders/queue/custom-order-queue.service.ts",
+      "line": 660,
+      "loopLine": 577,
+      "class": "CustomOrderQueueService",
+      "method": "drain",
+      "call": "this.record",
+      "queries": [
+        "tx.brand.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 83,
+      "file": "bthreadly/src/custom-orders/queue/custom-order-queue.service.ts",
+      "line": 1410,
+      "loopLine": 1408,
+      "class": "CustomOrderQueueService",
+      "method": "cancelMany",
+      "call": "this.cancel",
+      "queries": [
+        "this.prisma.customOrder.findUniqueOrThrow",
+        "this.prisma.customOrder.findUnique",
+        "this.prisma.brandMember.findUnique",
+        "tx.customOrder.findUniqueOrThrow",
+        "tx.paymentAttempt.findUnique",
+        "tx.paymentAttempt.findFirst",
+        "tx.customOrderQueueRefund.aggregate",
+        "tx.customOrderQueueRefund.findMany",
+        "tx.brand.findUnique",
+        "tx.brandSubscription.findFirst",
+        "tx.subscriptionTier.findUnique",
+        "tx.capacityCampaign.findFirst",
+        "tx.customOrder.count",
+        "tx.customOrder.findFirst",
+        "tx.customOrder.findUnique",
+        "tx.customOrderLedgerAllocation.findMany",
+        "(tx as any).ledgerTransaction.findUnique",
+        "tx.customOrderLedgerAllocation.findFirst",
+        "(tx as any).ledgerAccount.findUnique",
+        "this.prisma.customOrder.count",
+        "this.prisma.customOrder.findFirst",
+        "tx.customOrder.findMany",
+        "tx.$queryRaw"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 84,
+      "file": "bthreadly/src/custom-orders/queue/custom-order-queue.service.ts",
+      "line": 1711,
+      "loopLine": 1709,
+      "class": "CustomOrderQueueService",
+      "method": "sweep",
+      "call": "this.cancel",
+      "queries": [
+        "this.prisma.customOrder.findUniqueOrThrow",
+        "this.prisma.customOrder.findUnique",
+        "this.prisma.brandMember.findUnique",
+        "tx.customOrder.findUniqueOrThrow",
+        "tx.paymentAttempt.findUnique",
+        "tx.paymentAttempt.findFirst",
+        "tx.customOrderQueueRefund.aggregate",
+        "tx.customOrderQueueRefund.findMany",
+        "tx.brand.findUnique",
+        "tx.brandSubscription.findFirst",
+        "tx.subscriptionTier.findUnique",
+        "tx.capacityCampaign.findFirst",
+        "tx.customOrder.count",
+        "tx.customOrder.findFirst",
+        "tx.customOrder.findUnique",
+        "tx.customOrderLedgerAllocation.findMany",
+        "(tx as any).ledgerTransaction.findUnique",
+        "tx.customOrderLedgerAllocation.findFirst",
+        "(tx as any).ledgerAccount.findUnique",
+        "this.prisma.customOrder.count",
+        "this.prisma.customOrder.findFirst",
+        "tx.customOrder.findMany",
+        "tx.$queryRaw"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 85,
+      "file": "bthreadly/src/custom-orders/queue/custom-order-queue.service.ts",
+      "line": 1736,
+      "loopLine": 1732,
+      "class": "CustomOrderQueueService",
+      "method": "sweep",
+      "call": "this.drain",
+      "queries": [
+        "tx.brand.findUnique",
+        "tx.brandSubscription.findFirst",
+        "tx.subscriptionTier.findUnique",
+        "tx.capacityCampaign.findFirst",
+        "tx.customOrder.count",
+        "tx.customOrder.findFirst",
+        "tx.customOrder.findUnique",
+        "this.prisma.settlementPolicy.findFirst",
+        "tx.customOrderLedgerAllocation.findMany",
+        "(tx as any).ledgerTransaction.findUnique",
+        "(tx as any).ledgerAccount.findUnique",
+        "tx.customOrderLedgerAllocation.findFirst"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 86,
+      "file": "bthreadly/src/finance/commission.service.ts",
+      "line": 156,
+      "loopLine": 151,
+      "class": "CommissionService",
+      "method": "resolveRulesBatch",
+      "call": "this.systemConfigService.getNumber",
+      "queries": [
+        "this.prisma.systemConfig.findMany"
+      ],
+      "disposition": "BOUNDED_BULK_QUERY",
+      "evidence": "Loop processes bounded ID batches or request-cached rule fallback types, rather than issuing one related-row lookup per result."
+    },
+    {
+      "id": 87,
+      "file": "bthreadly/src/finance/custom-order-finance-sync.service.ts",
+      "line": 377,
+      "loopLine": 366,
+      "class": "CustomOrderFinanceSyncService",
+      "method": "settleCandidates",
+      "call": "this.applyPaidSettlement",
+      "queries": [
+        "tx.customOrder.findUnique",
+        "this.prisma.settlementPolicy.findFirst",
+        "tx.customOrderLedgerAllocation.findMany",
+        "(tx as any).ledgerTransaction.findUnique",
+        "(tx as any).ledgerAccount.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 88,
+      "file": "bthreadly/src/finance/ledger.service.ts",
+      "line": 125,
+      "loopLine": 119,
+      "class": "LedgerService",
+      "method": "postTransaction",
+      "call": "this.ensureAccount",
+      "queries": [
+        "(tx as any).ledgerAccount.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 89,
+      "file": "bthreadly/src/finance/reconciliation.service.ts",
+      "line": 214,
+      "loopLine": 213,
+      "class": "ReconciliationService",
+      "method": "loadLedgerByReference",
+      "call": "this.prisma.ledgerTransaction.findMany",
+      "queries": [
+        "this.prisma.ledgerTransaction.findMany"
+      ],
+      "disposition": "BOUNDED_BULK_QUERY",
+      "evidence": "Loop processes bounded ID batches or request-cached rule fallback types, rather than issuing one related-row lookup per result."
+    },
+    {
+      "id": 90,
+      "file": "bthreadly/src/finance/settlement-backfill.service.ts",
+      "line": 591,
+      "loopLine": 584,
+      "class": "SettlementBackfillService",
+      "method": "writeSnapshots",
+      "call": "tx.settlementSnapshot.findFirst",
+      "queries": [
+        "tx.settlementSnapshot.findFirst"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 91,
+      "file": "bthreadly/src/finance/settlement-policy.service.ts",
+      "line": 279,
+      "loopLine": 276,
+      "class": "SettlementPolicyService",
+      "method": "resolveActivePoliciesBatch",
+      "call": "(tx??this.prisma).$queryRaw",
+      "queries": [
+        "(tx??this.prisma).$queryRaw"
+      ],
+      "disposition": "BOUNDED_BULK_QUERY",
+      "evidence": "Loop processes bounded ID batches or request-cached rule fallback types, rather than issuing one related-row lookup per result."
+    },
+    {
+      "id": 92,
+      "file": "bthreadly/src/finance/settlement-policy.service.ts",
+      "line": 297,
+      "loopLine": 293,
+      "class": "SettlementPolicyService",
+      "method": "resolveActivePoliciesBatch",
+      "call": "this.buildFallbackResolution",
+      "queries": [
+        "this.prisma.systemConfig.findMany"
+      ],
+      "disposition": "BOUNDED_BULK_QUERY",
+      "evidence": "Loop processes bounded ID batches or request-cached rule fallback types, rather than issuing one related-row lookup per result."
+    },
+    {
+      "id": 93,
+      "file": "bthreadly/src/finance/settlement-policy.service.ts",
+      "line": 321,
+      "loopLine": 307,
+      "class": "SettlementPolicyService",
+      "method": "seedDefaults",
+      "call": "this.prisma.settlementPolicy.findFirst",
+      "queries": [
+        "this.prisma.settlementPolicy.findFirst"
+      ],
+      "disposition": "STATIC_SEED",
+      "evidence": "Taxonomy/filter/policy initialization read/write loop. Not a per-card feed lookup; not a claim that seeding cannot be optimized."
+    },
+    {
+      "id": 94,
+      "file": "bthreadly/src/finance/standard-order-escrow.service.ts",
+      "line": 129,
+      "loopLine": 88,
+      "class": "StandardOrderEscrowService",
+      "method": "ensureHoldsForPaidOrders",
+      "call": "this.ledgerService.postStandardOrderPaymentReceived",
+      "queries": [
+        "(tx as any).ledgerTransaction.findUnique",
+        "(tx as any).ledgerAccount.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 95,
+      "file": "bthreadly/src/finance/standard-order-escrow.service.ts",
+      "line": 131,
+      "loopLine": 88,
+      "class": "StandardOrderEscrowService",
+      "method": "ensureHoldsForPaidOrders",
+      "call": "this.releaseStandardOrderUpfrontPortion",
+      "queries": [
+        "tx.escrowHold.findUnique",
+        "(tx as any).ledgerTransaction.findUnique",
+        "(tx as any).ledgerAccount.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 96,
+      "file": "bthreadly/src/finance/standard-order-escrow.service.ts",
+      "line": 248,
+      "loopLine": 228,
+      "class": "StandardOrderEscrowService",
+      "method": "autoConfirmDeliveredOrders",
+      "call": "this.markBuyerDeliveryConfirmed",
+      "queries": [
+        "tx.escrowHold.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 97,
+      "file": "bthreadly/src/finance/standard-order-escrow.service.ts",
+      "line": 277,
+      "loopLine": 275,
+      "class": "StandardOrderEscrowService",
+      "method": "releaseEligibleFinalPortions",
+      "call": "this.releaseFinalPortionByHoldId",
+      "queries": [
+        "tx.escrowHold.findUnique",
+        "(tx as any).ledgerTransaction.findUnique",
+        "(tx as any).ledgerAccount.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 98,
+      "file": "bthreadly/src/finance/standard-order-finance-sync.service.ts",
+      "line": 144,
+      "loopLine": 118,
+      "class": "StandardOrderFinanceSyncService",
+      "method": "syncPaidOrdersBySnapshots",
+      "call": "this.standardOrderEscrowService.ensureHoldsForPaidOrders",
+      "queries": [
+        "(tx??this.prisma).$queryRaw",
+        "(tx as any).ledgerTransaction.findUnique",
+        "(tx as any).ledgerAccount.findUnique",
+        "tx.escrowHold.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 99,
+      "file": "bthreadly/src/market/market-section.service.ts",
+      "line": 234,
+      "loopLine": 231,
+      "class": "MarketSectionService",
+      "method": "getSections",
+      "call": "this.buildSection",
+      "queries": [
+        "this.prisma.product.findMany",
+        "this.prisma.fileUpload.findMany",
+        "this.prisma.storeCollection.findMany",
+        "this.prisma.collectionCategory.findMany",
+        "this.prisma.brand.findMany",
+        "this.prisma.collection.findMany",
+        "this.prisma.marketSignalAggregateDaily.groupBy"
+      ],
+      "disposition": "FIXED_SOURCE_PROJECTION",
+      "evidence": "One projection per reminder window or configured market source. Configuration size still needs operational bounds."
+    },
+    {
+      "id": 100,
+      "file": "bthreadly/src/market/market-signal-aggregation.service.ts",
+      "line": 155,
+      "loopLine": 154,
+      "class": "MarketSignalAggregationService",
+      "method": "rebuildDailyAggregatesFromStoredSignals",
+      "call": "this.prisma.userFeedSignal.findMany",
+      "queries": [
+        "this.prisma.userFeedSignal.findMany"
+      ],
+      "disposition": "PAGINATED_BATCH",
+      "evidence": "Cursor/source-page iteration for index rebuilds, signal rebuilds, or client pagination. Not classified as per-result related-row N+1."
+    },
+    {
+      "id": 101,
+      "file": "bthreadly/src/messaging/messaging-side-effects.service.ts",
+      "line": 82,
+      "loopLine": 50,
+      "class": "MessagingSideEffectsService",
+      "method": "dispatchMessageOutboxForMessage",
+      "call": "this.prisma.messageNotificationOutbox.findUnique",
+      "queries": [
+        "this.prisma.messageNotificationOutbox.findUnique"
+      ],
+      "disposition": "DEPENDENT_RETRY",
+      "evidence": "Next identifier/attempt depends on previous result. Keep uniqueness/conflict checks. Industri-number generation has an unbounded retry loop and requires separate exhaustion/collision review."
+    },
+    {
+      "id": 102,
+      "file": "bthreadly/src/messaging/messaging-side-effects.service.ts",
+      "line": 125,
+      "loopLine": 124,
+      "class": "MessagingSideEffectsService",
+      "method": "dispatchPendingMessageOutbox",
+      "call": "this.dispatchMessageOutboxForMessage",
+      "queries": [
+        "this.prisma.messageNotificationOutbox.findMany",
+        "this.prisma.messageNotificationOutbox.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 103,
+      "file": "bthreadly/src/messaging/messaging-side-effects.service.ts",
+      "line": 303,
+      "loopLine": 301,
+      "class": "MessagingSideEffectsService",
+      "method": "cleanupOrphanedMessageUploads",
+      "call": "this.uploadService.deleteFile",
+      "queries": [
+        "this.prisma.fileUpload.findFirst"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 104,
+      "file": "bthreadly/src/notifications/email-outbox-dispatcher.service.ts",
+      "line": 78,
+      "loopLine": 78,
+      "class": "EmailOutboxDispatcherService",
+      "method": "dispatchPendingEmails",
+      "call": "this.dispatchRow",
+      "queries": [
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.emailDeliveryAttempt.count"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 105,
+      "file": "bthreadly/src/notifications/push-notifications.service.ts",
+      "line": 708,
+      "loopLine": 708,
+      "class": "PushNotificationsService",
+      "method": "dispatchPendingPush",
+      "call": "this.dispatchOutboxRow",
+      "queries": [
+        "this.prisma.pushDeviceToken.findMany",
+        "this.prisma.notification.count"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 106,
+      "file": "bthreadly/src/order/order-sla.cron.service.ts",
+      "line": 169,
+      "loopLine": 154,
+      "class": "OrderSlaCronService",
+      "method": "remindBrandFulfilment",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 107,
+      "file": "bthreadly/src/order/order-sla.cron.service.ts",
+      "line": 255,
+      "loopLine": 237,
+      "class": "OrderSlaCronService",
+      "method": "escalateOrCloseOverdue",
+      "call": "this.orderRefundService.initiateRefund",
+      "queries": [
+        "tx.order.findUnique",
+        "tx.paymentAttempt.findUnique",
+        "tx.paymentAttempt.findFirst",
+        "tx.escrowHold.findUnique",
+        "(tx as any).ledgerTransaction.findUnique",
+        "(tx as any).ledgerAccount.findUnique",
+        "tx.brandBalanceAdjustment.findFirst",
+        "this.prisma.brand.findUnique",
+        "this.prisma.brandBalanceAdjustment.findMany",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 108,
+      "file": "bthreadly/src/order/order-sla.cron.service.ts",
+      "line": 269,
+      "loopLine": 237,
+      "class": "OrderSlaCronService",
+      "method": "escalateOrCloseOverdue",
+      "call": "this.notifyOverdue",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 109,
+      "file": "bthreadly/src/order/order-sla.cron.service.ts",
+      "line": 285,
+      "loopLine": 237,
+      "class": "OrderSlaCronService",
+      "method": "escalateOrCloseOverdue",
+      "call": "this.notifyOverdue",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 110,
+      "file": "bthreadly/src/order/order-sla.cron.service.ts",
+      "line": 316,
+      "loopLine": 314,
+      "class": "OrderSlaCronService",
+      "method": "notifyOverdue",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 111,
+      "file": "bthreadly/src/payment/payment.service.ts",
+      "line": 590,
+      "loopLine": 587,
+      "class": "PaymentService",
+      "method": "initializeUnifiedCheckout",
+      "call": "this.customOrderQueue.assertIntake",
+      "queries": [
+        "tx.user.findUnique",
+        "tx.brand.findUnique",
+        "tx.brandSubscription.findFirst",
+        "tx.subscriptionTier.findUnique",
+        "tx.capacityCampaign.findFirst"
+      ],
+      "disposition": "READ_FANOUT_OPEN",
+      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+    },
+    {
+      "id": 112,
+      "file": "bthreadly/src/payment/payment.service.ts",
+      "line": 734,
+      "loopLine": 699,
+      "class": "PaymentService",
+      "method": "initializeUnifiedCheckout",
+      "call": "this.reserveUnifiedStandardLineInventory",
+      "queries": [
+        "tx.product.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 113,
+      "file": "bthreadly/src/payment/payment.service.ts",
+      "line": 1806,
+      "loopLine": 1795,
+      "class": "PaymentService",
+      "method": "reconcileStalePaymentAttempts",
+      "call": "this.applyAttemptStatus",
+      "queries": [
+        "tx.paymentAttempt.findUnique",
+        "this.prisma.exchangeRateSnapshot.findUnique",
+        "tx.checkoutSession.findUnique",
+        "tx.paymentAttemptCheckoutIntentLink.findMany",
+        "tx.customOrder.findMany",
+        "tx.customOrderCheckoutIntent.findMany",
+        "tx.customOrderConfiguration.findMany",
+        "tx.customOrderConfigurationVersion.findMany",
+        "tx.customOrder.findUnique",
+        "tx.customOrder.findUniqueOrThrow",
+        "tx.customOrder.aggregate",
+        "tx.customOrderLedgerAllocation.findMany",
+        "tx.brand.findUnique",
+        "tx.brandSubscription.findFirst",
+        "tx.subscriptionTier.findUnique",
+        "tx.capacityCampaign.findFirst",
+        "tx.user.findUnique",
+        "tx.paymentAttempt.findFirst",
+        "tx.customOrderQueueRefund.aggregate",
+        "tx.customOrderQueueRefund.findMany",
+        "tx.customOrder.count",
+        "tx.customOrder.findFirst",
+        "tx.customOrderLedgerAllocation.findFirst",
+        "tx.checkoutSessionLine.findMany",
+        "this.prisma.order.findMany",
+        "this.prisma.paymentAttempt.findMany",
+        "this.prisma.paymentAttempt.findUnique",
+        "this.prisma.user.findMany",
+        "this.prisma.user.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany",
+        "tx.messageThreadOrderLink.findUnique",
+        "tx.messageThread.findFirst",
+        "tx.message.findFirst",
+        "this.prisma.customOrder.findMany",
+        "tx.product.findUnique",
+        "tx.escrowHold.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 114,
+      "file": "bthreadly/src/payment/payment.service.ts",
+      "line": 1846,
+      "loopLine": 1795,
+      "class": "PaymentService",
+      "method": "reconcileStalePaymentAttempts",
+      "call": "this.applyAttemptStatus",
+      "queries": [
+        "tx.paymentAttempt.findUnique",
+        "this.prisma.exchangeRateSnapshot.findUnique",
+        "tx.checkoutSession.findUnique",
+        "tx.paymentAttemptCheckoutIntentLink.findMany",
+        "tx.customOrder.findMany",
+        "tx.customOrderCheckoutIntent.findMany",
+        "tx.customOrderConfiguration.findMany",
+        "tx.customOrderConfigurationVersion.findMany",
+        "tx.customOrder.findUnique",
+        "tx.customOrder.findUniqueOrThrow",
+        "tx.customOrder.aggregate",
+        "tx.customOrderLedgerAllocation.findMany",
+        "tx.brand.findUnique",
+        "tx.brandSubscription.findFirst",
+        "tx.subscriptionTier.findUnique",
+        "tx.capacityCampaign.findFirst",
+        "tx.user.findUnique",
+        "tx.paymentAttempt.findFirst",
+        "tx.customOrderQueueRefund.aggregate",
+        "tx.customOrderQueueRefund.findMany",
+        "tx.customOrder.count",
+        "tx.customOrder.findFirst",
+        "tx.customOrderLedgerAllocation.findFirst",
+        "tx.checkoutSessionLine.findMany",
+        "this.prisma.order.findMany",
+        "this.prisma.paymentAttempt.findMany",
+        "this.prisma.paymentAttempt.findUnique",
+        "this.prisma.user.findMany",
+        "this.prisma.user.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany",
+        "tx.messageThreadOrderLink.findUnique",
+        "tx.messageThread.findFirst",
+        "tx.message.findFirst",
+        "this.prisma.customOrder.findMany",
+        "tx.product.findUnique",
+        "tx.escrowHold.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 115,
+      "file": "bthreadly/src/payment/payment.service.ts",
+      "line": 1916,
+      "loopLine": 1914,
+      "class": "PaymentService",
+      "method": "reconcilePaidUnifiedCheckoutFinalization",
+      "call": "this.finalizeUnifiedCheckoutAttempt",
+      "queries": [
+        "tx.paymentAttempt.findUnique",
+        "tx.checkoutSession.findUnique",
+        "tx.paymentAttemptCheckoutIntentLink.findMany",
+        "tx.customOrder.findMany",
+        "tx.customOrderCheckoutIntent.findMany",
+        "tx.customOrderConfiguration.findMany",
+        "tx.customOrderConfigurationVersion.findMany",
+        "tx.customOrder.findUnique",
+        "tx.customOrder.findUniqueOrThrow",
+        "tx.customOrder.aggregate",
+        "tx.customOrderLedgerAllocation.findMany",
+        "(tx as any).ledgerTransaction.findUnique",
+        "tx.brand.findUnique",
+        "tx.brandSubscription.findFirst",
+        "tx.subscriptionTier.findUnique",
+        "tx.capacityCampaign.findFirst",
+        "tx.user.findUnique",
+        "tx.paymentAttempt.findFirst",
+        "tx.customOrderQueueRefund.aggregate",
+        "tx.customOrderQueueRefund.findMany",
+        "tx.customOrder.count",
+        "tx.customOrder.findFirst",
+        "tx.customOrderLedgerAllocation.findFirst",
+        "tx.checkoutSessionLine.findMany",
+        "this.prisma.order.findMany",
+        "this.prisma.paymentAttempt.findMany",
+        "tx.escrowHold.findUnique",
+        "this.prisma.paymentAttempt.findUnique",
+        "this.prisma.user.findMany",
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany",
+        "tx.messageThreadOrderLink.findUnique",
+        "tx.messageThread.findFirst",
+        "tx.message.findFirst",
+        "this.prisma.customOrder.findMany"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 116,
+      "file": "bthreadly/src/payment/payment.service.ts",
+      "line": 2515,
+      "loopLine": 2498,
+      "class": "PaymentService",
+      "method": "reprocessPendingWebhookReceipts",
+      "call": "this.processWebhookPayload",
+      "queries": [
+        "this.prisma.paymentAttempt.findUnique",
+        "tx.paymentAttempt.findUnique",
+        "tx.checkoutSession.findUnique",
+        "tx.paymentAttemptCheckoutIntentLink.findMany",
+        "tx.customOrder.findMany",
+        "tx.customOrderCheckoutIntent.findMany",
+        "tx.customOrderConfiguration.findMany",
+        "tx.customOrderConfigurationVersion.findMany",
+        "tx.customOrder.findUnique",
+        "tx.customOrder.findUniqueOrThrow",
+        "tx.customOrder.aggregate",
+        "tx.customOrderLedgerAllocation.findMany",
+        "tx.brand.findUnique",
+        "tx.brandSubscription.findFirst",
+        "tx.subscriptionTier.findUnique",
+        "tx.capacityCampaign.findFirst",
+        "tx.user.findUnique",
+        "tx.paymentAttempt.findFirst",
+        "tx.customOrderQueueRefund.aggregate",
+        "tx.customOrderQueueRefund.findMany",
+        "tx.customOrder.count",
+        "tx.customOrder.findFirst",
+        "tx.customOrderLedgerAllocation.findFirst",
+        "tx.checkoutSessionLine.findMany",
+        "this.prisma.order.findMany",
+        "this.prisma.paymentAttempt.findMany",
+        "this.prisma.user.findMany",
+        "this.prisma.user.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany",
+        "tx.messageThreadOrderLink.findUnique",
+        "tx.messageThread.findFirst",
+        "tx.message.findFirst",
+        "this.prisma.customOrder.findMany",
+        "this.prisma.exchangeRateSnapshot.findUnique",
+        "tx.product.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 117,
+      "file": "bthreadly/src/payment/payment.service.ts",
+      "line": 4541,
+      "loopLine": 4540,
+      "class": "PaymentService",
+      "method": "notifyFinanceAdminsOfStandardPayment",
+      "call": "this.notificationsService.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 118,
+      "file": "bthreadly/src/payment/payment.service.ts",
+      "line": 4787,
+      "loopLine": 4782,
+      "class": "PaymentService",
+      "method": "notifyOrderPlacementAfterPayment",
+      "call": "this.ensureStandardOrderPlacedMessage",
+      "queries": [
+        "tx.messageThreadOrderLink.findUnique",
+        "tx.messageThread.findFirst",
+        "tx.message.findFirst"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 119,
+      "file": "bthreadly/src/payment/payment.service.ts",
+      "line": 4792,
+      "loopLine": 4782,
+      "class": "PaymentService",
+      "method": "notifyOrderPlacementAfterPayment",
+      "call": "this.notificationsService.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 120,
+      "file": "bthreadly/src/payment/payment.service.ts",
+      "line": 4813,
+      "loopLine": 4782,
+      "class": "PaymentService",
+      "method": "notifyOrderPlacementAfterPayment",
+      "call": "this.notificationsService.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 121,
+      "file": "bthreadly/src/payment/payment.service.ts",
+      "line": 4905,
+      "loopLine": 4891,
+      "class": "PaymentService",
+      "method": "notifyCustomOrderPlacementAfterPayment",
+      "call": "this.notificationsService.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 122,
+      "file": "bthreadly/src/payment/payment.service.ts",
+      "line": 4930,
+      "loopLine": 4891,
+      "class": "PaymentService",
+      "method": "notifyCustomOrderPlacementAfterPayment",
+      "call": "this.notificationsService.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 123,
+      "file": "bthreadly/src/payment/payment.service.ts",
+      "line": 8704,
+      "loopLine": 8701,
+      "class": "PaymentService",
+      "method": "releaseUnifiedCheckoutAttempt",
+      "call": "tx.product.findUnique",
+      "queries": [
+        "tx.product.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 124,
+      "file": "bthreadly/src/payment/payment.service.ts",
+      "line": 9308,
+      "loopLine": 9300,
+      "class": "PaymentService",
+      "method": "finalizeUnifiedCheckoutAttempt",
+      "call": "tx.customOrder.findUnique",
+      "queries": [
+        "tx.customOrder.findUnique"
+      ],
+      "disposition": "READ_FANOUT_OPEN",
+      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+    },
+    {
+      "id": 125,
+      "file": "bthreadly/src/payment/payment.service.ts",
+      "line": 9363,
+      "loopLine": 9300,
+      "class": "PaymentService",
+      "method": "finalizeUnifiedCheckoutAttempt",
+      "call": "tx.customOrder.findUnique",
+      "queries": [
+        "tx.customOrder.findUnique"
+      ],
+      "disposition": "DEPENDENT_RETRY",
+      "evidence": "Next identifier/attempt depends on previous result. Keep uniqueness/conflict checks. Industri-number generation has an unbounded retry loop and requires separate exhaustion/collision review."
+    },
+    {
+      "id": 126,
+      "file": "bthreadly/src/payment/payment.service.ts",
+      "line": 9383,
+      "loopLine": 9300,
+      "class": "PaymentService",
+      "method": "finalizeUnifiedCheckoutAttempt",
+      "call": "this.customOrderQueue.admitPaid",
+      "queries": [
+        "tx.customOrder.findUniqueOrThrow",
+        "tx.customOrder.aggregate",
+        "tx.customOrder.findUnique",
+        "this.prisma.settlementPolicy.findFirst",
+        "tx.customOrderLedgerAllocation.findMany",
+        "(tx as any).ledgerTransaction.findUnique",
+        "(tx as any).ledgerAccount.findUnique",
+        "tx.brand.findUnique",
+        "tx.brandSubscription.findFirst",
+        "tx.subscriptionTier.findUnique",
+        "tx.capacityCampaign.findFirst",
+        "tx.user.findUnique",
+        "tx.paymentAttempt.findUnique",
+        "tx.paymentAttempt.findFirst",
+        "tx.customOrderQueueRefund.aggregate",
+        "tx.customOrderQueueRefund.findMany",
+        "tx.customOrder.count",
+        "tx.customOrder.findFirst",
+        "tx.customOrderLedgerAllocation.findFirst"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 127,
+      "file": "bthreadly/src/payout/payout.service.ts",
+      "line": 1364,
+      "loopLine": 1363,
+      "class": "PayoutService",
+      "method": "getCommissionRateMap",
+      "call": "this.commissionService.resolveRule",
+      "queries": [
+        "this.prisma.systemConfig.findMany"
+      ],
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Implemented after this frozen scan: collection membership bulk projections/locks, atomic settings batch, or payout currency rule batch. Latest four focused suites passed 50 tests. New membership SQL concurrency integration remains pending."
+    },
+    {
+      "id": 128,
+      "file": "bthreadly/src/payout/payout.service.ts",
+      "line": 1483,
+      "loopLine": 1463,
+      "class": "PayoutService",
+      "method": "reserveLedgerSources",
+      "call": "this.resolveEscrowSourceForLedgerEntry",
+      "queries": [
+        "tx.escrowHold.findUnique"
+      ],
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Select oldest/partial sources first, batch only selected ORDER hold metadata in500-ID chunks; no per-ledger hold query. Four current passing behavior tests cover ordering/stages/chunk bounds/insufficient and non-order cases."
+    },
+    {
+      "id": 129,
+      "file": "bthreadly/src/posts/posts.service.ts",
+      "line": 396,
+      "loopLine": 394,
+      "class": "PostsService",
+      "method": "toggleThread",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 130,
+      "file": "bthreadly/src/queue/image-processing.processor.ts",
+      "line": 75,
+      "loopLine": 74,
+      "class": "ImageProcessingProcessor",
+      "method": "process",
+      "call": "this.processOne",
+      "queries": [
+        "this.prisma.fileUpload.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 131,
+      "file": "bthreadly/src/queue/notifications.processor.ts",
+      "line": 42,
+      "loopLine": 40,
+      "class": "NotificationsProcessor",
+      "method": "process",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 132,
+      "file": "bthreadly/src/reviews/reviews.service.ts",
+      "line": 1163,
+      "loopLine": 1146,
+      "class": "ReviewsService",
+      "method": "processDueReviewReminders",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 133,
+      "file": "bthreadly/src/search/search.service.ts",
+      "line": 2635,
+      "loopLine": 2634,
+      "class": "SearchService",
+      "method": "rebuildProductSuggestions",
+      "call": "this.prisma.product.findMany",
+      "queries": [
+        "this.prisma.product.findMany"
+      ],
+      "disposition": "PAGINATED_BATCH",
+      "evidence": "Cursor/source-page iteration for index rebuilds, signal rebuilds, or client pagination. Not classified as per-result related-row N+1."
+    },
+    {
+      "id": 134,
+      "file": "bthreadly/src/search/search.service.ts",
+      "line": 2699,
+      "loopLine": 2698,
+      "class": "SearchService",
+      "method": "rebuildBrandSuggestions",
+      "call": "this.prisma.brand.findMany",
+      "queries": [
+        "this.prisma.brand.findMany"
+      ],
+      "disposition": "PAGINATED_BATCH",
+      "evidence": "Cursor/source-page iteration for index rebuilds, signal rebuilds, or client pagination. Not classified as per-result related-row N+1."
+    },
+    {
+      "id": 135,
+      "file": "bthreadly/src/search/search.service.ts",
+      "line": 2752,
+      "loopLine": 2751,
+      "class": "SearchService",
+      "method": "rebuildDesignSuggestions",
+      "call": "this.prisma.collection.findMany",
+      "queries": [
+        "this.prisma.collection.findMany"
+      ],
+      "disposition": "PAGINATED_BATCH",
+      "evidence": "Cursor/source-page iteration for index rebuilds, signal rebuilds, or client pagination. Not classified as per-result related-row N+1."
+    },
+    {
+      "id": 136,
+      "file": "bthreadly/src/search/search.service.ts",
+      "line": 2801,
+      "loopLine": 2800,
+      "class": "SearchService",
+      "method": "rebuildStoreCollectionSuggestions",
+      "call": "this.prisma.storeCollection.findMany",
+      "queries": [
+        "this.prisma.storeCollection.findMany"
+      ],
+      "disposition": "PAGINATED_BATCH",
+      "evidence": "Cursor/source-page iteration for index rebuilds, signal rebuilds, or client pagination. Not classified as per-result related-row N+1."
+    },
+    {
+      "id": 137,
+      "file": "bthreadly/src/search/search.service.ts",
+      "line": 2850,
+      "loopLine": 2849,
+      "class": "SearchService",
+      "method": "rebuildTagSuggestions",
+      "call": "this.prisma.tag.findMany",
+      "queries": [
+        "this.prisma.tag.findMany"
+      ],
+      "disposition": "PAGINATED_BATCH",
+      "evidence": "Cursor/source-page iteration for index rebuilds, signal rebuilds, or client pagination. Not classified as per-result related-row N+1."
+    },
+    {
+      "id": 138,
+      "file": "bthreadly/src/search/search.service.ts",
+      "line": 2970,
+      "loopLine": 2970,
+      "class": "SearchService",
+      "method": "syncProductsForBrand",
+      "call": "this.syncProductSuggestionById",
+      "queries": [
+        "this.prisma.product.findUnique"
+      ],
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Hydrate keyset250pages once, reuse row mapping, cap concurrent index writes8.251-product fixture verifies2DBreads/no per-itemlookup and privacy/removal behavior."
+    },
+    {
+      "id": 139,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 2019,
+      "loopLine": 2017,
+      "class": "StoreService",
+      "method": "notifyPatchersOfProduct",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 140,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 2116,
+      "loopLine": 2112,
+      "class": "StoreService",
+      "method": "handleScheduledProductPublishNotifications",
+      "call": "this.notifyPatchersOfProduct",
+      "queries": [
+        "this.prisma.patchConnection.findMany",
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 141,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 2171,
+      "loopLine": 2152,
+      "class": "StoreService",
+      "method": "handleCustomOrderOutOfStockLifecycle",
+      "call": "this.notifyBrandOfOutOfStockCustomOrder",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 142,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 2207,
+      "loopLine": 2202,
+      "class": "StoreService",
+      "method": "handleCustomOrderOutOfStockLifecycle",
+      "call": "this.notifyBrandOfOutOfStockCustomOrder",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 143,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 2621,
+      "loopLine": 2620,
+      "class": "StoreService",
+      "method": "createProduct",
+      "call": "this.recalculateCollectionPriceRange",
+      "queries": [
+        "this.prisma.storeCollectionProduct.findMany"
+      ],
+      "disposition": "READ_FANOUT_OPEN",
+      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+    },
+    {
+      "id": 144,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 3446,
+      "loopLine": 3445,
+      "class": "StoreService",
+      "method": "updateProduct",
+      "call": "this.recalculateCollectionPriceRange",
+      "queries": [
+        "this.prisma.storeCollectionProduct.findMany"
+      ],
+      "disposition": "READ_FANOUT_OPEN",
+      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+    },
+    {
+      "id": 145,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 3762,
+      "loopLine": 3760,
+      "class": "StoreService",
+      "method": "duplicateProduct",
+      "call": "tx.storeCollectionProduct.count",
+      "queries": [
+        "tx.storeCollectionProduct.count"
+      ],
+      "disposition": "READ_FANOUT_OPEN",
+      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+    },
+    {
+      "id": 146,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 3958,
+      "loopLine": 3957,
+      "class": "StoreService",
+      "method": "archiveProduct",
+      "call": "this.recalculateCollectionPriceRange",
+      "queries": [
+        "this.prisma.storeCollectionProduct.findMany"
+      ],
+      "disposition": "READ_FANOUT_OPEN",
+      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+    },
+    {
+      "id": 147,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 3983,
+      "loopLine": 3982,
+      "class": "StoreService",
+      "method": "archiveProduct",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 148,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 4057,
+      "loopLine": 4056,
+      "class": "StoreService",
+      "method": "unarchiveProduct",
+      "call": "this.recalculateCollectionPriceRange",
+      "queries": [
+        "this.prisma.storeCollectionProduct.findMany"
+      ],
+      "disposition": "READ_FANOUT_OPEN",
+      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+    },
+    {
+      "id": 149,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 4092,
+      "loopLine": 4091,
+      "class": "StoreService",
+      "method": "unarchiveProduct",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 150,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 4253,
+      "loopLine": 4252,
+      "class": "StoreService",
+      "method": "deleteProduct",
+      "call": "this.recalculateCollectionPriceRange",
+      "queries": [
+        "this.prisma.storeCollectionProduct.findMany"
+      ],
+      "disposition": "READ_FANOUT_OPEN",
+      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+    },
+    {
+      "id": 151,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 4311,
+      "loopLine": 4309,
+      "class": "StoreService",
+      "method": "bulkDeleteProducts",
+      "call": "this.deleteProduct",
+      "queries": [
+        "this.prisma.product.findFirst",
+        "this.prisma.brand.findFirst",
+        "this.prisma.brandMember.findUnique",
+        "this.prisma.order.findMany",
+        "this.prisma.storeCollectionProduct.findMany",
+        "tx.order.findMany",
+        "prismaClient.tag.findMany",
+        "(tx as any).tag.findMany",
+        "(tx as any).tagBinding.count"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 152,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 4347,
+      "loopLine": 4345,
+      "class": "StoreService",
+      "method": "bulkArchiveProducts",
+      "call": "this.archiveProduct",
+      "queries": [
+        "this.prisma.product.findFirst",
+        "this.prisma.brand.findFirst",
+        "this.prisma.brandMember.findUnique",
+        "this.prisma.storeCollectionProduct.findMany",
+        "prismaClient.tag.findMany",
+        "(tx as any).tag.findMany",
+        "(tx as any).tagBinding.count",
+        "this.prisma.wishlistItem.findMany",
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany",
+        "this.prisma.entityFilter.findMany",
+        "(this.prisma as any).productMedia.findMany",
+        "(this.prisma as any).fileVariant.findMany",
+        "this.prisma.fileUpload.findMany"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 153,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 4386,
+      "loopLine": 4384,
+      "class": "StoreService",
+      "method": "bulkUnpublishProducts",
+      "call": "this.prisma.product.findFirst",
+      "queries": [
+        "this.prisma.product.findFirst"
+      ],
+      "disposition": "READ_FANOUT_OPEN",
+      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+    },
+    {
+      "id": 154,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 4394,
+      "loopLine": 4384,
+      "class": "StoreService",
+      "method": "bulkUnpublishProducts",
+      "call": "this.assertCanManageBrandCatalog",
+      "queries": [
+        "this.prisma.brandMember.findUnique",
+        "this.prisma.brand.findFirst"
+      ],
+      "disposition": "READ_FANOUT_OPEN",
+      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+    },
+    {
+      "id": 155,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 4408,
+      "loopLine": 4384,
+      "class": "StoreService",
+      "method": "bulkUnpublishProducts",
+      "call": "this.updateProduct",
+      "queries": [
+        "this.prisma.product.findFirst",
+        "this.prisma.brand.findFirst",
+        "this.prisma.brandMember.findUnique",
+        "(this.prisma as any).adminAuditLog.findMany",
+        "this.prisma.storeCollection.findFirst",
+        "this.prisma.entityFilter.findMany",
+        "this.prisma.filterValue.findMany",
+        "tx.storeCollection.findFirst",
+        "tx.storeCollectionProduct.findMany",
+        "tx.storeCollectionProduct.count",
+        "tx.collectionCategoryType.findUnique",
+        "tx.storeCollection.findUnique",
+        "tx.collectionCategory.findUnique",
+        "(tx as any).productMedia.findMany",
+        "tx.product.findUnique",
+        "tx.collection.findUnique",
+        "(tx as any).collectionMedia.findMany",
+        "(tx as any).contentSubmission.findFirst",
+        "this.prisma.storeCollectionProduct.findMany",
+        "this.prisma.patchConnection.findMany",
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany",
+        "prismaClient.tag.findMany",
+        "(tx as any).tag.findMany",
+        "(tx as any).tagBinding.count",
+        "this.prisma.collection.findUnique",
+        "this.prisma.product.findUnique",
+        "(this.prisma as any).productMedia.findMany",
+        "(this.prisma as any).fileVariant.findMany",
+        "this.prisma.fileUpload.findMany"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 156,
+      "file": "bthreadly/src/store/store.service.ts",
+      "line": 6215,
+      "loopLine": 6200,
+      "class": "StoreService",
+      "method": "handleBagCheckoutReminders",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 157,
+      "file": "bthreadly/src/subscriptions/subscriptions.service.ts",
+      "line": 1134,
+      "loopLine": 1133,
+      "class": "SubscriptionsService",
+      "method": "prepareHostedPayment",
+      "call": "this.verifyInvoice",
+      "queries": [
+        "this.prisma.brandSubscriptionPaymentCapture.findUnique",
+        "this.prisma.brandSubscriptionInvoice.findUniqueOrThrow",
+        "tx.brandSubscriptionInvoice.findUniqueOrThrow",
+        "tx.brandSubscriptionPaymentCapture.findUnique",
+        "tx.brand.findUnique",
+        "tx.brandSubscription.findFirst",
+        "tx.brandSubscription.findUnique",
+        "tx.savedPaymentMethod.findFirst"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 158,
+      "file": "bthreadly/src/subscriptions/subscriptions.service.ts",
+      "line": 1251,
+      "loopLine": 1250,
+      "class": "SubscriptionsService",
+      "method": "verifyForOwner",
+      "call": "this.verifyInvoice",
+      "queries": [
+        "this.prisma.brandSubscriptionPaymentCapture.findUnique",
+        "this.prisma.brandSubscriptionInvoice.findUniqueOrThrow",
+        "tx.brandSubscriptionInvoice.findUniqueOrThrow",
+        "tx.brandSubscriptionPaymentCapture.findUnique",
+        "tx.brand.findUnique",
+        "tx.brandSubscription.findFirst",
+        "tx.brandSubscription.findUnique",
+        "tx.savedPaymentMethod.findFirst"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 159,
+      "file": "bthreadly/src/subscriptions/subscriptions.service.ts",
+      "line": 1616,
+      "loopLine": 1614,
+      "class": "SubscriptionsService",
+      "method": "processBilling",
+      "call": "this.prepareRenewal",
+      "queries": [
+        "tx.brandSubscription.findUniqueOrThrow",
+        "tx.brand.findUnique",
+        "tx.subscriptionTier.findUniqueOrThrow",
+        "tx.brandSubscription.findFirst",
+        "tx.brandSubscriptionInvoice.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 160,
+      "file": "bthreadly/src/subscriptions/subscriptions.service.ts",
+      "line": 1646,
+      "loopLine": 1644,
+      "class": "SubscriptionsService",
+      "method": "processBilling",
+      "call": "this.processInvoice",
+      "queries": [
+        "this.prisma.brandSubscriptionInvoice.findUniqueOrThrow",
+        "this.prisma.brandSubscriptionPaymentCapture.findUnique",
+        "tx.brandSubscriptionInvoice.findUniqueOrThrow",
+        "tx.brandSubscriptionPaymentCapture.findUnique",
+        "tx.brand.findUnique",
+        "tx.brandSubscription.findFirst",
+        "tx.brandSubscription.findUnique",
+        "tx.savedPaymentMethod.findFirst",
+        "this.prisma.brandSubscription.findUniqueOrThrow",
+        "this.prisma.brandSubscription.findUnique",
+        "this.prisma.savedPaymentMethod.findFirst"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 161,
+      "file": "bthreadly/src/subscriptions/subscriptions.service.ts",
+      "line": 1799,
+      "loopLine": 1798,
+      "class": "SubscriptionsService",
+      "method": "processInvoice",
+      "call": "this.verifyInvoice",
+      "queries": [
+        "this.prisma.brandSubscriptionPaymentCapture.findUnique",
+        "this.prisma.brandSubscriptionInvoice.findUniqueOrThrow",
+        "tx.brandSubscriptionInvoice.findUniqueOrThrow",
+        "tx.brandSubscriptionPaymentCapture.findUnique",
+        "tx.brand.findUnique",
+        "tx.brandSubscription.findFirst",
+        "tx.brandSubscription.findUnique",
+        "tx.savedPaymentMethod.findFirst"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 162,
+      "file": "bthreadly/src/subscriptions/subscriptions.service.ts",
+      "line": 2002,
+      "loopLine": 1978,
+      "class": "SubscriptionsService",
+      "method": "processCompensations",
+      "call": "this.prisma.brandSubscriptionPaymentCapture.findUniqueOrThrow",
+      "queries": [
+        "this.prisma.brandSubscriptionPaymentCapture.findUniqueOrThrow"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 163,
+      "file": "bthreadly/src/subscriptions/subscriptions.service.ts",
+      "line": 2011,
+      "loopLine": 1978,
+      "class": "SubscriptionsService",
+      "method": "processCompensations",
+      "call": "this.refundNeedsAttention",
+      "queries": [
+        "tx.brand.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 164,
+      "file": "bthreadly/src/subscriptions/subscriptions.service.ts",
+      "line": 2080,
+      "loopLine": 1978,
+      "class": "SubscriptionsService",
+      "method": "processCompensations",
+      "call": "this.notifyBilling",
+      "queries": [
+        "tx.brand.findUnique"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 165,
+      "file": "bthreadly/src/subscriptions/subscriptions.service.ts",
+      "line": 2096,
+      "loopLine": 1978,
+      "class": "SubscriptionsService",
+      "method": "processCompensations",
+      "call": "this.compensationAttention",
+      "queries": [
+        "tx.brand.findUnique"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 166,
+      "file": "bthreadly/src/subscriptions/subscriptions.service.ts",
+      "line": 2105,
+      "loopLine": 1978,
+      "class": "SubscriptionsService",
+      "method": "processCompensations",
+      "call": "this.prisma.brandSubscriptionPaymentCapture.findUniqueOrThrow",
+      "queries": [
+        "this.prisma.brandSubscriptionPaymentCapture.findUniqueOrThrow"
+      ],
+      "disposition": "DEPENDENT_RETRY",
+      "evidence": "Next identifier/attempt depends on previous result. Keep uniqueness/conflict checks. Industri-number generation has an unbounded retry loop and requires separate exhaustion/collision review."
+    },
+    {
+      "id": 167,
+      "file": "bthreadly/src/subscriptions/subscriptions.service.ts",
+      "line": 2110,
+      "loopLine": 1978,
+      "class": "SubscriptionsService",
+      "method": "processCompensations",
+      "call": "this.refundNeedsAttention",
+      "queries": [
+        "tx.brand.findUnique"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 168,
+      "file": "bthreadly/src/tags/tag-index.service.ts",
+      "line": 291,
+      "loopLine": 290,
+      "class": "TagIndexService",
+      "method": "syncEntityTags",
+      "call": "(tx as any).tagBinding.count",
+      "queries": [
+        "(tx as any).tagBinding.count"
+      ],
+      "disposition": "READ_FANOUT_OPEN",
+      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+    },
+    {
+      "id": 169,
+      "file": "bthreadly/src/tags/tag-index.service.ts",
+      "line": 599,
+      "loopLine": 593,
+      "class": "TagIndexService",
+      "method": "reindexAll",
+      "call": "this.syncEntityTags",
+      "queries": [
+        "prismaClient.tag.findMany",
+        "(tx as any).tag.findMany",
+        "(tx as any).tagBinding.count"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 170,
+      "file": "bthreadly/src/tags/tag-index.service.ts",
+      "line": 610,
+      "loopLine": 604,
+      "class": "TagIndexService",
+      "method": "reindexAll",
+      "call": "this.syncEntityTags",
+      "queries": [
+        "prismaClient.tag.findMany",
+        "(tx as any).tag.findMany",
+        "(tx as any).tagBinding.count"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 171,
+      "file": "bthreadly/src/tags/tag-index.service.ts",
+      "line": 621,
+      "loopLine": 615,
+      "class": "TagIndexService",
+      "method": "reindexAll",
+      "call": "this.syncEntityTags",
+      "queries": [
+        "prismaClient.tag.findMany",
+        "(tx as any).tag.findMany",
+        "(tx as any).tagBinding.count"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 172,
+      "file": "bthreadly/src/tags/tag-index.service.ts",
+      "line": 632,
+      "loopLine": 626,
+      "class": "TagIndexService",
+      "method": "reindexAll",
+      "call": "this.syncEntityTags",
+      "queries": [
+        "prismaClient.tag.findMany",
+        "(tx as any).tag.findMany",
+        "(tx as any).tagBinding.count"
+      ],
+      "disposition": "STATEFUL_ENTITY_WORK",
+      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+    },
+    {
+      "id": 173,
+      "file": "bthreadly/src/upload/upload.service.ts",
+      "line": 1113,
+      "loopLine": 1112,
+      "class": "UploadService",
+      "method": "getVerificationReviewSignedUrlsByKey",
+      "call": "this.prisma.fileUpload.findMany",
+      "queries": [
+        "this.prisma.fileUpload.findMany"
+      ],
+      "disposition": "BOUNDED_BULK_QUERY",
+      "evidence": "Loop processes bounded ID batches or request-cached rule fallback types, rather than issuing one related-row lookup per result."
+    },
+    {
+      "id": 174,
+      "file": "bthreadly/src/upload/variant-display.util.ts",
+      "line": 10,
+      "loopLine": 9,
+      "class": null,
+      "method": null,
+      "call": "prisma.$queryRaw",
+      "queries": [
+        "prisma.$queryRaw"
+      ],
+      "disposition": "BOUNDED_BULK_QUERY",
+      "evidence": "Loop processes bounded ID batches or request-cached rule fallback types, rather than issuing one related-row lookup per result."
+    },
+    {
+      "id": 175,
+      "file": "bthreadly/src/users/size-fit.service.ts",
+      "line": 1239,
+      "loopLine": 1237,
+      "class": "SizeFitService",
+      "method": "sendDueUpdateReminders",
+      "call": "this.notifications.create",
+      "queries": [
+        "this.prisma.user.findUnique",
+        "this.prisma.patchConnection.findFirst",
+        "this.prisma.userEmailPreference.findUnique",
+        "this.prisma.userEmailScenarioPreference.findUnique",
+        "this.prisma.emailSuppression.findFirst",
+        "this.prisma.notification.findFirst",
+        "this.prisma.notification.findMany"
+      ],
+      "disposition": "NOTIFICATION_POLICY_FANOUT",
+      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+    },
+    {
+      "id": 176,
+      "file": "fthreadly/src/api/BrandApi.ts",
+      "line": 1856,
+      "loopLine": 1854,
+      "class": null,
+      "method": "resolveSignedUrlForStorageKey",
+      "call": "apiClient.get",
+      "queries": [
+        "apiClient.get"
+      ],
+      "disposition": "HTTP_COMPATIBILITY_FALLBACK",
+      "evidence": "Ordered legacy endpoint compatibility attempts; not a database query per returned entity."
+    },
+    {
+      "id": 177,
+      "file": "fthreadly/src/components/studio/store/StoreProductsPanel.tsx",
+      "line": 2039,
+      "loopLine": 2038,
+      "class": null,
+      "method": null,
+      "call": "apiClient.get",
+      "queries": [
+        "apiClient.get"
+      ],
+      "disposition": "PAGINATED_BATCH",
+      "evidence": "Cursor/source-page iteration for index rebuilds, signal rebuilds, or client pagination. Not classified as per-result related-row N+1."
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+[
+  {
+    "AllowedOrigins": [
+      "https://weaz.me",
+      "http://localhost:3000",
+      "http://localhost:5173",
+      "http://localhost:5174",
+      "http://192.168.110.91:3000"
+    ],
+    "AllowedMethods": ["GET", "PUT", "HEAD"],
+    "AllowedHeaders": ["Content-Type", "Cache-Control", "Range", "If-None-Match", "If-Modified-Since"],
+    "ExposeHeaders": ["ETag", "Content-Length", "Content-Range", "Accept-Ranges"],
+    "MaxAgeSeconds": 3600
+  }
+]

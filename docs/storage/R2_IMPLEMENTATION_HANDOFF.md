@@ -1,10 +1,9 @@
 # R2 integration handoff
 
-Date: 2026-10-22. Status: reviewed implementation inputs, **not an active or
-deployed R2 migration**. Implementation ownership has moved to the designated
-R2 implementation owner. This handoff authorizes implementation work only; it
-does not authorize a production cutover, live storage migration, source deletion
-or exposure of private bucket contents.
+Date: 2026-10-22. Status: **local integration in progress; application cutover
+has not been performed**. The existing S3 configuration remains the deployment
+default. Implementation and isolated verification do not authorize production
+source deletion, live data migration or exposure of private bucket contents.
 
 ## What is available
 
@@ -13,14 +12,14 @@ These independently testable files are supplied for integration:
 | File | Purpose |
 | --- | --- |
 | `src/upload/storage-provider.config.ts` | Pure provider validation, metadata URL identity, optional gateway signing |
-| `src/upload/storage-provider.config.spec.ts` | 45 passing provider/security configuration tests |
+| `src/upload/storage-provider.config.spec.ts` | 48 passing provider/security configuration tests |
 | `infrastructure/media-gateway/worker.mjs` | Optional authenticated Worker over a private R2 binding |
 | `infrastructure/media-gateway/worker.test.cjs` | 14 passing signer-to-Worker HTTP/security tests |
 | `infrastructure/media-gateway/wrangler.example.toml` | Illustrative, non-deployable route/bucket template |
 | `infrastructure/media-gateway/.gitignore` | Excludes deployment secrets and local deployment state |
 | `docs/storage/provider-config.md` | Configuration, security boundaries, activation gates and verification commands |
 
-No web/native media-expiry or refresh files were changed for this handoff.
+Shared web/native media-expiry and renewal changes are now implemented in source.
 No bucket, credentials, DNS route, Worker or application environment was deployed.
 The locally passing tests use deterministic storage/cache stubs, not real R2.
 They do not establish deployed authorization, CORS, object parity or capacity.
@@ -55,7 +54,7 @@ back to an AWS bucket, credential pair or region. The optional gateway uses
 `MEDIA_GATEWAY_BASE_URL`, `MEDIA_GATEWAY_SECRET`,
 `MEDIA_GATEWAY_ENVIRONMENT` and `MEDIA_GATEWAY_TTL_SECONDS`. It is absent when
 those settings are absent. The default gateway token lifetime is 300 seconds,
-with a maximum of 900. `storageObjectUrl` is a metadata identity, not a display
+with a minimum of 60 and maximum of 900. `storageObjectUrl` is a metadata identity, not a display
 URL. The signing function is not an authorization function.
 
 ## Required server integration boundaries
@@ -101,55 +100,59 @@ do not guess which path segment is a bucket. No source URL should be fetched
 server-side, and no extracted key should be signed without file/entity access
 checks.
 
-Images without a file ID need an authorized way to renew their exact source
-variant. A client cannot safely infer a gateway route prefix or a path-style
-R2 bucket prefix. One compatible option is to accept an alternate full-source
-`url` parameter on the existing public/authenticated key-signing routes, resolve
-only configured trusted origins server-side, then apply the existing file and
-active-variant authorization. Retain existing `key` requests. This alternate
-source contract has **not** been implemented in this handoff.
+Images without a file ID renew their exact variant using the alternate `url`
+parameter on existing `/uploads/public-url-by-key` and
+`/uploads/signed-url-by-key` routes. Existing `key` requests remain compatible.
+For grids, POST `/uploads/public-urls-by-source` and authenticated
+`/uploads/signed-urls-by-source` accept `{ urls: string[] }` (maximum 50) and
+return `{ items: [{ source, url: string | null }] }`, echoing each submitted
+source. Clients remove bearer query fields before sending source identities.
+The API must resolve only exact stored metadata aliases or exact configured
+origins/prefixes and then apply parent access and active-variant authorization.
+It must never fetch an arbitrary submitted URL.
 
-## Client expiry and cache gaps that block gateway activation
+## Shared client renewal implementation and verification limits
 
-The actual shared native loaders are `src/hooks/useResolvedImageUri.ts`,
-`components/ui/StableImage.tsx` and
-`src/components/media/AspectAwareMedia.tsx`. The web loaders include
-`src/hooks/useSignedFileUrl.ts` and `src/components/ImageWithFallback.tsx`.
-Their API cache helpers live in each app's `src/api/BrandApi.ts`, and both
-apps mirror signed-URL structural sharing in `src/query/structuralSharing.ts`.
+Both applications now share identical `src/utils/mediaUrlPolicy.ts` and
+`src/query/structuralSharing.ts` behavior. They recognize R2 SDK SigV4 expiry and
+gateway `exp`/`sig`, retain environment/method/transform identity, and reject
+expired or unsigned private-provider fallback URLs. Cache lifetimes are bounded
+by actual capability expiry. Session generations prevent a delayed old-account
+response from repopulating the next account's cache.
 
-Verified gaps requiring implementation and regression tests:
+Both `src/api/BrandApi.ts` implementations coalesce source requests for 25 ms,
+with at most 50 sources per POST, a bounded queue and limited in-flight batches.
+GET compatibility fallback is used for absent batch routes/transport failure;
+429 responses do not fan out into GET retry storms. Public-only callers do not
+fall through to authenticated private authorization.
 
-- Web/native expiry detection recognizes AWS-style fields but does not recognize
-  this gateway's `exp`/`sig` claims. Storage-host classification also needs R2 API
-  origins rather than an AWS-only substring check.
-- Web session URL caches use a 14-minute lifetime. That can exceed a five-minute
-  gateway token lifetime. Bound every cache entry by the URL's actual expiry,
-  with a refresh margin, including restored query data and API caches.
-- Native direct URLs can return before the `forceRefresh` branch. Direct URLs
-  without a file ID also skip scheduled renewal. A failed/expired source must
-  reach an authorized renewal path rather than returning the same URL.
-- Web hook-based images do not currently schedule renewal for a payload URL
-  that was usable at mount. Browser focus/visibility and native AppState resume
-  need expiry checks, including timers paused while the app is backgrounded.
-- URL-only error fallbacks can retry the same expired string. Use a file ID or
-  the verified source-resolution contract, preserving the selected variant.
-  Allow one bounded error-triggered renewal rather than an infinite retry loop.
-- Unsigned private storage URLs must not be rendered as a last-resort fallback.
-  Legitimate external media URLs should keep their existing direct behavior.
-- Session cleanup clears several caches, but an old in-flight request can finish
-  after a clear. Fence cache writes/results by the authenticated session
-  generation, and clear image-loader last-good/in-flight caches on account
-  change. Private URLs must not survive into another account's cache.
-- When adding gateway support to structural sharing, do not preserve an expired
-  URL or compare only its path while discarding the signed environment, method
-  or other content-selection parameters. Keep equivalent behavior across apps
-  with an executable contract test.
+Web loaders include `src/hooks/useSignedFileUrl.ts`,
+`src/hooks/useMediaCapabilityUrl.ts`, `src/components/ImageWithFallback.tsx`
+and `src/components/media/MediaRenderer.tsx`. Native loaders include
+`src/hooks/useResolvedImageUri.ts`, `components/ui/StableImage.tsx` and
+`src/components/media/AspectAwareMedia.tsx`. Payload URLs and URL-only variants
+renew before expiry and on browser focus/visibility or native AppState resume.
+Shared renderers permit one authorized error-triggered renewal. Video rendering
+retains playback position when the object identity is unchanged across renewal.
+The SDK display-URL lifetime remains unchanged without gateway configuration.
 
-The established SDK display URL lifetime must not be shortened implicitly
-while these gaps remain. Keep the gateway disabled until shared loaders and
-raw-URL image/video consumers pass idle, restored-cache, foreground/resume and
-expired-link recovery checks on every supported surface.
+Local evidence: the focused web suite passed 38 tests in seven files, including
+120 source renewals in three bounded requests; the native resolver/policy
+contract passed 15 tests; the native structural-sharing contract passed.
+These tests do not prove Android/iOS rendering or browser behavior against a
+live gateway. Mounted native hook regressions additionally cover pending/denied account
+authorization, source changes and AppState resume. Actual device rendering and
+slow-background-network behavior still require regression verification. Existing responsive `srcSet`
+capabilities need the same renewal contract if callers begin supplying them;
+there are currently no `srcSet` callers outside the renderer's forwarding API.
+
+**Activation gates:** retain the optional gateway disabled until actual
+web/Android/iOS idle, persisted-query restore, foreground and one-error recovery
+checks pass. Private renewal must preserve access for approved collection
+viewers, order participants and message recipients according to canonical
+backend policy; the client cannot bypass a server denial. Verify those roles
+and withdrawn/blocked access explicitly. Complete root application checks and
+live R2/CORS/gateway bypass-denial tests before an environment cutover.
 
 ## Finalization and future video work
 

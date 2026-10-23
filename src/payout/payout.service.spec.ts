@@ -53,7 +53,10 @@ describe('PayoutService', () => {
           provide: StandardOrderEscrowService,
           useValue: { getReleasedBalance: jest.fn() },
         },
-        { provide: CommissionService, useValue: { resolveRule: jest.fn(), resolveRulesBatch: jest.fn() } },
+        {
+          provide: CommissionService,
+          useValue: { resolveRule: jest.fn(), resolveRulesBatch: jest.fn() },
+        },
         {
           provide: StandardOrderFinanceSyncService,
           useValue: { syncPaidOrdersByOrderIds: jest.fn() },
@@ -88,11 +91,15 @@ describe('PayoutService', () => {
 
     // The money maths is exercised elsewhere; these tests are about the
     // authorisation gate in front of it.
-    jest.spyOn(service as any, 'assertBrandExists').mockResolvedValue(undefined);
+    jest
+      .spyOn(service as any, 'assertBrandExists')
+      .mockResolvedValue(undefined);
     jest
       .spyOn(service as any, 'assertPayoutAccountReadyForRequest')
       .mockResolvedValue(undefined);
-    jest.spyOn(service as any, 'syncFinanceSources').mockResolvedValue(undefined);
+    jest
+      .spyOn(service as any, 'syncFinanceSources')
+      .mockResolvedValue(undefined);
     jest
       .spyOn(service as any, 'calculateAvailableBalance')
       .mockResolvedValue(50_000);
@@ -112,13 +119,23 @@ describe('PayoutService', () => {
 
   it('resolves distinct payout currencies in one commission batch', async () => {
     const commission = (service as any).commissionService;
-    commission.resolveRulesBatch.mockResolvedValue([{ ratePercent: 12 }, { ratePercent: 8 }]);
-    const rates = await (service as any).getCommissionRateMap(BRAND_ID, ['ngn', 'NGN', ' usd ']);
+    commission.resolveRulesBatch.mockResolvedValue([
+      { ratePercent: 12 },
+      { ratePercent: 8 },
+    ]);
+    const rates = await (service as any).getCommissionRateMap(BRAND_ID, [
+      'ngn',
+      'NGN',
+      ' usd ',
+    ]);
     expect(commission.resolveRulesBatch).toHaveBeenCalledWith([
       { brandId: BRAND_ID, currency: 'NGN' },
       { brandId: BRAND_ID, currency: 'USD' },
     ]);
-    expect([...rates]).toEqual([['NGN', 12], ['USD', 8]]);
+    expect([...rates]).toEqual([
+      ['NGN', 12],
+      ['USD', 8],
+    ]);
     expect(commission.resolveRule).not.toHaveBeenCalled();
   });
 
@@ -287,7 +304,9 @@ describe('PayoutService', () => {
     });
 
     it('burns the code once the attempt budget is spent', async () => {
-      prisma.emailLoginCode.findFirst.mockResolvedValue(liveCode({ attempts: 4 }));
+      prisma.emailLoginCode.findFirst.mockResolvedValue(
+        liveCode({ attempts: 4 }),
+      );
       passwordService.verifyPassword.mockResolvedValue(false);
 
       await expect(

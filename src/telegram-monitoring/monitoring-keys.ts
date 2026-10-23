@@ -12,11 +12,13 @@ export const monitoringKeys = (environment: string) => {
     /** STRING marker: this idempotency key was delivered. */
     sent: (id: string) => `${root}:sent:${id}`,
     /** STRING counter for threshold policies. */
-    threshold: (eventKey: string, bucket: number) => `${root}:thr:${eventKey}:${bucket}`,
+    threshold: (eventKey: string, bucket: number) =>
+      `${root}:thr:${eventKey}:${bucket}`,
     /** STRING cooldown marker (Sentry repeat suppression, watchdog repeats). */
     cooldown: (id: string) => `${root}:cooldown:${id}`,
     /** STRING JSON delivery record for one report window. */
-    report: (kind: string, windowEndIso: string) => `${root}:report:${kind}:${windowEndIso}`,
+    report: (kind: string, windowEndIso: string) =>
+      `${root}:report:${kind}:${windowEndIso}`,
     /** LIST of recent report delivery records (audit trail, capped). */
     reportLog: () => `${root}:report-log`,
     /** HASH watchdog condition -> 'bad' state. */
@@ -30,7 +32,9 @@ export const COUNTER_TTL_SECONDS = 8 * 24 * 60 * 60;
 export const SENT_MARKER_TTL_SECONDS = 14 * 24 * 60 * 60;
 export const REPORT_RECORD_TTL_SECONDS = 35 * 24 * 60 * 60;
 
-export function stableId(...parts: Array<string | number | null | undefined>): string {
+export function stableId(
+  ...parts: Array<string | number | null | undefined>
+): string {
   return createHash('sha256')
     .update(parts.map((part) => String(part ?? '')).join('\u001f'))
     .digest('hex')

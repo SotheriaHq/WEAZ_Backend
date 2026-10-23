@@ -1,10 +1,11 @@
 import { ImageProcessingProcessor } from './image-processing.processor';
-import { IMAGE_PROCESS_BATCH_JOB } from './queue.constants';
+import { IMAGE_PROCESS_BATCH_JOB, IMAGE_PROCESS_SINGLE_JOB } from './queue.constants';
 
-function build(overrides: { getObject?: jest.Mock; status?: string } = {}) {
+function build(overrides: { getObject?: jest.Mock; status?: string; processed?: boolean } = {}) {
   const file = {
     id: 'file-1', mimeType: 'image/jpeg', s3Key: 'POST_IMAGE/u/file-1.jpg',
     processingStatus: overrides.status ?? 'READY', assetVersion: 1,
+    lastProcessedAt: overrides.processed === false || overrides.status === 'PENDING' ? null : new Date(),
     processingLeaseToken: null as string | null, processingLeaseUntil: null as Date | null,
   };
   const prisma = {
@@ -24,7 +25,10 @@ function build(overrides: { getObject?: jest.Mock; status?: string } = {}) {
   };
   (prisma as any).$queryRaw = jest.fn(async (_strings: any, _id: string, token: string) => file.processingLeaseToken === token ? [{ id: file.id }] : []);
   (prisma as any).$transaction = jest.fn(async (callback: any) => callback(prisma));
-  (prisma as any).storageObjectDeletion = { createMany: jest.fn().mockResolvedValue({ count: 1 }) };
+  (prisma as any).$executeRaw = jest.fn().mockResolvedValue(1);
+  (prisma as any).storageObjectDeletion = {
+    createMany: jest.fn().mockResolvedValue({ count: 1 }), deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+  };
   const upload = {
     getObjectBufferByKey:
       overrides.getObject ?? jest.fn().mockResolvedValue(Buffer.from('img')),
@@ -74,10 +78,10 @@ function build(overrides: { getObject?: jest.Mock; status?: string } = {}) {
   );
   const run = (data: Record<string, unknown>) =>
     processor.process({
-      name: IMAGE_PROCESS_BATCH_JOB,
-      data: { fileIds: ['file-1'], force: true, ...data },
+      name: IMAGE_PROCESS_SINGLE_JOB,
+      data: { fileId: 'file-1', force: true, ...data },
     } as any);
-  return { prisma: prisma as any, upload, media, file, run };
+  return { prisma: prisma as any, upload, media, file, run, processor };
 }
 
 describe('ImageProcessingProcessor re-encode (newVersion)', () => {
@@ -107,12 +111,12 @@ describe('ImageProcessingProcessor re-encode (newVersion)', () => {
     });
   });
 
-  it('keeps a working photo untouched when the re-encode fails, and does not throw', async () => {
+  it('keeps a working photo untouched and retries when the re-encode fails', async () => {
     const { prisma, run } = build({
       getObject: jest.fn().mockRejectedValue(new Error('NoSuchKey')),
     });
 
-    await expect(run({ newVersion: true })).resolves.toBeUndefined();
+    await expect(run({ newVersion: true })).rejects.toThrow('NoSuchKey');
 
     expect(prisma.fileUpload.update).not.toHaveBeenCalled();
     expect(prisma.fileVariant.deleteMany).not.toHaveBeenCalled();
@@ -155,7 +159,7 @@ describe('ImageProcessingProcessor re-encode (newVersion)', () => {
       file.processingLeaseToken = 'newer-worker';
       return { url: 'https://bucket/new-attempt' };
     });
-    await run({});
+    await expect(run({})).rejects.toThrow('Image processing publish lease expired');
     expect(prisma.fileVariant.upsert).not.toHaveBeenCalled();
     expect(prisma.fileUpload.update).not.toHaveBeenCalled();
     expect(prisma.storageObjectDeletion.createMany).toHaveBeenCalledTimes(1);
@@ -168,6 +172,24 @@ describe('ImageProcessingProcessor re-encode (newVersion)', () => {
     await run({});
     expect(prisma.fileUpload.update.mock.calls[0][0].data.assetVersion).toBe(2);
     expect(upload.putObjectBuffer.mock.calls[0][0].key).toMatch(/\/v2\.webp$/);
+  });
+
+  it('processes later legacy-batch files after an earlier failure and retains a retryable failure', async () => {
+    const { processor } = build();
+    const processOne = jest.spyOn(processor as any, 'processOne')
+      .mockRejectedValueOnce(new Error('first file failed')).mockResolvedValueOnce(undefined);
+    await expect(processor.process({ name: IMAGE_PROCESS_BATCH_JOB,
+      data: { fileIds: ['first', 'second'], force: true } } as any)).rejects.toThrow(AggregateError);
+    expect(processOne).toHaveBeenCalledTimes(2);
+    expect(processOne).toHaveBeenLastCalledWith('second', true, false);
+  });
+
+  it('marks an invalid newly uploaded original FAILED without treating it as a working encoded version', async () => {
+    const { run, prisma } = build({ processed: false, getObject: jest.fn().mockRejectedValue(new Error('Unreadable image')) });
+    await expect(run({})).rejects.toThrow('Unreadable image');
+    expect(prisma.fileUpload.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ processingStatus: 'FAILED' }),
+    }));
   });
 
 });

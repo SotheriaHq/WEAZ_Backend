@@ -39,7 +39,9 @@ export class TelegramMonitoringScheduler implements OnApplicationBootstrap {
       await this.sync();
     } catch (error) {
       // Never block worker boot on monitoring.
-      this.logger.error(`Telegram monitoring schedulers not synced: ${describe(error)}`);
+      this.logger.error(
+        `Telegram monitoring schedulers not synced: ${describe(error)}`,
+      );
     }
   }
 
@@ -56,7 +58,12 @@ export class TelegramMonitoringScheduler implements OnApplicationBootstrap {
           {
             name: TELEGRAM_REPORT_JOB,
             data: { kind },
-            opts: { attempts: 4, backoff: { type: 'exponential', delay: 60_000 }, removeOnComplete: 50, removeOnFail: 50 },
+            opts: {
+              attempts: 4,
+              backoff: { type: 'exponential', delay: 60_000 },
+              removeOnComplete: 50,
+              removeOnFail: 50,
+            },
           },
         );
       } else {
@@ -68,7 +75,11 @@ export class TelegramMonitoringScheduler implements OnApplicationBootstrap {
       await this.queue.upsertJobScheduler(
         WATCHDOG_SCHEDULER_ID,
         { every: WATCHDOG_EVERY_MS },
-        { name: TELEGRAM_WATCHDOG_JOB, data: {}, opts: { attempts: 1, removeOnComplete: 20, removeOnFail: 20 } },
+        {
+          name: TELEGRAM_WATCHDOG_JOB,
+          data: {},
+          opts: { attempts: 1, removeOnComplete: 20, removeOnFail: 20 },
+        },
       );
     } else {
       await this.queue.removeJobScheduler(WATCHDOG_SCHEDULER_ID);

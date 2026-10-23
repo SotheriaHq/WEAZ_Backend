@@ -4,6 +4,7 @@ require('dotenv/config');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { parseResetArgs, validateResetTarget, resolveLocalUploads } = require('./reset-safety.cjs');
 const {
   S3Client,
   ListObjectsV2Command,
@@ -11,18 +12,11 @@ const {
 } = require('@aws-sdk/client-s3');
 
 function parseArgs(argv) {
-  const flags = new Set(argv.filter((value) => value.startsWith('--')));
-  return {
-    confirm: flags.has('--confirm'),
-    skipDb: flags.has('--skip-db'),
-    skipBucket: flags.has('--skip-bucket'),
-    skipLocalUploads: flags.has('--skip-local-uploads'),
-    skipSeed: flags.has('--skip-seed'),
-    adminOnlySeed: flags.has('--admin-only-seed'),
-  };
+  return parseResetArgs(argv);
 }
 
 function getBucketName() {
+  if (process.env.STORAGE_PROVIDER === 'R2') return process.env.R2_BUCKET || '';
   return process.env.AWS_S3_BUCKET || process.env.S3_BUCKET || '';
 }
 
@@ -31,6 +25,11 @@ function getRegion() {
 }
 
 function createS3Client(region) {
+  if (process.env.STORAGE_PROVIDER === 'R2') {
+    if (!process.env.R2_ENDPOINT || !process.env.R2_ACCESS_KEY_ID || !process.env.R2_SECRET_ACCESS_KEY) throw new Error('R2 reset requires its endpoint and dedicated credentials');
+    return new S3Client({ region: 'auto', endpoint: process.env.R2_ENDPOINT, forcePathStyle: true,
+      credentials: { accessKeyId: process.env.R2_ACCESS_KEY_ID, secretAccessKey: process.env.R2_SECRET_ACCESS_KEY } });
+  }
   const accessKeyId =
     process.env.AWS_ACCESS_KEY_ID || process.env.ACCESS_KEY_ID || undefined;
   const secretAccessKey =
@@ -96,7 +95,7 @@ async function emptyBucket(bucketName, region) {
 }
 
 function removeLocalUploads() {
-  const uploadsPath = path.join(process.cwd(), 'uploads');
+  const uploadsPath = resolveLocalUploads(path.resolve(__dirname, '..'));
   if (!fs.existsSync(uploadsPath)) {
     return { removed: false, path: uploadsPath };
   }
@@ -211,9 +210,9 @@ async function main() {
 
   if (!options.confirm) {
     console.error('Refusing to run without --confirm.');
-    console.error('This command deletes database data, S3 objects, and local uploads.');
+    console.error('This command deletes database data. Storage deletion requires separate explicit wipe options.');
     console.error(
-      'Example: npm run dev:reset -- --confirm',
+      'Example: npm run dev:reset -- --confirm --target=local --expect-host=localhost --expect-database=YOUR_LOCAL_DB',
     );
     console.error(
       'Admin-only DB reset example: npm run reset:admin -- --confirm',
@@ -225,8 +224,11 @@ async function main() {
     throw new Error('DATABASE_URL must be set unless --skip-db is used.');
   }
 
+  const databaseLabel = validateResetTarget(options, process.env);
+  if (!options.skipBucket && (!bucketName || options.expectedBucket !== bucketName)) throw new Error('Storage deletion requires an exact --expect-bucket match');
+  if (!options.skipLocalUploads) resolveLocalUploads(path.resolve(__dirname, '..'));
   console.log('Starting destructive reset with target:');
-  console.log(`- database: ${options.skipDb ? 'skip' : databaseUrl}`);
+  console.log(`- database: ${databaseLabel}`);
   console.log(`- bucket: ${options.skipBucket ? 'skip' : bucketName || '(missing)'}`);
   console.log(`- local uploads: ${options.skipLocalUploads ? 'skip' : path.join(process.cwd(), 'uploads')}`);
   console.log(
