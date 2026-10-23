@@ -29,7 +29,8 @@ on:
         default: false
 
 concurrency:
-  group: backend-deploy-${{ github.ref }}
+  # Both refs use one EC2 checkout; their build/deploy runs must serialize.
+  group: backend-deploy-ec2
   cancel-in-progress: false
 
 permissions:
@@ -54,6 +55,8 @@ jobs:
       # happens to load the graph first. That is how the SIT worker ended up
       # restarting 74,771 times over nine days while every check stayed green.
       - run: npm run check:module-cycles
+      - name: Shared deployment lock regression
+        run: bash scripts/verify-deploy-lock.sh
       - name: Destructive reset safety checks
         run: node --test scripts/reset-safety.test.cjs
       - run: npx prisma generate
@@ -67,7 +70,7 @@ jobs:
   deploy:
     name: Deploy to EC2 (PM2)
     needs: build-check
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.validate_only }}
+    if: ${{ (github.ref_name == 'main' || github.ref_name == 'SIT') && (github.event_name != 'workflow_dispatch' || !inputs.validate_only) }}
     runs-on: ubuntu-latest
     steps:
       - name: Deploy over SSH
@@ -76,12 +79,18 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          command_timeout: 20m
+          command_timeout: 40m
           script_stop: true
           script: |
             set -e
+            # Cover checkout mutation too, before deploy.sh is invoked.
+            # --close keeps the lock out of PM2/other detached descendants.
+            flock --wait 900 --close "$HOME/.wiez-backend-deploy.lock" bash -s <<'WIEZ_DEPLOY'
+            set -e
+            export DEPLOY_LOCK_HELD=1
             cd ~/WEAZ_Backend
             git fetch --all --prune
             git checkout "${{ github.ref_name }}"
             git reset --hard "origin/${{ github.ref_name }}"
             DEPLOY_BRANCH="${{ github.ref_name }}" bash scripts/deploy.sh
+            WIEZ_DEPLOY

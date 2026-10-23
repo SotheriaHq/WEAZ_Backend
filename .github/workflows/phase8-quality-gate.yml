@@ -29,6 +29,8 @@ jobs:
 
       - name: NestJS module cycle guard
         run: npm run check:module-cycles
+      - name: Shared deployment lock regression
+        run: bash scripts/verify-deploy-lock.sh
 
       - name: Destructive reset safety checks
         run: node --test scripts/reset-safety.test.cjs

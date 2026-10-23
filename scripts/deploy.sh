@@ -49,6 +49,17 @@ if [ "${DEPLOY_SELF_COPY:-}" != "1" ]; then
   exec bash "$SELF_COPY" "$@"
 fi
 
+# Manual and GitHub deploys share the same host lock. A separate flock process
+# holds it; --close prevents PM2 children from retaining the descriptor forever.
+if [ "${DEPLOY_LOCK_HELD:-}" != "1" ]; then
+  command -v flock >/dev/null || { echo 'flock is required for deployment' >&2; exit 1; }
+  lock_status=0
+  flock --wait 900 --close "$HOME/.wiez-backend-deploy.lock" \
+    env DEPLOY_LOCK_HELD=1 bash "$0" "$@" || lock_status=$?
+  rm -f "${SELF_COPY:-}" 2>/dev/null || true
+  exit "$lock_status"
+fi
+
 APP_DIR="${APP_DIR:-$HOME/WEAZ_Backend}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 LIVENESS_URL="${LIVENESS_URL:-https://api.weaz.me/healthz}"

@@ -41,6 +41,7 @@ The combined focused regression run passed 14 suites / 103 tests, and the backen
 - Unified finalization batches missing order inserts with ON CONFLICT and hydrates winning orders afterwards. It explicitly uses READ COMMITTED. Conflict winners continue; unrelated uniqueness conflicts and failed admission refuse completion and roll back. Provider money movement is not asserted by these local fixtures.
 - Tag template changes batch shared-tag hydration, binding writes/deletes and grouped counts. Sync and merge take ordered tag locks; moderation is rechecked after locking. Generated Prisma against a disposable fully migrated PostgreSQL database verifies ten-product additions/removals, simultaneous additions, moderation rollback and merge counts.
 - Bulk unpublish loads update contexts and brand permissions once, then preserves the shared product mutation pipeline and partial-result contract. A concurrent archive/delete cannot silently pass the guarded product update.
+- Deployment jobs for main/SIT now share one GitHub concurrency group and one host flock covering checkout mutation through health verification. Manual deploys use the same host lock; --close prevents detached PM2 descendants from holding it indefinitely. A real Linux fixture verifies competing-command serialization and lock release with detached children, without opening the actual deployment lock or executing deployment. Shell scripts require LF endings so Windows file copies remain valid on Linux. Feature-branch validation cannot deploy.
 
 Reproduction tools:
 
