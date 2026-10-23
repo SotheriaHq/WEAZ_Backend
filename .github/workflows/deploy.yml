@@ -63,7 +63,7 @@ jobs:
       - name: Upload privacy and finalization regressions
         run: npm test -- src/upload/upload.service.spec.ts src/designs/mappers/design-response.mapper.spec.ts --runInBand
       - name: Query batching and payment concurrency regressions
-        run: npm test -- src/store/collection-price-range.util.spec.ts src/store/bulk-unpublish.spec.ts src/collections/collection-membership-query.spec.ts src/admin/featured/featured-expiry.spec.ts src/brands/permissions/brand-permission-batch.spec.ts src/custom-orders/checkout-bag-batching.spec.ts src/custom-orders/queue/intake-batch.spec.ts src/custom-orders/queue/paid-capture-admission.spec.ts src/tags/tag-usage-query.spec.ts --runInBand
+        run: npm test -- src/store/collection-price-range.util.spec.ts src/store/bulk-unpublish.spec.ts src/collections/collection-membership-query.spec.ts src/admin/featured/featured-expiry.spec.ts src/brands/permissions/brand-permission-batch.spec.ts src/custom-orders/checkout-bag-batching.spec.ts src/custom-orders/queue/intake-batch.spec.ts src/custom-orders/queue/custom-order-queue.service.spec.ts src/custom-orders/queue/paid-capture-admission.spec.ts src/tags/tag-usage-query.spec.ts --runInBand
       - run: npm run check:perf-regressions
       - run: npm run build
 

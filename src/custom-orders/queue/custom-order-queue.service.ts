@@ -427,6 +427,7 @@ export class CustomOrderQueueService {
     message: string,
     actorType: CustomOrderActorType = 'SYSTEM',
     actorId?: string,
+    knownBrandOwnerId?: string,
   ) {
     await tx.customOrderTimelineEvent.create({
       data: {
@@ -437,10 +438,10 @@ export class CustomOrderQueueService {
         payloadJson: { kind, message },
       },
     });
-    const brand = await tx.brand.findUnique({
+    const brand = knownBrandOwnerId === undefined ? await tx.brand.findUnique({
       where: { id: order.brandId },
       select: { ownerId: true },
-    });
+    }) : { ownerId: knownBrandOwnerId };
     await tx.customOrderNotificationOutbox.createMany({
       data: [
         ...new Set(
@@ -597,14 +598,16 @@ export class CustomOrderQueueService {
       where: { brandId, lane: 'ACTIVE' },
     });
     let streak = cap.brand.queuePriorityStreak;
+    // Every queue writer holds this brand's lock. Read bounded FIFO heads once;
+    // financial transitions and per-order outbox effects remain transactional.
+    let up = await tx.customOrder.findFirst({ where: { brandId, lane: 'UP_NEXT' } });
+    let pending: Awaited<ReturnType<typeof tx.customOrder.findMany>>[] | null = null;
+    const candidateLimit = Math.min(50, Math.max(1, cap.active === null ? 50 : cap.active - active + 1));
     for (let turns = 0; turns < 50; turns++) {
-      let up = await tx.customOrder.findFirst({
-        where: { brandId, lane: 'UP_NEXT' },
-      });
       if (!up) {
-        const [priority, ordinary] = await Promise.all(
+        pending ??= await Promise.all(
           [1, 0].map((queuePriority) =>
-            tx.customOrder.findFirst({
+            tx.customOrder.findMany({
               where: {
                 brandId,
                 lane: 'PENDING',
@@ -618,16 +621,18 @@ export class CustomOrderQueueService {
                 { createdAt: 'asc' },
                 { id: 'asc' },
               ],
+              take: candidateLimit,
             }),
           ),
         );
         const candidate = selectQueueCandidate(
-          [priority, ordinary].filter(
+          pending.map((rows) => rows[0] ?? null).filter(
             (row): row is NonNullable<typeof row> => row !== null,
           ),
           streak,
         );
         if (!candidate) break;
+        pending.find((rows) => rows[0]?.id === candidate.id)?.shift();
         up = await tx.customOrder.update({
           where: { id: candidate.id },
           data: { lane: 'UP_NEXT', orderRevision: { increment: 1 } },
@@ -637,6 +642,7 @@ export class CustomOrderQueueService {
           up,
           'QUEUE_UP_NEXT',
           'Your custom order is Up Next. No additional garment payment is required.',
+          'SYSTEM', undefined, cap.brand.ownerId,
         );
       }
       if (
@@ -685,9 +691,11 @@ export class CustomOrderQueueService {
         activated,
         'QUEUE_ACTIVE',
         'Your custom order is now Active. Production dates start today; the brand acceptance portion is available under the settlement policy.',
+        'SYSTEM', undefined, cap.brand.ownerId,
       );
       streak = up.queuePriority > 0 ? streak + 1 : 0;
       active++;
+      up = null;
     }
     await tx.brand.update({
       where: { id: brandId },

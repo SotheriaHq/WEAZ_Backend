@@ -360,6 +360,17 @@ describe('custom order queue transaction boundaries', () => {
     ).toHaveLength(1);
   });
 
+  it('promotes forty orders with bounded candidate reads and no per-order brand metadata lookup', async () => {
+    const h = harness(Array.from({ length: 40 }, (_, i) => order(`order-${i}`, { queuePosition: i })), 40);
+    await h.service.drain(h.tx as any, 'brand', NOW);
+    expect([...h.rows.values()].filter((row) => row.lane === 'ACTIVE')).toHaveLength(40);
+    expect(h.tx.customOrder.findFirst).toHaveBeenCalledTimes(1);
+    expect(h.tx.customOrder.findMany).toHaveBeenCalledTimes(2);
+    expect(h.service.capacity).toHaveBeenCalledTimes(1);
+    expect(h.tx.brand.findUnique).not.toHaveBeenCalled();
+    expect(h.finance.applyPaidSettlement).toHaveBeenCalledTimes(40);
+  });
+
   it('starts production promises at activation and not during paid waiting', async () => {
     const h = harness(
       [order('one', { queuedAt: new Date(+NOW - 20 * 24 * hour) })],
