@@ -652,6 +652,7 @@ describe('CustomOrdersService', () => {
     });
 
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       customOrderIssue: {
         create: jest.fn().mockResolvedValue(undefined),
       },
@@ -660,6 +661,7 @@ describe('CustomOrdersService', () => {
         create: jest.fn().mockResolvedValue(undefined),
       },
       customOrder: {
+        findFirst: jest.fn((args) => prisma.customOrder.findFirst(args)),
         update: jest.fn().mockResolvedValue(updatedOrder),
       },
       customOrderLedgerAllocation: {
@@ -750,12 +752,14 @@ describe('CustomOrdersService', () => {
     ]);
 
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       customOrderIssue: { create: jest.fn() },
       customOrderDispute: {
         findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn(),
       },
       customOrder: {
+        findFirst: jest.fn((args) => prisma.customOrder.findFirst(args)),
         update: jest.fn().mockResolvedValue(
           buildOrder({ status: CustomOrderStatus.DELIVERY_ISSUE_REPORTED }),
         ),
@@ -848,6 +852,38 @@ describe('CustomOrdersService', () => {
     ).rejects.toThrow('Dispute evidence must include at least one photo');
   });
 
+  it('rejects a garment complaint if completion won while its row lock was pending', async () => {
+    prisma.customOrder.findFirst.mockResolvedValue(buildOrder({ status: CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION }));
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      customOrder: { findFirst: jest.fn().mockResolvedValue(buildOrder({ status: CustomOrderStatus.COMPLETED })) },
+      customOrderIssue: { create: jest.fn() },
+    };
+    prisma.$transaction.mockImplementation(async (work) => work(tx));
+    await expect(service.reportIssue('buyer_1', 'co_1', {
+      issueType: CustomOrderIssueType.WRONG_ITEM, description: 'Wrong garment',
+      evidenceJson: { photos: ['https://example.com/proof.jpg'] },
+    })).rejects.toThrow('CUSTOM_ORDER_DISPUTE_WINDOW_CLOSED');
+    expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(tx.customOrder.findFirst.mock.invocationCallOrder[0]);
+    expect(tx.customOrderIssue.create).not.toHaveBeenCalled();
+  });
+
+  it('rechecks open delay disputes after locking, preventing two simultaneous submissions', async () => {
+    const order = buildOrder({ status: CustomOrderStatus.IN_PRODUCTION,
+      promisedProductionAt: new Date(Date.now() - 36 * 3600000), disputes: [] });
+    prisma.customOrder.findFirst.mockResolvedValue(order);
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      customOrder: { findFirst: jest.fn().mockResolvedValue({ ...order, disputes: [{ status: 'OPEN', resolvedAt: null }] }) },
+      customOrderIssue: { create: jest.fn() },
+    };
+    prisma.$transaction.mockImplementation(async (work) => work(tx));
+    await expect(service.reportIssue('buyer_1', 'co_1', {
+      issueType: CustomOrderIssueType.UNREASONABLE_DELAY, description: 'Overdue production', evidenceJson: {},
+    })).rejects.toThrow('CUSTOM_ORDER_DELAY_DISPUTE_');
+    expect(tx.customOrderIssue.create).not.toHaveBeenCalled();
+  });
+
   it('takes a delay dispute with no photo once the promise has actually been missed', async () => {
     prisma.brand.findUnique.mockResolvedValue({ ownerId: 'owner_1' });
     // Overdue by a day and a half: past the production promise AND past the
@@ -862,10 +898,12 @@ describe('CustomOrdersService', () => {
     prisma.customOrder.findFirst.mockResolvedValue(order);
 
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       customOrderIssue: { create: jest.fn() },
       customOrderDispute: { create: jest.fn() },
       customOrderExtensionRequest: { updateMany: jest.fn() },
-      customOrder: { update: jest.fn().mockResolvedValue(order) },
+      customOrder: {
+        findFirst: jest.fn((args) => prisma.customOrder.findFirst(args)), update: jest.fn().mockResolvedValue(order) },
     };
     prisma.$transaction.mockImplementation(
       async (callback: (innerTx: typeof tx) => Promise<unknown>) => callback(tx),

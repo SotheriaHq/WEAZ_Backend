@@ -1,0 +1,9 @@
+{
+  "checkedAt": "2026-10-23T12:18:01.342Z",
+  "passed": true,
+  "cleanupPassed": true,
+  "cases": [
+    "complaint commits while cron waits: no completion, release or false notification",
+    "completion commits while complaint waits: post-lock window check rejects late complaint"
+  ]
+}

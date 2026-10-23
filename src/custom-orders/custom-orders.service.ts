@@ -2224,6 +2224,10 @@ export class CustomOrdersService {
     );
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      const current = await this.lockBuyerOrderForIssue(tx, userId, customOrderId);
+      if (!disputeEligibleStates.has(current.status)) throw new BadRequestException('CUSTOM_ORDER_DISPUTE_WINDOW_CLOSED');
+      const now = new Date();
+
       await tx.customOrderIssue.create({
         data: {
           customOrderId,
@@ -2356,25 +2360,10 @@ export class CustomOrdersService {
    * `autoCompleteExpiredAcceptanceWindows` already exclude orders carrying an
    * open dispute, so raising one stops the money by itself.
    */
-  private async openDelayDispute(
-    userId: string,
-    // Structural, not the Prisma payload type: this only reads a handful of
-    // scalars plus the disputes relation, and naming the full include here ties
-    // the method to whatever `detailIncludes` happens to select today.
-    order: {
-      id: string;
-      brandId: string;
-      buyerId: string;
-      status: CustomOrderStatus;
-      promisedProductionAt?: Date | null;
-      promisedDeliveryAt?: Date | null;
-      currentProgressStage?: string | null;
-      retentionHoldType?: unknown;
-      disputes?: Array<{ status: string; resolvedAt?: Date | null }>;
-    },
-    dto: ReportCustomOrderIssueDto,
-    now: Date,
-  ) {
+  private assertDelayDisputeEligibility(order: {
+    status: CustomOrderStatus; promisedProductionAt?: Date | null; promisedDeliveryAt?: Date | null;
+    currentProgressStage?: string | null; disputes?: Array<{ status: string; resolvedAt?: Date | null }>;
+  }, now: Date) {
     const existingDisputes = Array.isArray((order as any).disputes)
       ? ((order as any).disputes as Array<{ status: string; resolvedAt?: Date | null }>)
       : [];
@@ -2409,9 +2398,37 @@ export class CustomOrdersService {
     ) {
       throw new BadRequestException('CUSTOM_ORDER_DELAY_DISPUTE_COOLDOWN');
     }
+    return eligibility;
+  }
+
+  private async openDelayDispute(
+    userId: string,
+    // Structural, not the Prisma payload type: this only reads a handful of
+    // scalars plus the disputes relation, and naming the full include here ties
+    // the method to whatever `detailIncludes` happens to select today.
+    order: {
+      id: string;
+      brandId: string;
+      buyerId: string;
+      status: CustomOrderStatus;
+      promisedProductionAt?: Date | null;
+      promisedDeliveryAt?: Date | null;
+      currentProgressStage?: string | null;
+      retentionHoldType?: unknown;
+      disputes?: Array<{ status: string; resolvedAt?: Date | null }>;
+    },
+    dto: ReportCustomOrderIssueDto,
+    now: Date,
+  ) {
+    let eligibility = this.assertDelayDisputeEligibility(order, now);
+    const customOrderId = order.id;
 
     const statement = dto.description.trim();
     const updated = await this.prisma.$transaction(async (tx) => {
+      const order = await this.lockBuyerOrderForIssue(tx, userId, customOrderId);
+      const now = new Date();
+      eligibility = this.assertDelayDisputeEligibility(order, now);
+
       await tx.customOrderIssue.create({
         data: {
           customOrderId: order.id,
@@ -4370,6 +4387,15 @@ export class CustomOrdersService {
       throw new NotFoundException('Custom order not found');
     }
     return order;
+  }
+
+  private async lockBuyerOrderForIssue(tx: Prisma.TransactionClient, userId: string, customOrderId: string) {
+    await tx.$queryRaw`SELECT "id" FROM "CustomOrder" WHERE "id" = ${customOrderId}::uuid AND "buyerId" = ${userId}::uuid FOR UPDATE`;
+    const current = await tx.customOrder.findFirst({
+      where: { id: customOrderId, buyerId: userId }, include: this.detailIncludes,
+    });
+    if (!current) throw new NotFoundException('Custom order not found');
+    return current;
   }
 
   private async resolveBrand(ownerUserId: string) {

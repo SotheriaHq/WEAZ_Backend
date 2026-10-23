@@ -229,6 +229,7 @@ describe('CustomOrderOpsCronService', () => {
     prisma.brand.findUnique.mockResolvedValue({ ownerId: 'owner_1' });
 
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       customOrder: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
@@ -257,6 +258,9 @@ describe('CustomOrderOpsCronService', () => {
       where: {
         id: 'co_1',
         status: CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION,
+        buyerAcceptanceWindowEndsAt: { lte: fixedNow },
+        issues: { none: {} },
+        disputes: { none: { status: { in: ['OPEN', 'BRAND_RESPONDED', 'ADMIN_REVIEW'] } } },
       },
       data: {
         status: CustomOrderStatus.COMPLETED,
@@ -305,6 +309,22 @@ describe('CustomOrderOpsCronService', () => {
     await service.autoCompleteExpiredAcceptanceWindows();
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(sideEffects.enqueueNotification).not.toHaveBeenCalled();
+  });
+
+  it('does not release money or send completion notices if a complaint wins after the initial scan', async () => {
+    prisma.customOrder.findMany.mockResolvedValue([{ id: 'co_1', buyerId: 'buyer_1', brandId: 'brand_1' }]);
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      customOrder: { updateMany: jest.fn(async ({ where }) => ({ count: where.issues?.none && where.disputes?.none ? 0 : 1 })) },
+      customOrderTimelineEvent: { create: jest.fn() },
+      customOrderLedgerAllocation: { findFirst: jest.fn(), update: jest.fn() },
+    };
+    prisma.$transaction.mockImplementation(async (work) => work(tx));
+    await service.autoCompleteExpiredAcceptanceWindows();
+    expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(tx.customOrder.updateMany.mock.invocationCallOrder[0]);
+    expect(tx.customOrderLedgerAllocation.findFirst).not.toHaveBeenCalled();
+    expect(ledgerService.postCustomOrderFinalRelease).not.toHaveBeenCalled();
     expect(sideEffects.enqueueNotification).not.toHaveBeenCalled();
   });
 

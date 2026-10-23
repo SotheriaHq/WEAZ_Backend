@@ -42,6 +42,7 @@ The combined focused regression run passed 14 suites / 103 tests, and the backen
 - Tag template changes batch shared-tag hydration, binding writes/deletes and grouped counts. Sync and merge take ordered tag locks; moderation is rechecked after locking. Generated Prisma against a disposable fully migrated PostgreSQL database verifies ten-product additions/removals, simultaneous additions, moderation rollback and merge counts.
 - Bulk unpublish loads update contexts and brand permissions once, then preserves the shared product mutation pipeline and partial-result contract. A concurrent archive/delete cannot silently pass the guarded product update.
 - Queue promotion reads the incumbent once and lazily loads two bounded FIFO candidate groups under the existing brand lock. It reuses the owner from capacity context for timeline/outbox recipients. Twenty-five queue tests pass, including a forty-order batch, priority fairness, protected Up Next, unpaid/expired exclusion, retain boundaries and refund reservation guards. Per-order settlement and durable effects remain separate guarded operations; this is not a certificate for their entire query graph.
+- Complaint submission and automatic acceptance completion now serialize on the order row and recheck current eligibility in a separate post-lock statement. Delay complaints recheck open disputes/cooldown against current state. The completion cron rechecks the acceptance deadline, issues and open disputes; a skipped order produces no completion notice or release. Lifecycle history still records completed orders under a financial safety hold while money remains held. Forty focused service/cron tests pass. A generated-Prisma disposable PostgreSQL fixture verifies both transaction orders: complaint wins while cron waits, and completion wins while complaint waits.
 - Deployment jobs for main/SIT now share one GitHub concurrency group and one host flock covering checkout mutation through health verification. Manual deploys use the same host lock; --close prevents detached PM2 descendants from holding it indefinitely. A real Linux fixture verifies competing-command serialization and lock release with detached children, without opening the actual deployment lock or executing deployment. Shell scripts require LF endings so Windows file copies remain valid on Linux. Feature-branch validation cannot deploy.
 
 Reproduction tools:
@@ -50,6 +51,7 @@ Reproduction tools:
 - scripts/verify-bag-permission-batching.cjs
 - scripts/verify-tag-usage-concurrency.cjs
 - scripts/verify-tag-sync-batching.cjs
+- scripts/verify-custom-order-issue-race.cjs
 - scripts/verify-fresh-schema.cjs --seed
 - scripts/audit-db-integrity.cjs --output <local-report-path>
 
