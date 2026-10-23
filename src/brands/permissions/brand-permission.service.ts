@@ -253,6 +253,25 @@ export class BrandPermissionService {
     return permissions.includes(validatedPermission);
   }
 
+  /** Canonical role/grant predicate, scoped to the resource IDs already requested. */
+  async getPermittedBrandIds(
+    userId: string,
+    brandIds: readonly string[],
+    permission: BrandPermissionCode,
+  ): Promise<Set<string>> {
+    const ids = [...new Set(brandIds)].sort();
+    const allowed = new Set<string>();
+    const predicate = this.buildPermissionPredicate(userId, permission, Prisma.sql`brand."_id"`, Prisma.sql`brand."ownerId"`);
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const rows = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT brand."_id" AS id FROM "Brand" brand
+        WHERE brand."_id" = ANY(${ids.slice(offset, offset + 500)}::uuid[]) AND ${predicate}
+      `);
+      for (const row of rows) allowed.add(row.id);
+    }
+    return allowed;
+  }
+
   async assertPermission(
     userId: string,
     brandId: string,

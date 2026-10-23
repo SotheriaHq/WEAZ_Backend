@@ -25,7 +25,11 @@ describe('custom-order capture admission transaction', () => {
       customOrder: {
         findMany: jest.fn().mockResolvedValue([]),
         findUnique: jest.fn().mockResolvedValue(null),
-        create: jest.fn(async () => { pending.created = true; return { id: 'order' }; }),
+        createMany: jest.fn(async () => {
+          pending.created = true;
+          tx.customOrder.findMany.mockResolvedValue([{ id: 'order', checkoutIntentId: 'intent' }]);
+          return { count: 1 };
+        }),
         update: jest.fn(async () => { pending.attemptStatus = 'PAID'; return order; }),
       },
       checkoutSession: {
@@ -81,7 +85,7 @@ describe('custom-order capture admission transaction', () => {
       prisma: h.prisma, customOrderQueue: h.queue,
       buildUnifiedSummaryFromSession: jest.fn().mockReturnValue({}),
       resolveShippingCostForState: jest.fn().mockReturnValue(0),
-      buildCustomOrderCreateDataFromIntent: jest.fn().mockReturnValue({ paymentStatus: 'PAID' }),
+      buildUnifiedCustomOrderCreateData: jest.fn().mockReturnValue({ paymentStatus: 'PAID', checkoutIntentId: 'intent' }),
       recordUnifiedFinalizationFailure: jest.fn(), markUnifiedFinalizationRecovered: jest.fn(),
       customOrderFinanceSyncService: { ensureSettlementForCustomOrderIds: jest.fn() },
       notifyCustomOrderPlacementAfterPayment: jest.fn(),
@@ -137,5 +141,26 @@ describe('custom-order capture admission transaction', () => {
       expect(service.financialDocumentsService.issueBuyerReceipt).toHaveBeenCalledWith(h.tx, expect.anything());
     }
     expect(h.queue.admitPaid).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the winning intent order after a conflict without aborting the transaction', async () => {
+    const h = fixture(false, true);
+    h.tx.customOrder.createMany.mockImplementation(async () => {
+      h.tx.customOrder.findMany.mockResolvedValue([{ id: 'order', checkoutIntentId: 'intent' }]);
+      return { count: 0 };
+    });
+    await unified(h).finalizeUnifiedCheckoutAttempt('capture', 'buyer');
+    expect(h.tx.customOrder.createMany).toHaveBeenCalledWith({ data: [expect.objectContaining({ checkoutIntentId: 'intent' })], skipDuplicates: true });
+    expect(h.tx.customOrder.findUnique).not.toHaveBeenCalled();
+    expect(h.queue.admitPaid).toHaveBeenCalledTimes(1);
+    expect(h.state().completed).toBe(true);
+  });
+
+  it('rolls back instead of linking an unrelated uniqueness conflict', async () => {
+    const h = fixture(false, true);
+    h.tx.customOrder.createMany.mockResolvedValue({ count: 0 });
+    await expect(unified(h).finalizeUnifiedCheckoutAttempt('capture', 'buyer')).rejects.toThrow('Unable to commit custom order');
+    expect(h.queue.admitPaid).not.toHaveBeenCalled();
+    expect(h.state().completed).toBe(false);
   });
 });

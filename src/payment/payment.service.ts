@@ -592,10 +592,8 @@ export class PaymentService implements OnModuleInit {
               },
               select: { brandId: true },
             });
-          for (const brandId of new Set(
-            configurations.map((configuration) => configuration.brandId),
-          ))
-            await this.customOrderQueue.assertIntake(userId, brandId);
+          await this.customOrderQueue.assertIntakeForBrands(userId,
+            configurations.map((configuration) => configuration.brandId));
         }
 
         if (standardLineDrafts.length === 0 && customLineDrafts.length === 0) {
@@ -9317,79 +9315,41 @@ export class PaymentService implements OnModuleInit {
         ].sort())
           await this.customOrderQueue!.lockBrand(tx, brandId);
 
+        const customOrdersToCreate: Prisma.CustomOrderCreateManyInput[] = [];
         for (const line of customPendingLines) {
           const checkoutIntentId = String(line.checkoutIntentId ?? '').trim();
           if (!checkoutIntentId) {
-            throw new ConflictException(
-              `Unified checkout custom line ${line.id} is missing checkout intent linkage.`,
-            );
+            throw new ConflictException(`Unified checkout custom line ${line.id} is missing checkout intent linkage.`);
           }
-
-          const existingOrder = await tx.customOrder.findUnique({
-            where: { checkoutIntentId },
-            select: { id: true },
+          if (existingOrderByIntentId.has(checkoutIntentId)) continue;
+          const intent = intentById.get(checkoutIntentId);
+          if (!intent) throw new BadRequestException('Custom checkout intent no longer exists');
+          const configuration = configurationById.get(intent.configurationId);
+          const version = versionById.get(intent.configurationVersionId);
+          if (!configuration || !version) {
+            throw new BadRequestException('Custom checkout configuration is no longer available');
+          }
+          customOrdersToCreate.push(this.buildUnifiedCustomOrderCreateData({
+            checkoutSession, line, attempt, intent, configuration,
+            versionSnapshot: this.asObject(version.snapshotJson),
+            acceptedAt: attempt.confirmedAt ?? now,
+          }));
+        }
+        // ON CONFLICT keeps the transaction usable if another capture won an intent.
+        // Reading after this statement sees that winner under READ COMMITTED.
+        if (customOrdersToCreate.length) {
+          await tx.customOrder.createMany({ data: customOrdersToCreate, skipDuplicates: true });
+          const committedOrders = await tx.customOrder.findMany({
+            where: { checkoutIntentId: { in: customOrdersToCreate.map((order) => order.checkoutIntentId!) } },
+            select: { id: true, checkoutIntentId: true },
           });
-
-          let customOrderId = existingOrder?.id ?? null;
-          if (!customOrderId) {
-            const intent = intentById.get(checkoutIntentId);
-            if (!intent) {
-              throw new BadRequestException(
-                'Custom checkout intent no longer exists',
-              );
-            }
-
-            const configuration = configurationById.get(intent.configurationId);
-            const version = versionById.get(intent.configurationVersionId);
-            if (!configuration || !version) {
-              throw new BadRequestException(
-                'Custom checkout configuration is no longer available',
-              );
-            }
-
-            await tx.customOrderCheckoutIntent.updateMany({
-              where: {
-                id: intent.id,
-                consumedAt: null,
-              },
-              data: {
-                consumedAt: now,
-              },
-            });
-
-            const createData = this.buildUnifiedCustomOrderCreateData({
-              checkoutSession,
-              line,
-              attempt,
-              intent,
-              configuration,
-              versionSnapshot: this.asObject(version.snapshotJson),
-              acceptedAt: attempt.confirmedAt ?? now,
-            });
-
-            try {
-              const created = await tx.customOrder.create({
-                data: createData,
-                select: {
-                  id: true,
-                },
-              });
-              customOrderId = created.id;
-            } catch (error) {
-              if (
-                error instanceof Prisma.PrismaClientKnownRequestError &&
-                error.code === 'P2002'
-              ) {
-                const duplicate = await tx.customOrder.findUnique({
-                  where: { checkoutIntentId },
-                  select: { id: true },
-                });
-                customOrderId = duplicate?.id ?? null;
-              } else {
-                throw error;
-              }
-            }
+          for (const order of committedOrders) {
+            existingOrderByIntentId.set(order.checkoutIntentId!, order.id);
           }
+        }
+        for (const line of customPendingLines) {
+          const checkoutIntentId = String(line.checkoutIntentId ?? '').trim();
+          const customOrderId = existingOrderByIntentId.get(checkoutIntentId) ?? null;
 
           if (!customOrderId) {
             throw new ConflictException(
@@ -9526,7 +9486,7 @@ export class PaymentService implements OnModuleInit {
           customOrderIds: finalCustomOrderIds,
           summary,
         } satisfies UnifiedCheckoutFinalizeResult;
-      });
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
     } catch (error) {
       await this.recordUnifiedFinalizationFailure(reference, userId, error);
       throw error;
@@ -9861,7 +9821,7 @@ export class PaymentService implements OnModuleInit {
     };
     versionSnapshot: Record<string, any>;
     acceptedAt: Date;
-  }): Prisma.CustomOrderUncheckedCreateInput {
+  }): Prisma.CustomOrderCreateManyInput {
     const lineSnapshot = this.asObject(params.line.itemSnapshotJson);
     const requestSnapshot = this.asObject(params.intent.requestSnapshotJson);
     const buyerSummary = this.asObject(params.intent.buyerPriceSummaryJson);

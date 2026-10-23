@@ -168,6 +168,43 @@ export class CustomOrderQueueService {
     return cap;
   }
 
+  /** Checkout preview needs eligibility only; capacity is rechecked under lock on capture. */
+  async assertIntakeForBrands(buyerId: string, brandIds: readonly string[]) {
+    const ids = [...new Set(brandIds)].sort();
+    if (!ids.length) return;
+    const buyer = await this.prisma.user.findUnique({ where: { id: buyerId }, select: { type: true, status: true } });
+    if (!buyer || buyer.type !== 'REGULAR' || buyer.status !== 'ACTIVE') {
+      throw new ForbiddenException('Only an eligible shopper may order from this brand');
+    }
+    const now = new Date();
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const batch = ids.slice(offset, offset + 500);
+      const rows = await this.prisma.$queryRaw<Array<{ id: string; ownerId: string; tierConfigured: boolean; intakeAllowed: boolean }>>(Prisma.sql`
+        SELECT brand."_id" AS id, brand."ownerId", tier.key IS NOT NULL AS "tierConfigured",
+          COALESCE(agreement.status = 'ACTIVE' AND agreement."currentPeriodEnd" > ${now}
+            AND brand."verificationStatus" = 'APPROVED' AND owner.status = 'ACTIVE'
+            AND brand."customOrderIntakeBlockedAt" IS NULL, FALSE) AS "intakeAllowed"
+        FROM "Brand" brand JOIN "User" owner ON owner."_id" = brand."ownerId"
+        LEFT JOIN LATERAL (
+          SELECT subscription."tierKey", subscription.status, subscription."currentPeriodEnd"
+          FROM "BrandSubscription" subscription WHERE subscription."brandId" = brand."_id"
+            AND subscription.status IN ('ACTIVE', 'PAST_DUE', 'CANCELLED')
+          ORDER BY subscription."createdAt" DESC LIMIT 1
+        ) agreement ON TRUE
+        LEFT JOIN "SubscriptionTier" tier ON tier.key = COALESCE(agreement."tierKey", 'THREAD')
+        WHERE brand."_id" = ANY(${batch}::uuid[])
+      `);
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      for (const id of batch) {
+        const row = byId.get(id);
+        if (!row) throw new NotFoundException('Brand not found');
+        if (!row.tierConfigured) throw new ConflictException('CUSTOM_ORDER_TIER_CONFIGURATION_MISSING');
+        if (row.ownerId === buyerId) throw new ForbiddenException('Only an eligible shopper may order from this brand');
+        if (!row.intakeAllowed) throw new ForbiddenException('CUSTOM_ORDER_INTAKE_UNAVAILABLE');
+      }
+    }
+  }
+
   async summary(brandId: string, buyerId?: string) {
     const [cap, counts, openOrderCount] = await Promise.all([
       this.capacity(this.prisma, brandId),
@@ -264,12 +301,11 @@ export class CustomOrderQueueService {
       if (rows.some((row) => row.buyerId !== userId))
         throw new ForbiddenException('Not authorized for these orders');
     } else {
-      for (const brandId of new Set(rows.map((row) => row.brandId)))
-        await this.permissions.assertPermission(
-          userId,
-          brandId,
-          BRAND_PERMISSIONS.ORDERS_READ,
-        );
+      const brands = [...new Set(rows.map((row) => row.brandId))];
+      const allowed = await this.permissions.getPermittedBrandIds(userId, brands, BRAND_PERMISSIONS.ORDERS_READ);
+      if (brands.some((brandId) => !allowed.has(brandId))) {
+        throw new ForbiddenException('You do not have permission for this brand action');
+      }
     }
     return {
       orders: await this.present(rows.map((row) => row.id)),

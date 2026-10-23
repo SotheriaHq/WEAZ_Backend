@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
 
 const MEMBERSHIP_BATCH_SIZE = 500;
 export type CollectionMembership = {
@@ -10,6 +11,35 @@ export type CollectionMembership = {
 };
 
 const uniqueIds = (ids: string[]) => [...new Set(ids)].sort();
+
+/** Append one new product while holding every destination collection in UUID order. */
+export async function appendProductMemberships(
+  tx: Prisma.TransactionClient,
+  productId: string,
+  collectionIds: string[],
+  primaryCollectionId: string,
+): Promise<void> {
+  const ids = uniqueIds(collectionIds);
+  for (let offset = 0; offset < ids.length; offset += MEMBERSHIP_BATCH_SIZE) {
+    const batch = ids.slice(offset, offset + MEMBERSHIP_BATCH_SIZE);
+    await tx.$queryRaw(Prisma.sql`
+      SELECT "_id" FROM "StoreCollection"
+      WHERE "_id" = ANY(${batch}::uuid[]) ORDER BY "_id" FOR UPDATE
+    `);
+    const positions = await tx.storeCollectionProduct.groupBy({
+      by: ['collectionId'], where: { collectionId: { in: batch } },
+      _max: { orderIndex: true },
+    });
+    const maxima = new Map(positions.map((row) => [row.collectionId, row._max.orderIndex]));
+    await tx.storeCollectionProduct.createMany({
+      data: batch.map((collectionId) => ({
+        id: randomUUID(), productId, collectionId,
+        orderIndex: (maxima.get(collectionId) ?? -1) + 1,
+        isPrimary: collectionId === primaryCollectionId,
+      })),
+    });
+  }
+}
 
 export async function lockMembershipProducts(
   tx: Prisma.TransactionClient,

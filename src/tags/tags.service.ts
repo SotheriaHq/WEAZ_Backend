@@ -1,3 +1,4 @@
+import { lockTagRows, refreshTagUsageCounts } from './tag-usage-query';
 import {
   BadRequestException,
   Injectable,
@@ -1476,27 +1477,14 @@ export class TagsService {
       throw new BadRequestException('Source and target tags must differ');
 
     await this.prisma.$transaction(async (tx) => {
-      const sourceTag = await (tx as any).tag.upsert({
-        where: { normalizedName: source },
-        create: {
-          id: crypto.randomUUID(),
-          normalizedName: source,
-          displayName: source,
-        },
-        update: {},
-        select: { id: true, normalizedName: true },
+      await tx.tag.createMany({
+        data: [source, target].sort().map((name) => ({ id: crypto.randomUUID(), normalizedName: name, displayName: name })),
+        skipDuplicates: true,
       });
-
-      const targetTag = await (tx as any).tag.upsert({
-        where: { normalizedName: target },
-        create: {
-          id: crypto.randomUUID(),
-          normalizedName: target,
-          displayName: target,
-        },
-        update: {},
-        select: { id: true, normalizedName: true },
-      });
+      const tags = await tx.tag.findMany({ where: { normalizedName: { in: [source, target] } }, select: { id: true, normalizedName: true } });
+      await lockTagRows(tx, tags.map((row) => row.id));
+      const sourceTag = tags.find((row) => row.normalizedName === source)!;
+      const targetTag = tags.find((row) => row.normalizedName === target)!;
 
       const sourceBindings = await (tx as any).tagBinding.findMany({
         where: { tagId: sourceTag.id },
@@ -1519,29 +1507,9 @@ export class TagsService {
         where: { tagId: sourceTag.id },
       });
 
-      const [targetCount, sourceCount] = await Promise.all([
-        (tx as any).tagBinding.count({ where: { tagId: targetTag.id } }),
-        (tx as any).tagBinding.count({ where: { tagId: sourceTag.id } }),
-      ]);
-
-      await Promise.all([
-        (tx as any).tag.update({
-          where: { id: targetTag.id },
-          data: {
-            usageCount: targetCount,
-            lastUsedAt: targetCount > 0 ? new Date() : null,
-            isBanned: false,
-          },
-        }),
-        (tx as any).tag.update({
-          where: { id: sourceTag.id },
-          data: {
-            usageCount: sourceCount,
-            lastUsedAt: null,
-            aliasOfTagId: targetTag.id,
-          },
-        }),
-      ]);
+      await refreshTagUsageCounts(tx, [sourceTag.id, targetTag.id], new Date());
+      await tx.tag.update({ where: { id: targetTag.id }, data: { isBanned: false } });
+      await tx.tag.update({ where: { id: sourceTag.id }, data: { aliasOfTagId: targetTag.id } });
 
       // Note: systemTag table not in schema, skipping systemTag operations
     });

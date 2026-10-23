@@ -1,5 +1,5 @@
 /** Metadata and aggregate counts only. Never changes data or prints connection secrets. */
-require('dotenv').config({ quiet: true });
+require('dotenv').config({ path: require('node:path').resolve(__dirname, '../.env'), quiet: true });
 const { Client } = require('pg');
 const { Prisma } = require('@prisma/client');
 const fs = require('node:fs');
@@ -14,7 +14,7 @@ async function main() {
   try {
     await client.query('BEGIN READ ONLY');
     const report = {
-      generatedAt: new Date().toISOString(), scope: local ? 'local database only' : 'configured remote database',
+      generatedAt: new Date().toISOString(), scope: local ? 'configured database via loopback (read-only)' : 'configured remote database (read-only)',
       serverVersion: (await client.query('SHOW server_version')).rows[0].server_version,
       schema: {
         models: models.length,
@@ -36,6 +36,31 @@ async function main() {
       activeFeaturedBrandDuplicates: `SELECT COUNT(*)::int count FROM (SELECT 1 FROM "FeaturedItem" WHERE "isActive" GROUP BY "brandId" HAVING COUNT(*)>1) duplicates`,
       inconsistentProductFilterBridge: `SELECT COUNT(*)::int count FROM "EntityFilter" WHERE ("entityType"='PRODUCT' AND "productId" IS DISTINCT FROM "entityId") OR ("entityType"<>'PRODUCT' AND "productId" IS NOT NULL)`,
       orphanProductFilterTargets: `SELECT COUNT(*)::int count FROM "EntityFilter" filters LEFT JOIN "Product" product ON product."_id"=filters."entityId" WHERE filters."entityType"='PRODUCT' AND product."_id" IS NULL`,
+      multiplePrimaryProductMemberships: `SELECT COUNT(*)::int count FROM (SELECT "productId" FROM "StoreCollectionProduct" WHERE "isPrimary" GROUP BY "productId" HAVING COUNT(*)>1) duplicates`,
+      inconsistentPrimaryProductMemberships: `SELECT COUNT(*)::int count FROM "Product" product LEFT JOIN LATERAL (
+        SELECT "collectionId" FROM "StoreCollectionProduct" membership WHERE membership."productId"=product."_id"
+        ORDER BY "isPrimary" DESC,"createdAt","orderIndex","collectionId" LIMIT 1
+      ) membership ON TRUE WHERE product."collectionId" IS DISTINCT FROM membership."collectionId"`,
+      inconsistentTagUsageCounts: `SELECT COUNT(*)::int count FROM "Tag" tag LEFT JOIN (
+        SELECT "tagId",COUNT(*)::int usage FROM "TagBinding" GROUP BY "tagId"
+      ) bindings ON bindings."tagId"=tag."_id" WHERE tag."usageCount" IS DISTINCT FROM COALESCE(bindings.usage,0)`,
+      orphanTagBindingTargets: `SELECT COUNT(*)::int count FROM "TagBinding" binding
+        LEFT JOIN "Product" product ON binding."entityType"='PRODUCT' AND product."_id"=binding."entityId"
+        LEFT JOIN "Collection" design ON binding."entityType"='COLLECTION' AND design."_id"=binding."entityId"
+        LEFT JOIN "StoreCollection" collection ON binding."entityType"='COLLECTION' AND collection."_id"=binding."entityId"
+        LEFT JOIN "Brand" brand ON binding."entityType"='BRAND' AND brand."_id"=binding."entityId"
+        LEFT JOIN "User" owner ON binding."entityType"='USER_BRAND' AND owner."_id"=binding."entityId"
+        WHERE COALESCE(product."_id",design."_id",collection."_id",brand."_id",owner."_id") IS NULL`,
+      storeCollectionsUsingDesignTagType: `SELECT COUNT(*)::int count FROM "TagBinding" binding
+        JOIN "StoreCollection" collection ON collection."_id"=binding."entityId" WHERE binding."entityType"='COLLECTION'`,
+      ordersMissingRelationalLines: `SELECT COUNT(*)::int count FROM "Order" orders
+        WHERE jsonb_typeof(orders.items)='array' AND jsonb_array_length(orders.items)>0
+        AND NOT EXISTS (SELECT 1 FROM "OrderItem" item WHERE item."orderId"=orders."_id")`,
+      orderItemOwnershipMismatch: `SELECT COUNT(*)::int count FROM "OrderItem" item
+        JOIN "Order" orders ON orders."_id"=item."orderId"
+        JOIN "Product" product ON product."_id"=item."productId"
+        WHERE item."brandId" IS DISTINCT FROM orders."brandId" OR item."brandId" IS DISTINCT FROM product."brandId"
+          OR item."buyerId" IS DISTINCT FROM orders."buyerId"`,
     };
     // An older database may lack an audited feature. Preserve the read-only transaction after a missing-table error.
     for (const [key, sql] of Object.entries(queries)) {

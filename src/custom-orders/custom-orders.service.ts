@@ -1621,8 +1621,9 @@ export class CustomOrdersService {
     );
 
     const items: CheckoutBagLine[] = [];
+    const sourceSnapshots = await this.loadCheckoutBagSourceSnapshots(configurations);
     for (const session of sessions) {
-      const mapped = await this.mapCheckoutBagLine(session, configurationById);
+      const mapped = await this.mapCheckoutBagLine(session, configurationById, sourceSnapshots);
       if (mapped) {
         items.push(mapped);
       }
@@ -4683,6 +4684,47 @@ export class CustomOrdersService {
     };
   }
 
+  private async loadCheckoutBagSourceSnapshots(
+    configurations: Array<{ sourceType: CustomOrderSourceType; sourceId: string }>,
+  ): Promise<Map<string, { title: string; primaryMediaUrl: string | null; brandName: string | null }>> {
+    const sources = [...new Map(configurations.map((entry) => [`${entry.sourceType}:${entry.sourceId}`, entry])).values()];
+    const snapshots = new Map<string, { title: string; primaryMediaUrl: string | null; brandName: string | null }>();
+    for (let offset = 0; offset < sources.length; offset += 500) {
+      const batch = sources.slice(offset, offset + 500);
+      const rows = await this.prisma.$queryRaw<Array<{
+        sourceType: string; sourceId: string; title: string | null;
+        mediaCandidates: Array<string | null>; brandName: string | null;
+      }>>(Prisma.sql`
+        SELECT source.type AS "sourceType", source.id AS "sourceId",
+          CASE WHEN source.type = 'PRODUCT' THEN product.name ELSE COALESCE(design.title, 'Untitled design') END AS title,
+          CASE WHEN source.type = 'PRODUCT' THEN ARRAY[product.thumbnail] || product.images
+            ELSE ARRAY[CASE WHEN cover."mediaType" = 'POST_IMAGE' THEN cover_file."s3Url" END]
+              || COALESCE(angles.urls, ARRAY[]::text[]) END AS "mediaCandidates",
+          CASE WHEN source.type = 'PRODUCT' THEN product_brand.name ELSE design_brand.name END AS "brandName"
+        FROM unnest(${batch.map((row) => row.sourceType)}::text[], ${batch.map((row) => row.sourceId)}::uuid[]) AS source(type, id)
+        LEFT JOIN "Product" product ON source.type = 'PRODUCT' AND product."_id" = source.id
+        LEFT JOIN "Brand" product_brand ON product_brand."_id" = product."brandId"
+        LEFT JOIN "Collection" design ON source.type = 'DESIGN' AND design."_id" = source.id AND design.domain = 'DESIGN'
+        LEFT JOIN "Brand" design_brand ON design_brand."ownerId" = design."ownerId"
+        LEFT JOIN "CollectionMedia" cover ON cover."_id" = design."coverMediaId"
+        LEFT JOIN "FileUpload" cover_file ON cover_file."_id" = cover."fileUploadId"
+        LEFT JOIN LATERAL (
+          SELECT array_agg(angle.url ORDER BY angle.position, angle.id) AS urls FROM (
+            SELECT file."s3Url" AS url, media."orderIndex" AS position, media."_id" AS id
+            FROM "CollectionMedia" media LEFT JOIN "FileUpload" file ON file."_id" = media."fileUploadId"
+            WHERE media."collectionId" = design."_id" AND media."mediaType" = 'POST_IMAGE'
+            ORDER BY media."orderIndex", media."_id" LIMIT 6
+          ) angle
+        ) angles ON TRUE
+        WHERE product."_id" IS NOT NULL OR design."_id" IS NOT NULL
+      `);
+      for (const row of rows) snapshots.set(`${row.sourceType}:${row.sourceId}`, {
+        title: row.title || '', primaryMediaUrl: pickFirstRenderableMediaUrl(row.mediaCandidates), brandName: row.brandName,
+      });
+    }
+    return snapshots;
+  }
+
   private async mapCheckoutBagLine(
     session: {
       id: string;
@@ -4715,6 +4757,7 @@ export class CustomOrdersService {
         title: string;
       }
     >,
+    sourceSnapshots?: Map<string, { title: string; primaryMediaUrl: string | null; brandName: string | null }>,
   ): Promise<CheckoutBagLine | null> {
     const configuration = configurationById.get(
       session.checkoutIntent.configurationId,
@@ -4727,13 +4770,14 @@ export class CustomOrdersService {
     let sourcePrimaryMediaUrl: string | null = null;
     let sourceBrandName: string | null = null;
     try {
-      const sourceSnapshot = await this.resolveSourceSnapshot(
-        configuration.sourceType,
-        configuration.sourceId,
-      );
-      sourceTitle = sourceSnapshot.title || sourceTitle;
-      sourcePrimaryMediaUrl = sourceSnapshot.primaryMediaUrl;
-      sourceBrandName = sourceSnapshot.brandName;
+      const sourceSnapshot = sourceSnapshots
+        ? sourceSnapshots.get(`${configuration.sourceType}:${configuration.sourceId}`)
+        : await this.resolveSourceSnapshot(configuration.sourceType, configuration.sourceId);
+      if (sourceSnapshot) {
+        sourceTitle = sourceSnapshot.title || sourceTitle;
+        sourcePrimaryMediaUrl = sourceSnapshot.primaryMediaUrl;
+        sourceBrandName = sourceSnapshot.brandName;
+      }
     } catch {
       // Preserve bag lines even when source records are no longer available.
     }

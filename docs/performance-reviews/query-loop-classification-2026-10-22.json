@@ -4,24 +4,25 @@
   "candidateCount": 178,
   "classificationCoverage": 178,
   "limitations": [
-    "Static AST/call-graph inventory, not production telemetry or a universal N+1/race proof.",
-    "Scanner excludes specs/test fixtures and follows its supported query receivers/call graph only; aliases and runtime dispatch can be missed.",
-    "Source line numbers refer to the frozen scan and may have shifted after subsequent changes. Locate by class/method/call.",
-    "15 confirmed read-fanout sites remain open; 46 recipient-policy and 64 stateful-command sites require guarded follow-up, not blanket approval.",
-    "Latest membership query helper has unit coverage but has not yet received its own real-PostgreSQL concurrency fixture."
+    "Static frozen AST/call-graph inventory, not production telemetry or a universal N+1/race proof.",
+    "Scanner excludes tests and follows its supported receivers/call graph only; aliases/runtime dispatch can be missed.",
+    "Source line numbers refer to the frozen scan; locate by class/method/call.",
+    "All 15 explicitly open read-fanout entries are resolved with focused evidence. The 46 recipient-policy and 64 stateful-command entries remain an open semantic audit, not automatic approval.",
+    "Product bulk mutation still executes guarded per-product effects; incidental taxonomy/media/index reads in those commands require review before the overall N+1 gate can clear.",
+    "Tag sync/merge competing counts are tested. Reindex-versus-write and stale source publication ordering remain open race findings."
   ],
   "counts": {
     "NOTIFICATION_POLICY_FANOUT": 46,
-    "READ_FANOUT_OPEN": 15,
+    "FIXED_AFTER_CAPTURE": 29,
     "BOUNDED_BULK_QUERY": 8,
-    "FIXED_AFTER_CAPTURE": 14,
     "DEPENDENT_RETRY": 12,
     "PREFETCHED_CONTEXT": 3,
     "FIXED_SOURCE_PROJECTION": 2,
     "STATIC_SEED": 6,
     "STATEFUL_ENTITY_WORK": 64,
     "PAGINATED_BATCH": 7,
-    "HTTP_COMPATIBILITY_FALLBACK": 1
+    "HTTP_COMPATIBILITY_FALLBACK": 1,
+    "READ_FANOUT_OPEN": 0
   },
   "verification": {
     "earlierFocusedTestsPassed": 75,
@@ -39,7 +40,14 @@
       "backendQueryPaymentAndQueue": 88,
       "uploadImageConfigSeedAndUtc": 106,
       "backendTypecheck": "passed",
-      "webTypecheck": "passed"
+      "webTypecheck": "passed",
+      "additionalPostgresFixtures": [
+        "collection prices and primary constraint",
+        "checkout bag, permissions and intake matrix",
+        "tag usage competing writers",
+        "generated Prisma tag sync and merge"
+      ],
+      "allMigrationsAndDoubleSeed": 143
     }
   },
   "candidates": [
@@ -75,8 +83,8 @@
         "this.prisma.product.findUnique",
         "this.prisma.collection.findUnique"
       ],
-      "disposition": "READ_FANOUT_OPEN",
-      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Expiry metrics use loadFeaturedSummaries joined hydration and known joined owners; conditional deactivation elects one notifier. featured-expiry.spec.ts passes."
     },
     {
       "id": 2,
@@ -790,8 +798,8 @@
         "(tx as any).tag.findMany",
         "(tx as any).tagBinding.count"
       ],
-      "disposition": "READ_FANOUT_OPEN",
-      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Template applies syncEntitiesTags once for the product batch; bounded tag hydration, ordered locks, joined deletes and grouped usage updates replace entity/tag read loops. Generated Prisma PostgreSQL tag-sync fixture passes."
     },
     {
       "id": 47,
@@ -1344,8 +1352,8 @@
         "this.prisma.product.findUnique",
         "this.prisma.collection.findUnique"
       ],
-      "disposition": "READ_FANOUT_OPEN",
-      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Bag source snapshots use bounded JOIN/LATERAL hydration across deduplicated product/design sources. Missing sources retain bag lines. Real PostgreSQL bag fixture and checkout-bag-batching.spec.ts pass."
     },
     {
       "id": 73,
@@ -1406,8 +1414,8 @@
         "this.prisma.brand.findFirst",
         "this.prisma.brandMember.findUnique"
       ],
-      "disposition": "READ_FANOUT_OPEN",
-      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Queue pages use one scoped canonical owner/member/grant predicate per bounded brand set. Buyer isolation and all-or-nothing staff authorization tested; real PostgreSQL permission fixture passes."
     },
     {
       "id": 77,
@@ -2016,8 +2024,8 @@
         "tx.subscriptionTier.findUnique",
         "tx.capacityCampaign.findFirst"
       ],
-      "disposition": "READ_FANOUT_OPEN",
-      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Unified checkout calls assertIntakeForBrands: one buyer read and bounded joined latest-subscription/tier/owner eligibility. Paid admission still rechecks under lock. Real PostgreSQL lifecycle matrix passes."
     },
     {
       "id": 112,
@@ -2385,8 +2393,8 @@
       "queries": [
         "tx.customOrder.findUnique"
       ],
-      "disposition": "READ_FANOUT_OPEN",
-      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Unified finalization uses batched createMany(skipDuplicates)/post-insert winner hydration, preserving guarded per-order admission. READ COMMITTED explicit. Successful, failed admission, conflict winner and unrelated uniqueness rollback tests pass."
     },
     {
       "id": 125,
@@ -2712,8 +2720,8 @@
       "queries": [
         "this.prisma.storeCollectionProduct.findMany"
       ],
-      "disposition": "READ_FANOUT_OPEN",
-      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Collection price ranges refresh via one sorted collection-lock query and one joined aggregate update per 500 unique IDs, shared with collection service. Real PostgreSQL price/eligibility/concurrent refresh fixture passes."
     },
     {
       "id": 144,
@@ -2726,8 +2734,8 @@
       "queries": [
         "this.prisma.storeCollectionProduct.findMany"
       ],
-      "disposition": "READ_FANOUT_OPEN",
-      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Uses shared bounded collection price aggregation after product update; variant/base/sale windows and concurrent refresh tested against PostgreSQL."
     },
     {
       "id": 145,
@@ -2740,8 +2748,8 @@
       "queries": [
         "tx.storeCollectionProduct.count"
       ],
-      "disposition": "READ_FANOUT_OPEN",
-      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Duplicate membership destinations lock in UUID order; one grouped MAX(orderIndex) lookup per 500 IDs and createMany replaces per-collection COUNT. Primary selection and gaps tested."
     },
     {
       "id": 146,
@@ -2754,8 +2762,8 @@
       "queries": [
         "this.prisma.storeCollectionProduct.findMany"
       ],
-      "disposition": "READ_FANOUT_OPEN",
-      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Archive price refresh uses shared bounded collection aggregation; inactive/archived exclusions verified in PostgreSQL."
     },
     {
       "id": 147,
@@ -2788,8 +2796,8 @@
       "queries": [
         "this.prisma.storeCollectionProduct.findMany"
       ],
-      "disposition": "READ_FANOUT_OPEN",
-      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Restore price refresh uses shared bounded collection aggregation with post-lock snapshot; PostgreSQL fixture passes."
     },
     {
       "id": 149,
@@ -2822,8 +2830,8 @@
       "queries": [
         "this.prisma.storeCollectionProduct.findMany"
       ],
-      "disposition": "READ_FANOUT_OPEN",
-      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Delete price refresh uses shared bounded collection aggregation; empty collections reset prices to NULL in PostgreSQL fixture."
     },
     {
       "id": 151,
@@ -2890,8 +2898,8 @@
       "queries": [
         "this.prisma.product.findFirst"
       ],
-      "disposition": "READ_FANOUT_OPEN",
-      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Bulk unpublish prefetches authorized update contexts once and retains shared product mutation pipeline. Mixed/missing/archived/already-draft results and concurrent lifecycle failure tested."
     },
     {
       "id": 154,
@@ -2905,8 +2913,8 @@
         "this.prisma.brandMember.findUnique",
         "this.prisma.brand.findFirst"
       ],
-      "disposition": "READ_FANOUT_OPEN",
-      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Bulk unpublish authorizes requested brands once through canonical scoped permission predicate. No per-product authorization re-read at entry; the mutation pipeline still has separately reviewed stateful reads."
     },
     {
       "id": 155,
@@ -3176,8 +3184,8 @@
       "queries": [
         "(tx as any).tagBinding.count"
       ],
-      "disposition": "READ_FANOUT_OPEN",
-      "evidence": "Confirmed repeated related-row reads. Remains open at this checkpoint; preserve authorization and transaction behavior when batching."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Tag binding writers lock affected tag IDs in order before writes, then refresh usage using one grouped LEFT JOIN UPDATE per 500 tags. Sync and merge share this control. Real PostgreSQL competing writer fixture passes."
     },
     {
       "id": 169,
