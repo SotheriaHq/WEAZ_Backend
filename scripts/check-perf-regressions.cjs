@@ -19,11 +19,10 @@ const assertNotMatches = (relativePath, pattern, message) => {
 
 assertIncludes('src/upload/upload.service.ts', 'getStablePublicDisplayUrl', 'public delivery must keep stable display URL preference');
 assertIncludes('src/upload/upload.service.ts', 'getPublicDisplayUrl', 'public URL endpoint must keep explicit display URL policy');
-assertIncludes('src/upload/upload.service.ts', 'getLocalDevSignedDisplayUrl', 'local/dev signed validation path must stay guarded');
-assertIncludes('src/upload/upload.service.ts', "nodeEnv !== 'production'", 'local/dev signed display URL path must be production guarded');
 assertIncludes('src/upload/upload.service.spec.ts', 'keeps production signed media on the S3 presigned URL path', 'production signing regression test must remain');
 assertIncludes('src/upload/upload.service.spec.ts', 'denies public URL fallback for private collection media', 'private public-URL denial test must remain');
-assertIncludes('src/upload/upload.service.spec.ts', 'returns owner-gated local disk upload URLs for non-production signed media validation', 'local/dev fixture validation test must remain');
+assertIncludes('src/upload/upload.service.spec.ts', 'always issues an owner-gated storage capability rather than returning a persisted local URL', 'all environments must use owner-gated storage capabilities');
+assertIncludes('src/upload/upload.service.spec.ts', 'retains a recoverable staging intent and fails visibly when server storage is unavailable', 'storage failures must preserve recovery without falling back to local disk');
 
 assertIncludes('src/designs/mappers/design-response.mapper.ts', 'sanitizePrivateMedia', 'explicit design mapper must sanitize private media');
 assertIncludes('src/designs/mappers/design-response.mapper.ts', 'file.isPublic !== false', 'only private media should be stripped');

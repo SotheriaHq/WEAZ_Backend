@@ -56,7 +56,10 @@ export class TelegramDeliveryService {
     }
   }
 
-  async deliverOnce(idempotencyId: string, text: string): Promise<DeliveryOutcome> {
+  async deliverOnce(
+    idempotencyId: string,
+    text: string,
+  ): Promise<DeliveryOutcome> {
     const redis = await this.redis();
     const marker = this.keys.sent(idempotencyId);
     if (redis) {
@@ -68,7 +71,9 @@ export class TelegramDeliveryService {
       await redis
         .set(marker, new Date().toISOString(), 'EX', SENT_MARKER_TTL_SECONDS)
         .catch((error: unknown) =>
-          this.logger.warn(`Could not record Telegram delivery marker: ${describe(error)}`),
+          this.logger.warn(
+            `Could not record Telegram delivery marker: ${describe(error)}`,
+          ),
         );
     }
     return { status: 'sent', messageId };
@@ -82,7 +87,13 @@ export class TelegramDeliveryService {
     const redis = await this.redis();
     if (!redis) return true;
     try {
-      const result = await redis.set(this.keys.cooldown(id), '1', 'EX', seconds, 'NX');
+      const result = await redis.set(
+        this.keys.cooldown(id),
+        '1',
+        'EX',
+        seconds,
+        'NX',
+      );
       return result === 'OK';
     } catch {
       return true;
@@ -96,6 +107,7 @@ export class TelegramDeliveryService {
 }
 
 export function describe(error: unknown): string {
-  if (error instanceof Error) return `${error.name}: ${error.message}`.slice(0, 300);
+  if (error instanceof Error)
+    return `${error.name}: ${error.message}`.slice(0, 300);
   return String(error).slice(0, 300);
 }

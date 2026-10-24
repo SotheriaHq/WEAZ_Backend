@@ -9,7 +9,11 @@ import {
 import { PrismaService } from 'src/prisma/prisma.service';
 import { hourBucket } from './report-window';
 import { COUNTER_TTL_SECONDS, stableId } from './monitoring-keys';
-import { EVENT_POLICY, MonitoringEventKey, MonitoringSeverity } from './monitoring-events';
+import {
+  EVENT_POLICY,
+  MonitoringEventKey,
+  MonitoringSeverity,
+} from './monitoring-events';
 import {
   MessageField,
   renderMessage,
@@ -39,7 +43,10 @@ export type MonitoringEventInput = {
 };
 
 export type SendJobData = { idempotencyId: string; text: string };
-export type SentryAlertJobData = { idempotencyId: string; alert: NormalizedSentryAlert };
+export type SentryAlertJobData = {
+  idempotencyId: string;
+  alert: NormalizedSentryAlert;
+};
 
 export const SEND_JOB_OPTIONS: JobsOptions = {
   attempts: 6,
@@ -76,10 +83,14 @@ export class TelegramEventsService {
     try {
       if (!this.config.isActive()) return;
       void this.withTimeout(this.dispatch(event)).catch((error) => {
-        this.logger.warn(`Monitoring event ${event.key} not dispatched: ${describe(error)}`);
+        this.logger.warn(
+          `Monitoring event ${event.key} not dispatched: ${describe(error)}`,
+        );
       });
     } catch (error) {
-      this.logger.warn(`Monitoring event ${event?.key} rejected: ${describe(error)}`);
+      this.logger.warn(
+        `Monitoring event ${event?.key} rejected: ${describe(error)}`,
+      );
     }
   }
 
@@ -87,14 +98,23 @@ export class TelegramEventsService {
   count(eventKey: string, at: Date = new Date()): void {
     try {
       if (!this.config.isActive()) return;
-      void this.withTimeout(this.increment([eventKey], at)).catch(() => undefined);
+      void this.withTimeout(this.increment([eventKey], at)).catch(
+        () => undefined,
+      );
     } catch {
       // Monitoring must never surface to the caller.
     }
   }
 
-  async enqueueSentryAlert(alert: NormalizedSentryAlert, deliveryId: string): Promise<void> {
-    const idempotencyId = stableId('sentry-delivery', this.config.environment, deliveryId);
+  async enqueueSentryAlert(
+    alert: NormalizedSentryAlert,
+    deliveryId: string,
+  ): Promise<void> {
+    const idempotencyId = stableId(
+      'sentry-delivery',
+      this.config.environment,
+      deliveryId,
+    );
     const data: SentryAlertJobData = { idempotencyId, alert };
     await this.queue.add(TELEGRAM_SENTRY_ALERT_JOB, data, {
       ...SEND_JOB_OPTIONS,
@@ -103,7 +123,11 @@ export class TelegramEventsService {
   }
 
   async enqueueText(idempotencyKey: string, text: string): Promise<void> {
-    const idempotencyId = stableId('event', this.config.environment, idempotencyKey);
+    const idempotencyId = stableId(
+      'event',
+      this.config.environment,
+      idempotencyKey,
+    );
     const data: SendJobData = { idempotencyId, text };
     await this.queue.add(TELEGRAM_SEND_JOB, data, {
       ...SEND_JOB_OPTIONS,
@@ -111,7 +135,10 @@ export class TelegramEventsService {
     });
   }
 
-  render(event: MonitoringEventInput, overrides?: { title?: string; summary?: string }): string {
+  render(
+    event: MonitoringEventInput,
+    overrides?: { title?: string; summary?: string },
+  ): string {
     const policy = EVENT_POLICY[event.key];
     return renderMessage(
       {
@@ -124,7 +151,10 @@ export class TelegramEventsService {
         timeline: event.timeline,
         links: event.links,
       },
-      { includeIdentity: this.config.includeUserIdentity, timeZone: this.config.reportTimeZone },
+      {
+        includeIdentity: this.config.includeUserIdentity,
+        timeZone: this.config.reportTimeZone,
+      },
     );
   }
 
@@ -133,7 +163,9 @@ export class TelegramEventsService {
     if (!policy) return;
     const at = event.occurredAt ?? new Date();
     await this.increment(
-      event.counterSuffix ? [event.key, `${event.key}:${event.counterSuffix}`] : [event.key],
+      event.counterSuffix
+        ? [event.key, `${event.key}:${event.counterSuffix}`]
+        : [event.key],
       at,
     );
 
@@ -146,19 +178,24 @@ export class TelegramEventsService {
       if (!redis) return;
       const key = this.delivery.keys.threshold(event.key, bucket);
       const count = await redis.incr(key);
-      if (count === 1) await redis.expire(key, Math.ceil((windowMs * 2) / 1000));
+      if (count === 1)
+        await redis.expire(key, Math.ceil((windowMs * 2) / 1000));
       // Exactly one message per bucket: fire on the crossing, not after it.
       if (count !== policy.threshold) return;
       const text = this.render(event, {
         title: `${policy.title} — threshold reached`,
-        summary: `${count} occurrences within ${policy.windowMinutes} minutes. ${event.summary ?? ''}`.trim(),
+        summary:
+          `${count} occurrences within ${policy.windowMinutes} minutes. ${event.summary ?? ''}`.trim(),
       });
       await this.enqueueText(`threshold:${event.key}:${bucket}`, text);
       return;
     }
 
     const enriched = await this.withIdentity(event);
-    await this.enqueueText(`${event.key}:${event.idempotencyKey}`, this.render(enriched));
+    await this.enqueueText(
+      `${event.key}:${event.idempotencyKey}`,
+      this.render(enriched),
+    );
   }
 
   /**
@@ -166,7 +203,9 @@ export class TelegramEventsService {
    * username / email / account type and add "Account created" to the
    * timeline. One indexed primary-key read, inside the dispatch timeout.
    */
-  private async withIdentity(event: MonitoringEventInput): Promise<MonitoringEventInput> {
+  private async withIdentity(
+    event: MonitoringEventInput,
+  ): Promise<MonitoringEventInput> {
     const identity = event.identity;
     if (!identity?.userId || !this.config.includeUserIdentity) return event;
     try {
@@ -190,7 +229,9 @@ export class TelegramEventsService {
         timeline,
       };
     } catch (error) {
-      this.logger.warn(`Identity lookup skipped for ${event.key}: ${describe(error)}`);
+      this.logger.warn(
+        `Identity lookup skipped for ${event.key}: ${describe(error)}`,
+      );
       return event;
     }
   }
@@ -211,7 +252,12 @@ export class TelegramEventsService {
       promise,
       new Promise<T>((_, reject) => {
         timer = setTimeout(
-          () => reject(new Error(`monitoring dispatch exceeded ${DISPATCH_TIMEOUT_MS}ms`)),
+          () =>
+            reject(
+              new Error(
+                `monitoring dispatch exceeded ${DISPATCH_TIMEOUT_MS}ms`,
+              ),
+            ),
           DISPATCH_TIMEOUT_MS,
         );
         timer.unref?.();

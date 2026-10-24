@@ -1,3 +1,4 @@
+import { lockTagRows, refreshTagUsageCounts } from './tag-usage-query';
 import {
   BadRequestException,
   Injectable,
@@ -5,7 +6,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { NotificationType, TagStatus } from '@prisma/client';
+import { NotificationType, TagStatus, Prisma } from '@prisma/client';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
@@ -172,154 +173,78 @@ export class TagIndexService {
     nextTags: Array<string | null | undefined>,
     options?: SyncEntityTagsOptions,
   ): Promise<void> {
-    const prismaClient = this.prisma as any;
-    if (!this.ensureTagDelegatesAvailable(prismaClient, 'sync')) return;
+    await this.syncEntitiesTags([{ entityType, entityId, previousTags, nextTags, options }]);
+  }
 
-    const maxCount = options?.maxCount ?? 30;
-    const prev = new Set(this.normalizeTagList(previousTags, maxCount));
-    const next = new Set(this.normalizeTagList(nextTags, maxCount));
-
-    const added = Array.from(next).filter((tag) => !prev.has(tag));
-    const removed = Array.from(prev).filter((tag) => !next.has(tag));
-    const affected = Array.from(new Set([...added, ...removed]));
-
-    if (affected.length === 0) return;
-
-    let banned: Array<{ normalizedName: string }> = [];
-    try {
-      banned = await prismaClient.tag.findMany({
-        where: {
-          normalizedName: { in: added },
-          OR: [{ isBanned: true }, { status: TagStatus.REJECTED }],
-        },
-        select: { normalizedName: true },
-      });
-    } catch (error: any) {
-      if (this.isMissingTagTableError(error)) {
-        this.warnMissingTagTables('sync');
-        return;
+  async syncEntitiesTags(entries: Array<{
+    entityType: TagEntityTypeValue; entityId: string;
+    previousTags: Array<string | null | undefined>; nextTags: Array<string | null | undefined>;
+    options?: SyncEntityTagsOptions;
+  }>): Promise<void> {
+    const keys = new Set<string>();
+    const changes = entries.map((entry) => {
+      const key = entry.entityType + ':' + entry.entityId;
+      if (keys.has(key)) throw new BadRequestException('Duplicate entity in tag synchronization batch');
+      keys.add(key);
+      const prev = new Set(this.normalizeTagList(entry.previousTags, entry.options?.maxCount ?? 30));
+      const next = new Set(this.normalizeTagList(entry.nextTags, entry.options?.maxCount ?? 30));
+      return { ...entry, added: [...next].filter((name) => !prev.has(name)), removed: [...prev].filter((name) => !next.has(name)) };
+    }).filter((entry) => entry.added.length || entry.removed.length);
+    for (let offset = 0; offset < changes.length; offset += 500) {
+      const batch = changes.slice(offset, offset + 500);
+      const now = new Date();
+      const addedNames = [...new Set(batch.flatMap((entry) => entry.added))].sort();
+      const affected = [...new Set(batch.flatMap((entry) => [...entry.added, ...entry.removed]))].sort();
+      const creatorByTag = new Map<string, string | null>();
+      for (const entry of batch) for (const name of entry.added) {
+        if (!creatorByTag.has(name)) creatorByTag.set(name, entry.options?.actorId ?? null);
       }
-      throw error;
-    }
-
-    if (banned.length > 0) {
-      throw new BadRequestException(
-        `One or more tags are blocked: ${banned.map((t) => `#${t.normalizedName}`).join(', ')}`,
-      );
-    }
-
-    const now = new Date();
-    try {
       await this.prisma.$transaction(async (tx) => {
-        const tagIdByName = new Map<string, string>();
-
-        if (affected.length > 0) {
-          const existing = await (tx as any).tag.findMany({
-            where: { normalizedName: { in: affected } },
-            select: { id: true, normalizedName: true },
-          });
-          for (const row of existing)
-            tagIdByName.set(row.normalizedName, row.id);
-        }
-
-        for (const name of added) {
-          if (tagIdByName.has(name)) continue;
-          const row = await (tx as any).tag.upsert({
-            where: { normalizedName: name },
-            create: {
-              id: uuidv4(),
-              normalizedName: name,
-              displayName: name,
-              status: TagStatus.PENDING,
-              createdById: options?.actorId ?? null,
-              usageCount: 0,
-              lastUsedAt: now,
-              isBanned: false,
-            },
-            update: { displayName: name },
-            select: { id: true, normalizedName: true },
-          });
-          tagIdByName.set(row.normalizedName, row.id);
-        }
-
-        const addedBindings = added
-          .map((name) => {
-            const tagId = tagIdByName.get(name);
-            if (!tagId) return null;
-            return {
-              id: uuidv4(),
-              tagId,
-              entityType,
-              entityId,
-            };
-          })
-          .filter(Boolean) as Array<{
-          id: string;
-          tagId: string;
-          entityType: TagEntityTypeValue;
-          entityId: string;
-        }>;
-
-        if (addedBindings.length > 0) {
-          await (tx as any).tagBinding.createMany({
-            data: addedBindings,
-            skipDuplicates: true,
+        for (let start = 0; start < addedNames.length; start += 500) {
+          await tx.tag.createMany({
+            data: addedNames.slice(start, start + 500).map((name) => ({
+              id: uuidv4(), normalizedName: name, displayName: name, status: TagStatus.PENDING,
+              createdById: creatorByTag.get(name) ?? null,
+              usageCount: 0, lastUsedAt: now, isBanned: false,
+            })), skipDuplicates: true,
           });
         }
-
-        const removedTagIds = removed
-          .map((name) => tagIdByName.get(name))
-          .filter(Boolean) as string[];
-
-        if (removedTagIds.length > 0) {
-          await (tx as any).tagBinding.deleteMany({
-            where: {
-              entityType,
-              entityId,
-              tagId: { in: removedTagIds },
-            },
-          });
+        const existing: Array<{ id: string; normalizedName: string }> = [];
+        for (let start = 0; start < affected.length; start += 500) {
+          existing.push(...await tx.tag.findMany({
+            where: { normalizedName: { in: affected.slice(start, start + 500) } }, select: { id: true, normalizedName: true },
+          }));
         }
-
-        const affectedRows = await (tx as any).tag.findMany({
-          where: { normalizedName: { in: affected } },
-          select: { id: true, normalizedName: true },
-        });
-
-        const zeroUsageNames: string[] = [];
-        for (const row of affectedRows) {
-          const count = await (tx as any).tagBinding.count({
-            where: { tagId: row.id },
-          });
-          await (tx as any).tag.update({
-            where: { id: row.id },
-            data: {
-              usageCount: count,
-              lastUsedAt: count > 0 ? now : null,
-            },
-          });
-          if (count === 0) {
-            zeroUsageNames.push(row.normalizedName);
-          }
+        const locked = await lockTagRows(tx, existing.map((row) => row.id));
+        const addedSet = new Set(addedNames);
+        const blocked = locked.filter((row) => addedSet.has(row.normalizedName) && (row.isBanned || row.status === TagStatus.REJECTED));
+        if (blocked.length) throw new BadRequestException(`One or more tags are blocked: ${blocked.map((row) => '#' + row.normalizedName).join(', ')}`);
+        const byName = new Map(locked.map((row) => [row.normalizedName, row.id]));
+        const added = batch.flatMap((entry) => entry.added.flatMap((name) => {
+          const tagId = byName.get(name);
+          return tagId ? [{ id: uuidv4(), tagId, entityType: entry.entityType, entityId: entry.entityId }] : [];
+        }));
+        const removed = batch.flatMap((entry) => entry.removed.flatMap((name) => {
+          const tagId = byName.get(name);
+          return tagId ? [{ tagId, entityType: entry.entityType, entityId: entry.entityId }] : [];
+        }));
+        for (let start = 0; start < added.length; start += 500) {
+          await tx.tagBinding.createMany({ data: added.slice(start, start + 500), skipDuplicates: true });
         }
-
-        // Note: systemTag table not in schema, skipping systemTag operations
+        for (let start = 0; start < removed.length; start += 500) {
+          const removals = removed.slice(start, start + 500);
+          await tx.$executeRaw(Prisma.sql`
+            DELETE FROM "TagBinding" binding USING unnest(
+              ${removals.map((row) => row.tagId)}::uuid[],
+              ${removals.map((row) => row.entityType)}::"TagEntityType"[],
+              ${removals.map((row) => row.entityId)}::uuid[]
+            ) removed("tagId", type, "entityId")
+            WHERE binding."tagId" = removed."tagId" AND binding."entityType" = removed.type AND binding."entityId" = removed."entityId"
+          `);
+        }
+        await refreshTagUsageCounts(tx, locked.map((row) => row.id), now);
       });
-    } catch (error: any) {
-      if (this.isMissingTagTableError(error)) {
-        this.warnMissingTagTables('sync');
-        return;
-      }
-      throw error;
     }
-
-    // TAG_MENTION ("<title> matched your tags") fan-out is intentionally
-    // disabled: another account reusing a tag a brand also lists is NOT a
-    // reason to notify that brand. It produced constant unwanted noise for
-    // store owners. The notification type + renderers remain only so any
-    // historical rows still display; nothing creates new ones. `notifyTagMentions`
-    // is retained (unused) for reference/rollback but is no longer invoked.
-    void options?.notifyMentions;
   }
 
   private async resolveMentionContext(

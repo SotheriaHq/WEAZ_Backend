@@ -128,7 +128,7 @@ export class ImageProcessingProcessor extends WorkerHost {
       return;
     }
     // Any force on a published image uses new immutable URLs, even for legacy callers.
-    const reencode = file.processingStatus === 'READY' && (force || newVersion);
+    const reencode = file.processingStatus === 'READY' && Boolean(file.lastProcessedAt) && (force || newVersion);
     const uploadedKeys: string[] = [];
     let published = false;
     try {
@@ -142,6 +142,11 @@ export class ImageProcessingProcessor extends WorkerHost {
         const baseKey = this.uploadService.buildVariantS3Key({ variantKind: variant.kind, fileId, assetVersion: nextVersion, ext: variant.ext });
         // A stale encoder cannot overwrite another attempt's objects, including after lease expiry.
         const key = baseKey.replace(/\/([^/]+)$/, `/${token}/$1`);
+        // Persist before uploading so a process crash or uncertain PUT response is recoverable.
+        await this.prisma.storageObjectDeletion.createMany({ data: [{ s3Key: key,
+          processingFileId: fileId, processingLeaseToken: token,
+          nextAttemptAt: new Date(Date.now() + 86_400_000),
+        }], skipDuplicates: true });
         const uploaded = await this.uploadService.putObjectBuffer({ key, body: variant.buffer, contentType: variant.mimeType });
         uploadedKeys.push(key);
         encoded.push({
@@ -153,9 +158,10 @@ export class ImageProcessingProcessor extends WorkerHost {
       }
       if (lostLease()) throw new Error('Image processing lease lost');
       published = await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT "_id" FROM "FileUpload" WHERE "_id"=${fileId}::uuid FOR UPDATE`;
         const owned = await tx.$queryRaw<Array<{ id: string }>>`
           SELECT "_id" AS id FROM "FileUpload" WHERE "_id"=${fileId}::uuid
-          AND "processingLeaseToken"=${token}::uuid AND "processingLeaseUntil">CURRENT_TIMESTAMP FOR UPDATE
+          AND "processingLeaseToken"=${token}::uuid AND "processingLeaseUntil">(clock_timestamp() AT TIME ZONE 'UTC')
         `;
         if (!owned.length) return false;
         for (const variant of encoded) {
@@ -173,16 +179,26 @@ export class ImageProcessingProcessor extends WorkerHost {
             processingStatus: 'READY', processingError: null, width: probe.width, height: probe.height,
             hasAlpha: probe.hasAlpha, isAnimated: probe.isAnimated, orientation: probe.orientation,
             colorSpace: probe.colorSpace, lastProcessedAt: new Date(), assetVersion: nextVersion,
+            processingLeaseToken: null, processingLeaseUntil: null,
           },
         });
-        if (reencode) await tx.fileVariant.deleteMany({ where: { fileUploadId: fileId, assetVersion: { lt: nextVersion } } });
+        if (reencode) {
+          // Existing issued URLs can live for up to seven days. Retire old objects after that window.
+          await tx.$executeRaw`
+            INSERT INTO "StorageObjectDeletion" ("s3Key", "nextAttemptAt")
+            SELECT "s3Key", (clock_timestamp() AT TIME ZONE 'UTC') + INTERVAL '8 days' FROM "FileVariant"
+            WHERE "fileUploadId"=${fileId}::uuid AND "assetVersion" < ${nextVersion}
+            ON CONFLICT ("s3Key") DO NOTHING
+          `;
+          await tx.fileVariant.deleteMany({ where: { fileUploadId: fileId, assetVersion: { lt: nextVersion } } });
+        }
+        if (uploadedKeys.length) await tx.storageObjectDeletion.deleteMany({
+          where: { s3Key: { in: uploadedKeys }, processingLeaseToken: token },
+        });
         return true;
       });
       if (!published) throw new Error('Image processing publish lease expired');
     } catch (error) {
-      if (!published && uploadedKeys.length) {
-        await this.prisma.storageObjectDeletion.createMany({ data: uploadedKeys.map((s3Key) => ({ s3Key })), skipDuplicates: true });
-      }
       if (reencode) {
         this.logger.warn(`Image re-encode skipped for ${fileId}; current version kept: ${String(error)}`);
         throw error;

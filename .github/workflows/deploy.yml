@@ -21,12 +21,16 @@ name: Backend Deploy (EC2)
 on:
   push:
     branches: [main, SIT]
-  # No inputs needed: the "Run workflow" branch picker sets `github.ref_name`,
-  # which is already what the deploy step checks out and passes to deploy.sh.
   workflow_dispatch:
+    inputs:
+      validate_only:
+        description: Build and verify this ref without changing the SIT server
+        type: boolean
+        default: false
 
 concurrency:
-  group: backend-deploy-${{ github.ref }}
+  # Both refs use one EC2 checkout; their build/deploy runs must serialize.
+  group: backend-deploy-ec2
   cancel-in-progress: false
 
 permissions:
@@ -36,6 +40,18 @@ jobs:
   build-check:
     name: Build (fail fast before deploy)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: ci-disposable-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -44,17 +60,38 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
       # Before the build, because a module cycle without forwardRef compiles
       # perfectly and only fails at boot — and only for whichever entry point
       # happens to load the graph first. That is how the SIT worker ended up
       # restarting 74,771 times over nine days while every check stayed green.
       - run: npm run check:module-cycles
+      - name: Shared deployment lock regression
+        run: bash scripts/verify-deploy-lock.sh
+      - name: Destructive reset safety checks
+        run: node --test scripts/reset-safety.test.cjs scripts/http-parser-compat.test.cjs
       - run: npx prisma generate
+      - name: Upload privacy and finalization regressions
+        run: npm test -- src/upload/upload.service.spec.ts src/designs/mappers/design-response.mapper.spec.ts --runInBand
+      - name: Query batching and payment concurrency regressions
+        run: npm test -- src/subscriptions src/brands/brand-commerce-access.service.spec.ts src/brands/brand-customers.service.spec.ts src/finance/ledger.service.spec.ts src/store/collection-price-range.util.spec.ts src/store/bulk-unpublish.spec.ts src/collections/collection-membership-query.spec.ts src/admin/featured/featured-expiry.spec.ts src/brands/permissions/brand-permission-batch.spec.ts src/custom-orders/checkout-bag-batching.spec.ts src/custom-orders/custom-orders.service.spec.ts src/custom-order-ops/custom-order-ops.cron.service.spec.ts src/custom-orders/queue/intake-batch.spec.ts src/custom-orders/queue/custom-order-queue.service.spec.ts src/custom-orders/queue/paid-capture-admission.spec.ts src/tags/tag-usage-query.spec.ts --runInBand
+      - name: PostgreSQL ledger and complaint concurrency
+        env:
+          DATABASE_URL: postgresql://postgres:ci-disposable-only@localhost:5432/postgres
+        run: |
+          node scripts/verify-ledger-concurrency.cjs
+          node scripts/verify-custom-order-issue-race.cjs
+          node scripts/verify-subscription-queue-postgres.cjs
+          node scripts/verify-fresh-schema.cjs --seed
+          node scripts/verify-reset-bootstrap.cjs
+      - run: npm run check:perf-regressions
       - run: npm run build
 
   deploy:
     name: Deploy to EC2 (PM2)
     needs: build-check
+    if: ${{ (github.ref_name == 'main' || github.ref_name == 'SIT') && (github.event_name != 'workflow_dispatch' || !inputs.validate_only) }}
     runs-on: ubuntu-latest
     steps:
       - name: Deploy over SSH
@@ -63,12 +100,18 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          command_timeout: 20m
+          command_timeout: 40m
           script_stop: true
           script: |
             set -e
+            # Cover checkout mutation too, before deploy.sh is invoked.
+            # --close keeps the lock out of PM2/other detached descendants.
+            flock --wait 900 --close "$HOME/.wiez-backend-deploy.lock" bash -s <<'WIEZ_DEPLOY'
+            set -e
+            export DEPLOY_LOCK_HELD=1
             cd ~/WEAZ_Backend
             git fetch --all --prune
             git checkout "${{ github.ref_name }}"
             git reset --hard "origin/${{ github.ref_name }}"
             DEPLOY_BRANCH="${{ github.ref_name }}" bash scripts/deploy.sh
+            WIEZ_DEPLOY

@@ -1,3 +1,4 @@
+import { SUBSCRIPTION_TIER_ORDER } from 'src/subscriptions/subscription-tiers';
 import {
   BadRequestException,
   Body,
@@ -30,7 +31,6 @@ import { CustomOrderQueueRefundsService } from './custom-order-queue-refunds.ser
 import {
   QueuePublishNoticeDto,
   QueueReconcileRefundDto,
-  QueueReconcileLaneDto,
   QueueRefundListDto,
 } from './custom-order-queue.dto';
 import {
@@ -202,21 +202,6 @@ export class AdminCustomOrderQueueController {
       dto.expectedRevision,
     );
   }
-  @Post('orders/:id/reconcile-lane')
-  @RequirePermissions(P.MODERATION_WRITE)
-  reconcileLane(
-    @Req() req: ActorRequest,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: QueueReconcileLaneDto,
-  ) {
-    return this.queue.reconcileHistoricalLane(
-      id,
-      dto.lane,
-      dto.evidence,
-      dto.expectedRevision,
-      req.user.id,
-    );
-  }
   @Post('orders/:id/demote') @RequirePermissions(P.MODERATION_WRITE) demote(
     @Req() req: ActorRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -327,8 +312,8 @@ export class AdminCustomOrderQueueController {
     @Param('brandId', ParseUUIDPipe) brandId: string,
     @Body() dto: QueueAssignTierDto,
   ) {
-    if (dto.tierKey === 'LEGACY')
-      throw new BadRequestException('Legacy is not a sold subscription');
+    if (!SUBSCRIPTION_TIER_ORDER.includes(dto.tierKey))
+      throw new BadRequestException('Choose an available paid subscription tier');
     await this.prisma.$transaction(async (tx) => {
       await this.queue.lockBrand(tx, brandId);
       await tx.brand.update({
@@ -352,7 +337,6 @@ export class AdminCustomOrderQueueController {
     return {
       tiers: (
         await this.prisma.subscriptionTier.findMany({
-          where: { key: { not: 'LEGACY' } },
           orderBy: { monthlyPriceNgn: 'asc' },
         })
       ).map((tier) => ({ ...tier, tierKey: tier.key, label: tier.name })),
@@ -365,7 +349,7 @@ export class AdminCustomOrderQueueController {
     @Body() dto: QueueTierDto,
   ) {
     if (
-      key === 'LEGACY' ||
+      !SUBSCRIPTION_TIER_ORDER.includes(key) ||
       !Object.keys(dto).length ||
       Object.values(dto).some((value) => value === null)
     )

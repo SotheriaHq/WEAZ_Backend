@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { BrandMemberRole, BrandMemberStatus } from '@prisma/client';
+import { BrandMemberRole, BrandMemberStatus, Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import {
   BRAND_PERMISSION_CODES,
@@ -206,6 +206,25 @@ export class BrandPermissionService {
     ]);
   }
 
+  /** SQL counterpart of getEffectivePermissions for bounded, joined resource reads. */
+  buildPermissionPredicate(userId: string, permission: BrandPermissionCode, brandId: Prisma.Sql, ownerId: Prisma.Sql): Prisma.Sql {
+    const validated = this.validatePermissionCode(permission);
+    const roles = [...new Set<BrandMemberRole>([
+      BrandMemberRole.OWNER,
+      ...Object.entries(ROLE_DEFAULT_PERMISSIONS)
+        .filter(([, permissions]) => permissions.some((permission) => permission === validated))
+        .map(([role]) => role as BrandMemberRole),
+    ])];
+    return Prisma.sql`(${ownerId} = ${userId}::uuid OR EXISTS (
+      SELECT 1 FROM "BrandMember" permission_member
+      WHERE permission_member."brandId" = ${brandId} AND permission_member."userId" = ${userId}::uuid
+        AND permission_member.status = 'ACTIVE'
+        AND (permission_member.role IN (${Prisma.join(roles.map((role) => Prisma.sql`${role}::"BrandMemberRole"`))})
+          OR EXISTS (SELECT 1 FROM "BrandPermissionGrant" permission_grant
+            WHERE permission_grant."brandMemberId" = permission_member.id AND permission_grant."permissionCode" = ${validated}))
+    ))`;
+  }
+
   async getBrandIdsWithPermission(userId: string, permission: BrandPermissionCode): Promise<string[]> {
     const validated = this.validatePermissionCode(permission);
     const [owned, members] = await Promise.all([
@@ -232,6 +251,25 @@ export class BrandPermissionService {
     const validatedPermission = this.validatePermissionCode(permission);
     const permissions = await this.getEffectivePermissions(userId, brandId);
     return permissions.includes(validatedPermission);
+  }
+
+  /** Canonical role/grant predicate, scoped to the resource IDs already requested. */
+  async getPermittedBrandIds(
+    userId: string,
+    brandIds: readonly string[],
+    permission: BrandPermissionCode,
+  ): Promise<Set<string>> {
+    const ids = [...new Set(brandIds)].sort();
+    const allowed = new Set<string>();
+    const predicate = this.buildPermissionPredicate(userId, permission, Prisma.sql`brand."_id"`, Prisma.sql`brand."ownerId"`);
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const rows = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT brand."_id" AS id FROM "Brand" brand
+        WHERE brand."_id" = ANY(${ids.slice(offset, offset + 500)}::uuid[]) AND ${predicate}
+      `);
+      for (const row of rows) allowed.add(row.id);
+    }
+    return allowed;
   }
 
   async assertPermission(

@@ -1,0 +1,31 @@
+{
+  "checkedAt": "2026-10-24T07:12:56.311Z",
+  "passed": true,
+  "cases": [
+    {
+      "scenario": "paid-tiers",
+      "passed": true
+    },
+    {
+      "scenario": "assigned-grandfather",
+      "passed": true
+    },
+    {
+      "scenario": "active-grandfather",
+      "passed": true
+    },
+    {
+      "scenario": "scheduled-grandfather",
+      "passed": true
+    },
+    {
+      "scenario": "paid-disputed-null",
+      "passed": true
+    },
+    {
+      "scenario": "paid-delivery-issue-null",
+      "passed": true
+    }
+  ],
+  "cleanupPassed": true
+}

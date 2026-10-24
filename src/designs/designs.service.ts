@@ -108,7 +108,11 @@ export class DesignsService {
 
   async archiveDesign(designId: string, userId: string) {
     this.assertPersistedDesignId(designId);
-    return this.collectionsService.archiveCollection(designId, userId, 'design');
+    return this.collectionsService.archiveCollection(
+      designId,
+      userId,
+      'design',
+    );
   }
 
   async unarchiveDesign(designId: string, userId: string) {

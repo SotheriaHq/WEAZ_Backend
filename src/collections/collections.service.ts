@@ -1,3 +1,4 @@
+import { refreshCollectionPriceRanges } from '../store/collection-price-range.util';
 import { lockMembershipProducts, readProductMemberships, synchronizePrimaryMemberships } from './collection-membership-query';
 import { privateCollectionCountsForOwners } from './collection-counts.util';
 import { retryDatabaseTransaction } from 'src/common/transaction-retry.util';
@@ -1319,73 +1320,7 @@ export class CollectionsService {
   }
 
   private async recalculateCollectionPriceRange(collectionId: string) {
-    const links = await this.prisma.storeCollectionProduct.findMany({
-      where: { collectionId },
-      include: {
-        product: {
-          select: {
-            price: true,
-            salePrice: true,
-            saleStartAt: true,
-            saleEndAt: true,
-            deletedAt: true,
-            archivedAt: true,
-            isActive: true,
-            publishAt: true,
-            variants: { select: { price: true } },
-          },
-        },
-      },
-    });
-    const now = new Date();
-    const active = links.filter((l) => {
-      const p = l.product;
-      if (!p || p.deletedAt || p.archivedAt || !p.isActive) return false;
-      if (p.publishAt && p.publishAt > now) return false;
-      return true;
-    });
-
-    const prices = active
-      .map((l) => {
-        const p = l.product;
-        const variantPrices = Array.isArray(p.variants)
-          ? p.variants.map((v) => Number(v.price || 0)).filter((v) => v > 0)
-          : [];
-        if (variantPrices.length > 0) return Math.min(...variantPrices);
-        return Number(p.price || 0);
-      })
-      .filter((v) => v > 0);
-
-    const maxPrices = active
-      .map((l) => {
-        const p = l.product;
-        const variantPrices = Array.isArray(p.variants)
-          ? p.variants.map((v) => Number(v.price || 0)).filter((v) => v > 0)
-          : [];
-        if (variantPrices.length > 0) return Math.max(...variantPrices);
-        return Number(p.price || 0);
-      })
-      .filter((v) => v > 0);
-
-    const salePrices = active
-      .map((l) => {
-        const p = l.product;
-        if (!p.salePrice) return null;
-        if (p.saleStartAt && p.saleStartAt > now) return null;
-        if (p.saleEndAt && p.saleEndAt < now) return null;
-        return Number(p.salePrice);
-      })
-      .filter((v): v is number => typeof v === 'number' && v > 0);
-
-    await this.prisma.storeCollection.update({
-      where: { id: collectionId },
-      data: {
-        minPrice: prices.length ? Math.min(...prices) : null,
-        maxPrice: maxPrices.length ? Math.max(...maxPrices) : null,
-        saleMinPrice: salePrices.length ? Math.min(...salePrices) : null,
-        saleMaxPrice: salePrices.length ? Math.max(...salePrices) : null,
-      },
-    });
+    await this.prisma.$transaction((tx) => refreshCollectionPriceRanges(tx, [collectionId]));
   }
 
   // ===================== Access Management =====================
@@ -4386,58 +4321,6 @@ export class CollectionsService {
         if (presign.s3Key !== completion.s3Key) {
           throw new BadRequestException('S3 key mismatch for presign record');
         }
-        const now = new Date();
-        if (presign.expiresAt && presign.expiresAt < now) {
-          await this.prisma.presignedUpload.update({
-            where: { id: completion.fileId },
-            data: { status: 'EXPIRED' },
-          });
-          throw new BadRequestException('Presign has expired');
-        }
-        if (presign.status === 'USED') {
-          const existing = await this.prisma.fileUpload.findUnique({
-            where: { id: completion.fileId },
-          });
-          if (existing) {
-            return {
-              file: existing,
-              orderIndex: presign.orderIndex ?? null,
-              viewSlot:
-                (completion as any).viewSlot ??
-                (presign as any).viewSlot ??
-                null,
-            };
-          }
-          throw new BadRequestException('Presign already used');
-        }
-        if (presign.status === 'EXPIRED') {
-          throw new BadRequestException('Presign has expired');
-        }
-        if (presign.status !== 'PENDING' && presign.status !== 'READY') {
-          throw new BadRequestException('Presign is not ready for use');
-        }
-
-        const exists = await this.uploadService.verifyObjectExists(
-          completion.s3Key,
-        );
-        if (!exists) {
-          throw new BadRequestException(
-            `File not found in S3: ${completion.s3Key}`,
-          );
-        }
-
-        const existing = await this.prisma.fileUpload.findUnique({
-          where: { id: completion.fileId },
-        });
-        if (existing) {
-          return {
-            file: existing,
-            orderIndex: presign.orderIndex ?? null,
-            viewSlot:
-              (completion as any).viewSlot ?? (presign as any).viewSlot ?? null,
-          };
-        }
-
         const fileUpload = await this.uploadService.createFileRecordFromPresign(
           completion.fileId,
           userId,
@@ -4491,17 +4374,6 @@ export class CollectionsService {
         });
       }
     });
-
-    const enqueueAt = new Date();
-    for (const entry of verifiedFiles) {
-      const file = entry.file;
-      await (this.prisma as any).presignedUpload.updateMany({
-        where: { id: file.id, status: 'USED' },
-        data: { processingEnqueuedAt: enqueueAt },
-      });
-
-      await this.uploadService.enqueueImageProcessing(file.id);
-    }
 
     let coverMediaId: string | null = dto.coverMediaId ?? null;
     if (coverMediaId) {
@@ -5968,19 +5840,11 @@ export class CollectionsService {
       }
     }
     if (this.tagIndex && nextTags !== undefined) {
-      for (const p of previousProducts) {
-        const previousIndexedTags = this.getIndexedProductTags(p, p.tags ?? []);
-        const nextIndexedTags = this.getIndexedProductTags(p, nextTags);
-        if (!this.areTagsEqual(previousIndexedTags, nextIndexedTags)) {
-          await this.tagIndex.syncEntityTags(
-            TAG_ENTITY_TYPE.PRODUCT,
-            p.id,
-            previousIndexedTags,
-            nextIndexedTags,
-            { maxCount: 30 },
-          );
-        }
-      }
+      await this.tagIndex.syncEntitiesTags(previousProducts.map((product) => ({
+        entityType: TAG_ENTITY_TYPE.PRODUCT, entityId: product.id,
+        previousTags: this.getIndexedProductTags(product, product.tags ?? []),
+        nextTags: this.getIndexedProductTags(product, nextTags), options: { maxCount: 30 },
+      })));
     }
 
     await this.recalculateCollectionPriceRange(collectionId);

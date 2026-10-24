@@ -3,7 +3,9 @@ import { TelegramMonitoringConfig } from '../telegram-monitoring.config';
 
 export const VALID_TOKEN = '1234567890:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 
-export function fakeConfig(env: Record<string, string> = {}): TelegramMonitoringConfig {
+export function fakeConfig(
+  env: Record<string, string> = {},
+): TelegramMonitoringConfig {
   const values: Record<string, string> = {
     TELEGRAM_MONITORING_ENABLED: 'true',
     TELEGRAM_BOT_TOKEN: VALID_TOKEN,
@@ -107,7 +109,10 @@ export class FakeRedis {
       },
       ltrim: (key: string, start: number, stop: number) => {
         ops.push(async () => {
-          this.lists.set(key, (this.lists.get(key) ?? []).slice(start, stop + 1));
+          this.lists.set(
+            key,
+            (this.lists.get(key) ?? []).slice(start, stop + 1),
+          );
           return 'OK';
         });
         return chain;
@@ -127,7 +132,15 @@ export function fakeQueue(redis: FakeRedis | null) {
   return {
     client: redis ? Promise.resolve(redis) : new Promise(() => undefined),
     add: jest.fn().mockResolvedValue({ id: 'job' }),
-    getJobCounts: jest.fn().mockResolvedValue({ waiting: 0, active: 0, delayed: 0, failed: 0, paused: 0 }),
+    getJobCounts: jest
+      .fn()
+      .mockResolvedValue({
+        waiting: 0,
+        active: 0,
+        delayed: 0,
+        failed: 0,
+        paused: 0,
+      }),
     getFailed: jest.fn().mockResolvedValue([]),
   } as any;
 }

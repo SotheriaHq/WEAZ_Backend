@@ -136,7 +136,8 @@ describe('MessagingSideEffectsService', () => {
     await service.dispatchPendingMessageOutbox(1000000);
     const [sql, ...parameters] = prisma.$queryRaw.mock.calls[0];
     expect(sql.join(' ')).toContain('FOR UPDATE SKIP LOCKED');
-    expect(sql.join(' ')).toContain('"processingLeaseUntil"<=CURRENT_TIMESTAMP');
+    expect(sql.join(' ')).toContain('"processingLeaseUntil"<=(CURRENT_TIMESTAMP AT TIME ZONE');
+    expect(sql.join(' ')).toContain("CURRENT_TIMESTAMP AT TIME ZONE 'UTC'");
     expect(parameters).toContain(100);
     expect(parameters).not.toContain(1000000);
   });

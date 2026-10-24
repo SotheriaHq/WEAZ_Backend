@@ -191,7 +191,9 @@ export class PhysicalVerificationService {
     });
     if (!agent) throw new NotFoundException('Agent not found');
     if (agent.status !== 'ACTIVE') {
-      throw new ForbiddenException('Cannot assign a visit to an inactive account');
+      throw new ForbiddenException(
+        'Cannot assign a visit to an inactive account',
+      );
     }
 
     const updated = await this.prisma.brandPhysicalVerification.update({
@@ -579,7 +581,11 @@ export class PhysicalVerificationService {
   async decide(
     id: string,
     agentId: string,
-    input: { outcome: 'PASSED' | 'FAILED'; notes?: string; failureReason?: string },
+    input: {
+      outcome: 'PASSED' | 'FAILED';
+      notes?: string;
+      failureReason?: string;
+    },
   ) {
     const current = await this.mustBeInStatus(id, [
       PhysicalVerificationStatus.VISIT_COMPLETED,
@@ -594,7 +600,10 @@ export class PhysicalVerificationService {
         `Attach at least ${MIN_PROOFS_FOR_DECISION} pieces of proof before recording a verdict`,
       );
     }
-    if (input.outcome === 'FAILED' && !String(input.failureReason ?? '').trim()) {
+    if (
+      input.outcome === 'FAILED' &&
+      !String(input.failureReason ?? '').trim()
+    ) {
       throw new BadRequestException('A failed visit needs a reason');
     }
 

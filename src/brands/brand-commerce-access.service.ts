@@ -1,52 +1,45 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { BrandSubscription, Prisma, SubscriptionTierKey } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SUBSCRIPTION_TIER_ORDER as TIER_ORDER } from '../subscriptions/subscription-tiers';
+
+type AgreementProjection = Pick<BrandSubscription, 'tierKey' | 'status' | 'currentPeriodEnd' | 'priceSnapshotNgn'>;
+type CommerceState = { customerMinimumOrders: number; availableTiers: SubscriptionTierKey[] } & {
+  [Key in keyof AgreementProjection]: AgreementProjection[Key] | null;
+};
 
 @Injectable()
 export class BrandCommerceAccessService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async get(brandId: string, now = new Date()) {
-    const [brand, agreement, tiers] = await Promise.all([
-      this.prisma.brand.findUnique({
-        where: { id: brandId },
-        select: {
-          customerMinimumOrders: true,
-          customOrderLegacyEligible: true,
-        },
-      }),
-      this.prisma.brandSubscription.findFirst({
-        where: { brandId, status: { in: ['ACTIVE', 'PAST_DUE'] } },
-        orderBy: { createdAt: 'desc' },
-        select: {
-          tierKey: true,
-          status: true,
-          currentPeriodEnd: true,
-          tier: { select: { monthlyPriceNgn: true } },
-        },
-      }),
-      this.prisma.subscriptionTier.findMany({
-        where: { key: { in: TIER_ORDER } },
-        select: { key: true },
-      }),
-    ]);
-    if (!brand) throw new NotFoundException('Brand not found');
+  async get(brandId: string, asOf?: Date) {
+    const [state] = await this.prisma.$queryRaw<CommerceState[]>(Prisma.sql`
+      SELECT b."customerMinimumOrders", s."tierKey", s.status, s."currentPeriodEnd", s."priceSnapshotNgn",
+        ARRAY(SELECT t.key::text FROM "SubscriptionTier" t WHERE t.key::text IN (${Prisma.join(TIER_ORDER)})) AS "availableTiers"
+      FROM "Brand" b LEFT JOIN LATERAL (
+        SELECT "tierKey", status, "currentPeriodEnd", "priceSnapshotNgn" FROM "BrandSubscription"
+        WHERE "brandId" = b."_id" AND status IN ('ACTIVE', 'PAST_DUE') ORDER BY "createdAt" DESC LIMIT 1
+      ) s ON TRUE WHERE b."_id" = ${brandId}::uuid
+    `);
+    if (!state) throw new NotFoundException('Brand not found');
+    // A slow query must not grant access using the time before it started.
+    const now = asOf ?? new Date();
     const active =
-      agreement?.status === 'ACTIVE' && agreement.currentPeriodEnd > now;
-    const paid = Boolean(active && agreement.tier.monthlyPriceNgn > 0);
-    const tierKey = active ? agreement.tierKey : 'FREE';
-    const currentTierIndex = active ? TIER_ORDER.indexOf(agreement.tierKey) : -1;
-    const legacy = brand.customOrderLegacyEligible || tierKey === 'LEGACY';
+      state.status === 'ACTIVE' && state.tierKey !== null && state.currentPeriodEnd !== null && state.currentPeriodEnd > now;
+    const paid = Boolean(active && (state.priceSnapshotNgn ?? 0) > 0);
+    const tierKey = active ? state.tierKey! : 'FREE';
+    const currentTierIndex = active ? TIER_ORDER.indexOf(state.tierKey!) : -1;
     return {
       tierKey,
       canUpgrade:
-        !legacy &&
-        tiers.some(
-          (tier) => TIER_ORDER.indexOf(tier.key) > currentTierIndex,
+        state.availableTiers.some(
+          (tier) => TIER_ORDER.indexOf(tier) > currentTierIndex,
         ),
       canConfigureCustomers: paid,
-      customerMinimumOrders: brand.customerMinimumOrders,
-      effectiveMinimumOrders: paid ? brand.customerMinimumOrders : 1,
+      customerMinimumOrders: state.customerMinimumOrders,
+      effectiveMinimumOrders: paid ? state.customerMinimumOrders : 1,
+      serverNow: now.toISOString(),
+      entitlementExpiresAt: active ? state.currentPeriodEnd!.toISOString() : null,
     };
   }
 }

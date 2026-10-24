@@ -1,15 +1,25 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { stableId } from './monitoring-keys';
-import { NormalizedSentryAlert, SentryEventDetails, sentrySeverity } from './sentry-alert.parser';
+import {
+  NormalizedSentryAlert,
+  SentryEventDetails,
+  sentrySeverity,
+} from './sentry-alert.parser';
 import { SentryApiClient, SentryIssueSummary } from './sentry-api.client';
 import { renderMessage, safeUrl } from './telegram-message.format';
-import { describe, DeliveryOutcome, TelegramDeliveryService } from './telegram-delivery.service';
+import {
+  describe,
+  DeliveryOutcome,
+  TelegramDeliveryService,
+} from './telegram-delivery.service';
 import { TelegramMonitoringConfig } from './telegram-monitoring.config';
 
 /** Same issue + rule + level within this window is one message, not many. */
 const REPEAT_SUPPRESSION_SECONDS = 30 * 60;
 
-export type SentryHandleOutcome = DeliveryOutcome | { status: 'suppressed' | 'ignored'; reason: string };
+export type SentryHandleOutcome =
+  | DeliveryOutcome
+  | { status: 'suppressed' | 'ignored'; reason: string };
 
 @Injectable()
 export class SentryAlertHandler {
@@ -28,9 +38,15 @@ export class SentryAlertHandler {
     return allowed.includes(alert.environment.toLowerCase());
   }
 
-  async handle(alert: NormalizedSentryAlert, idempotencyId: string): Promise<SentryHandleOutcome> {
+  async handle(
+    alert: NormalizedSentryAlert,
+    idempotencyId: string,
+  ): Promise<SentryHandleOutcome> {
     if (!this.belongsHere(alert)) {
-      return { status: 'ignored', reason: `environment ${alert.environment ?? 'unknown'} not forwarded` };
+      return {
+        status: 'ignored',
+        reason: `environment ${alert.environment ?? 'unknown'} not forwarded`,
+      };
     }
 
     // Level is part of the key: an issue escalating error → fatal, a metric
@@ -44,15 +60,22 @@ export class SentryAlertHandler {
       alert.level,
       alert.resource === 'metric_alert' ? alert.action : '',
     );
-    const fresh = await this.delivery.acquireCooldown(repeatKey, REPEAT_SUPPRESSION_SECONDS);
+    const fresh = await this.delivery.acquireCooldown(
+      repeatKey,
+      REPEAT_SUPPRESSION_SECONDS,
+    );
     if (!fresh) {
-      return { status: 'suppressed', reason: 'same alert delivered within 30 minutes' };
+      return {
+        status: 'suppressed',
+        reason: 'same alert delivered within 30 minutes',
+      };
     }
 
     const issue = await this.enrichIssue(alert);
-    const details = alert.details?.endpoint || alert.details?.errorType
-      ? alert.details
-      : await this.enrichLatestEvent(alert, alert.details);
+    const details =
+      alert.details?.endpoint || alert.details?.errorType
+        ? alert.details
+        : await this.enrichLatestEvent(alert, alert.details);
     const text = this.render(alert, issue, details);
     try {
       return await this.delivery.deliverOnce(idempotencyId, text);
@@ -64,8 +87,15 @@ export class SentryAlertHandler {
     }
   }
 
-  private async enrichIssue(alert: NormalizedSentryAlert): Promise<SentryIssueSummary | null> {
-    if (!alert.issueId || alert.resource === 'metric_alert' || !this.sentryApi.isConfigured()) return null;
+  private async enrichIssue(
+    alert: NormalizedSentryAlert,
+  ): Promise<SentryIssueSummary | null> {
+    if (
+      !alert.issueId ||
+      alert.resource === 'metric_alert' ||
+      !this.sentryApi.isConfigured()
+    )
+      return null;
     try {
       return await this.sentryApi.getIssue(alert.issueId);
     } catch (error) {
@@ -78,16 +108,27 @@ export class SentryAlertHandler {
     alert: NormalizedSentryAlert,
     fallback: SentryEventDetails | null,
   ): Promise<SentryEventDetails | null> {
-    if (!alert.issueId || alert.resource === 'metric_alert' || !this.sentryApi.isConfigured()) return fallback;
+    if (
+      !alert.issueId ||
+      alert.resource === 'metric_alert' ||
+      !this.sentryApi.isConfigured()
+    )
+      return fallback;
     try {
       return await this.sentryApi.getLatestEventDetails(alert.issueId);
     } catch (error) {
-      this.logger.warn(`Sentry latest-event enrichment skipped: ${describe(error)}`);
+      this.logger.warn(
+        `Sentry latest-event enrichment skipped: ${describe(error)}`,
+      );
       return fallback;
     }
   }
 
-  render(alert: NormalizedSentryAlert, issue: SentryIssueSummary | null, details: SentryEventDetails | null): string {
+  render(
+    alert: NormalizedSentryAlert,
+    issue: SentryIssueSummary | null,
+    details: SentryEventDetails | null,
+  ): string {
     const severity = sentrySeverity(alert.level);
     const kind =
       alert.resource === 'metric_alert'
@@ -97,7 +138,9 @@ export class SentryAlertHandler {
           : 'Issue alert';
     const issueLink = issue?.permalink ?? this.issueUrl(alert);
     const eventLink = alert.resource === 'event_alert' ? alert.webUrl : null;
-    const endpoint = details?.endpoint ? `${details.method ? `${details.method} ` : ''}${details.endpoint}` : null;
+    const endpoint = details?.endpoint
+      ? `${details.method ? `${details.method} ` : ''}${details.endpoint}`
+      : null;
 
     return renderMessage(
       {
@@ -109,9 +152,17 @@ export class SentryAlertHandler {
           ['Project', issue?.project ?? alert.project],
           ['Sentry environment', alert.environment],
           ['Trigger', [kind, alert.ruleName].filter(Boolean).join(' — ')],
-          ['Issue', issue?.shortId ? `${issue.shortId} (${alert.issueId})` : alert.issueId],
+          [
+            'Issue',
+            issue?.shortId
+              ? `${issue.shortId} (${alert.issueId})`
+              : alert.issueId,
+          ],
           ['Occurrences', issue?.count ?? 'unavailable (no Sentry API token)'],
-          ['Users affected', issue?.userCount ?? 'unavailable (no Sentry API token)'],
+          [
+            'Users affected',
+            issue?.userCount ?? 'unavailable (no Sentry API token)',
+          ],
           ['Release', alert.release],
         ],
         sections: details
@@ -161,7 +212,10 @@ export class SentryAlertHandler {
           ['Alert', alert.resource === 'metric_alert' ? alert.webUrl : null],
         ],
       },
-      { includeIdentity: this.config.includeUserIdentity, timeZone: this.config.reportTimeZone },
+      {
+        includeIdentity: this.config.includeUserIdentity,
+        timeZone: this.config.reportTimeZone,
+      },
     );
   }
 
@@ -172,7 +226,9 @@ export class SentryAlertHandler {
       return safeUrl(trimmed);
     }
     if (alert.issueId && this.config.sentryOrgSlug) {
-      return safeUrl(`https://${this.config.sentryOrgSlug}.sentry.io/issues/${alert.issueId}/`);
+      return safeUrl(
+        `https://${this.config.sentryOrgSlug}.sentry.io/issues/${alert.issueId}/`,
+      );
     }
     return null;
   }

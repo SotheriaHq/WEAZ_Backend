@@ -51,7 +51,7 @@ The gateway is disabled when its settings are absent. The API must have all of:
 | `MEDIA_GATEWAY_BASE_URL` | HTTPS Worker origin, optionally with a plain route prefix |
 | `MEDIA_GATEWAY_SECRET` | Shared randomly generated signing secret, at least 32 UTF-8 bytes |
 | `MEDIA_GATEWAY_ENVIRONMENT` | Explicit lowercase environment identifier such as `sit` |
-| `MEDIA_GATEWAY_TTL_SECONDS` | API token lifetime; default 300 seconds, maximum 900 |
+| `MEDIA_GATEWAY_TTL_SECONDS` | API token lifetime; 60–900 seconds, default 300 |
 
 The Worker receives the same base URL, environment and secret. Configure its
 `MEDIA_BUCKET` binding to the private bucket; `MEDIA_GATEWAY_MAX_TTL_SECONDS`
@@ -81,6 +81,9 @@ the Worker completely. Storage being private by default does not prove these
 alternate routes are disabled; inspect and test the deployed bucket settings.
 [Cloudflare public-bucket bypass guidance](https://developers.cloudflare.com/r2/buckets/public-buckets/)
 
+The 60-second minimum keeps valid configurations above the shared clients’
+30-second renewal margin and prevents repeated immediate renewal requests.
+
 ## Retraction and client-cache contract
 
 An issued URL is a bearer capability. With the API default, a newly withdrawn
@@ -93,8 +96,12 @@ This design does not claim immediate per-object revocation. Immediate revocation
 requires a checked revocation/publication-version mechanism or object removal
 plus any necessary CDN purge.
 
-**Activation gate:** existing clients cache API results and URLs longer than
-five minutes. A short-lived gateway URL must not be activated merely because
+Shared web/native loaders now recognize gateway and R2 SDK expiry, batch exact
+source renewals, and fence cache results by account session. The focused web
+suite passed 38 tests; native resolver/policy and structural-sharing contracts
+passed. These are local checks, not deployed browser/device evidence.
+
+**Activation gate:** API result caches can live longer than five minutes. A short-lived gateway URL must not be activated merely because
 its signature tests pass. Verify every native/web image and video surface after
 idle, query-cache restoration and app/browser resume, including components that
 render raw URLs. They must recognize `exp`/`sig`, discard expired URLs, obtain a
@@ -121,3 +128,6 @@ verification evidence and private order files denied at the gateway; unsigned
 custom-domain access denied; `r2.dev` access disabled; environment separation;
 clock synchronization; cold/warm latency, operation counts and peak memory.
 No real R2, DNS, bucket-policy or deployed-Worker result is implied by local tests.
+
+For the exact SIT Worker name, private bucket binding, dashboard variables and
+deployment authorization, see [SIT media gateway setup](SIT_MEDIA_GATEWAY_SETUP.md).

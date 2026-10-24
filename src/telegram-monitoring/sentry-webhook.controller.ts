@@ -13,7 +13,10 @@ import { Throttle } from '@nestjs/throttler';
 import type { Request } from 'express';
 import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 import { stableId } from './monitoring-keys';
-import { parseSentryWebhook, verifySentrySignature } from './sentry-alert.parser';
+import {
+  parseSentryWebhook,
+  verifySentrySignature,
+} from './sentry-alert.parser';
 import { SentryAlertHandler } from './sentry-alert.handler';
 import { describe } from './telegram-delivery.service';
 import { TelegramEventsService } from './telegram-events.service';
@@ -49,10 +52,15 @@ export class SentryWebhookController {
   @Post()
   @HttpCode(200)
   @Throttle({ default: { limit: 120, ttl: 60_000 } })
-  async receive(@Body() body: unknown, @Req() req: Request & { rawBody?: string }) {
+  async receive(
+    @Body() body: unknown,
+    @Req() req: Request & { rawBody?: string },
+  ) {
     const secret = this.config.sentryWebhookSecret;
     if (!secret) {
-      throw new ServiceUnavailableException('Sentry webhook receiver is not configured');
+      throw new ServiceUnavailableException(
+        'Sentry webhook receiver is not configured',
+      );
     }
 
     const verified = verifySentrySignature({
@@ -63,7 +71,9 @@ export class SentryWebhookController {
     });
     if (!verified) {
       this.events.count('sentry.rejected_signature');
-      this.logger.warn(`Rejected Sentry webhook with invalid signature from ${req.ip ?? 'unknown'}`);
+      this.logger.warn(
+        `Rejected Sentry webhook with invalid signature from ${req.ip ?? 'unknown'}`,
+      );
       throw new UnauthorizedException('Invalid signature');
     }
 
@@ -77,7 +87,8 @@ export class SentryWebhookController {
     }
 
     const resource = String(header(req, 'sentry-hook-resource') ?? '').trim();
-    if (!this.config.isActive()) return { status: 'ignored', reason: 'monitoring inactive' };
+    if (!this.config.isActive())
+      return { status: 'ignored', reason: 'monitoring inactive' };
 
     const alert = parseSentryWebhook(resource, body);
     if (!alert) {
@@ -93,7 +104,8 @@ export class SentryWebhookController {
     // Sentry sends a unique Request-ID per delivery; retries of one delivery
     // reuse it. Fall back to a hash of the signed body.
     const deliveryId =
-      header(req, 'request-id') ?? stableId(resource, req.rawBody ?? JSON.stringify(body ?? {}));
+      header(req, 'request-id') ??
+      stableId(resource, req.rawBody ?? JSON.stringify(body ?? {}));
     try {
       await this.events.enqueueSentryAlert(alert, `${resource}:${deliveryId}`);
     } catch (error) {

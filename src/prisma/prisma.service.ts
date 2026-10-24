@@ -7,6 +7,7 @@ import {
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
+import { withUtcDatabaseUrl } from './database-connection';
 
 @Injectable()
 export class PrismaService
@@ -22,7 +23,7 @@ export class PrismaService
       throw new Error('DATABASE_URL is required to initialize PrismaClient.');
     }
 
-    const pool = new Pool({ connectionString: datasourceUrl });
+    const pool = new Pool({ connectionString: withUtcDatabaseUrl(datasourceUrl) });
     const adapter = new PrismaPg(pool);
 
     const enableQueryLogs =
@@ -64,6 +65,12 @@ export class PrismaService
 
   async onModuleInit() {
     await this.$connect();
+    const rows = await this.$queryRaw<Array<{ timezone: string }>>`
+      SELECT current_setting('TimeZone') AS timezone
+    `;
+    if (rows[0]?.timezone !== 'UTC') {
+      throw new Error('Database connections must use UTC.');
+    }
   }
 
   async onModuleDestroy() {

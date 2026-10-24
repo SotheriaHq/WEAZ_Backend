@@ -807,36 +807,39 @@ export class AdminFeaturedService {
         isActive: true,
         expiresAt: { lte: now },
       },
+      include: { brand: { select: { ownerId: true } } },
+      orderBy: [{ expiresAt: 'asc' }, { id: 'asc' }],
+      take: 500,
     });
 
     if (!expired.length) return 0;
 
+    const summaries = await loadFeaturedSummaries(this.prisma, expired);
+    let expiredCount = 0;
     for (const item of expired) {
       try {
         // Snapshot performance metrics before deactivating
-        const metrics = await this.snapshotPerformance(
-          item.entityType,
-          item.entityId,
-        );
-
-        await this.prisma.featuredItem.update({
-          where: { id: item.id },
+        const summary = summaries.get(item.id);
+        const result = await this.prisma.featuredItem.updateMany({
+          where: { id: item.id, isActive: true, expiresAt: { lte: now } },
           data: {
             isActive: false,
             removeReason: 'EXPIRED',
             removedAt: now,
-            ...metrics,
+            ...(summary?.viewsDelta == null ? {} : { viewsDelta: summary.viewsDelta }),
+            ...(summary?.threadsDelta == null ? {} : { threadsDelta: summary.threadsDelta }),
           },
         });
+        if (!result.count) continue;
+        expiredCount += result.count;
 
         // Notify brand owner of expiry
-        this.notifyBrandOwner(
-          item.brandId,
+        this.notifications.create(
+          item.brand.ownerId,
           NotificationType.FEATURED_AUTO_REMOVED,
           {
-            entityType: item.entityType,
-            entityId: item.entityId,
-            reason: 'EXPIRED',
+            payload: { entityType: item.entityType, entityId: item.entityId, reason: 'EXPIRED' },
+            target: { type: item.entityType === 'DESIGN' ? 'COLLECTION' : 'PRODUCT', id: item.entityId },
           },
         ).catch((err) =>
           this.logger.warn(
@@ -850,8 +853,8 @@ export class AdminFeaturedService {
       }
     }
 
-    this.logger.log(`Expired ${expired.length} featured item(s)`);
-    return expired.length;
+    this.logger.log(`Expired ${expiredCount} featured item(s)`);
+    return expiredCount;
   }
 
   // ── Private helpers ──
@@ -1110,28 +1113,6 @@ export class AdminFeaturedService {
         data: { featuredPenaltyUntil: penaltyUntil },
       });
     }
-  }
-
-  private async snapshotPerformance(
-    entityType: string,
-    entityId: string,
-  ): Promise<{ viewsDelta?: number; threadsDelta?: number }> {
-    // Best-effort metric snapshot
-    if (entityType === 'PRODUCT') {
-      const p = await this.prisma.product.findUnique({
-        where: { id: entityId },
-        select: { viewsCount: true, threadsCount: true },
-      });
-      if (p) return { viewsDelta: p.viewsCount, threadsDelta: p.threadsCount };
-    }
-    if (entityType === 'DESIGN') {
-      const c = await this.prisma.collection.findUnique({
-        where: { id: entityId },
-        select: { viewsCount: true, threadsCount: true },
-      });
-      if (c) return { viewsDelta: c.viewsCount, threadsDelta: c.threadsCount };
-    }
-    return {};
   }
 
   private async notifyBrandOwner(

@@ -98,7 +98,7 @@ export class CustomOrderQueueService {
     const tier =
       agreement?.tier ??
       (await tx.subscriptionTier.findUnique({
-        where: { key: brand.customOrderLegacyEligible ? 'LEGACY' : 'THREAD' },
+        where: { key: 'THREAD' },
       }));
     if (!tier)
       throw new ConflictException('CUSTOM_ORDER_TIER_CONFIGURATION_MISSING');
@@ -125,7 +125,6 @@ export class CustomOrderQueueService {
       brand.verificationStatus === 'APPROVED' &&
       brand.owner.status === 'ACTIVE';
     const entitled =
-      brand.customOrderLegacyEligible ||
       Boolean(
         agreement?.status === 'ACTIVE' && agreement.currentPeriodEnd > now,
       );
@@ -167,6 +166,43 @@ export class CustomOrderQueueService {
     if (!cap.intakeAllowed)
       throw new ForbiddenException('CUSTOM_ORDER_INTAKE_UNAVAILABLE');
     return cap;
+  }
+
+  /** Checkout preview needs eligibility only; capacity is rechecked under lock on capture. */
+  async assertIntakeForBrands(buyerId: string, brandIds: readonly string[]) {
+    const ids = [...new Set(brandIds)].sort();
+    if (!ids.length) return;
+    const buyer = await this.prisma.user.findUnique({ where: { id: buyerId }, select: { type: true, status: true } });
+    if (!buyer || buyer.type !== 'REGULAR' || buyer.status !== 'ACTIVE') {
+      throw new ForbiddenException('Only an eligible shopper may order from this brand');
+    }
+    const now = new Date();
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const batch = ids.slice(offset, offset + 500);
+      const rows = await this.prisma.$queryRaw<Array<{ id: string; ownerId: string; tierConfigured: boolean; intakeAllowed: boolean }>>(Prisma.sql`
+        SELECT brand."_id" AS id, brand."ownerId", tier.key IS NOT NULL AS "tierConfigured",
+          COALESCE(agreement.status = 'ACTIVE' AND agreement."currentPeriodEnd" > ${now}
+            AND brand."verificationStatus" = 'APPROVED' AND owner.status = 'ACTIVE'
+            AND brand."customOrderIntakeBlockedAt" IS NULL, FALSE) AS "intakeAllowed"
+        FROM "Brand" brand JOIN "User" owner ON owner."_id" = brand."ownerId"
+        LEFT JOIN LATERAL (
+          SELECT subscription."tierKey", subscription.status, subscription."currentPeriodEnd"
+          FROM "BrandSubscription" subscription WHERE subscription."brandId" = brand."_id"
+            AND subscription.status IN ('ACTIVE', 'PAST_DUE', 'CANCELLED')
+          ORDER BY subscription."createdAt" DESC LIMIT 1
+        ) agreement ON TRUE
+        LEFT JOIN "SubscriptionTier" tier ON tier.key = COALESCE(agreement."tierKey", 'THREAD')
+        WHERE brand."_id" = ANY(${batch}::uuid[])
+      `);
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      for (const id of batch) {
+        const row = byId.get(id);
+        if (!row) throw new NotFoundException('Brand not found');
+        if (!row.tierConfigured) throw new ConflictException('CUSTOM_ORDER_TIER_CONFIGURATION_MISSING');
+        if (row.ownerId === buyerId) throw new ForbiddenException('Only an eligible shopper may order from this brand');
+        if (!row.intakeAllowed) throw new ForbiddenException('CUSTOM_ORDER_INTAKE_UNAVAILABLE');
+      }
+    }
   }
 
   async summary(brandId: string, buyerId?: string) {
@@ -265,12 +301,11 @@ export class CustomOrderQueueService {
       if (rows.some((row) => row.buyerId !== userId))
         throw new ForbiddenException('Not authorized for these orders');
     } else {
-      for (const brandId of new Set(rows.map((row) => row.brandId)))
-        await this.permissions.assertPermission(
-          userId,
-          brandId,
-          BRAND_PERMISSIONS.ORDERS_READ,
-        );
+      const brands = [...new Set(rows.map((row) => row.brandId))];
+      const allowed = await this.permissions.getPermittedBrandIds(userId, brands, BRAND_PERMISSIONS.ORDERS_READ);
+      if (brands.some((brandId) => !allowed.has(brandId))) {
+        throw new ForbiddenException('You do not have permission for this brand action');
+      }
     }
     return {
       orders: await this.present(rows.map((row) => row.id)),
@@ -313,10 +348,6 @@ export class CustomOrderQueueService {
               createdAt: refund.createdAt.toISOString(),
             })),
             lane: row.lane,
-            needsLaneReconciliation:
-              row.lane === null &&
-              !row.queuePolicyVersion &&
-              ['DISPUTED', 'DELIVERY_ISSUE_REPORTED'].includes(row.status),
             orderRevision: row.orderRevision,
             queueExpiresAt: row.queueExpiresAt?.toISOString() ?? null,
             serverNow: now.toISOString(),
@@ -396,6 +427,7 @@ export class CustomOrderQueueService {
     message: string,
     actorType: CustomOrderActorType = 'SYSTEM',
     actorId?: string,
+    knownBrandOwnerId?: string,
   ) {
     await tx.customOrderTimelineEvent.create({
       data: {
@@ -406,10 +438,10 @@ export class CustomOrderQueueService {
         payloadJson: { kind, message },
       },
     });
-    const brand = await tx.brand.findUnique({
+    const brand = knownBrandOwnerId === undefined ? await tx.brand.findUnique({
       where: { id: order.brandId },
       select: { ownerId: true },
-    });
+    }) : { ownerId: knownBrandOwnerId };
     await tx.customOrderNotificationOutbox.createMany({
       data: [
         ...new Set(
@@ -562,26 +594,20 @@ export class CustomOrderQueueService {
   async drain(tx: Tx, brandId: string, now: Date) {
     const cap = await this.capacity(tx, brandId, now);
     if (!cap.safetyAllowed) return;
-    const ambiguous = await tx.customOrder.count({
-      where: {
-        brandId,
-        lane: null,
-        status: { in: ['DISPUTED', 'DELIVERY_ISSUE_REPORTED'] },
-      },
-    });
-    if (ambiguous) return;
     let active = await tx.customOrder.count({
       where: { brandId, lane: 'ACTIVE' },
     });
     let streak = cap.brand.queuePriorityStreak;
+    // Every queue writer holds this brand's lock. Read bounded FIFO heads once;
+    // financial transitions and per-order outbox effects remain transactional.
+    let up = await tx.customOrder.findFirst({ where: { brandId, lane: 'UP_NEXT' } });
+    let pending: Awaited<ReturnType<typeof tx.customOrder.findMany>>[] | null = null;
+    const candidateLimit = Math.min(50, Math.max(1, cap.active === null ? 50 : cap.active - active + 1));
     for (let turns = 0; turns < 50; turns++) {
-      let up = await tx.customOrder.findFirst({
-        where: { brandId, lane: 'UP_NEXT' },
-      });
       if (!up) {
-        const [priority, ordinary] = await Promise.all(
+        pending ??= await Promise.all(
           [1, 0].map((queuePriority) =>
-            tx.customOrder.findFirst({
+            tx.customOrder.findMany({
               where: {
                 brandId,
                 lane: 'PENDING',
@@ -595,16 +621,18 @@ export class CustomOrderQueueService {
                 { createdAt: 'asc' },
                 { id: 'asc' },
               ],
+              take: candidateLimit,
             }),
           ),
         );
         const candidate = selectQueueCandidate(
-          [priority, ordinary].filter(
+          pending.map((rows) => rows[0] ?? null).filter(
             (row): row is NonNullable<typeof row> => row !== null,
           ),
           streak,
         );
         if (!candidate) break;
+        pending.find((rows) => rows[0]?.id === candidate.id)?.shift();
         up = await tx.customOrder.update({
           where: { id: candidate.id },
           data: { lane: 'UP_NEXT', orderRevision: { increment: 1 } },
@@ -614,6 +642,7 @@ export class CustomOrderQueueService {
           up,
           'QUEUE_UP_NEXT',
           'Your custom order is Up Next. No additional garment payment is required.',
+          'SYSTEM', undefined, cap.brand.ownerId,
         );
       }
       if (
@@ -662,9 +691,11 @@ export class CustomOrderQueueService {
         activated,
         'QUEUE_ACTIVE',
         'Your custom order is now Active. Production dates start today; the brand acceptance portion is available under the settlement policy.',
+        'SYSTEM', undefined, cap.brand.ownerId,
       );
       streak = up.queuePriority > 0 ? streak + 1 : 0;
       active++;
+      up = null;
     }
     await tx.brand.update({
       where: { id: brandId },
@@ -1569,56 +1600,6 @@ export class CustomOrderQueueService {
       );
       await this.audit(tx, actorId, `queue.${action}`, id, { reason });
       await this.drain(tx, row.brandId, now);
-    });
-    return { queue: (await this.present([id]))[id] };
-  }
-
-  async reconcileHistoricalLane(
-    id: string,
-    lane: 'ACTIVE' | 'IN_DELIVERY',
-    evidence: string,
-    expectedRevision: number,
-    actorId: string,
-  ) {
-    const source = await this.prisma.customOrder.findUniqueOrThrow({
-      where: { id },
-    });
-    await this.prisma.$transaction(async (tx) => {
-      const now = await this.lockBrand(tx, source.brandId);
-      const current = await tx.customOrder.findUniqueOrThrow({ where: { id } });
-      this.checkRevision(current.orderRevision, expectedRevision);
-      if (
-        current.queuePolicyVersion ||
-        current.lane !== null ||
-        current.paymentStatus !== 'PAID' ||
-        !['DISPUTED', 'DELIVERY_ISSUE_REPORTED'].includes(current.status)
-      )
-        throw new ConflictException(
-          'Only quarantined paid historical orders can be reconciled',
-        );
-      await tx.customOrder.update({
-        where: { id },
-        data: {
-          lane,
-          activatedAt: current.acceptedAt ?? current.createdAt,
-          adminPromotionHeld: false,
-          orderRevision: { increment: 1 },
-        },
-      });
-      await this.audit(tx, actorId, 'queue.historical-lane.reconcile', id, {
-        lane,
-        evidence,
-        previousStatus: current.status,
-      });
-      await this.record(
-        tx,
-        current,
-        'HISTORICAL_LANE_RECONCILED',
-        `An admin reconciled this historical order to ${lane === 'ACTIVE' ? 'Active' : 'In Delivery'} from fulfilment evidence. Existing promises, money and dispute status are preserved.`,
-        'ADMIN',
-        actorId,
-      );
-      await this.drain(tx, current.brandId, now);
     });
     return { queue: (await this.present([id]))[id] };
   }

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
+import { withUtcDatabaseUrl } from '../src/prisma/database-connection';
 import { ensureSystemAdmin } from './seed-system-admin';
 
 const datasourceUrl = process.env.DATABASE_URL;
@@ -10,7 +11,7 @@ if (!datasourceUrl) {
   throw new Error('DATABASE_URL must be set to seed the admin user.');
 }
 
-const pool = new Pool({ connectionString: datasourceUrl });
+const pool = new Pool({ connectionString: withUtcDatabaseUrl(datasourceUrl) });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 

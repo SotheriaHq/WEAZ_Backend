@@ -1,6 +1,6 @@
 import { Transform } from 'class-transformer';
 import { CapacityCampaignResetMode, RunwayBrandNoticeKind, SubscriptionTierKey } from '@prisma/client';
-import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsBoolean, IsDateString, IsEnum, IsIn, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsBoolean, IsDateString, IsEnum, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min, MinLength } from 'class-validator';
 
 export class QueueRevisionDto {
   @IsOptional() @IsInt() @Min(0) expectedRevision?: number;
@@ -35,11 +35,6 @@ export class QueueTierDto {
 }
 export class QueuePublishNoticeDto { @Transform(({ obj, key }) => obj[key]) @IsBoolean() published: boolean; }
 export class QueueReconcileRefundDto { @IsString() @MinLength(1) @MaxLength(120) providerRefundId: string; }
-export class QueueReconcileLaneDto {
-  @IsIn(['ACTIVE', 'IN_DELIVERY']) lane: 'ACTIVE' | 'IN_DELIVERY';
-  @IsString() @MinLength(10) @MaxLength(3000) evidence: string;
-  @IsInt() @Min(0) expectedRevision: number;
-}
 export class QueueAssignTierDto {
   @IsEnum(SubscriptionTierKey) tierKey: SubscriptionTierKey;
   @IsString() @MinLength(3) @MaxLength(1000) reason: string;

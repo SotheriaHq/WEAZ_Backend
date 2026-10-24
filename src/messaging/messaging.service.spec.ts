@@ -499,6 +499,7 @@ describe('MessagingService', () => {
     };
 
     const buildTx = (existingPair: unknown) => ({
+      $executeRaw: jest.fn().mockResolvedValue(1),
       messageThread: {
         findFirst: jest.fn().mockResolvedValue(existingPair),
         findUniqueOrThrow: jest.fn().mockResolvedValue({ ...pairThread, participants: [] }),

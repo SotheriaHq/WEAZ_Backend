@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { defineConfig } from 'prisma/config';
+import { withUtcDatabaseUrl } from './src/prisma/database-connection';
 
 // NOTE: DATABASE_URL is intentionally NOT required here.
 // `prisma generate` only reads the schema and must succeed at build time
@@ -23,6 +24,6 @@ export default defineConfig({
         },
       }),
   datasource: {
-    url: process.env.DATABASE_URL ?? PLACEHOLDER_DATABASE_URL,
+    url: withUtcDatabaseUrl(process.env.DATABASE_URL ?? PLACEHOLDER_DATABASE_URL),
   },
 });

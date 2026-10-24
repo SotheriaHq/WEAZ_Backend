@@ -21,6 +21,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 
@@ -183,8 +184,15 @@ export class QueryVisibleCustomOrderConfigurationsDto {
   @Max(100)
   limit?: number;
 
-  @IsOptional()
-  @Type(() => Boolean)
+  @ValidateIf((_object, value) => value !== undefined)
+  @Transform(({ obj, key }) => {
+    // Read the original input: global implicit conversion has already made
+    // Boolean('false') true before property transforms receive `value`.
+    const value: unknown = obj[key];
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return value;
+  })
   @IsBoolean()
   isActive?: boolean;
 

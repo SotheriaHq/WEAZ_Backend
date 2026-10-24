@@ -1,0 +1,12 @@
+{
+  "checkedAt": "2026-10-23T11:37:11.403Z",
+  "passed": true,
+  "cleanupPassed": true,
+  "cases": [
+    "shared tags across ten products",
+    "joined removal isolates each entity and clears zero counts",
+    "concurrent shared-tag additions retain both bindings",
+    "moderation failure rolls back bindings",
+    "merge retains all distinct bindings and grouped counts"
+  ]
+}

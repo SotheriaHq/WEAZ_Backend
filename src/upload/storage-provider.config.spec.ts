@@ -92,6 +92,10 @@ describe('storage provider configuration boundaries', () => {
     expect(resolveStorageProviderSettings(read({ ...r2(), ...gateway(), MEDIA_PUBLIC_BASE_URL: gateway().MEDIA_GATEWAY_BASE_URL })).publicGateway?.ttlSeconds).toBe(300);
   });
 
+  it('accepts the minimum gateway lifetime above the client refresh margin', () => {
+    expect(resolveStorageProviderSettings(read({ ...r2(), ...gateway(), MEDIA_GATEWAY_TTL_SECONDS: '60' })).publicGateway?.ttlSeconds).toBe(60);
+  });
+
   it.each([`https://${account}.r2.cloudflarestorage.com`, 'https://pub-secret.r2.dev', 'https://bucket.s3.us-east-1.amazonaws.com'])('cannot label a raw storage host as an authenticated gateway: %s', (base) => {
     expect(() => resolveStorageProviderSettings(read({ ...r2(), ...gateway(), MEDIA_GATEWAY_BASE_URL: base }))).toThrow('authenticated Worker');
   });
@@ -100,6 +104,7 @@ describe('storage provider configuration boundaries', () => {
     { MEDIA_GATEWAY_SECRET: undefined }, { MEDIA_GATEWAY_ENVIRONMENT: undefined },
     { MEDIA_GATEWAY_SECRET: 'short' }, { MEDIA_GATEWAY_ENVIRONMENT: 'prod\nother' },
     { MEDIA_GATEWAY_TTL_SECONDS: '901' }, { MEDIA_GATEWAY_TTL_SECONDS: '0' },
+    { MEDIA_GATEWAY_TTL_SECONDS: '1' }, { MEDIA_GATEWAY_TTL_SECONDS: '59' },
     { MEDIA_GATEWAY_TTL_SECONDS: '10.5' }, { MEDIA_GATEWAY_TTL_SECONDS: 'Infinity' },
     { MEDIA_GATEWAY_BASE_URL: 'https://media.example.test/path%2Fprefix' },
   ])('rejects incomplete or unsafe gateway configuration: %j', (override) => {

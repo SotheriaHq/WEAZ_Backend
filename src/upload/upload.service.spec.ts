@@ -282,7 +282,7 @@ describe('ImageService', () => {
     );
   });
 
-  it('returns owner-gated local disk upload URLs for non-production signed media validation', async () => {
+  it('always issues an owner-gated storage capability rather than returning a persisted local URL', async () => {
     (service as any).prisma = {
       fileUpload: {
         findUnique: jest.fn().mockResolvedValue({
@@ -297,9 +297,9 @@ describe('ImageService', () => {
     };
 
     await expect(service.getSignedUrl('file_1', 'user_1')).resolves.toBe(
-      'http://localhost:3040/uploads/POST_IMAGE/user_1/file_1.png',
+      'signed-url',
     );
-    expect(getSignedUrl).not.toHaveBeenCalled();
+    expect(getSignedUrl).toHaveBeenCalledTimes(1);
   });
 
   it('keeps production signed media on the S3 presigned URL path', async () => {
@@ -709,6 +709,7 @@ describe('ImageService', () => {
       send: jest.fn().mockResolvedValue({
         ContentLength: 1234,
         ContentType: 'image/jpeg',
+        ETag: '"stored-version"',
       }),
     };
     (service as any).prisma = {
@@ -723,12 +724,17 @@ describe('ImageService', () => {
           expiresAt: new Date(Date.now() + 60_000),
         }),
         update: jest.fn().mockResolvedValue({}),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       fileUpload: {
         findUnique: jest.fn(),
-        create: jest.fn().mockResolvedValue(createdRecord),
+        create: jest.fn().mockImplementation(({ data }) => Promise.resolve({ ...createdRecord, ...data })),
       },
+      storageObjectDeletion: { createMany: jest.fn().mockResolvedValue({ count: 1 }), deleteMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 'file_1' }]),
     };
+    (service as any).prisma.$transaction = jest.fn((callback) => callback((service as any).prisma));
+    jest.spyOn(service as any, 'assertStoredUploadSignature').mockResolvedValue(undefined);
 
     const result = await service.createFileRecordFromPresign(
       'file_1',
@@ -739,6 +745,8 @@ describe('ImageService', () => {
     );
 
     expect(result.processingStatus).toBe('READY');
+    expect(result.s3Key).toMatch(/^POST_IMAGE\/user_1\/final\/file_1\//);
+    expect((service as any).s3.send).toHaveBeenCalledWith(expect.objectContaining({ input: expect.objectContaining({ CopySourceIfMatch: '"stored-version"' }) }));
     expect((service as any).prisma.fileUpload.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -773,6 +781,89 @@ describe('ImageService', () => {
         ]),
       }),
     );
+  });
+
+  it('uses a private signed PUT with exact headers for R2', async () => {
+    (service as any).storageSettings = { provider: 'R2' };
+    (service as any).prisma = { presignedUpload: { create: jest.fn() } };
+    const result = await service.createPresignedPost('user_1', 'look.jpg', FileType.POST_IMAGE, 'image/jpeg');
+    expect(result.method).toBe('PUT');
+    expect(result.key).toContain('/pending/');
+    expect(result.uploadHeaders).toEqual({ 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=0, no-store' });
+    expect(createPresignedPost).not.toHaveBeenCalled();
+    expect(getSignedUrl).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      input: expect.objectContaining({ Key: result.key, ContentType: 'image/jpeg' }),
+    }), expect.objectContaining({ signableHeaders: new Set(['content-type']) }));
+  });
+
+  it('retains a recoverable staging intent and fails visibly when server storage is unavailable', async () => {
+    const intents: unknown[] = [];
+    const createFile = jest.fn();
+    (service as any).prisma = {
+      presignedUpload: { create: jest.fn(async ({ data }) => { intents.push(data); return data; }) },
+      fileUpload: { create: createFile },
+    };
+    (service as any).s3 = { send: jest.fn(async () => {
+      expect(intents).toHaveLength(1);
+      throw new Error('Storage unavailable');
+    }) };
+    await expect(service.uploadFile({ originalname: 'photo.jpg', mimetype: 'image/jpeg', size: 3,
+      buffer: Buffer.from('img') } as Express.Multer.File, 'user_1', FileType.POST_IMAGE))
+      .rejects.toMatchObject({ status: 503 });
+    expect(intents[0]).toMatchObject({ s3Key: expect.stringContaining('/pending/'), userId: 'user_1' });
+    expect(createFile).not.toHaveBeenCalled();
+  });
+
+  it('keeps the endpoint-specific product limit when server uploads enter common finalization', async () => {
+    (service as any).systemConfigService.getMaxFileSize.mockResolvedValue(8 * 1024 * 1024);
+    (service as any).prisma = { presignedUpload: { create: jest.fn() } };
+    (service as any).s3 = { send: jest.fn().mockResolvedValue({}) };
+    const record = { id: 'file_1', s3Key: 'immutable.jpg', s3Url: 'storage-url', fileName: 'immutable.jpg',
+      originalName: 'photo.jpg', size: 3 * 1024 * 1024, mimeType: 'image/jpeg', fileType: 'POST_IMAGE',
+      processingStatus: 'READY', createdAt: new Date(), updatedAt: new Date() };
+    const finalize = jest.spyOn(service, 'createFileRecordFromPresign').mockResolvedValue(record as any);
+    const options = { maxSizeConfigKey: 'upload.maxSize.productMedia', hardMaxSizeBytes: 8 * 1024 * 1024 };
+    await expect(service.uploadFile({ originalname: 'photo.jpg', mimetype: 'image/jpeg', size: record.size,
+      buffer: Buffer.alloc(record.size) } as Express.Multer.File, 'user_1', FileType.POST_IMAGE, options))
+      .resolves.toMatchObject({ id: 'file_1', url: 'storage-url' });
+    expect(finalize).toHaveBeenCalledWith(expect.any(String), 'user_1', expect.stringContaining('/pending/'),
+      'image/jpeg', record.size, undefined, options);
+  });
+
+  it('replays a committed upload after its original capability expires without reading storage', async () => {
+    const committed = { id: 'file_1', userId: 'user_1', s3Key: 'immutable/file.jpg' };
+    (service as any).prisma = {
+      presignedUpload: { findUnique: jest.fn().mockResolvedValue({
+        id: 'file_1', userId: 'user_1', s3Key: 'staging/file.jpg', status: 'USED', expiresAt: new Date(0),
+      }) },
+      fileUpload: { findUnique: jest.fn().mockResolvedValue(committed) },
+    };
+    const storage = jest.fn();
+    (service as any).s3 = { send: storage };
+    await expect(service.createFileRecordFromPresign('file_1', 'user_1', 'staging/file.jpg', 'image/jpeg', 1234))
+      .resolves.toBe(committed);
+    expect(storage).not.toHaveBeenCalled();
+  });
+
+  it('retains durable cleanup and never publishes when a source changes during copy', async () => {
+    const intent = { id: 'file_1', userId: 'user_1', s3Key: 'POST_IMAGE/user_1/pending/look.jpg',
+      originalName: 'look.jpg', fileType: 'POST_IMAGE', expiresAt: new Date(Date.now() + 60_000) };
+    const prisma = {
+      presignedUpload: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      storageObjectDeletion: { createMany: jest.fn().mockResolvedValue({ count: 1 }), deleteMany: jest.fn() },
+      $transaction: jest.fn(),
+    };
+    (service as any).prisma = prisma;
+    (service as any).s3 = { send: jest.fn().mockRejectedValue({ $metadata: { httpStatusCode: 412 } }) };
+    jest.spyOn(service as any, 'assertStoredUploadSignature').mockResolvedValue(undefined);
+    await expect((service as any).finalizeStoredUpload(intent, 'user_1', { etag: '"etag"', contentLength: 1234 }, 'image/jpeg'))
+      .rejects.toMatchObject({ response: { code: 'UPLOAD_CHANGED' } });
+    expect(prisma.storageObjectDeletion.createMany).toHaveBeenCalledTimes(1);
+    expect(prisma.storageObjectDeletion.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.presignedUpload.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: 'file_1', finalizeLeaseToken: expect.any(String) }),
+    }));
   });
 
   it('rejects oversized, spoofed, expired, and missing presigned uploads using trusted S3 metadata', async () => {

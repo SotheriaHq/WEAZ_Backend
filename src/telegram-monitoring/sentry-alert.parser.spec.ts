@@ -137,18 +137,31 @@ describe('verifySentrySignature', () => {
 
 describe('verifySentrySignature with Sentry-style (Python json.dumps) bodies', () => {
   // Sentry sends `{"a": 1, "b": [1, 2]}` — spaces after separators.
-  const pythonBody = '{"action": "triggered", "data": {"event": {"level": "error", "tags": [["a", "b"]]}}}';
-  const signature = createHmac('sha256', SECRET).update(pythonBody, 'utf8').digest('hex');
+  const pythonBody =
+    '{"action": "triggered", "data": {"event": {"level": "error", "tags": [["a", "b"]]}}}';
+  const signature = createHmac('sha256', SECRET)
+    .update(pythonBody, 'utf8')
+    .digest('hex');
 
   it('verifies when the raw bytes are available', () => {
     expect(
-      verifySentrySignature({ secret: SECRET, signature, rawBody: pythonBody, parsedBody: JSON.parse(pythonBody) }),
+      verifySentrySignature({
+        secret: SECRET,
+        signature,
+        rawBody: pythonBody,
+        parsedBody: JSON.parse(pythonBody),
+      }),
     ).toBe(true);
   });
 
   it('cannot verify from the parsed body alone (the raw body must be captured for /webhooks/sentry)', () => {
     expect(
-      verifySentrySignature({ secret: SECRET, signature, rawBody: undefined, parsedBody: JSON.parse(pythonBody) }),
+      verifySentrySignature({
+        secret: SECRET,
+        signature,
+        rawBody: undefined,
+        parsedBody: JSON.parse(pythonBody),
+      }),
     ).toBe(false);
   });
 });

@@ -241,6 +241,7 @@ integration(
       adminUrl.pathname = '/postgres';
       const testUrl = new URL(source);
       testUrl.pathname = `/${database}`;
+      testUrl.searchParams.set('options', '-c timezone=Africa/Lagos');
       admin = new Client({ connectionString: adminUrl.toString() });
       await admin.connect();
       await admin.query(`CREATE DATABASE "${database}"`);
@@ -255,7 +256,7 @@ integration(
       CREATE TABLE "MessageThreadParticipant"("threadId" uuid REFERENCES "MessageThread","userId" uuid,"role" text,"lastReadAt" timestamp(3),"lastReadMessageId" uuid,"archivedAt" timestamp(3),PRIMARY KEY("threadId","userId"));
       CREATE TABLE "Message"("id" uuid PRIMARY KEY,"threadId" uuid REFERENCES "MessageThread","senderUserId" uuid,"senderRole" text,"kind" text,"visibilityState" text DEFAULT 'VISIBLE',"clientMessageId" text,"createdAt" timestamp(3),"bodyText" text,UNIQUE("threadId","senderUserId","clientMessageId"));
       CREATE TABLE "MessageDeliveryReceipt"("id" uuid PRIMARY KEY,"messageId" uuid REFERENCES "Message","recipientId" uuid,"deliveredAt" timestamp(3),"readAt" timestamp(3),"createdAt" timestamp(3),UNIQUE("messageId","recipientId"));
-      CREATE TABLE "MessageNotificationOutbox"("id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),"threadId" uuid REFERENCES "MessageThread","messageId" uuid REFERENCES "Message","recipientId" uuid,"notificationType" text,"payloadJson" jsonb,"status" text DEFAULT 'PENDING',"attempts" integer DEFAULT 0,"availableAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP,"createdAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP,"updatedAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP,"processedAt" timestamp(3),"lastError" text,"processingLeaseToken" uuid,"processingLeaseUntil" timestamp(3),UNIQUE("messageId","recipientId","notificationType"));
+      CREATE TABLE "MessageNotificationOutbox"("id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),"threadId" uuid REFERENCES "MessageThread","messageId" uuid REFERENCES "Message","recipientId" uuid,"notificationType" text,"payloadJson" jsonb,"status" text DEFAULT 'PENDING',"attempts" integer DEFAULT 0,"availableAt" timestamp(3) DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),"createdAt" timestamp(3) DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),"updatedAt" timestamp(3) DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),"processedAt" timestamp(3),"lastError" text,"processingLeaseToken" uuid,"processingLeaseUntil" timestamp(3),UNIQUE("messageId","recipientId","notificationType"));
     `);
       prisma = {
         ...adapter(pool),
@@ -450,6 +451,10 @@ integration(
           )
         ).rowCount,
       ).toBe(2);
+      const receiptInstant = (
+        await pool.query(`SELECT MAX("readAt") AT TIME ZONE 'UTC' AS instant FROM "MessageDeliveryReceipt"`)
+      ).rows[0].instant;
+      expect(Math.abs(Date.now() - receiptInstant.getTime())).toBeLessThan(30000);
       await expect(
         service.markThreadReadById(owner, threadId, {
           upToMessageId: randomUUID(),
@@ -481,7 +486,7 @@ integration(
     it('parallel dispatchers claim a recipient once and reclaim an expired worker lease', async () => {
       await send();
       await pool.query(
-        `UPDATE "MessageNotificationOutbox" SET "status"='PROCESSING',"processingLeaseToken"=$1,"processingLeaseUntil"=CURRENT_TIMESTAMP-INTERVAL '1 minute'`,
+        `UPDATE "MessageNotificationOutbox" SET "status"='PROCESSING',"processingLeaseToken"=$1,"processingLeaseUntil"=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')-INTERVAL '1 minute'`,
         [randomUUID()],
       );
       await Promise.all([
@@ -506,7 +511,7 @@ integration(
           .rows[0].status,
       ).toBe('FAILED');
       await pool.query(
-        'UPDATE "MessageNotificationOutbox" SET "availableAt"=CURRENT_TIMESTAMP',
+        `UPDATE "MessageNotificationOutbox" SET "availableAt"=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')`,
       );
       await worker.dispatchPendingMessageOutbox();
       expect(queue.enqueueFanout.mock.calls[0]).toEqual(
@@ -522,7 +527,7 @@ integration(
       await send();
       const token = randomUUID();
       await pool.query(
-        `UPDATE "MessageNotificationOutbox" SET "status"='PROCESSING',"processingLeaseToken"=$1,"processingLeaseUntil"=CURRENT_TIMESTAMP+INTERVAL '5 minutes'`,
+        `UPDATE "MessageNotificationOutbox" SET "status"='PROCESSING',"processingLeaseToken"=$1,"processingLeaseUntil"=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')+INTERVAL '5 minutes'`,
         [token],
       );
       const row = (

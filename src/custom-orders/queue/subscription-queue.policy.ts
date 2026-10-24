@@ -11,7 +11,7 @@ export const SYSTEM_CHARGE_RATE_BPS = 1000;
 export const JUMP_FEE_RATE_BPS = 2000;
 export const JUMP_FEE_PLATFORM_KEEP_BPS = 1000;
 
-export type TierKey = 'THREAD' | 'ASO_OKE' | 'ARU' | 'IGWE' | 'LEGACY';
+export type TierKey = 'THREAD' | 'ASO_OKE' | 'ARU' | 'IGWE';
 export type OrderLane = 'PENDING' | 'UP_NEXT' | 'ACTIVE' | 'IN_DELIVERY' | 'TERMINAL';
 
 export type TierCapacity = {
@@ -29,7 +29,6 @@ export const SUBSCRIPTION_TIERS: readonly TierCapacity[] = [
   { key: 'ASO_OKE', name: 'Aso-oke', monthlyPriceNgn: 15_000, maxActive: 3, maxInDelivery: 4, maxUpNext: 1, queueJumpAllowed: false },
   { key: 'ARU', name: 'Aru', monthlyPriceNgn: 30_000, maxActive: 4, maxInDelivery: 5, maxUpNext: 1, queueJumpAllowed: true },
   { key: 'IGWE', name: 'Igwe', monthlyPriceNgn: 50_000, maxActive: 6, maxInDelivery: 5, maxUpNext: 1, queueJumpAllowed: true },
-  { key: 'LEGACY', name: 'Legacy', monthlyPriceNgn: 0, maxActive: null, maxInDelivery: null, maxUpNext: 1, queueJumpAllowed: false },
 ];
 
 const TIER_BY_KEY = new Map(SUBSCRIPTION_TIERS.map((tier) => [tier.key, tier]));

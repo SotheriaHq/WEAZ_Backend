@@ -25,6 +25,7 @@ import { Logger } from 'nestjs-pino';
 import { AllExceptionsFilter } from './filters/All-exception.filter';
 import cookieParser from 'cookie-parser';
 import bodyParser from 'body-parser';
+import type * as express from 'express';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { requestLoggerMiddleware } from './common/middleware/request-logger.middleware';
@@ -35,9 +36,8 @@ import {
 } from './common/utils/validation-error-redaction';
 import { sanitizeErrorForLog } from './common/utils/sensitive-log';
 import { MonitoringService } from './monitoring/monitoring.service';
-import * as express from 'express';
 import { existsSync, readFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { resolve } from 'path';
 
 const DEFAULT_BODY_LIMIT = '10mb';
 const DEFAULT_PORT = 3040;
@@ -240,13 +240,10 @@ async function bootstrap() {
 
   try {
     const httpsOptions = resolveOptionalHttpsOptions();
-    const app = await NestFactory.create(
-      AppModule,
-      {
-        ...(httpsOptions ? { httpsOptions } : {}),
-        bufferLogs: true,
-      },
-    );
+    const app = await NestFactory.create(AppModule, {
+      ...(httpsOptions ? { httpsOptions } : {}),
+      bufferLogs: true,
+    });
     app.useLogger(app.get(Logger));
     logger = app.get(Logger);
     const configService = app.get(ConfigService);
@@ -286,7 +283,8 @@ async function bootstrap() {
         exceptionFactory: (errors) => {
           try {
             const formattedErrors = formatValidationErrors(errors);
-            const primaryMessage = formatPrimaryValidationMessage(formattedErrors);
+            const primaryMessage =
+              formatPrimaryValidationMessage(formattedErrors);
 
             try {
               logger.warn(
@@ -471,15 +469,6 @@ async function bootstrap() {
         verify: rawBodySaver,
       }),
     );
-
-    const serveLocalUploads = toBoolean(
-      configService.get<string>('SERVE_LOCAL_UPLOADS'),
-      configService.get<string>('NODE_ENV', '').toLowerCase() !== 'production',
-    );
-    if (serveLocalUploads) {
-      // Serve locally-stored uploads (used as a dev fallback when S3 isn't available).
-      app.use('/uploads', express.static(join(process.cwd(), 'uploads')));
-    }
 
     const port = parsePort(
       configService.get<string>('APP_PORT') ??

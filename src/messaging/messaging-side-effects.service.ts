@@ -54,20 +54,20 @@ export class MessagingSideEffectsService {
     const rows = await this.prisma.$queryRaw<MessageNotificationOutbox[]>`
       WITH due AS (
         SELECT "id" FROM "MessageNotificationOutbox"
-        WHERE "availableAt"<=CURRENT_TIMESTAMP ${messageScope}
+        WHERE "availableAt"<=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC') ${messageScope}
           AND (
             ("status" IN ('PENDING','FAILED') AND "attempts"<${MAX_MESSAGE_OUTBOX_ATTEMPTS})
             OR ("status"='PROCESSING' AND (
-              "processingLeaseUntil"<=CURRENT_TIMESTAMP
-              OR ("processingLeaseUntil" IS NULL AND "updatedAt"<=CURRENT_TIMESTAMP-INTERVAL '5 minutes')
+              "processingLeaseUntil"<=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+              OR ("processingLeaseUntil" IS NULL AND "updatedAt"<=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')-INTERVAL '5 minutes')
             ))
           )
         ORDER BY "createdAt","id" LIMIT ${take} FOR UPDATE SKIP LOCKED
       )
       UPDATE "MessageNotificationOutbox" o
       SET "status"='PROCESSING',"processingLeaseToken"=${token}::uuid,
-          "processingLeaseUntil"=CURRENT_TIMESTAMP+INTERVAL '5 minutes',
-          "attempts"=o."attempts"+1,"lastError"=NULL,"updatedAt"=CURRENT_TIMESTAMP
+          "processingLeaseUntil"=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')+INTERVAL '5 minutes',
+          "attempts"=o."attempts"+1,"lastError"=NULL,"updatedAt"=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
       FROM due WHERE o."id"=due."id" RETURNING o.*
     `;
     let next = 0;

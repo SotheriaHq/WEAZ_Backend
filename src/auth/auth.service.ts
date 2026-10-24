@@ -710,9 +710,12 @@ export class AuthService {
         .includes('mobile');
       const bridgeBaseUrl = isMobileSignup
         ? resolveMobileAppBridgeBaseUrl({
-            host: req.get?.('host') ?? (req.headers['host'] as string | undefined),
+            host:
+              req.get?.('host') ?? (req.headers['host'] as string | undefined),
             protocol: req.protocol,
-            forwardedProto: req.headers['x-forwarded-proto'] as string | undefined,
+            forwardedProto: req.headers['x-forwarded-proto'] as
+              | string
+              | undefined,
           })
         : undefined;
       const verificationLink =
@@ -3334,7 +3337,9 @@ export class AuthService {
       !!user &&
       (user.status === UserStatus.ACTIVE ||
         (user.status === UserStatus.SUSPENDED &&
-          this.loginLockout.isAutoLockoutSuspension(user.adminSuspendedReason)));
+          this.loginLockout.isAutoLockoutSuspension(
+            user.adminSuspendedReason,
+          )));
     if (!user || !statusAllowsReset || !this.hasLocalPassword(user)) {
       this.logger.log(
         `Password reset requested for unknown, inactive, or passwordless account ${maskEmailForLog(normalizedEmail)}`,

@@ -1,0 +1,17 @@
+{
+  "time": "2026-10-23T10:31:35.922Z",
+  "gateway": "https://wiez-sit-media-gateway.sotheria-hq.workers.dev",
+  "checks": [
+    "unsigned-worker-request-denied",
+    "signed-get-content-etag",
+    "head",
+    "conditional-range",
+    "etag-conditions",
+    "warm-path-invalid-expired-environment-and-method-denial",
+    "approved-cors-origins-and-untrusted-denial",
+    "unsigned-r2-api-object-denied"
+  ],
+  "cleanup": true,
+  "privateApiAuthorization": "Not exercised: requires deployed API identities and private parent fixtures.",
+  "cacheObservation": "Warm-path authorization tested; internal edge cache hit is not externally observable."
+}

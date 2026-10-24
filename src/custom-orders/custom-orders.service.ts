@@ -1621,8 +1621,9 @@ export class CustomOrdersService {
     );
 
     const items: CheckoutBagLine[] = [];
+    const sourceSnapshots = await this.loadCheckoutBagSourceSnapshots(configurations);
     for (const session of sessions) {
-      const mapped = await this.mapCheckoutBagLine(session, configurationById);
+      const mapped = await this.mapCheckoutBagLine(session, configurationById, sourceSnapshots);
       if (mapped) {
         items.push(mapped);
       }
@@ -2223,6 +2224,10 @@ export class CustomOrdersService {
     );
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      const current = await this.lockBuyerOrderForIssue(tx, userId, customOrderId);
+      if (!disputeEligibleStates.has(current.status)) throw new BadRequestException('CUSTOM_ORDER_DISPUTE_WINDOW_CLOSED');
+      const now = new Date();
+
       await tx.customOrderIssue.create({
         data: {
           customOrderId,
@@ -2355,25 +2360,10 @@ export class CustomOrdersService {
    * `autoCompleteExpiredAcceptanceWindows` already exclude orders carrying an
    * open dispute, so raising one stops the money by itself.
    */
-  private async openDelayDispute(
-    userId: string,
-    // Structural, not the Prisma payload type: this only reads a handful of
-    // scalars plus the disputes relation, and naming the full include here ties
-    // the method to whatever `detailIncludes` happens to select today.
-    order: {
-      id: string;
-      brandId: string;
-      buyerId: string;
-      status: CustomOrderStatus;
-      promisedProductionAt?: Date | null;
-      promisedDeliveryAt?: Date | null;
-      currentProgressStage?: string | null;
-      retentionHoldType?: unknown;
-      disputes?: Array<{ status: string; resolvedAt?: Date | null }>;
-    },
-    dto: ReportCustomOrderIssueDto,
-    now: Date,
-  ) {
+  private assertDelayDisputeEligibility(order: {
+    status: CustomOrderStatus; promisedProductionAt?: Date | null; promisedDeliveryAt?: Date | null;
+    currentProgressStage?: string | null; disputes?: Array<{ status: string; resolvedAt?: Date | null }>;
+  }, now: Date) {
     const existingDisputes = Array.isArray((order as any).disputes)
       ? ((order as any).disputes as Array<{ status: string; resolvedAt?: Date | null }>)
       : [];
@@ -2408,9 +2398,37 @@ export class CustomOrdersService {
     ) {
       throw new BadRequestException('CUSTOM_ORDER_DELAY_DISPUTE_COOLDOWN');
     }
+    return eligibility;
+  }
+
+  private async openDelayDispute(
+    userId: string,
+    // Structural, not the Prisma payload type: this only reads a handful of
+    // scalars plus the disputes relation, and naming the full include here ties
+    // the method to whatever `detailIncludes` happens to select today.
+    order: {
+      id: string;
+      brandId: string;
+      buyerId: string;
+      status: CustomOrderStatus;
+      promisedProductionAt?: Date | null;
+      promisedDeliveryAt?: Date | null;
+      currentProgressStage?: string | null;
+      retentionHoldType?: unknown;
+      disputes?: Array<{ status: string; resolvedAt?: Date | null }>;
+    },
+    dto: ReportCustomOrderIssueDto,
+    now: Date,
+  ) {
+    let eligibility = this.assertDelayDisputeEligibility(order, now);
+    const customOrderId = order.id;
 
     const statement = dto.description.trim();
     const updated = await this.prisma.$transaction(async (tx) => {
+      const order = await this.lockBuyerOrderForIssue(tx, userId, customOrderId);
+      const now = new Date();
+      eligibility = this.assertDelayDisputeEligibility(order, now);
+
       await tx.customOrderIssue.create({
         data: {
           customOrderId: order.id,
@@ -4371,6 +4389,15 @@ export class CustomOrdersService {
     return order;
   }
 
+  private async lockBuyerOrderForIssue(tx: Prisma.TransactionClient, userId: string, customOrderId: string) {
+    await tx.$queryRaw`SELECT "id" FROM "CustomOrder" WHERE "id" = ${customOrderId}::uuid AND "buyerId" = ${userId}::uuid FOR UPDATE`;
+    const current = await tx.customOrder.findFirst({
+      where: { id: customOrderId, buyerId: userId }, include: this.detailIncludes,
+    });
+    if (!current) throw new NotFoundException('Custom order not found');
+    return current;
+  }
+
   private async resolveBrand(ownerUserId: string) {
     const brand = await this.prisma.brand.findUnique({
       where: { ownerId: ownerUserId },
@@ -4683,6 +4710,47 @@ export class CustomOrdersService {
     };
   }
 
+  private async loadCheckoutBagSourceSnapshots(
+    configurations: Array<{ sourceType: CustomOrderSourceType; sourceId: string }>,
+  ): Promise<Map<string, { title: string; primaryMediaUrl: string | null; brandName: string | null }>> {
+    const sources = [...new Map(configurations.map((entry) => [`${entry.sourceType}:${entry.sourceId}`, entry])).values()];
+    const snapshots = new Map<string, { title: string; primaryMediaUrl: string | null; brandName: string | null }>();
+    for (let offset = 0; offset < sources.length; offset += 500) {
+      const batch = sources.slice(offset, offset + 500);
+      const rows = await this.prisma.$queryRaw<Array<{
+        sourceType: string; sourceId: string; title: string | null;
+        mediaCandidates: Array<string | null>; brandName: string | null;
+      }>>(Prisma.sql`
+        SELECT source.type AS "sourceType", source.id AS "sourceId",
+          CASE WHEN source.type = 'PRODUCT' THEN product.name ELSE COALESCE(design.title, 'Untitled design') END AS title,
+          CASE WHEN source.type = 'PRODUCT' THEN ARRAY[product.thumbnail] || product.images
+            ELSE ARRAY[CASE WHEN cover."mediaType" = 'POST_IMAGE' THEN cover_file."s3Url" END]
+              || COALESCE(angles.urls, ARRAY[]::text[]) END AS "mediaCandidates",
+          CASE WHEN source.type = 'PRODUCT' THEN product_brand.name ELSE design_brand.name END AS "brandName"
+        FROM unnest(${batch.map((row) => row.sourceType)}::text[], ${batch.map((row) => row.sourceId)}::uuid[]) AS source(type, id)
+        LEFT JOIN "Product" product ON source.type = 'PRODUCT' AND product."_id" = source.id
+        LEFT JOIN "Brand" product_brand ON product_brand."_id" = product."brandId"
+        LEFT JOIN "Collection" design ON source.type = 'DESIGN' AND design."_id" = source.id AND design.domain = 'DESIGN'
+        LEFT JOIN "Brand" design_brand ON design_brand."ownerId" = design."ownerId"
+        LEFT JOIN "CollectionMedia" cover ON cover."_id" = design."coverMediaId"
+        LEFT JOIN "FileUpload" cover_file ON cover_file."_id" = cover."fileUploadId"
+        LEFT JOIN LATERAL (
+          SELECT array_agg(angle.url ORDER BY angle.position, angle.id) AS urls FROM (
+            SELECT file."s3Url" AS url, media."orderIndex" AS position, media."_id" AS id
+            FROM "CollectionMedia" media LEFT JOIN "FileUpload" file ON file."_id" = media."fileUploadId"
+            WHERE media."collectionId" = design."_id" AND media."mediaType" = 'POST_IMAGE'
+            ORDER BY media."orderIndex", media."_id" LIMIT 6
+          ) angle
+        ) angles ON TRUE
+        WHERE product."_id" IS NOT NULL OR design."_id" IS NOT NULL
+      `);
+      for (const row of rows) snapshots.set(`${row.sourceType}:${row.sourceId}`, {
+        title: row.title || '', primaryMediaUrl: pickFirstRenderableMediaUrl(row.mediaCandidates), brandName: row.brandName,
+      });
+    }
+    return snapshots;
+  }
+
   private async mapCheckoutBagLine(
     session: {
       id: string;
@@ -4715,6 +4783,7 @@ export class CustomOrdersService {
         title: string;
       }
     >,
+    sourceSnapshots?: Map<string, { title: string; primaryMediaUrl: string | null; brandName: string | null }>,
   ): Promise<CheckoutBagLine | null> {
     const configuration = configurationById.get(
       session.checkoutIntent.configurationId,
@@ -4727,13 +4796,14 @@ export class CustomOrdersService {
     let sourcePrimaryMediaUrl: string | null = null;
     let sourceBrandName: string | null = null;
     try {
-      const sourceSnapshot = await this.resolveSourceSnapshot(
-        configuration.sourceType,
-        configuration.sourceId,
-      );
-      sourceTitle = sourceSnapshot.title || sourceTitle;
-      sourcePrimaryMediaUrl = sourceSnapshot.primaryMediaUrl;
-      sourceBrandName = sourceSnapshot.brandName;
+      const sourceSnapshot = sourceSnapshots
+        ? sourceSnapshots.get(`${configuration.sourceType}:${configuration.sourceId}`)
+        : await this.resolveSourceSnapshot(configuration.sourceType, configuration.sourceId);
+      if (sourceSnapshot) {
+        sourceTitle = sourceSnapshot.title || sourceTitle;
+        sourcePrimaryMediaUrl = sourceSnapshot.primaryMediaUrl;
+        sourceBrandName = sourceSnapshot.brandName;
+      }
     } catch {
       // Preserve bag lines even when source records are no longer available.
     }

@@ -60,10 +60,16 @@ export class TelegramClient {
   /** Validates the token without sending anything. */
   async getMe(): Promise<{ username: string; id: number }> {
     if (!this.config.botToken) {
-      throw new TelegramDeliveryError('inactive', 'TELEGRAM_BOT_TOKEN is not set');
+      throw new TelegramDeliveryError(
+        'inactive',
+        'TELEGRAM_BOT_TOKEN is not set',
+      );
     }
     const result = await this.call<{ username?: string; id?: number }>('getMe');
-    return { username: String(result?.username ?? ''), id: Number(result?.id ?? 0) };
+    return {
+      username: String(result?.username ?? ''),
+      id: Number(result?.id ?? 0),
+    };
   }
 
   private assertActive(): void {
@@ -76,7 +82,10 @@ export class TelegramClient {
     }
   }
 
-  private async call<T>(method: string, body?: Record<string, unknown>): Promise<T> {
+  private async call<T>(
+    method: string,
+    body?: Record<string, unknown>,
+  ): Promise<T> {
     const url = `${TELEGRAM_API_ORIGIN}/bot${this.config.botToken}/${method}`;
     let response: Response;
     try {
@@ -117,7 +126,10 @@ export class TelegramClient {
     const status = response.status;
     const description = sanitizeDescription(payload.description);
     if (status === 429) {
-      const retryAfter = Math.max(1, Number(payload.parameters?.retry_after ?? 5));
+      const retryAfter = Math.max(
+        1,
+        Number(payload.parameters?.retry_after ?? 5),
+      );
       throw new TelegramDeliveryError(
         'rate_limited',
         `Telegram ${method} rate limited; retry after ${retryAfter}s`,
@@ -134,7 +146,9 @@ export class TelegramClient {
       );
     }
     // 400 chat not found / 401 bad token / 403 bot blocked / 404 bad token path.
-    this.logger.error(`Telegram ${method} rejected (${status}): ${description}`);
+    this.logger.error(
+      `Telegram ${method} rejected (${status}): ${description}`,
+    );
     throw new TelegramDeliveryError(
       'fatal',
       `Telegram ${method} rejected (${status}): ${description}`,

@@ -1,3 +1,5 @@
+import { appendProductMemberships } from '../collections/collection-membership-query';
+import { refreshCollectionPriceRanges } from './collection-price-range.util';
 import { withCartTransaction } from '../bagging/cart-transaction.util';
 import {
   Injectable,
@@ -155,6 +157,12 @@ const PRODUCT_VARIANT_SIZE_ALIASES: Record<string, string> = {
   '3XL': 'XXXL',
   '4XL': 'XXXXL',
 };
+const PRODUCT_UPDATE_INCLUDE = {
+  brand: true,
+  variants: { select: { size: true, color: true, sku: true, price: true, stock: true, colorHex: true } },
+} satisfies Prisma.ProductInclude;
+type ProductUpdateContext = Prisma.ProductGetPayload<{ include: typeof PRODUCT_UPDATE_INCLUDE }>;
+
 const CUSTOM_ORDER_OUT_OF_STOCK_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const CUSTOM_ORDER_OUT_OF_STOCK_REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -835,75 +843,9 @@ export class StoreService {
     };
   }
 
-  private async recalculateCollectionPriceRange(collectionId: string) {
-    const links = await this.prisma.storeCollectionProduct.findMany({
-      where: { collectionId },
-      include: {
-        product: {
-          select: {
-            price: true,
-            salePrice: true,
-            saleStartAt: true,
-            saleEndAt: true,
-            deletedAt: true,
-            archivedAt: true,
-            isActive: true,
-            publishAt: true,
-            variants: { select: { price: true } },
-          },
-        },
-      },
-    });
-
-    const now = new Date();
-    const active = links.filter((l) => {
-      const p = l.product;
-      if (!p || p.deletedAt || p.archivedAt || !p.isActive) return false;
-      if (p.publishAt && p.publishAt > now) return false;
-      return true;
-    });
-
-    const prices = active
-      .map((l) => {
-        const p = l.product;
-        const variantPrices = Array.isArray(p.variants)
-          ? p.variants.map((v) => Number(v.price || 0)).filter((v) => v > 0)
-          : [];
-        if (variantPrices.length > 0) return Math.min(...variantPrices);
-        return Number(p.price || 0);
-      })
-      .filter((v) => v > 0);
-
-    const maxPrices = active
-      .map((l) => {
-        const p = l.product;
-        const variantPrices = Array.isArray(p.variants)
-          ? p.variants.map((v) => Number(v.price || 0)).filter((v) => v > 0)
-          : [];
-        if (variantPrices.length > 0) return Math.max(...variantPrices);
-        return Number(p.price || 0);
-      })
-      .filter((v) => v > 0);
-
-    const salePrices = active
-      .map((l) => {
-        const p = l.product;
-        if (!p.salePrice) return null;
-        if (p.saleStartAt && p.saleStartAt > now) return null;
-        if (p.saleEndAt && p.saleEndAt < now) return null;
-        return Number(p.salePrice);
-      })
-      .filter((v): v is number => typeof v === 'number' && v > 0);
-
-    await this.prisma.storeCollection.update({
-      where: { id: collectionId },
-      data: {
-        minPrice: prices.length ? Math.min(...prices) : null,
-        maxPrice: maxPrices.length ? Math.max(...maxPrices) : null,
-        saleMinPrice: salePrices.length ? Math.min(...salePrices) : null,
-        saleMaxPrice: salePrices.length ? Math.max(...salePrices) : null,
-      },
-    });
+  private async recalculateCollectionPriceRanges(collectionIds: readonly string[]) {
+    if (!collectionIds.length) return;
+    await this.prisma.$transaction((tx) => refreshCollectionPriceRanges(tx, collectionIds));
   }
 
   async getProductCategories() {
@@ -2617,9 +2559,7 @@ export class StoreService {
     const collectionIds = Array.isArray(product.collections)
       ? product.collections.map((c: any) => c.collectionId)
       : [];
-    for (const id of collectionIds) {
-      await this.recalculateCollectionPriceRange(id);
-    }
+    await this.recalculateCollectionPriceRanges(collectionIds);
 
     if (this.isProductPublished(product)) {
       await this.notifyPatchersOfProduct(brandOwnerUserId, product);
@@ -2785,19 +2725,7 @@ export class StoreService {
   ) {
     const product = await this.prisma.product.findFirst({
       where: { id: productId, deletedAt: null },
-      include: {
-        brand: true,
-        variants: {
-          select: {
-            size: true,
-            color: true,
-            sku: true,
-            price: true,
-            stock: true,
-            colorHex: true,
-          },
-        },
-      },
+      include: PRODUCT_UPDATE_INCLUDE,
     });
 
     if (!product) {
@@ -2812,6 +2740,14 @@ export class StoreService {
       'You can only update your own products',
     );
 
+    return this.updateProductWithContext(brandOwnerId, product, dto);
+  }
+
+  private async updateProductWithContext(
+    brandOwnerId: string, product: ProductUpdateContext, dto: UpdateProductDto,
+    requireUnarchived = false,
+  ) {
+    const productId = product.id;
     if ((dto as any).sizingModeDeprecatedAliasUsed) {
       this.logger.warn(
         `Deprecated sizingMode 'RTW_PLUS_CUSTOM' used by store owner ${brandOwnerId}; auto-mapped to RTW_PLUS_FITTINGS`,
@@ -3351,8 +3287,11 @@ export class StoreService {
       }
 
       await tx.product.update({
-        where: { id: productId },
+        where: { id: productId, deletedAt: null, ...(requireUnarchived ? { archivedAt: null } : {}) },
         data: updateData,
+      }).catch((error) => {
+        if (error?.code === 'P2025') throw new ConflictException('Product changed while updating. Refresh and retry.');
+        throw error;
       });
 
       if (dto.customOrderEnabled === false) {
@@ -3440,9 +3379,7 @@ export class StoreService {
       const ids = Array.isArray(updated?.collections)
         ? updated.collections.map((c) => c.collectionId)
         : [];
-      for (const id of ids) {
-        await this.recalculateCollectionPriceRange(id);
-      }
+      await this.recalculateCollectionPriceRanges(ids);
     }
 
     if (updated && !wasPublished && this.isProductPublished(updated)) {
@@ -3731,46 +3668,14 @@ export class StoreService {
         },
       });
 
-      if (sourceCollections.length === 0) {
-        const fallbackCollectionId = await this.ensureDefaultStoreCollection(
-          tx,
-          product.brand.ownerId,
-        );
-        await this.lockCollectionForUpdate(tx, fallbackCollectionId);
-        const orderIndex = await tx.storeCollectionProduct.count({
-          where: { collectionId: fallbackCollectionId },
-        });
-        await tx.storeCollectionProduct.create({
-          data: {
-            id: uuidv4(),
-            collectionId: fallbackCollectionId,
-            productId: created.id,
-            orderIndex,
-            isPrimary: true,
-          },
-        });
-
+      const membershipIds = sourceCollections.map((link) => link.collectionId);
+      if (!membershipIds.length) {
+        membershipIds.push(await this.ensureDefaultStoreCollection(tx, product.brand.ownerId));
         await tx.product.update({
-          where: { id: created.id },
-          data: { collectionId: fallbackCollectionId },
+          where: { id: created.id }, data: { collectionId: membershipIds[0] },
         });
-      } else {
-        for (const link of sourceCollections) {
-          await this.lockCollectionForUpdate(tx, link.collectionId);
-          const orderIndex = await tx.storeCollectionProduct.count({
-            where: { collectionId: link.collectionId },
-          });
-          await tx.storeCollectionProduct.create({
-            data: {
-              id: uuidv4(),
-              collectionId: link.collectionId,
-              productId: created.id,
-              orderIndex,
-              isPrimary: link.collectionId === primaryCollectionId,
-            },
-          });
-        }
       }
+      await appendProductMemberships(tx, created.id, membershipIds, membershipIds[0]);
 
       if (derivedFromVariants && derivedFromVariants.variants.length > 0) {
         await tx.productVariant.createMany({
@@ -3952,9 +3857,7 @@ export class StoreService {
     const archivedCollectionIds = Array.isArray(archived.collections)
       ? archived.collections.map((c) => c.collectionId)
       : [];
-    for (const id of archivedCollectionIds) {
-      await this.recalculateCollectionPriceRange(id);
-    }
+    await this.recalculateCollectionPriceRanges(archivedCollectionIds);
 
     if (previousIndexedTags.length > 0 && this.systemTags) {
       await this.systemTags.syncTags(previousIndexedTags, []);
@@ -4051,9 +3954,7 @@ export class StoreService {
     const restoredCollectionIds = Array.isArray(restored.collections)
       ? restored.collections.map((c) => c.collectionId)
       : [];
-    for (const id of restoredCollectionIds) {
-      await this.recalculateCollectionPriceRange(id);
-    }
+    await this.recalculateCollectionPriceRanges(restoredCollectionIds);
 
     const nextIndexedTags = this.getIndexedProductTags(
       restored,
@@ -4247,9 +4148,7 @@ export class StoreService {
       });
     }
 
-    for (const link of memberships) {
-      await this.recalculateCollectionPriceRange(link.collectionId);
-    }
+    await this.recalculateCollectionPriceRanges(memberships.map((link) => link.collectionId));
 
     if (previousIndexedTags.length > 0 && this.systemTags) {
       await this.systemTags.syncTags(previousIndexedTags, []);
@@ -4379,23 +4278,20 @@ export class StoreService {
     const successIds: string[] = [];
     const failures: Array<{ productId: string; message: string }> = [];
 
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: productIds }, deletedAt: null }, include: PRODUCT_UPDATE_INCLUDE,
+    });
+    if (!this.brandPermissionService) throw new InternalServerErrorException('Brand permission service is unavailable');
+    const allowedBrands = await this.brandPermissionService.getPermittedBrandIds(
+      brandOwnerId, products.map((product) => product.brandId), BRAND_PERMISSIONS.CATALOG_WRITE,
+    );
+    const byId = new Map(products.map((product) => [product.id, product]));
+
     for (const productId of productIds) {
       try {
-        const product = await this.prisma.product.findFirst({
-          where: { id: productId, deletedAt: null },
-          include: { brand: true },
-        });
-
-        if (!product) {
-          throw new NotFoundException('Product not found');
-        }
-        await this.assertCanManageBrandCatalog(
-          brandOwnerId,
-          product.brandId,
-          product.brand.ownerId,
-          BRAND_PERMISSIONS.CATALOG_WRITE,
-          'You can only unpublish your own products',
-        );
+        const product = byId.get(productId);
+        if (!product) throw new NotFoundException('Product not found');
+        if (!allowedBrands.has(product.brandId)) throw new ForbiddenException('You can only unpublish your own products');
         if (product.archivedAt) {
           throw new BadRequestException(
             'Product is archived. Unarchive it first before unpublishing.',
@@ -4403,10 +4299,10 @@ export class StoreService {
         }
 
         if (product.isActive) {
-          await this.updateProduct(brandOwnerId, productId, {
+          await this.updateProductWithContext(brandOwnerId, product, {
             isActive: false,
             publishAt: null,
-          });
+          }, true);
         }
         successIds.push(productId);
       } catch (error: any) {

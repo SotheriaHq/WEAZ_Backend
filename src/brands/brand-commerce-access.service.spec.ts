@@ -1,28 +1,35 @@
 import { BrandCommerceAccessService } from './brand-commerce-access.service';
 const now = new Date('2026-10-21T12:00:00Z');
-function service(agreement: unknown = null, legacy = false, available = ['THREAD', 'ASO_OKE', 'ARU', 'IGWE']) {
+function service(agreement: unknown = null, available = ['THREAD', 'ASO_OKE', 'ARU', 'IGWE']) {
   const prisma = {
-    brand: {
-      findUnique: jest.fn().mockResolvedValue({
-        customerMinimumOrders: 3,
-        customOrderLegacyEligible: legacy,
-      }),
-    },
-    brandSubscription: { findFirst: jest.fn().mockResolvedValue(agreement) },
-    subscriptionTier: {
-      findMany: jest
-        .fn()
-        .mockResolvedValue(
-          available.map((key) => ({ key })),
-        ),
-    },
+    $queryRaw: jest.fn().mockResolvedValue([{
+      customerMinimumOrders: 3, availableTiers: available,
+      tierKey: null, status: null, currentPeriodEnd: null, priceSnapshotNgn: 10000,
+      ...agreement as object,
+    }]),
   };
   return new BrandCommerceAccessService(prisma as any);
 }
 describe('Brand commerce access', () => {
+  it('uses a single joined snapshot and rejects a missing brand', async () => {
+    const target = service();
+    await target.get('brand', now);
+    expect((target as any).prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    (target as any).prisma.$queryRaw.mockResolvedValue([]);
+    await expect(target.get('brand', now)).rejects.toThrow('Brand not found');
+  });
+  it('evaluates expiry after a slow database read completes', async () => {
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(now);
+      const pending = service({ status: 'ACTIVE', tierKey: 'THREAD', currentPeriodEnd: new Date(now.getTime() + 1000) }).get('brand');
+      jest.setSystemTime(new Date(now.getTime() + 2000));
+      expect(await pending).toMatchObject({ canConfigureCustomers: false, effectiveMinimumOrders: 1, serverNow: new Date(now.getTime() + 2000).toISOString() });
+    } finally { jest.useRealTimers(); }
+  });
   it('offers the first paid tier to a free brand in a partially seeded environment', async () => {
-    expect(await service(null, false, ['THREAD']).get('brand', now)).toMatchObject({tierKey:'FREE',canUpgrade:true});
-    expect((await service({status:'ACTIVE',tierKey:'THREAD',currentPeriodEnd:new Date(now.getTime()+1000),tier:{monthlyPriceNgn:10000}},false,['THREAD']).get('brand',now)).canUpgrade).toBe(false);
+    expect(await service(null, ['THREAD']).get('brand', now)).toMatchObject({tierKey:'FREE',canUpgrade:true});
+    expect((await service({status:'ACTIVE',tierKey:'THREAD',currentPeriodEnd:new Date(now.getTime()+1000),tier:{monthlyPriceNgn:10000}},['THREAD']).get('brand',now)).canUpgrade).toBe(false);
   });
   it('shows all qualifying shoppers for free brands and offers upgrade', async () => {
     expect(await service().get('brand', now)).toMatchObject({
@@ -50,7 +57,7 @@ describe('Brand commerce access', () => {
       canConfigureCustomers: false,
     });
   });
-  it('never offers a nonexistent upgrade to the highest or legacy tiers', async () => {
+  it('never offers a nonexistent upgrade to the highest tier', async () => {
     expect(
       (
         await service({
@@ -61,8 +68,14 @@ describe('Brand commerce access', () => {
         }).get('brand', now)
       ).canUpgrade,
     ).toBe(false);
-    expect((await service(null, true).get('brand', now)).canUpgrade).toBe(
-      false,
-    );
+  });
+  it('bases paid customer access on the agreement snapshot and exposes its exact expiry', async () => {
+    const end = new Date(now.getTime() + 1000);
+    expect(await service({status:'ACTIVE',tierKey:'THREAD',priceSnapshotNgn:10000,currentPeriodEnd:end,tier:{monthlyPriceNgn:0}}).get('brand',now)).toMatchObject({
+      canConfigureCustomers:true,serverNow:now.toISOString(),entitlementExpiresAt:end.toISOString(),
+    });
+    expect(await service({status:'PAST_DUE',tierKey:'THREAD',priceSnapshotNgn:10000,currentPeriodEnd:end}).get('brand',now)).toMatchObject({
+      canConfigureCustomers:false,effectiveMinimumOrders:1,entitlementExpiresAt:null,
+    });
   });
 });

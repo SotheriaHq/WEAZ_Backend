@@ -1,0 +1,69 @@
+{
+  "checkedAt": "2026-10-24T07:06:23.356Z",
+  "passed": true,
+  "appliedMigrations": 143,
+  "failures": [],
+  "cleanupPassed": true,
+  "subscriptionTierValues": [
+    "THREAD",
+    "ASO_OKE",
+    "ARU",
+    "IGWE"
+  ],
+  "grandfatherFlagRemoved": true,
+  "errorCodes": [],
+  "openingSubscriptionCatalog": [
+    {
+      "key": "ARU",
+      "monthlyPriceNgn": 30000,
+      "maxActive": 4,
+      "maxInDelivery": 5,
+      "maxUpNext": 1,
+      "queueJumpAllowed": true
+    },
+    {
+      "key": "ASO_OKE",
+      "monthlyPriceNgn": 15000,
+      "maxActive": 3,
+      "maxInDelivery": 4,
+      "maxUpNext": 1,
+      "queueJumpAllowed": false
+    },
+    {
+      "key": "IGWE",
+      "monthlyPriceNgn": 50000,
+      "maxActive": 6,
+      "maxInDelivery": 5,
+      "maxUpNext": 1,
+      "queueJumpAllowed": true
+    },
+    {
+      "key": "THREAD",
+      "monthlyPriceNgn": 10000,
+      "maxActive": 2,
+      "maxInDelivery": 2,
+      "maxUpNext": 1,
+      "queueJumpAllowed": false
+    }
+  ],
+  "seedExitCodes": [
+    0,
+    0
+  ],
+  "seedCounts": {
+    "users": 1,
+    "admins": 1,
+    "uploads": 0,
+    "content": 0,
+    "measurements": 38,
+    "charts": 46,
+    "tags": 130,
+    "categories": 13,
+    "settings": 21,
+    "settlement_policies": 2
+  },
+  "subscriptionCatalogMatchesApprovedPolicy": true,
+  "reseedPreservesEditedTierPrice": true,
+  "defaultCustomerMinimumOrders": "3",
+  "seededSubscriptionAgreements": 0
+}

@@ -562,13 +562,20 @@ export class CustomOrderOpsCronService {
         take: 100,
       });
 
+      let completedCount = 0;
       for (const order of orders) {
-        await this.prisma.$transaction(async (tx) => {
+        const completed = await this.prisma.$transaction(async (tx) => {
           if (this.queue) await this.queue.lockBrand(tx, order.brandId);
+          // Complaint submission locks the same row. Recheck relations in the
+          // following statement so a complaint committed while waiting is seen.
+          await tx.$queryRaw`SELECT "id" FROM "CustomOrder" WHERE "id" = ${order.id}::uuid FOR UPDATE`;
           const updated = await tx.customOrder.updateMany({
             where: {
               id: order.id,
               status: CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION,
+              buyerAcceptanceWindowEndsAt: { lte: now },
+              issues: { none: {} },
+              disputes: { none: { status: { in: ['OPEN', 'BRAND_RESPONDED', 'ADMIN_REVIEW'] } } },
             },
             data: {
               status: CustomOrderStatus.COMPLETED,
@@ -579,11 +586,12 @@ export class CustomOrderOpsCronService {
             },
           });
           if (updated.count === 0) {
-            return;
+            return false;
           }
+          let canRelease = true;
           if (this.queue) {
             await this.queue.drain(tx, order.brandId, now);
-            if (!(await this.queue.capacity(tx, order.brandId, now)).safetyAllowed) return;
+            canRelease = (await this.queue.capacity(tx, order.brandId, now)).safetyAllowed;
           }
 
           await tx.customOrderTimelineEvent.create({
@@ -594,6 +602,7 @@ export class CustomOrderOpsCronService {
               payloadJson: { autoCompleted: true } as Prisma.InputJsonValue,
             },
           });
+          if (!canRelease) return true;
 
           const finalAllocation =
             await tx.customOrderLedgerAllocation.findFirst({
@@ -613,7 +622,7 @@ export class CustomOrderOpsCronService {
             });
 
           if (!finalAllocation) {
-            return;
+            return true;
           }
 
           await tx.customOrderLedgerAllocation.update({
@@ -632,7 +641,10 @@ export class CustomOrderOpsCronService {
             commissionAmount: Number(finalAllocation.commissionAmount),
             netBrandAmount: Number(finalAllocation.netBrandAmount),
           });
+          return true;
         });
+        if (!completed) continue;
+        completedCount++;
 
         await this.sideEffects.enqueueNotification({
           customOrderId: order.id,
@@ -659,9 +671,9 @@ export class CustomOrderOpsCronService {
         });
       }
 
-      if (orders.length > 0) {
+      if (completedCount > 0) {
         this.logger.log(
-          `Auto-completed ${orders.length} delivered custom order(s)`,
+          `Auto-completed ${completedCount} delivered custom order(s)`,
         );
       }
     } catch (error) {

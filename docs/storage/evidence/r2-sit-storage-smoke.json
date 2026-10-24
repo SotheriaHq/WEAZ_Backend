@@ -1,0 +1,28 @@
+{
+  "time": "2026-10-23T10:40:54.665Z",
+  "bucket": "wiez-sit-media",
+  "checks": [
+    "put",
+    "head",
+    "range-read",
+    "conditional-copy-and-immutable-result",
+    "signed-put",
+    "signed-get",
+    "unsigned-api-access-denied"
+  ],
+  "cleanup": true,
+  "anonymousApiStatus": 400,
+  "cors": [
+    {
+      "origin": "https://weaz.me",
+      "status": 204,
+      "allowed": true
+    },
+    {
+      "origin": "http://localhost:5173",
+      "status": 204,
+      "allowed": true
+    }
+  ],
+  "untrustedOriginDenied": true
+}

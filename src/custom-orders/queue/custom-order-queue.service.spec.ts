@@ -285,23 +285,6 @@ describe('custom order queue transaction boundaries', () => {
     jest.restoreAllMocks();
   });
 
-  it('reconciles an ambiguous paid historical lane with evidence without changing its money, dates or dispute', async () => {
-    const promised = new Date(+NOW + 3 * 86400000);
-    const h = harness([order('legacy', { lane: null, status: 'DISPUTED', queuePolicyVersion: null, adminPromotionHeld: true, acceptedAt: NOW, promisedProductionAt: promised })]);
-    await h.service.reconcileHistoricalLane('legacy', 'IN_DELIVERY', 'Verified courier handover receipt', 0, 'admin');
-    expect(h.rows.get('legacy')).toMatchObject({ lane: 'IN_DELIVERY', status: 'DISPUTED', promisedProductionAt: promised, adminPromotionHeld: false, orderRevision: 1 });
-    expect(h.tx.adminAuditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({ metadata: expect.objectContaining({ evidence: 'Verified courier handover receipt' }) }) });
-    expect(h.finance.applyPaidSettlement).not.toHaveBeenCalled();
-    expect(h.ledger.postTransaction).not.toHaveBeenCalled();
-    await expect(h.service.reconcileHistoricalLane('legacy', 'ACTIVE', 'Contradictory second instruction', 0, 'admin')).rejects.toThrow('CUSTOM_ORDER_CHANGED_REFRESH_REQUIRED');
-  });
-
-  it('rejects historical reconciliation of a current queue order', async () => {
-    const h = harness([order('current', { queuePolicyVersion: 1 })]);
-    await expect(h.service.reconcileHistoricalLane('current', 'ACTIVE', 'Not a historical migration record', 0, 'admin')).rejects.toThrow('Only quarantined paid historical orders can be reconciled');
-    expect(h.tx.customOrder.update).not.toHaveBeenCalled();
-  });
-
   it('allows one concurrent retain and rejects the stale revision without changing position or priority', async () => {
     const h = harness([order('one', { queuePosition: 8, queuePriority: 1 })]);
     const oldExpiry = h.rows.get('one')!.queueExpiresAt;
@@ -377,6 +360,17 @@ describe('custom order queue transaction boundaries', () => {
     ).toHaveLength(1);
   });
 
+  it('promotes forty orders with bounded candidate reads and no per-order brand metadata lookup', async () => {
+    const h = harness(Array.from({ length: 40 }, (_, i) => order(`order-${i}`, { queuePosition: i })), 40);
+    await h.service.drain(h.tx as any, 'brand', NOW);
+    expect([...h.rows.values()].filter((row) => row.lane === 'ACTIVE')).toHaveLength(40);
+    expect(h.tx.customOrder.findFirst).toHaveBeenCalledTimes(1);
+    expect(h.tx.customOrder.findMany).toHaveBeenCalledTimes(2);
+    expect(h.service.capacity).toHaveBeenCalledTimes(1);
+    expect(h.tx.brand.findUnique).not.toHaveBeenCalled();
+    expect(h.finance.applyPaidSettlement).toHaveBeenCalledTimes(40);
+  });
+
   it('starts production promises at activation and not during paid waiting', async () => {
     const h = harness(
       [order('one', { queuedAt: new Date(+NOW - 20 * 24 * hour) })],
@@ -430,6 +424,16 @@ describe('custom order queue transaction boundaries', () => {
     );
     await h.service.admitPaid(h.tx as any, 'arrival');
     expect(h.finance.applyPaidSettlement).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves unpaid orders without a lane while promoting eligible paid demand', async () => {
+    const h = harness([
+      order('unpaid', { lane: null, paymentStatus: 'PENDING', status: 'PENDING_PAYMENT', queuePosition: null }),
+      order('paid'),
+    ], 0);
+    await h.service.drain(h.tx as any, 'brand', NOW);
+    expect(h.rows.get('unpaid')).toMatchObject({ lane: null, paymentStatus: 'PENDING', status: 'PENDING_PAYMENT' });
+    expect(h.rows.get('paid')!.lane).toBe('UP_NEXT');
   });
 
   it('makes demoting the sole Up Next a durable visible hold without removing retain/cancel rights', async () => {
@@ -498,5 +502,42 @@ describe('custom order queue transaction boundaries', () => {
     expect(h.refunds).toHaveLength(1);
     expect(h.rows.get('one')!.lane).toBe('PENDING');
     expect(h.tx.customOrderLedgerAllocation.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('paid custom-order intake entitlement', () => {
+  const now = new Date('2026-10-23T12:00:00Z');
+  const tier = { key: 'THREAD', maxActive: 2, maxInDelivery: 2, queueJumpAllowed: false };
+  function setup(agreement: any = null, brandPatch: any = {}) {
+    const prisma: any = {
+      brand: { findUnique: jest.fn().mockResolvedValue({ ownerId: 'owner', owner: { status: 'ACTIVE' }, verificationStatus: 'APPROVED', activeOrderCapOverride: null, customOrderIntakeBlockedAt: null, ...brandPatch }) },
+      brandSubscription: { findFirst: jest.fn().mockResolvedValue(agreement) },
+      subscriptionTier: { findUnique: jest.fn().mockResolvedValue(tier) },
+      capacityCampaign: { findFirst: jest.fn().mockResolvedValue(null) },
+    };
+    return { prisma, service: new CustomOrderQueueService(prisma, {} as any, {} as any, {} as any) };
+  }
+  it('offers Thread capacity without granting intake to an unsubscribed brand', async () => {
+    const h = setup();
+    expect(await h.service.capacity(h.prisma, 'brand', now)).toMatchObject({ tierKey: 'THREAD', active: 2, inDelivery: 2, intakeAllowed: false });
+    expect(h.prisma.subscriptionTier.findUnique).toHaveBeenCalledWith({ where: { key: 'THREAD' } });
+  });
+  it.each(['PAST_DUE', 'CANCELLED'])('blocks intake for %s while retaining the agreement capacity', async status => {
+    const h = setup({ status, currentPeriodEnd: new Date(+now + 1000), tier });
+    expect(await h.service.capacity(h.prisma, 'brand', now)).toMatchObject({ active: 2, intakeAllowed: false });
+  });
+  it('grants intake only through the exact unexpired paid period', async () => {
+    const h = setup({ status: 'ACTIVE', currentPeriodEnd: new Date(+now + 1), tier });
+    expect((await h.service.capacity(h.prisma, 'brand', now)).intakeAllowed).toBe(true);
+    expect((await h.service.capacity(h.prisma, 'brand', new Date(+now + 1))).intakeAllowed).toBe(false);
+  });
+  it.each([{ owner: { status: 'SUSPENDED' } }, { verificationStatus: 'PENDING' }, { customOrderIntakeBlockedAt: now }])('keeps safety enforcement for paid brands %j', async patch => {
+    const h = setup({ status: 'ACTIVE', currentPeriodEnd: new Date(+now + 1000), tier }, patch);
+    expect((await h.service.capacity(h.prisma, 'brand', now)).intakeAllowed).toBe(false);
+  });
+  it('preserves a current admin capacity override without opening unpaid intake', async () => {
+    const h = setup(null, { activeOrderCapOverride: 8 });
+    expect(await h.service.capacity(h.prisma, 'brand', now)).toMatchObject({ active: 8, intakeAllowed: false });
   });
 });
