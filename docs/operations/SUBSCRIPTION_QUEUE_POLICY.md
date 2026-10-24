@@ -25,10 +25,33 @@ The pre-policy paid-dispute lane reconciliation endpoint, presenter flag and adm
 
 ## Cutover requirements
 
-The retired grandfather tier and brand eligibility flag are removed through an appended migration. The migration rejects references to the retired tier instead of silently converting a financial agreement. The separately authorized SIT/local reset and reference seeding occur only after R2 readiness. Do not use the migration or this policy to reset another environment or infer that a reset already happened.
+The retired grandfather tier and brand eligibility flag are removed through an appended migration. The migration rejects references to the retired tier instead of silently converting a financial agreement. On 24 October 2026, the owner brought the authorized SIT/local reset and reference seeding forward as this cutover's prerequisite. Only the verified localhost/wiez_sit and localhost/threadly test databases are in scope. Each needs a backup with an actual restore check, stopped writers, reference/admin seeding and live verification. Do not use this policy to reset another environment or infer that a reset already happened.
 
 Current legal documents use version `2026.10.23-v1.6`. Historical consent and billing records keep their original versions; new consent uses the current document definitions. Legal Markdown and generated web/native copies must remain synchronized.
 
 ## Regression coverage
 
+### Customer qualification and entitlement expiry
+
+Customers are authenticated shoppers with successfully paid standard or custom orders from the brand. Count each order once, regardless of its number of lines. Exclude cancelled and fully refunded orders; partial refunds retain the paid purchase. Guest orders without a shopper identity cannot be assigned to a customer. Inactive accounts retain masked purchase history.
+
+Free brands see every qualifying shopper (one or more purchases). Paid brands may configure an integer threshold from 1 through 1,000, initially 3. Only the owner may change it. Expiry restores the effective threshold to 1 without deleting the saved paid threshold. Paid access uses the agreement's recorded price and exact paid-period end, not a later catalog price edit.
+
+Commerce-access responses include serverNow and entitlementExpiresAt. Web and native schedule one expiry refresh from these values, make expired controls read-only immediately, and invalidate the scoped customer list. This avoids continuous polling and does not trust the device's calendar at receipt. The API remains authoritative when saving settings. An unavailable refresh cannot grant expired access.
+
+Evaluate entitlement time after the database reads complete, so a slow read crossing expiry cannot return paid access. The staff-readable customer-list response contains only effectiveMinimumOrders in its settings metadata. Subscription tier, upgrade eligibility and paid-period timestamps stay on the owner-only endpoint. Customer settings navigation and cached entitlement presentation are owner-only, while authorized staff retain customer-list access.
+
+### Local item-1 verification, 23 October 2026
+
+- All 143 migrations and two reference/admin seed runs passed in an automatically removed disposable database. Four tier definitions, customer default 3, no seeded financial agreements, and preservation of an administrator's catalog price edit on reseeding were asserted.
+- Six contraction/rollback scenarios passed. The real customer aggregation SQL passed paid, cancelled, full/partial refund, guest, privacy, search, pagination and brand-isolation cases.
+- The actual queue integration suite passed six PostgreSQL scenarios with zero skips, including exact entitlement expiry with saved criteria, a write refused after expiry despite a successful preflight, concurrent shared notices, admission and sibling cancellation, partial-refund reservation, and production dispute compensation. Disposable database cleanup passed.
+- Subscription/queue focused runs passed 67 and 53 tests; the subsequent commerce/customer run passed 12 tests. Web expiry utilities/hooks passed 8 tests; native expiry contract/parity passed. All three applications passed TypeScript checks.
+
+Reproduce with scripts/verify-fresh-schema.cjs --seed, scripts/verify-subscription-tier-contraction.cjs, scripts/verify-customers-db.cjs and scripts/verify-subscription-queue-postgres.cjs. Evidence is in ../storage/evidence/fresh-schema.json, ../storage/evidence/subscription-tier-contraction.json and ../performance-reviews/subscription-queue-postgres-2026-10-23.json.
+
+Item 1 is locally verified. Actual SIT/local reset and live cutover are now authorized before item 2 and remain pending until recorded in the release evidence. No live schema, payment-provider behavior, device rendering or running deployment is certified by these isolated checks.
+
 Verify unsubscribed storefront access, blocked unpaid custom intake, exact paid-period expiry, first activation, failed switch, recovery, cancellation, owner/account safety, admin cap overrides, next-tier notices, highest-tier Upgrade suppression, both capture entrypoints and repeat finalization. Database reset, provider callbacks, device rendering and deployment are separate release checks; focused tests do not establish unlimited capacity or universal absence of defects.
+
+Customer-setting writes lock the brand, then evaluate current paid agreement, owner access and database wall-clock expiry in the write statement. A successful earlier access read cannot authorize a write after expiry. This boundary also passed an actual PostgreSQL test.

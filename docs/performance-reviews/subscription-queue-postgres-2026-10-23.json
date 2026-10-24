@@ -1,0 +1,35 @@
+{
+  "checkedAt": "2026-10-24T07:05:45.909Z",
+  "passed": true,
+  "cleanupPassed": true,
+  "migrationExitCode": 0,
+  "testExitCode": 0,
+  "passedTests": 6,
+  "skippedTests": 0,
+  "testNames": [
+    {
+      "name": "keeps saved customer criteria while paid access expires at the exact recorded boundary",
+      "status": "passed"
+    },
+    {
+      "name": "refuses a paid customer-setting write when the agreement expires after preflight",
+      "status": "passed"
+    },
+    {
+      "name": "keeps tier data private and serializes the shared login/Studio notice receipt",
+      "status": "passed"
+    },
+    {
+      "name": "serializes admission, preserves Up Next, holds the whole capture, and cancels only one sibling",
+      "status": "passed"
+    },
+    {
+      "name": "reserves only the agreed partial amount, preserves the lane, and later refunds only the remainder",
+      "status": "passed"
+    },
+    {
+      "name": "resolves a real production dispute into partial compensation and usable production status",
+      "status": "passed"
+    }
+  ]
+}
