@@ -55,3 +55,9 @@ Item 1 is locally verified. Actual SIT/local reset and live cutover are now auth
 Verify unsubscribed storefront access, blocked unpaid custom intake, exact paid-period expiry, first activation, failed switch, recovery, cancellation, owner/account safety, admin cap overrides, next-tier notices, highest-tier Upgrade suppression, both capture entrypoints and repeat finalization. Database reset, provider callbacks, device rendering and deployment are separate release checks; focused tests do not establish unlimited capacity or universal absence of defects.
 
 Customer-setting writes lock the brand, then evaluate current paid agreement, owner access and database wall-clock expiry in the write statement. A successful earlier access read cannot authorize a write after expiry. This boundary also passed an actual PostgreSQL test.
+
+### Release dependency checks, 24 October 2026
+
+The first GitHub release validation was blocked by newly published parser advisories. Body-parser now resolves to 2.4.0, Multer to 2.5.0 through an explicit dependency override, and fast-uri to 3.1.9 in the lockfile. These retain the existing major versions. Upstream advisories: [body-parser](https://github.com/expressjs/body-parser/security/advisories/GHSA-27r3-jxmh-p828), [Multer](https://github.com/expressjs/multer/security/advisories/GHSA-q7qp-rjg7-q26m), [fast-uri](https://github.com/fastify/fast-uri/security/advisories/GHSA-w74x-v6f9-j3xg).
+
+Three actual HTTP compatibility tests pass: ordinary/compressed JSON retains exact webhook bytes; invalid compressed trailing bytes cannot terminate subsequent requests; asynchronous multipart filtering and the exact field-size boundary work. The 37 upload/privacy mapper tests also pass. The high-severity production dependency gate passes; 12 moderate dependency findings remain in the compiler archive/file-type and Swagger YAML chains. This is not a claim of zero dependency findings.
