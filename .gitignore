@@ -1,6 +1,6 @@
 # compiled output
 /dist
-/node_modules
+**/node_modules/
 /build
 
 # Prisma custom client output (generated at build/start; never commit)

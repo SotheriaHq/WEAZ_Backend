@@ -25,11 +25,12 @@ async function main(){
     evidence.migrationExitCode=await run(['node_modules/prisma/build/index.js','migrate','deploy'],env);
     assert.equal(evidence.migrationExitCode,0,'Fresh queue schema must migrate');
     const report=path.resolve(__dirname,`../.tmp/${database}.json`);
+    await fs.mkdir(path.dirname(report),{recursive:true});
     evidence.testExitCode=await run(['node_modules/jest/bin/jest.js','src/custom-orders/queue/custom-order-queue.integration.spec.ts','--runInBand','--json',`--outputFile=${report}`],env,'inherit');
     const result=JSON.parse(await fs.readFile(report,'utf8'));
     evidence.passedTests=result.numPassedTests;evidence.skippedTests=result.numPendingTests;
     evidence.testNames=result.testResults.flatMap(suite=>suite.assertionResults.map(test=>({name:test.title,status:test.status})));
-    evidence.passed=evidence.testExitCode===0&&result.success&&result.numPassedTests>=4&&result.numPendingTests===0;
+    evidence.passed=evidence.testExitCode===0&&result.success&&result.numPassedTests>=6&&result.numPendingTests===0;
   }finally{
     if(created){
       assert(/^wiez_queue_validation_[a-f0-9]{32}$/.test(database));

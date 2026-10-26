@@ -148,7 +148,9 @@ function verifySeededAdmin() {
         "const pool = new Pool({ connectionString: process.env.DATABASE_URL });",
         "const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });",
         "(async () => {",
-        "  const superAdminEmail = String(process.env.SYSTEM_ADMIN_EMAIL || 'adminoversee@test.com').trim().toLowerCase();",
+        "  require('ts-node/register/transpile-only');",
+        "  const { resolveSystemAdminEmail } = require('./prisma/seed-system-admin');",
+        "  const superAdminEmail = resolveSystemAdminEmail();",
         "  const disallowedSeedEmails = ['brand@example.com'];",
         "  const disallowedSeedUsernames = ['brand_demo'];",
         "  const superAdmin = await prisma.user.findUnique({",
@@ -261,7 +263,8 @@ async function main() {
         console.log('Database admin-only seed completed and SuperAdmin verified.');
       } else {
         runSeed();
-        console.log('Database full seed completed.');
+        verifySeededAdmin();
+        console.log('Database full seed completed and SuperAdmin verified.');
       }
     } else {
       console.log('Database seed skipped.');

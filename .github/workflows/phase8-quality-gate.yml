@@ -63,6 +63,7 @@ jobs:
           node scripts/verify-bulk-import-postgres.cjs
           node scripts/verify-file-deletion-postgres.cjs
           node scripts/verify-fresh-schema.cjs --seed
+          node scripts/verify-reset-bootstrap.cjs
 
       - name: Build
         run: npm run build

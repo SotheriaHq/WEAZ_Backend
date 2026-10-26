@@ -25,7 +25,7 @@ The pre-policy paid-dispute lane reconciliation endpoint, presenter flag and adm
 
 ## Cutover requirements
 
-The retired grandfather tier and brand eligibility flag are removed through an appended migration. The migration rejects references to the retired tier instead of silently converting a financial agreement. The separately authorized SIT/local reset and reference seeding occur only after R2 readiness. Do not use the migration or this policy to reset another environment or infer that a reset already happened.
+The retired grandfather tier and brand eligibility flag are removed through an appended migration. The migration rejects references to the retired tier instead of silently converting a financial agreement. On 24 October 2026, the owner brought the authorized SIT/local reset and reference seeding forward as this cutover's prerequisite. Only the verified localhost/wiez_sit and localhost/threadly test databases are in scope. Each needs a backup with an actual restore check, stopped writers, reference/admin seeding and live verification. Do not use this policy to reset another environment or infer that a reset already happened.
 
 Current legal documents use version `2026.10.23-v1.6`. Historical consent and billing records keep their original versions; new consent uses the current document definitions. Legal Markdown and generated web/native copies must remain synchronized.
 
@@ -50,8 +50,14 @@ Evaluate entitlement time after the database reads complete, so a slow read cros
 
 Reproduce with scripts/verify-fresh-schema.cjs --seed, scripts/verify-subscription-tier-contraction.cjs, scripts/verify-customers-db.cjs and scripts/verify-subscription-queue-postgres.cjs. Evidence is in ../storage/evidence/fresh-schema.json, ../storage/evidence/subscription-tier-contraction.json and ../performance-reviews/subscription-queue-postgres-2026-10-23.json.
 
-Item 1 is locally verified. The owner reserved actual SIT/local reset and live cutover for the final release. No live schema, payment-provider behavior, device rendering or running deployment is certified by these isolated checks.
+Actual SIT/local reset, reference/admin seeding and backend cutover completed on24October. Web PR7 subsequently merged on25October; further item-1 follow-up remains held. Current schema additions require their own verified rollout. No live schema, payment-provider behavior, device rendering or running deployment is certified by these isolated checks.
 
 Verify unsubscribed storefront access, blocked unpaid custom intake, exact paid-period expiry, first activation, failed switch, recovery, cancellation, owner/account safety, admin cap overrides, next-tier notices, highest-tier Upgrade suppression, both capture entrypoints and repeat finalization. Database reset, provider callbacks, device rendering and deployment are separate release checks; focused tests do not establish unlimited capacity or universal absence of defects.
 
 Customer-setting writes lock the brand, then evaluate current paid agreement, owner access and database wall-clock expiry in the write statement. A successful earlier access read cannot authorize a write after expiry. This boundary also passed an actual PostgreSQL test.
+
+### Release dependency checks, 24 October 2026
+
+The first GitHub release validation was blocked by newly published parser advisories. Body-parser now resolves to 2.4.0, Multer to 2.5.0 through an explicit dependency override, and fast-uri to 3.1.9 in the lockfile. These retain the existing major versions. Upstream advisories: [body-parser](https://github.com/expressjs/body-parser/security/advisories/GHSA-27r3-jxmh-p828), [Multer](https://github.com/expressjs/multer/security/advisories/GHSA-q7qp-rjg7-q26m), [fast-uri](https://github.com/fastify/fast-uri/security/advisories/GHSA-w74x-v6f9-j3xg).
+
+Three actual HTTP compatibility tests pass: ordinary/compressed JSON retains exact webhook bytes; invalid compressed trailing bytes cannot terminate subsequent requests; asynchronous multipart filtering and the exact field-size boundary work. The 37 upload/privacy mapper tests also pass. The high-severity production dependency gate passes; 12 moderate dependency findings remain in the compiler archive/file-type and Swagger YAML chains. This is not a claim of zero dependency findings.
