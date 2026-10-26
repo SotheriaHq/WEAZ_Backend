@@ -965,15 +965,7 @@ export class CategoriesService {
       });
 
       if (existing) {
-        await this.prisma.collectionCategory.update({
-          where: { id: existing.id },
-          data: {
-            name: category.name,
-            description: category.description,
-            order: category.order,
-            isActive: true,
-          },
-        });
+        // Defaults are inserted once; admin edits to an existing row are kept.
         categoryIdsBySlug.set(category.slug, existing.id);
       } else {
         const created = await this.prisma.collectionCategory.create({
@@ -1027,17 +1019,7 @@ export class CategoriesService {
           },
         );
 
-        if (existingType) {
-          await this.prisma.collectionCategoryType.update({
-            where: { id: existingType.id },
-            data: {
-              name: sub.name,
-              description: sub.description ?? null,
-              order: sub.order,
-              isActive: true,
-            },
-          });
-        } else {
+        if (!existingType) {
           await this.prisma.collectionCategoryType.create({
             data: {
               id: uuidv4(),
@@ -1119,17 +1101,6 @@ export class CategoriesService {
       });
 
       if (existing) {
-        await this.prisma.filterDimension.update({
-          where: { id: existing.id },
-          data: {
-            name: dim.name,
-            description: dim.description,
-            order: dim.order,
-            isMulti: dim.isMulti,
-            appliesTo: dim.appliesTo,
-            isActive: true,
-          },
-        });
         dimensionId = existing.id;
       } else {
         const created = await this.prisma.filterDimension.create({
@@ -1155,16 +1126,7 @@ export class CategoriesService {
           select: { id: true },
         });
 
-        if (existingValue) {
-          await this.prisma.filterValue.update({
-            where: { id: existingValue.id },
-            data: {
-              name: val.name,
-              order: val.order,
-              isActive: true,
-            },
-          });
-        } else {
+        if (!existingValue) {
           await this.prisma.filterValue.create({
             data: {
               id: uuidv4(),
@@ -1178,20 +1140,7 @@ export class CategoriesService {
         }
       }
 
-      const activeValueSlugs = dim.values.map((value) => value.slug);
-      const deactivatedValues = await this.prisma.filterValue.updateMany({
-        where: {
-          dimensionId,
-          isActive: true,
-          slug: { notIn: activeValueSlugs },
-        },
-        data: { isActive: false },
-      });
-      if (deactivatedValues.count > 0) {
-        this.logger.log(
-          `Deactivated ${deactivatedValues.count} obsolete values in filter dimension: ${dim.slug}`,
-        );
-      }
+      // Values an admin added are not defaults and are never deactivated here.
     }
 
     const activeDimensionSlugs = DEFAULT_FILTER_DIMENSIONS.map(

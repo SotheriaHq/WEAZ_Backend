@@ -60,6 +60,7 @@ import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-fina
 import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-sync.service';
 import { CustomOrderQueueService } from 'src/custom-orders/queue/custom-order-queue.service';
 import { CustomOrderQueueRefundsService } from 'src/custom-orders/queue/custom-order-queue-refunds.service';
+import { StandardOrderRefundsService } from 'src/finance/standard-order-refunds.service';
 import { SubscriptionsService } from 'src/subscriptions/subscriptions.service';
 import type { ForwardRefType } from 'src/common/types/forward-ref-type';
 import { TelegramEventsService } from 'src/telegram-monitoring/telegram-events.service';
@@ -109,7 +110,7 @@ import {
   PHONE_REQUIRED_MESSAGE,
 } from 'src/common/utils/phone-number';
 import { LegalService } from 'src/legal/legal.service';
-import { lockCheckoutProducts, lockCheckoutVariants, LockedCheckoutProduct, releaseCheckoutReservations } from './checkout-inventory-query';
+import { isSellableAfterLock, lockCheckoutProducts, lockCheckoutVariants, LockedCheckoutProduct, releaseCheckoutReservations } from './checkout-inventory-query';
 
 type PaymentAttemptRecord = Awaited<
   ReturnType<PrismaService['paymentAttempt']['findUnique']>
@@ -358,6 +359,8 @@ export class PaymentService implements OnModuleInit {
     @Optional()
     @Inject('PAYMENT_PAYSTACK_BASE_URL')
     private readonly paystackVerificationBaseUrl = 'https://api.paystack.co',
+    @Optional()
+    private readonly standardRefunds?: StandardOrderRefundsService,
   ) {}
 
   onModuleInit(): void {
@@ -713,7 +716,14 @@ export class PaymentService implements OnModuleInit {
           });
 
           const reservedLines = standardLineDrafts.filter(line => line.reserveInventory);
-          const lockedInventory = await lockCheckoutProducts(tx, reservedLines.map(line => line.productId));
+          // Every standard line's product is locked and re-read, not only tracked
+          // stock: product deletion takes the same lock, so a removed product
+          // can never enter a new checkout.
+          const lockedInventory = await lockCheckoutProducts(tx, standardLineDrafts.map(line => line.productId));
+          const unavailable = standardLineDrafts.find(line => !isSellableAfterLock(lockedInventory.get(line.productId.toLowerCase()) ?? lockedInventory.get(line.productId)));
+          if (unavailable) {
+            throw new BadRequestException(`Product is no longer available: ${unavailable.productName}`);
+          }
           await lockCheckoutVariants(tx, reservedLines.flatMap(line => line.variantId ? [line.variantId] : []));
           for (let index = 0; index < standardLineDrafts.length; index += 1) {
             const line = standardLineDrafts[index];
@@ -2607,15 +2617,20 @@ export class PaymentService implements OnModuleInit {
     }
 
     // These handlers run only after signature verification. Their references
-    // belong to separate durable records, never a whole checkout refund.
+    // belong to separate durable records, never a whole checkout refund. A
+    // unified capture can carry both kinds, so both stores are consulted; each
+    // re-reads its own refunds from the provider before acting.
     const eventType = this.extractWebhookEvent(normalizedGateway, payload);
     if (
-      (normalizedGateway === 'PAYSTACK' ||
-        normalizedGateway === 'FLUTTERWAVE') &&
-      this.queueRefunds &&
-      (await this.queueRefunds.handleWebhook(normalizedGateway, payload))
-    )
-      return null;
+      normalizedGateway === 'PAYSTACK' ||
+      normalizedGateway === 'FLUTTERWAVE'
+    ) {
+      const [custom, standard] = await Promise.all([
+        this.queueRefunds?.handleWebhook(normalizedGateway, payload) ?? false,
+        this.standardRefunds?.handleWebhook(normalizedGateway, payload) ?? false,
+      ]);
+      if (custom || standard) return null;
+    }
     const reference = this.extractWebhookReference(normalizedGateway, payload);
     if (
       normalizedGateway === 'PAYSTACK' &&

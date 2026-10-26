@@ -280,6 +280,7 @@ export class OrderSlaCronService {
               await this.orderRefundService.initiateRefund(tx, {
                 orderId: order.id,
                 reason: 'SLA_FULFILLMENT_TIMEOUT',
+                trigger: 'SLA_TIMEOUT',
               });
               return true;
             });
@@ -363,6 +364,7 @@ export class OrderSlaCronService {
           orderId,
           autoCancelled,
           reason: 'SLA_FULFILLMENT_TIMEOUT',
+          ...(autoCancelled ? { refundStatus: 'PENDING' } : {}),
           targetUrl: `/orders/${orderId}`,
         },
       },

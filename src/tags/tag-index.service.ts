@@ -495,6 +495,24 @@ export class TagIndexService {
           ).map((row) => ({ ...row, entityId: row.id })),
       },
       {
+        entityType: TAG_ENTITY_TYPE.STORE_COLLECTION,
+        maxCount: 30,
+        load: async (afterId) =>
+          (
+            await this.prisma.storeCollection.findMany({
+              where: {
+                status: 'PUBLISHED',
+                visibility: 'PUBLIC',
+                deletedAt: null,
+                ...(afterId ? { id: { gt: afterId } } : {}),
+              },
+              select: { id: true, tags: true },
+              orderBy: { id: 'asc' },
+              take: pageSize,
+            })
+          ).map((row) => ({ ...row, entityId: row.id })),
+      },
+      {
         entityType: TAG_ENTITY_TYPE.PRODUCT,
         maxCount: 30,
         load: async (afterId) =>
@@ -551,11 +569,8 @@ export class TagIndexService {
       },
     ];
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.tagBinding.deleteMany({});
-      await tx.tag.updateMany({ data: { usageCount: 0, lastUsedAt: null } });
-    });
-
+    // No global delete: the index stays searchable while it is rebuilt, and each
+    // entity converges from its current bindings to its current source tags.
     let bindingsCreated = 0;
     for (const source of sources) {
       let afterId: string | null = null;
@@ -566,6 +581,19 @@ export class TagIndexService {
           ...row,
           tags: this.normalizeTagList(row.tags ?? [], source.maxCount),
         }));
+        const bound = new Map<string, string[]>();
+        const current = await this.prisma.tagBinding.findMany({
+          where: {
+            entityType: source.entityType,
+            entityId: { in: normalized.map((row) => row.entityId) },
+          },
+          select: { entityId: true, tag: { select: { normalizedName: true } } },
+        });
+        for (const binding of current) {
+          const list = bound.get(binding.entityId) ?? [];
+          list.push(binding.tag.normalizedName);
+          bound.set(binding.entityId, list);
+        }
         const names = [...new Set(normalized.flatMap((row) => row.tags))];
         const blocked = new Set<string>();
         for (let offset = 0; offset < names.length; offset += pageSize) {
@@ -581,9 +609,9 @@ export class TagIndexService {
         const entries = normalized.map((row) => ({
           entityType: source.entityType,
           entityId: row.entityId,
-          previousTags: [] as string[],
+          previousTags: bound.get(row.entityId) ?? [],
           nextTags: row.tags.filter((tag) => !blocked.has(tag)),
-          options: { maxCount: source.maxCount, notifyMentions: false },
+          options: { maxCount: 1000, notifyMentions: false },
         }));
         await this.syncEntitiesTags(entries);
         bindingsCreated += entries.reduce(
@@ -594,8 +622,51 @@ export class TagIndexService {
       }
     }
 
+    await this.removeIneligibleBindings();
     const tagsIndexed = await prismaClient.tag.count();
     return { tagsIndexed, bindingsCreated };
+  }
+
+  /**
+   * Remove bindings whose target is no longer indexable (unpublished, private,
+   * archived, deleted or closed). Tags are locked before their bindings change,
+   * as every binding writer does, and usage counts are recomputed after.
+   */
+  private async removeIneligibleBindings(batchSize = 500) {
+    for (;;) {
+      const stale = await this.prisma.$queryRaw<Array<{ id: string; tagId: string }>>(Prisma.sql`
+        SELECT b."_id" AS id, b."tagId" FROM "TagBinding" b
+        WHERE ${this.ineligibleBindingCondition()}
+        ORDER BY b."_id" LIMIT ${batchSize}
+      `);
+      if (!stale.length) return;
+      await this.prisma.$transaction(async (tx) => {
+        const locked = await lockTagRows(tx, stale.map((row) => row.tagId));
+        await tx.$executeRaw(Prisma.sql`
+          DELETE FROM "TagBinding" b
+          WHERE b."_id" = ANY(${stale.map((row) => row.id)}::uuid[])
+            AND ${this.ineligibleBindingCondition()}
+        `);
+        await refreshTagUsageCounts(tx, locked.map((row) => row.id), new Date());
+      });
+      if (stale.length < batchSize) return;
+    }
+  }
+
+  private ineligibleBindingCondition() {
+    return Prisma.sql`(
+      (b."entityType" = 'PRODUCT' AND NOT EXISTS (SELECT 1 FROM "Product" p
+        WHERE p."_id" = b."entityId" AND p."isActive" AND p."deletedAt" IS NULL AND p."archivedAt" IS NULL
+          AND (p."publishAt" IS NULL OR p."publishAt" <= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'))))
+      OR (b."entityType" = 'COLLECTION' AND NOT EXISTS (SELECT 1 FROM "Collection" c
+        WHERE c."_id" = b."entityId" AND c.status = 'PUBLISHED' AND c.visibility = 'PUBLIC' AND c."deletedAt" IS NULL))
+      OR (b."entityType" = 'STORE_COLLECTION' AND NOT EXISTS (SELECT 1 FROM "StoreCollection" s
+        WHERE s."_id" = b."entityId" AND s.status = 'PUBLISHED' AND s.visibility = 'PUBLIC' AND s."deletedAt" IS NULL))
+      OR (b."entityType" = 'BRAND' AND NOT EXISTS (SELECT 1 FROM "Brand" br
+        WHERE br."_id" = b."entityId" AND br."isStoreOpen"))
+      OR (b."entityType" = 'USER_BRAND' AND NOT EXISTS (SELECT 1 FROM "User" u
+        WHERE u."_id" = b."entityId" AND u.type = 'BRAND'))
+    )`;
   }
 
   @Cron(CronExpression.EVERY_6_HOURS)

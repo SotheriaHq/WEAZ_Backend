@@ -662,13 +662,7 @@ integration('paid queue PostgreSQL transaction integration', () => {
         buyerStatement: 'Agreed partial compensation',
       },
     });
-    const ledger = new LedgerService(prisma as any);
-    const refundService = new CustomOrderRefundService(
-      prisma as any,
-      ledger,
-      new BrandBalanceService(prisma as any),
-      queue,
-    );
+    const refundService = new CustomOrderRefundService(queue);
     const disputes = new CustomOrderDisputeService(
       prisma as any,
       refundService,

@@ -5071,7 +5071,7 @@ export class CollectionsService {
     }
     if (this.tagIndex && shouldSyncCollectionTags) {
       await this.tagIndex.syncEntityTags(
-        TAG_ENTITY_TYPE.COLLECTION,
+        TAG_ENTITY_TYPE.STORE_COLLECTION,
         collectionId,
         previousIndexedTags,
         nextIndexedTags,
@@ -5466,7 +5466,7 @@ export class CollectionsService {
       }
       if (previousIndexedTags.length > 0 && this.tagIndex) {
         await this.tagIndex.syncEntityTags(
-          TAG_ENTITY_TYPE.COLLECTION,
+          TAG_ENTITY_TYPE.STORE_COLLECTION,
           collectionId,
           previousIndexedTags,
           [],
@@ -5599,7 +5599,7 @@ export class CollectionsService {
         !this.areTagsEqual(previousIndexedTags, nextIndexedTags)
       ) {
         await this.tagIndex.syncEntityTags(
-          TAG_ENTITY_TYPE.COLLECTION,
+          TAG_ENTITY_TYPE.STORE_COLLECTION,
           collectionId,
           previousIndexedTags,
           nextIndexedTags,
@@ -7260,16 +7260,25 @@ export class CollectionsService {
       const deleteExpiresAt = new Date(
         now.getTime() + this.collectionDeleteWindowMs,
       );
-      await this.prisma.storeCollection.update({
-        where: { id: collectionId },
-        data: { deletedAt: now, deleteExpiresAt },
+      // Members keep their link (the deletion can be restored), but a deleted
+      // collection is never a product's primary: move each primary to a live
+      // collection, or clear it, in the same transaction. Collection lock first,
+      // then product locks, as every membership writer does.
+      const productIds = await this.prisma.$transaction(async (tx) => {
+        await this.lockMembershipCollection(tx, collectionId);
+        await tx.storeCollection.update({
+          where: { id: collectionId },
+          data: { deletedAt: now, deleteExpiresAt },
+        });
+        const links = await tx.storeCollectionProduct.findMany({
+          where: { collectionId },
+          select: { productId: true },
+        });
+        const ids = links.map((link) => link.productId);
+        await lockMembershipProducts(tx, ids);
+        await synchronizePrimaryMemberships(tx, ids);
+        return ids;
       });
-
-      const productLinks = await this.prisma.storeCollectionProduct.findMany({
-        where: { collectionId },
-        select: { productId: true },
-      });
-      const productIds = productLinks.map((l) => l.productId);
       if (productIds.length) {
         await this.prisma.cartItem.deleteMany({
           where: { productId: { in: productIds } },
@@ -7281,7 +7290,7 @@ export class CollectionsService {
       }
       if (previousIndexedTags.length > 0 && this.tagIndex) {
         await this.tagIndex.syncEntityTags(
-          TAG_ENTITY_TYPE.COLLECTION,
+          TAG_ENTITY_TYPE.STORE_COLLECTION,
           collectionId,
           previousIndexedTags,
           [],
@@ -7498,7 +7507,7 @@ export class CollectionsService {
       }
       if (indexedTags.length > 0 && this.tagIndex) {
         await this.tagIndex.syncEntityTags(
-          TAG_ENTITY_TYPE.COLLECTION,
+          TAG_ENTITY_TYPE.STORE_COLLECTION,
           duplicateId,
           [],
           indexedTags,
@@ -7750,7 +7759,7 @@ export class CollectionsService {
         !this.areTagsEqual(previousIndexedTags, nextIndexedTags)
       ) {
         await this.tagIndex.syncEntityTags(
-          TAG_ENTITY_TYPE.COLLECTION,
+          TAG_ENTITY_TYPE.STORE_COLLECTION,
           collectionId,
           previousIndexedTags,
           nextIndexedTags,
@@ -9661,7 +9670,7 @@ export class CollectionsService {
         }
         if (this.tagIndex) {
           await this.tagIndex.syncEntityTags(
-            TAG_ENTITY_TYPE.COLLECTION,
+            TAG_ENTITY_TYPE.STORE_COLLECTION,
             collectionId,
             previousIndexedTags,
             nextIndexedTags,

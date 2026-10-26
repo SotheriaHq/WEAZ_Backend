@@ -1,39 +1,47 @@
 import { Prisma } from '@prisma/client';
+import {
+  BRAND_SETTLEMENT_CURRENCY,
+  loadBrandPosition,
+} from './brand-position-query';
 
-/** One canonical debt summary/recipient projection, without loading every debt row. */
+/**
+ * Canonical debt summary and owner for one brand, in its settlement currency.
+ * What is owed is the negative part of the brand's position; the open debt
+ * rows only say why. Two bounded reads, no per-debt hydration.
+ */
 export async function loadBrandDebtContext(
-  tx: Prisma.TransactionClient,
+  tx: Pick<Prisma.TransactionClient, '$queryRaw'>,
   brandId: string,
+  currency: string = BRAND_SETTLEMENT_CURRENCY,
 ) {
   const rows = await tx.$queryRaw<
     Array<{
       ownerId: string;
-      outstanding: Prisma.Decimal;
       count: bigint;
       oldestAt: Date | null;
-      currency: string | null;
     }>
   >(Prisma.sql`
-    SELECT b."ownerId", debt.outstanding, debt.count,
-      debt."oldestAt", debt.currency
+    SELECT b."ownerId", debt.count, debt."oldestAt"
     FROM "Brand" b
     LEFT JOIN LATERAL (
-      SELECT GREATEST(COALESCE(SUM((a.amount - a."recoveredAmount") *
-        CASE WHEN a.type = 'MANUAL_CREDIT' THEN -1 ELSE 1 END), 0), 0) AS outstanding,
-        COUNT(*) AS count, MIN(a."createdAt") AS "oldestAt",
-        (ARRAY_AGG(a.currency ORDER BY a."createdAt", a.id))[1] AS currency
+      SELECT COUNT(*) AS count, MIN(a."createdAt") AS "oldestAt"
       FROM "BrandBalanceAdjustment" a WHERE a."brandId" = b."_id"
+        AND a.currency = ${currency}
+        AND a.type <> 'MANUAL_CREDIT'
         AND a.status IN ('OUTSTANDING', 'PARTIALLY_RECOVERED')
     ) debt ON true
     WHERE b."_id" = ${brandId}::uuid
   `);
   const row = rows[0];
-  const outstanding = row?.outstanding.toNumber() ?? 0;
+  const { position } = row
+    ? await loadBrandPosition(tx, brandId, currency)
+    : { position: new Prisma.Decimal(0) };
+  const outstanding = position.isNegative() ? position.negated().toNumber() : 0;
   return {
     ownerId: row?.ownerId ?? null,
     snapshot: {
       outstanding,
-      currency: row?.currency ?? 'NGN',
+      currency,
       count: Number(row?.count ?? 0),
       oldestAt: row?.oldestAt ?? null,
       inDebt: outstanding > 0,

@@ -32,6 +32,8 @@ const LedgerTransactionType = {
 type LedgerTransactionType =
   (typeof LedgerTransactionType)[keyof typeof LedgerTransactionType];
 
+type LedgerAmount = Prisma.Decimal | number | string;
+
 type LedgerLine = {
   code: string;
   name: string;
@@ -41,7 +43,7 @@ type LedgerLine = {
   entityId?: string;
   isSystemAccount?: boolean;
   direction: LedgerEntryDirection;
-  amount: number;
+  amount: LedgerAmount;
 };
 
 type PostLedgerTransactionParams = {
@@ -50,15 +52,25 @@ type PostLedgerTransactionParams = {
   description: string;
   referenceType?: string;
   referenceId?: string;
-  totalAmount: number;
+  totalAmount: LedgerAmount;
   currency: string;
   baseCurrency?: string;
-  baseCurrencyAmount?: number;
+  baseCurrencyAmount?: LedgerAmount;
   fxRateSnapshotId?: string | null;
   metadata?: Prisma.InputJsonValue;
   createdById?: string | null;
   lines: LedgerLine[];
 };
+
+/** Standard escrow split at the moment a refund is reserved. */
+export type StandardRefundSplit = {
+  releasedGross: Prisma.Decimal;
+  releasedCommission: Prisma.Decimal;
+  releasedNet: Prisma.Decimal;
+  unreleasedGross: Prisma.Decimal;
+};
+
+const CURRENCY_CODE = /^[A-Z]{3}$/;
 
 @Injectable()
 export class LedgerService {
@@ -68,6 +80,15 @@ export class LedgerService {
     tx: Prisma.TransactionClient,
     params: PostLedgerTransactionParams,
   ) {
+    const currency = String(params.currency ?? '')
+      .trim()
+      .toUpperCase();
+    const baseCurrency = String(params.baseCurrency ?? currency)
+      .trim()
+      .toUpperCase();
+    if (!CURRENCY_CODE.test(currency) || !CURRENCY_CODE.test(baseCurrency)) {
+      throw new BadRequestException('LEDGER_INVALID_CURRENCY');
+    }
     const roundedTotal = this.ledgerMoney(params.totalAmount);
     const lines = params.lines.map((line) => ({
       ...line,
@@ -102,8 +123,8 @@ export class LedgerService {
         referenceType: params.referenceType ?? null,
         referenceId: params.referenceId ?? null,
         totalAmount: roundedTotal,
-        currency: params.currency,
-        baseCurrency: params.baseCurrency ?? params.currency,
+        currency,
+        baseCurrency,
         baseCurrencyAmount: this.ledgerMoney(
           params.baseCurrencyAmount ?? params.totalAmount,
         ),
@@ -135,7 +156,7 @@ export class LedgerService {
           .join('\n');
       if (
         existing.type !== params.type ||
-        existing.currency !== params.currency ||
+        existing.currency !== currency ||
         existing.referenceType !== (params.referenceType ?? null) ||
         existing.referenceId !== (params.referenceId ?? null) ||
         !existing.totalAmount.equals(roundedTotal) ||
@@ -162,8 +183,9 @@ export class LedgerService {
     }
     const codes = [...definitions.keys()].sort();
     if (codes.length > 0) {
+      // An account is one (code, currency): a USD posting never touches an NGN balance.
       const existing = await tx.ledgerAccount.findMany({
-        where: { code: { in: codes } },
+        where: { code: { in: codes }, currency },
         select: { code: true },
       });
       const existingCodes = new Set(existing.map((account) => account.code));
@@ -180,7 +202,7 @@ export class LedgerService {
               subType: line.subType,
               entityType: line.entityType ?? null,
               entityId: line.entityId ?? null,
-              currency: 'NGN',
+              currency,
               currentBalance: new Prisma.Decimal(0),
               isSystemAccount: Boolean(line.isSystemAccount),
               isActive: true,
@@ -204,7 +226,7 @@ export class LedgerService {
       >(Prisma.sql`
         SELECT "id", "code", "type", "subType", "entityType", "entityId",
                "isSystemAccount", "currentBalance"
-        FROM "LedgerAccount" WHERE "code" IN (${Prisma.join(codes)})
+        FROM "LedgerAccount" WHERE "code" IN (${Prisma.join(codes)}) AND "currency" = ${currency}
         ORDER BY "code" FOR UPDATE
       `);
       if (accounts.length !== codes.length) {
@@ -283,7 +305,7 @@ export class LedgerService {
       description: `Payment received for order ${hold.orderId}`,
       referenceType: 'Order',
       referenceId: hold.orderId,
-      totalAmount: Number(hold.totalAmount),
+      totalAmount: hold.totalAmount,
       currency: hold.currency,
       lines: [
         {
@@ -293,7 +315,7 @@ export class LedgerService {
           subType: 'GATEWAY_RECEIVABLES',
           isSystemAccount: true,
           direction: LedgerEntryDirection.DEBIT,
-          amount: Number(hold.totalAmount),
+          amount: hold.totalAmount,
         },
         {
           code: 'SYSTEM:STANDARD_ORDER_ESCROW',
@@ -302,7 +324,7 @@ export class LedgerService {
           subType: 'STANDARD_ORDER_ESCROW',
           isSystemAccount: true,
           direction: LedgerEntryDirection.CREDIT,
-          amount: Number(hold.totalAmount),
+          amount: hold.totalAmount,
         },
       ],
     });
@@ -329,7 +351,7 @@ export class LedgerService {
       description: `Shipment release for order ${hold.orderId}`,
       referenceType: 'Order',
       referenceId: hold.orderId,
-      totalAmount: Number(hold.firstReleaseAmount),
+      totalAmount: hold.firstReleaseAmount,
       currency: hold.currency,
       lines: [
         {
@@ -339,7 +361,7 @@ export class LedgerService {
           subType: 'STANDARD_ORDER_ESCROW',
           isSystemAccount: true,
           direction: LedgerEntryDirection.DEBIT,
-          amount: Number(hold.firstReleaseAmount),
+          amount: hold.firstReleaseAmount,
         },
         {
           code: 'SYSTEM:PLATFORM_COMMISSION_REVENUE',
@@ -348,7 +370,7 @@ export class LedgerService {
           subType: 'PLATFORM_COMMISSION',
           isSystemAccount: true,
           direction: LedgerEntryDirection.CREDIT,
-          amount: Number(hold.firstReleaseCommissionAmount),
+          amount: hold.firstReleaseCommissionAmount,
         },
         {
           code: this.getBrandWalletCode(hold.brandId),
@@ -358,7 +380,7 @@ export class LedgerService {
           entityType: 'BRAND',
           entityId: hold.brandId,
           direction: LedgerEntryDirection.CREDIT,
-          amount: Number(hold.firstReleaseNetAmount),
+          amount: hold.firstReleaseNetAmount,
         },
       ],
     });
@@ -385,7 +407,7 @@ export class LedgerService {
       description: `Final escrow release for order ${hold.orderId}`,
       referenceType: 'Order',
       referenceId: hold.orderId,
-      totalAmount: Number(hold.secondReleaseAmount),
+      totalAmount: hold.secondReleaseAmount,
       currency: hold.currency,
       lines: [
         {
@@ -395,7 +417,7 @@ export class LedgerService {
           subType: 'STANDARD_ORDER_ESCROW',
           isSystemAccount: true,
           direction: LedgerEntryDirection.DEBIT,
-          amount: Number(hold.secondReleaseAmount),
+          amount: hold.secondReleaseAmount,
         },
         {
           code: 'SYSTEM:PLATFORM_COMMISSION_REVENUE',
@@ -404,7 +426,7 @@ export class LedgerService {
           subType: 'PLATFORM_COMMISSION',
           isSystemAccount: true,
           direction: LedgerEntryDirection.CREDIT,
-          amount: Number(hold.secondReleaseCommissionAmount),
+          amount: hold.secondReleaseCommissionAmount,
         },
         {
           code: this.getBrandWalletCode(hold.brandId),
@@ -414,7 +436,7 @@ export class LedgerService {
           entityType: 'BRAND',
           entityId: hold.brandId,
           direction: LedgerEntryDirection.CREDIT,
-          amount: Number(hold.secondReleaseNetAmount),
+          amount: hold.secondReleaseNetAmount,
         },
       ],
     });
@@ -563,46 +585,77 @@ export class LedgerService {
     });
   }
 
-  async postCustomOrderRefund(
+  /**
+   * What of a standard escrow hold has already reached the brand and the
+   * platform, computed exactly. The refund reserves all of it back.
+   */
+  standardRefundSplit(hold: {
+    totalAmount: Prisma.Decimal;
+    firstReleasedAt: Date | null;
+    firstReleaseAmount: Prisma.Decimal;
+    firstReleaseCommissionAmount: Prisma.Decimal;
+    firstReleaseNetAmount: Prisma.Decimal;
+    secondReleasedAt: Date | null;
+    secondReleaseAmount: Prisma.Decimal;
+    secondReleaseCommissionAmount: Prisma.Decimal;
+    secondReleaseNetAmount: Prisma.Decimal;
+  }): StandardRefundSplit {
+    const zero = new Prisma.Decimal(0);
+    const first = hold.firstReleasedAt;
+    const second = hold.secondReleasedAt;
+    const releasedGross = (first ? hold.firstReleaseAmount : zero).plus(
+      second ? hold.secondReleaseAmount : zero,
+    );
+    const releasedCommission = (
+      first ? hold.firstReleaseCommissionAmount : zero
+    ).plus(second ? hold.secondReleaseCommissionAmount : zero);
+    const releasedNet = (first ? hold.firstReleaseNetAmount : zero).plus(
+      second ? hold.secondReleaseNetAmount : zero,
+    );
+    const unreleasedGross = hold.totalAmount.minus(releasedGross);
+    if (unreleasedGross.isNegative()) {
+      throw new BadRequestException('LEDGER_REFUND_EXCEEDS_HOLD');
+    }
+    return { releasedGross, releasedCommission, releasedNet, unreleasedGross };
+  }
+
+  /**
+   * A standard refund was requested: everything the hold had paid out or still
+   * holds now belongs to the shopper and sits in refund payable until the
+   * provider confirms. Released brand money is clawed back here, once.
+   */
+  async postStandardOrderRefundReserved(
     tx: Prisma.TransactionClient,
     params: {
-      customOrderId: string;
+      refundId: string;
+      orderId: string;
       brandId: string;
       currency: string;
-      totalAmount: number;
-      releasedCommission: number;
-      releasedNet: number;
-      unreleasedGross: number;
+      totalAmount: Prisma.Decimal;
+      split: StandardRefundSplit;
     },
   ) {
-    const lines: LedgerLine[] = [];
-
-    if (params.unreleasedGross > 0) {
-      lines.push({
-        code: 'SYSTEM:CUSTOM_ORDER_ESCROW',
-        name: 'Custom Order Escrow',
+    const { split } = params;
+    const lines: LedgerLine[] = [
+      {
+        code: 'SYSTEM:STANDARD_ORDER_ESCROW',
+        name: 'Standard Order Escrow',
         type: LedgerAccountType.LIABILITY,
-        subType: 'CUSTOM_ORDER_ESCROW',
+        subType: 'STANDARD_ORDER_ESCROW',
         isSystemAccount: true,
         direction: LedgerEntryDirection.DEBIT,
-        amount: params.unreleasedGross,
-      });
-    }
-
-    if (params.releasedCommission > 0) {
-      lines.push({
+        amount: split.unreleasedGross,
+      },
+      {
         code: 'SYSTEM:PLATFORM_COMMISSION_REVENUE',
         name: 'Platform Commission Revenue',
         type: LedgerAccountType.REVENUE,
         subType: 'PLATFORM_COMMISSION',
         isSystemAccount: true,
         direction: LedgerEntryDirection.DEBIT,
-        amount: params.releasedCommission,
-      });
-    }
-
-    if (params.releasedNet > 0) {
-      lines.push({
+        amount: split.releasedCommission,
+      },
+      {
         code: this.getBrandWalletCode(params.brandId),
         name: `Brand Wallet ${params.brandId}`,
         type: LedgerAccountType.LIABILITY,
@@ -610,129 +663,77 @@ export class LedgerService {
         entityType: 'BRAND',
         entityId: params.brandId,
         direction: LedgerEntryDirection.DEBIT,
-        amount: params.releasedNet,
-      });
-    }
-
-    lines.push({
-      code: 'SYSTEM:GATEWAY_RECEIVABLES',
-      name: 'Gateway Receivables',
-      type: LedgerAccountType.ASSET,
-      subType: 'GATEWAY_RECEIVABLES',
-      isSystemAccount: true,
-      direction: LedgerEntryDirection.CREDIT,
-      amount: params.totalAmount,
-    });
+        amount: split.releasedNet,
+      },
+      {
+        code: 'SYSTEM:REFUND_PAYABLE',
+        name: 'Refund Payable',
+        type: LedgerAccountType.LIABILITY,
+        subType: 'REFUND_PAYABLE',
+        isSystemAccount: true,
+        direction: LedgerEntryDirection.CREDIT,
+        amount: params.totalAmount,
+      },
+    ];
 
     return this.postTransaction(tx, {
-      idempotencyKey: `ledger:custom-order:${params.customOrderId}:refund`,
-      type: LedgerTransactionType.REFUND_ISSUED,
-      description: `Refund issued for custom order ${params.customOrderId}`,
-      referenceType: 'CustomOrder',
-      referenceId: params.customOrderId,
+      idempotencyKey: `ledger:order:${params.orderId}:refund_reserved`,
+      type: LedgerTransactionType.REVERSAL,
+      description: `Refund reserved for order ${params.orderId}`,
+      referenceType: 'StandardOrderRefund',
+      referenceId: params.refundId,
       totalAmount: params.totalAmount,
       currency: params.currency,
       lines,
     });
   }
 
-  async postStandardOrderRefund(
+  /** The provider confirmed the refund: the payable is paid from the gateway. */
+  async postStandardOrderRefundSettled(
     tx: Prisma.TransactionClient,
-    hold: {
-      orderId: string | null;
-      brandId: string;
+    params: {
+      refundId: string;
+      orderId: string;
       currency: string;
       totalAmount: Prisma.Decimal;
-      firstReleasedAt: Date | null;
-      firstReleaseAmount: Prisma.Decimal;
-      firstReleaseCommissionAmount: Prisma.Decimal;
-      firstReleaseNetAmount: Prisma.Decimal;
-      secondReleasedAt: Date | null;
-      secondReleaseAmount: Prisma.Decimal;
-      secondReleaseCommissionAmount: Prisma.Decimal;
-      secondReleaseNetAmount: Prisma.Decimal;
+      captureCurrency: string;
+      captureAmount: Prisma.Decimal;
+      exchangeRateSnapshotId?: string | null;
     },
   ) {
-    if (!hold.orderId) {
-      return null;
-    }
-
-    const releasedGross = this.roundMoney(
-      (hold.firstReleasedAt ? Number(hold.firstReleaseAmount) : 0) +
-        (hold.secondReleasedAt ? Number(hold.secondReleaseAmount) : 0),
-    );
-    const releasedCommission = this.roundMoney(
-      (hold.firstReleasedAt ? Number(hold.firstReleaseCommissionAmount) : 0) +
-        (hold.secondReleasedAt
-          ? Number(hold.secondReleaseCommissionAmount)
-          : 0),
-    );
-    const releasedNet = this.roundMoney(
-      (hold.firstReleasedAt ? Number(hold.firstReleaseNetAmount) : 0) +
-        (hold.secondReleasedAt ? Number(hold.secondReleaseNetAmount) : 0),
-    );
-    const unreleasedGross = this.roundMoney(
-      Number(hold.totalAmount) - releasedGross,
-    );
-
-    const lines: LedgerLine[] = [];
-
-    if (unreleasedGross > 0) {
-      lines.push({
-        code: 'SYSTEM:STANDARD_ORDER_ESCROW',
-        name: 'Standard Order Escrow',
-        type: LedgerAccountType.LIABILITY,
-        subType: 'STANDARD_ORDER_ESCROW',
-        isSystemAccount: true,
-        direction: LedgerEntryDirection.DEBIT,
-        amount: unreleasedGross,
-      });
-    }
-
-    if (releasedCommission > 0) {
-      lines.push({
-        code: 'SYSTEM:PLATFORM_COMMISSION_REVENUE',
-        name: 'Platform Commission Revenue',
-        type: LedgerAccountType.REVENUE,
-        subType: 'PLATFORM_COMMISSION',
-        isSystemAccount: true,
-        direction: LedgerEntryDirection.DEBIT,
-        amount: releasedCommission,
-      });
-    }
-
-    if (releasedNet > 0) {
-      lines.push({
-        code: this.getBrandWalletCode(hold.brandId),
-        name: `Brand Wallet ${hold.brandId}`,
-        type: LedgerAccountType.LIABILITY,
-        subType: 'BRAND_AVAILABLE',
-        entityType: 'BRAND',
-        entityId: hold.brandId,
-        direction: LedgerEntryDirection.DEBIT,
-        amount: releasedNet,
-      });
-    }
-
-    lines.push({
-      code: 'SYSTEM:GATEWAY_RECEIVABLES',
-      name: 'Gateway Receivables',
-      type: LedgerAccountType.ASSET,
-      subType: 'GATEWAY_RECEIVABLES',
-      isSystemAccount: true,
-      direction: LedgerEntryDirection.CREDIT,
-      amount: Number(hold.totalAmount),
-    });
-
     return this.postTransaction(tx, {
-      idempotencyKey: `ledger:order:${hold.orderId}:refund`,
+      idempotencyKey: `ledger:order:${params.orderId}:refund_settled:${params.refundId}`,
       type: LedgerTransactionType.REFUND_ISSUED,
-      description: `Refund issued for order ${hold.orderId}`,
-      referenceType: 'Order',
-      referenceId: hold.orderId,
-      totalAmount: Number(hold.totalAmount),
-      currency: hold.currency,
-      lines,
+      description: `Provider confirmed refund for order ${params.orderId}`,
+      referenceType: 'StandardOrderRefund',
+      referenceId: params.refundId,
+      totalAmount: params.totalAmount,
+      currency: params.currency,
+      fxRateSnapshotId: params.exchangeRateSnapshotId ?? null,
+      metadata: {
+        captureCurrency: params.captureCurrency,
+        captureAmount: params.captureAmount.toFixed(2),
+      },
+      lines: [
+        {
+          code: 'SYSTEM:REFUND_PAYABLE',
+          name: 'Refund Payable',
+          type: LedgerAccountType.LIABILITY,
+          subType: 'REFUND_PAYABLE',
+          isSystemAccount: true,
+          direction: LedgerEntryDirection.DEBIT,
+          amount: params.totalAmount,
+        },
+        {
+          code: 'SYSTEM:GATEWAY_RECEIVABLES',
+          name: 'Gateway Receivables',
+          type: LedgerAccountType.ASSET,
+          subType: 'GATEWAY_RECEIVABLES',
+          isSystemAccount: true,
+          direction: LedgerEntryDirection.CREDIT,
+          amount: params.totalAmount,
+        },
+      ],
     });
   }
 
@@ -751,7 +752,7 @@ export class LedgerService {
       description: `Payout disbursed for brand ${payout.brandId}`,
       referenceType: 'Payout',
       referenceId: payout.id,
-      totalAmount: Number(payout.amount),
+      totalAmount: payout.amount,
       currency: payout.currency,
       lines: [
         {
@@ -762,7 +763,7 @@ export class LedgerService {
           entityType: 'BRAND',
           entityId: payout.brandId,
           direction: LedgerEntryDirection.DEBIT,
-          amount: Number(payout.amount),
+          amount: payout.amount,
         },
         {
           code: 'SYSTEM:BANK_SETTLEMENT',
@@ -771,7 +772,7 @@ export class LedgerService {
           subType: 'BANK_SETTLEMENT',
           isSystemAccount: true,
           direction: LedgerEntryDirection.CREDIT,
-          amount: Number(payout.amount),
+          amount: payout.amount,
         },
       ],
     });
@@ -822,14 +823,19 @@ export class LedgerService {
     );
   }
 
-  private ledgerMoney(value: number) {
-    if (!Number.isFinite(value) || value < 0) {
+  private ledgerMoney(value: LedgerAmount) {
+    let decimal: Prisma.Decimal;
+    try {
+      decimal = new Prisma.Decimal(
+        value instanceof Prisma.Decimal ? value : String(value),
+      );
+    } catch {
       throw new BadRequestException('LEDGER_INVALID_AMOUNT');
     }
-    const amount = new Prisma.Decimal(value).toDecimalPlaces(
-      2,
-      Prisma.Decimal.ROUND_HALF_UP,
-    );
+    if (!decimal.isFinite() || decimal.isNegative()) {
+      throw new BadRequestException('LEDGER_INVALID_AMOUNT');
+    }
+    const amount = decimal.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
     if (amount.greaterThan('9999999999999999.99')) {
       throw new BadRequestException('LEDGER_AMOUNT_OUT_OF_RANGE');
     }

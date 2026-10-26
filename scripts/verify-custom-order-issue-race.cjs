@@ -47,6 +47,7 @@ const { BrandPermissionService } = require('../src/brands/permissions/brand-perm
 const { BrandBalanceService } = require('../src/finance/brand-balance.service');
 const { CustomOrderAdminService } = require('../src/custom-order-admin/custom-order-admin.service');
 const { loadQueueRefundContexts } = require('../src/custom-orders/queue/queue-refund-query');
+const { loadBrandPosition } = require('../src/finance/brand-position-query');
 
 async function main() {
   const source = new URL(process.env.DATABASE_URL || '');
@@ -955,45 +956,56 @@ async function main() {
     const releaseOrders = await Promise.all(Array.from({ length: 26 }, () => createOrder()));
     const releaseIds = releaseOrders.map(row => row.id);
     await prisma.customOrder.updateMany({ where: { id: { in: releaseIds } }, data: { status: 'COMPLETED', lane: 'TERMINAL' } });
+    // Earlier sections left eligible earnings. Record them as already paid out,
+    // so this brand's position is exactly the release below.
+    assert.equal(await prisma.brandBalanceAdjustment.count({ where: { brandId: brand.id, status: { in: ['OUTSTANDING', 'PARTIALLY_RECOVERED'] } } }), 0);
+    const earlierPosition = (await loadBrandPosition(prisma, brand.id, 'NGN')).position;
+    assert(!earlierPosition.isNegative());
+    if (earlierPosition.greaterThan(0)) await prisma.payout.create({ data: { id: randomUUID(), brandId: brand.id, amount: earlierPosition, currency: 'NGN', status: 'PAID', reference: `fixture-${randomUUID()}` } });
     await prisma.customOrderLedgerAllocation.createMany({ data: releaseOrders.map(row => ({ customOrderId: row.id, allocationType: 'FINAL_COMPLETION_PORTION', amount: 10, commissionAmount: 1, netBrandAmount: 9, currency: 'NGN', status: 'PAYOUT_ELIGIBLE', eligibleAt: new Date() })) });
-    const debts = await Promise.all(['10.01','4.99'].map((amount,index) => prisma.brandBalanceAdjustment.create({ data: { brandId: brand.id, type: 'REFUND_CLAWBACK', amount, currency: 'NGN', reason: 'Debt query fixture', createdAt: new Date(Date.now() - (2-index)*3600000) } })));
+    // Manual debits reduce the position; refund clawbacks are a statement of refunds already netted there.
+    const debts = await Promise.all(['10.01','4.99'].map((amount,index) => prisma.brandBalanceAdjustment.create({ data: { brandId: brand.id, type: 'MANUAL_DEBIT', amount, currency: 'NGN', reason: 'Debt query fixture', createdAt: new Date(Date.now() - (2-index)*3600000) } })));
     const balance = new BrandBalanceService(prisma);
     const adminFinance = Object.assign(Object.create(CustomOrderAdminService.prototype), { prisma, brandBalance: balance });
     const releaseAllocationIds = (await prisma.customOrderLedgerAllocation.findMany({ where: { customOrderId: { in: releaseIds } }, select: { id: true } })).map(row => row.id);
     queries.length = 0;
     const releaseResult = await adminFinance.releaseEligibleLedgerAllocations({ allocationIds: releaseAllocationIds }, owner.id);
-    evidence.debtListReadsFor26Allocations = queries.filter(query => /^\s*SELECT\b/i.test(query) && /FROM "public"\."BrandBalanceAdjustment"/.test(query)).length;
-    assert.equal(evidence.debtListReadsFor26Allocations, 1);
+    evidence.debtReadsFor26Allocations = queries.filter(query => /^\s*SELECT\b/i.test(query) && /BrandBalanceAdjustment/.test(query)).length;
+    assert.equal(evidence.debtReadsFor26Allocations, 3, 'Position for the payable amount, the ordered debt lock and the position for recovery; nothing per allocation');
     assert.equal(releaseResult.data.releasedBatches, 1);
     assert.equal(releaseResult.data.releasedAllocations, 26);
     assert.equal(releaseResult.data.appliedToBrandDebt, 15);
-    const debtPayouts = await prisma.payout.findMany({ where: { brandId: brand.id } });
+    const debtPayouts = await prisma.payout.findMany({ where: { brandId: brand.id, status: 'PENDING_APPROVAL' } });
     assert.equal(debtPayouts.length, 1);
     assert.equal(debtPayouts[0].amount.toFixed(2), '219.00');
     assert.equal(await prisma.brandBalanceAdjustment.count({ where: { id: { in: debts.map(row => row.id) }, status: 'RECOVERED' } }), 2);
     assert.equal(await prisma.brandBalanceRecovery.count({ where: { adjustmentId: { in: debts.map(row => row.id) } } }), 2);
     const releaseReplay = await adminFinance.releaseEligibleLedgerAllocations({ allocationIds: releaseAllocationIds }, owner.id);
     assert.equal(releaseReplay.data.releasedAllocations, 0);
-    assert.equal(await prisma.payout.count({ where: { brandId: brand.id } }), 1);
-    evidence.cases.push('actual admin release groups26 NGN allocations into one debt-list read and one payout, recovers two oldest debts totalling15 before a219 payout, and repeats without paying or recovering twice');
+    assert.equal(await prisma.payout.count({ where: { brandId: brand.id, status: 'PENDING_APPROVAL' } }), 1);
+    assert.equal(await prisma.brandBalanceRecovery.count({ where: { adjustmentId: { in: debts.map(row => row.id) } } }), 2);
+    evidence.cases.push('actual admin release groups26 NGN allocations into one payout capped by the brand position: two manual debits totalling15 settle first (oldest-first, one statement line each) before a219 payout, with three bounded debt reads; replay pays and recovers nothing twice');
     await prisma.brandBalanceAdjustment.createMany({ data: [
       { brandId: brand.id, type: 'MANUAL_DEBIT', amount: 20, recoveredAmount: 0, currency: 'NGN', reason: 'Summary fixture', createdAt: new Date(Date.now() - 7200000) },
       { brandId: brand.id, type: 'MANUAL_CREDIT', amount: 5, recoveredAmount: 0, currency: 'NGN', reason: 'Summary credit fixture' },
     ] });
+    const openDebit = await prisma.brandBalanceAdjustment.findFirstOrThrow({ where: { brandId: brand.id, status: 'OUTSTANDING', type: 'MANUAL_DEBIT' } });
     queries.length = 0;
-    assert.deepEqual(await balance.getDebtSnapshot(brand.id), { outstanding: 15, currency: 'NGN', count: 2, oldestAt: (await prisma.brandBalanceAdjustment.findFirst({ where: { brandId: brand.id, status: 'OUTSTANDING' }, orderBy: { createdAt: 'asc' } })).createdAt, inDebt: true });
+    assert.deepEqual(await balance.getDebtSnapshot(brand.id), { outstanding: 15, currency: 'NGN', count: 1, oldestAt: openDebit.createdAt, inDebt: true });
     evidence.debtSummaryContextReads = queries.filter(query => /^\s*SELECT\b/i.test(query) && /FROM "Brand" b/.test(query) && /BrandBalanceAdjustment/.test(query)).length;
     assert.equal(evidence.debtSummaryContextReads, 1);
     assert.deepEqual(await balance.getDebtSnapshot(randomUUID()), { outstanding: 0, currency: 'NGN', count: 0, oldestAt: null, inDebt: false });
     const balanceNotices = [];
     const balanceWithNotices = new BrandBalanceService(prisma, { create: async (...args) => { balanceNotices.push(args); } });
-    queries.length = 0;
-    await balanceWithNotices.announce({ brandId: brand.id, direction: 'RECOVERY', amount: 1, currency: 'NGN' });
-    evidence.debtNoticeContextReads = queries.filter(query => /^\s*SELECT\b/i.test(query)).length;
-    assert.equal(evidence.debtNoticeContextReads, 1);
-    assert.equal(balanceNotices[0][0], owner.id);
-    assert.equal(balanceNotices[0][2].payload.outstanding, 15);
-    evidence.cases.push('one shared native aggregate JOIN produces debt snapshot and owner notice context without loading every debt: manual-credit netting, missing-brand defaults and correct owner/outstanding handoff verified; currency isolation and notification rollback remain separate gates');
+    while ((await balanceWithNotices.announcePending()) > 0);
+    assert.equal(await balanceWithNotices.announcePending(), 0);
+    const ownerNotices = balanceNotices.filter(args => args[0] === owner.id);
+    const brandRows = (await prisma.brandBalanceAdjustment.count({ where: { brandId: brand.id } })) + (await prisma.brandBalanceRecovery.count({ where: { adjustment: { brandId: brand.id } } }));
+    assert.equal(ownerNotices.length, brandRows);
+    assert(ownerNotices.every(args => args[2].payload.outstanding === 15));
+    assert.equal(new Set(balanceNotices.map(args => args[2].notificationId)).size, balanceNotices.length);
+    evidence.debtNoticesSent = balanceNotices.length;
+    evidence.cases.push('position-based debt snapshot (manual credit nets, missing brand defaults) in one owner/debt JOIN; owner notices are sent once per committed adjustment or recovery, after commit, each with the current outstanding amount');
     await prisma.user.update({ where: { id: owner.id }, data: { status: 'ACTIVE' } });
     await prisma.brand.update({ where: { id: brand.id }, data: { activeOrderCapOverride: 0, activeOrderCapOverrideUntil: new Date(Date.now() + 86400000) } });
     await prisma.brandSubscription.update({ where: { id: agreement.id }, data: { status: 'ACTIVE', currentPeriodEnd: new Date(Date.now() + 30 * 86400000) } });

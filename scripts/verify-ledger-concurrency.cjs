@@ -39,7 +39,11 @@ const {
 const { BrandAccessService } = require('../src/brands/brand-access.service');
 const { OrderRefundService } = require('../src/order/order-refund.service');
 const { OrderSlaCronService } = require('../src/order/order-sla.cron.service');
-const { loadStandardOrderRefundContext } = require('../src/order/order-refund-query');
+const { BrandBalanceService } = require('../src/finance/brand-balance.service');
+const { RefundProviderClient } = require('../src/finance/refund-provider.client');
+const {
+  StandardOrderRefundsService,
+} = require('../src/finance/standard-order-refunds.service');
 const { PaymentService } = require('../src/payment/payment.service');
 const { FxRateService } = require('../src/payment/fx-rate.service');
 const { lockPaymentAttempt } = require('../src/payment/payment-attempt-query');
@@ -167,7 +171,7 @@ async function main() {
     assert.equal(
       (
         await prisma.ledgerAccount.findUniqueOrThrow({
-          where: { code: 'shared:A' },
+          where: { code_currency: { code: 'shared:A', currency: 'NGN' } },
         })
       ).currentBalance.toFixed(2),
       '7.00',
@@ -199,7 +203,7 @@ async function main() {
     assert.equal(
       (
         await prisma.ledgerAccount.findUniqueOrThrow({
-          where: { code: 'cold:A' },
+          where: { code_currency: { code: 'cold:A', currency: 'NGN' } },
         })
       ).currentBalance.toFixed(2),
       '30.00',
@@ -207,7 +211,7 @@ async function main() {
     assert.equal(
       (
         await prisma.ledgerAccount.findUniqueOrThrow({
-          where: { code: 'cold:B' },
+          where: { code_currency: { code: 'cold:B', currency: 'NGN' } },
         })
       ).currentBalance.toFixed(2),
       '-30.00',
@@ -223,7 +227,7 @@ async function main() {
     );
 
     const rollbackBefore = await prisma.ledgerAccount.findUniqueOrThrow({
-      where: { code: 'cold:A' },
+      where: { code_currency: { code: 'cold:A', currency: 'NGN' } },
     });
     await assert.rejects(
       prisma.$transaction(async (tx) => {
@@ -241,7 +245,7 @@ async function main() {
     assert.equal(
       (
         await prisma.ledgerAccount.findUniqueOrThrow({
-          where: { code: 'cold:A' },
+          where: { code_currency: { code: 'cold:A', currency: 'NGN' } },
         })
       ).currentBalance.toFixed(2),
       rollbackBefore.currentBalance.toFixed(2),
@@ -251,14 +255,14 @@ async function main() {
     );
 
     await prisma.ledgerAccount.update({
-      where: { code: 'cold:A' },
+      where: { code_currency: { code: 'cold:A', currency: 'NGN' } },
       data: { currentBalance: new Prisma.Decimal('999999999999999.90') },
     });
     await post(params('precision', 0.01, false, 'cold'));
     assert.equal(
       (
         await prisma.ledgerAccount.findUniqueOrThrow({
-          where: { code: 'cold:A' },
+          where: { code_currency: { code: 'cold:A', currency: 'NGN' } },
         })
       ).currentBalance.toFixed(2),
       '999999999999999.91',
@@ -335,7 +339,7 @@ async function main() {
     assert.equal(
       (
         await prisma.ledgerAccount.findUniqueOrThrow({
-          where: { code: 'bounded:A' },
+          where: { code_currency: { code: 'bounded:A', currency: 'NGN' } },
         })
       ).currentBalance.toFixed(2),
       '21.00',
@@ -395,7 +399,7 @@ async function main() {
         ledger,
         calculator,
         snapshots,
-        {},
+        new BrandBalanceService(prisma),
       );
       const paidOrders = Array.from({ length: 26 }, () => ({
         id: randomUUID(),
@@ -804,7 +808,10 @@ async function main() {
       await prisma.order.createMany({ data: refundFixtureOrders });
       await prisma.paymentAttempt.createMany({ data: refundFixtureOrders.map(order => ({ buyerId, provider: 'PAYSTACK', providerMode: 'test', paymentMethod: 'PAYSTACK', status: 'PAID', reference: order.paymentReference, amount: 100, currency: 'NGN', orderIds: [order.id], subjectType: 'STANDARD_ORDER' })) });
       await prisma.$transaction(tx => escrow.ensureHoldsForPaidOrders(tx, refundFixtureOrders, 2600, 'NGN'), { timeout: 30000 });
-      const refundService = new OrderRefundService(prisma, escrow);
+      // The SLA path only reserves the refund; this loopback URL is never called
+      // because no provider submission runs here.
+      const standardRefunds = new StandardOrderRefundsService(prisma, escrow, sync, new RefundProviderClient({ PAYSTACK: 'http://127.0.0.1:9', FLUTTERWAVE: 'http://127.0.0.1:9' }));
+      const refundService = new OrderRefundService(standardRefunds);
       const slaEvents = [], slaRealtime = [];
       const sla = new OrderSlaCronService(prisma, {
         createEvents: async events => { slaEvents.push(...events); return events.map(() => ({ status: 'fulfilled' })); },
@@ -815,31 +822,35 @@ async function main() {
       try {
         queries.length = 0;
         await sla.escalateOrCloseOverdue();
-        evidence.standardRefundContextJoinsFor26 = queries.filter(query => /^\s*SELECT\b/i.test(query) && /FROM "Order" o/.test(query) && /LEFT JOIN LATERAL/.test(query)).length;
-        assert.equal(evidence.standardRefundContextJoinsFor26, 26);
+        evidence.standardRefundCaptureLocksFor26 = queries.filter(query => /FROM "PaymentAttempt" WHERE reference = \$1 FOR UPDATE/.test(query)).length;
+        assert.equal(evidence.standardRefundCaptureLocksFor26, 26);
         const refundIds = refundFixtureOrders.map(row => row.id);
-        assert.equal(await prisma.order.count({ where: { id: { in: refundIds }, status: 'CANCELLED', paymentStatus: 'REFUNDED' } }), 26);
-        assert.equal(await prisma.escrowHold.count({ where: { orderId: { in: refundIds }, status: 'REFUNDED' } }), 26);
-        assert.equal(await prisma.ledgerTransaction.count({ where: { referenceId: { in: refundIds }, type: 'REFUND_ISSUED' } }), 26);
-        assert.equal(slaEvents.filter(event => refundIds.includes(event.opts.payload.orderId)).length, 52);
+        // Cancelled now; the order becomes REFUNDED only when the provider confirms.
+        assert.equal(await prisma.order.count({ where: { id: { in: refundIds }, status: 'CANCELLED', paymentStatus: 'PAID' } }), 26);
+        const requested = await prisma.standardOrderRefund.findMany({ where: { orderId: { in: refundIds } } });
+        assert.equal(requested.length, 26);
+        assert(requested.every(row => row.status === 'REQUESTED' && row.trigger === 'SLA_TIMEOUT' && row.settlementAmount.toFixed(2) === '100.00'));
+        assert.equal(await prisma.escrowHold.count({ where: { orderId: { in: refundIds }, status: 'REFUND_PENDING' } }), 26);
+        const reserveKeys = refundIds.map(id => `ledger:order:${id}:refund_reserved`);
+        assert.equal(await prisma.ledgerTransaction.count({ where: { idempotencyKey: { in: reserveKeys } } }), 26);
+        assert.equal(await prisma.ledgerTransaction.count({ where: { referenceType: 'StandardOrderRefund', type: 'REFUND_ISSUED', referenceId: { in: requested.map(row => row.id) } } }), 0);
+        const slaNotices = slaEvents.filter(event => refundIds.includes(event.opts.payload.orderId));
+        assert.equal(slaNotices.length, 52);
+        assert(slaNotices.every(event => event.opts.payload.refundStatus === 'PENDING'));
         assert.equal(slaRealtime.length, 26);
         await sla.escalateOrCloseOverdue();
         assert.equal(slaRealtime.length, 26);
-        assert.equal(await prisma.ledgerTransaction.count({ where: { referenceId: { in: refundIds }, type: 'REFUND_ISSUED' } }), 26);
-        const replay = await prisma.$transaction(tx => refundService.initiateRefund(tx, { orderId: refundIds[0], reason: 'Replay' }));
-        assert.equal(replay.alreadyRefunded, true);
+        assert.equal(await prisma.ledgerTransaction.count({ where: { idempotencyKey: { in: reserveKeys } } }), 26);
+        const replay = await prisma.$transaction(tx => refundService.initiateRefund(tx, { orderId: refundIds[0], reason: 'Replay', trigger: 'ADMIN' }));
+        assert.equal(replay.refundId, requested.find(row => row.orderId === refundIds[0]).id);
+        assert.equal(replay.alreadyRefunded, false);
+        assert.equal(await prisma.standardOrderRefund.count({ where: { orderId: { in: refundIds } } }), 26);
       } finally {
         for (const [key,value] of Object.entries(slaConfig)) { if(value===undefined)delete process.env[key];else process.env[key]=value; }
       }
-      evidence.cases.push('actual SLA cron refunds26 independent test-mode captures using26 current order/capture JOINs,26 real escrow/journal transitions and52 recipient-event handoffs; repeat and direct replay add no refund money; provider transport is outside this query proof');
-      assert.equal(await loadStandardOrderRefundContext(prisma, randomUUID()), null);
+      evidence.cases.push('actual SLA cron cancels26 overdue paid orders and requests26 canonical refunds (26 capture locks,26 escrow reservations and reserve journals, pending-refund notices for52 recipients); repeat and direct replay converge on the same refunds and no settlement journal exists before the provider confirms (provider transport: verify-standard-refund-integrity)');
       const unlinkedOrder = await prisma.order.create({ data: { id: randomUUID(), brandId, buyerId, customerName: 'Fallback query fixture', items: [], totalAmount: 1, paymentStatus: 'PAID', paymentReference: '' } });
-      assert.equal((await loadStandardOrderRefundContext(prisma, unlinkedOrder.id)).attempt, null);
       const fallbackAttempts = await Promise.all([0,1].map(index => prisma.paymentAttempt.create({ data: { buyerId, provider: 'PAYSTACK', providerMode: 'test', paymentMethod: 'PAYSTACK', status: 'PAID', reference: `fallback-${randomUUID()}`, amount: new Prisma.Decimal(index ? '12345678.91' : '1.00'), currency: 'NGN', orderIds: [unlinkedOrder.id], createdAt: new Date(Date.now() + index * 1000) } })));
-      const fallbackContext = await loadStandardOrderRefundContext(prisma, unlinkedOrder.id);
-      assert.equal(fallbackContext.attempt.id, fallbackAttempts[1].id);
-      assert.equal(fallbackContext.attempt.amount.toFixed(2), '12345678.91');
-      evidence.cases.push('standard refund context distinguishes missing order from missing capture, preserves current empty-reference/latest-array fallback and native Decimal precision; old-data fallback retirement remains a separate gate');
       {
       const staleReferences = Array.from({ length: 26 }, () => `stale-fixture-${randomUUID()}`);
       const staleOrders = staleReferences.map(reference => ({ id: randomUUID(), buyerId, brandId, customerName: 'Stale payment fixture', items: [], totalAmount: 100, currency: 'NGN', paymentStatus: 'PENDING', paymentReference: reference }));

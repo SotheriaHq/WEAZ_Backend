@@ -135,6 +135,11 @@ describe('CollectionsService brand catalog access', () => {
       cartItem: {
         deleteMany: jest.fn(),
       },
+      // Collection lock; the soft delete and primary re-sync share a transaction.
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      $transaction: jest.fn(async (run: (tx: unknown) => unknown) =>
+        run(prisma),
+      ),
     };
     const brandAccessService = {
       resolveBrandIdFromBrandOrOwnerId: jest.fn().mockResolvedValue('brand_1'),
@@ -149,6 +154,7 @@ describe('CollectionsService brand catalog access', () => {
         'store',
       ),
     ).resolves.toEqual(expect.objectContaining({ success: true }));
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(brandAccessService.assertCanManageCatalog).toHaveBeenCalledWith(
       'catalog_manager_1',
       'brand_1',

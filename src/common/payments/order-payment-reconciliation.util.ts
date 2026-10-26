@@ -38,6 +38,26 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
   'EXPIRED',
 ]);
 
+/** Only an unpaid order may be brought up to date from its capture on read. */
+const REPAIRABLE_ORDER_STATUSES = new Set<PaymentStatus>([
+  PaymentStatus.PENDING,
+  PaymentStatus.FAILED,
+]);
+
+/**
+ * Capture statuses that describe the payment itself. Refund-stage statuses
+ * (REFUND_IN_PROGRESS, PARTIALLY_REFUNDED, REFUNDED) say nothing about any one
+ * order on the capture and never change an order here.
+ */
+const REPAIRABLE_ATTEMPT_STATUSES = new Set([
+  'PENDING',
+  'PROCESSING',
+  'PAID',
+  'FAILED',
+  'CANCELLED',
+  'EXPIRED',
+]);
+
 const normalizeMockStatusHint = (value: unknown): string | null => {
   const normalized = String(value ?? '')
     .trim()
@@ -138,7 +158,17 @@ export const reconcileStandardOrderPaymentStatuses = async (
       const attempt = attemptByReference.get(reference);
       if (!attempt) return null;
 
+      // A read never moves a paid or refunded order: refunds are decided by
+      // the refund engine, and one capture can fund several orders.
+      if (!REPAIRABLE_ORDER_STATUSES.has(order.paymentStatus)) {
+        resolvedByOrderId.set(order.id, order.paymentStatus);
+        return null;
+      }
       const effectiveAttemptStatus = resolveEffectiveAttemptStatus(attempt);
+      if (!REPAIRABLE_ATTEMPT_STATUSES.has(effectiveAttemptStatus)) {
+        resolvedByOrderId.set(order.id, order.paymentStatus);
+        return null;
+      }
       const resolvedStatus = mapAttemptStatusToPaymentStatus(
         effectiveAttemptStatus,
       );
@@ -180,8 +210,9 @@ export const reconcileStandardOrderPaymentStatuses = async (
         );
       }
 
-      return prisma.order.update({
-        where: { id: order.id },
+      // Conditional on the status this read observed: a concurrent writer wins.
+      return prisma.order.updateMany({
+        where: { id: order.id, paymentStatus: order.paymentStatus },
         data: {
           paymentStatus: resolvedStatus,
           paidAt: settledAt,

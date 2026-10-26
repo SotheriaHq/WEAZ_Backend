@@ -7,10 +7,31 @@ const PRODUCT_INVENTORY_SELECT = {
   sizeStock: true,
   trackInventory: true,
   allowBackorders: true,
+  deletedAt: true,
+  archivedAt: true,
+  isActive: true,
+  publishAt: true,
+  standardCheckoutEnabled: true,
 } as const;
 export type LockedCheckoutProduct = Prisma.ProductGetPayload<{
   select: typeof PRODUCT_INVENTORY_SELECT;
 }>;
+
+/** Evaluate current sellability only after the product lock has been acquired. */
+export function isSellableAfterLock(
+  product: LockedCheckoutProduct | null | undefined,
+  now = new Date(),
+): boolean {
+  return Boolean(
+    product &&
+      product.deletedAt === null &&
+      product.archivedAt === null &&
+      product.isActive &&
+      product.standardCheckoutEnabled !== false &&
+      (product.publishAt === null ||
+        product.publishAt.getTime() <= now.getTime()),
+  );
+}
 type Reservation = {
   id: string;
   productId: string;

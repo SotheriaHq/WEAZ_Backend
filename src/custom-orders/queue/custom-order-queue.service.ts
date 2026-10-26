@@ -1120,10 +1120,10 @@ export class CustomOrderQueueService {
       tx,
       order.brandId,
       id,
+      refund.id,
       releasedNet / 100,
       order.currency,
       reason,
-      actorId,
     );
     await tx.customOrderLedgerAllocation.updateMany({
       where: {
@@ -1278,10 +1278,10 @@ export class CustomOrderQueueService {
       tx,
       order.brandId,
       id,
+      refund.id,
       releasedNet / 100,
       order.currency,
       reason,
-      actorId,
     );
     await tx.customOrder.update({
       where: { id },
@@ -1298,45 +1298,30 @@ export class CustomOrderQueueService {
     return refund;
   }
 
+  /** One immutable clawback row per refund; replays converge on its source key. */
   private async recordRefundDebt(
     tx: Tx,
     brandId: string,
     customOrderId: string,
+    refundId: string,
     amount: number,
     currency: string,
     reason: string,
-    actorId?: string,
   ) {
     if (amount <= 0) return;
     if (!this.brandBalance)
       throw new ConflictException(
         'CUSTOM_ORDER_REFUND_RELEASE_RECONCILIATION_REQUIRED',
       );
-    const existing = await tx.brandBalanceAdjustment.findFirst({
-      where: { brandId, customOrderId, type: 'REFUND_CLAWBACK' },
-      select: { id: true, recoveredAmount: true },
+    await this.brandBalance.raiseAdjustment(tx, {
+      brandId,
+      customOrderId,
+      type: 'REFUND_CLAWBACK',
+      amount: amount.toFixed(2),
+      currency,
+      reason: `Order refund reserved (${reason})`,
+      sourceKey: `custom-order-refund:${refundId}`,
     });
-    if (existing)
-      await tx.brandBalanceAdjustment.update({
-        where: { id: existing.id },
-        data: {
-          amount: { increment: amount },
-          status:
-            Number(existing.recoveredAmount) > 0
-              ? 'PARTIALLY_RECOVERED'
-              : 'OUTSTANDING',
-        },
-      });
-    else
-      await this.brandBalance.raiseAdjustment(tx, {
-        brandId,
-        customOrderId,
-        type: 'REFUND_CLAWBACK',
-        amount,
-        currency,
-        reason: `Order refund reserved (${reason})`,
-        createdById: actorId ?? null,
-      });
   }
 
   private async cancelLocked(

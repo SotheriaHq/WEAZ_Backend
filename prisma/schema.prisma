@@ -762,6 +762,8 @@ enum EscrowHoldStatus {
   FROZEN
   REFUNDED
   FORFEITED
+  /// A provider refund was requested; nothing may be released until it settles.
+  REFUND_PENDING
 }
 
 enum EscrowReleaseCondition {
@@ -1007,10 +1009,12 @@ enum PresignStatus {
 }
 
 enum TagEntityType {
+  /// A design (stored in Collection).
   COLLECTION
   PRODUCT
   BRAND
   USER_BRAND
+  STORE_COLLECTION
 }
 
 enum TagStatus {
@@ -2924,9 +2928,16 @@ model BrandBalanceAdjustment {
   reason          String
   /// The order that caused it, and the order that paid it down.
   customOrderId   String?                      @db.Uuid
+  customOrder     CustomOrder?                 @relation("BrandBalanceAdjustmentCustomOrder", fields: [customOrderId], references: [id], onDelete: NoAction)
   orderId         String?                      @db.Uuid
+  order           Order?                       @relation("BrandBalanceAdjustmentOrder", fields: [orderId], references: [id], onDelete: NoAction)
+  /// Stable identity of a system-raised adjustment (for example one refund),
+  /// so a retried refund or a duplicated webhook records it exactly once.
+  sourceKey       String?                      @unique
   /// Who raised it: an admin id for a manual adjustment, null for the system.
   createdById     String?                      @db.Uuid
+  /// Set once the owner was told about this committed row.
+  announcedAt     DateTime?
   settledAt       DateTime?
   createdAt       DateTime                     @default(now())
   updatedAt       DateTime                     @updatedAt
@@ -2935,6 +2946,9 @@ model BrandBalanceAdjustment {
 
   @@index([brandId, status])
   @@index([brandId, createdAt])
+  @@index([brandId, currency, status, createdAt])
+  @@index([orderId])
+  @@index([customOrderId])
 }
 
 /// One payment against one debt, so the history reads as a statement.
@@ -2946,11 +2960,17 @@ model BrandBalanceRecovery {
   currency      String                 @default("NGN")
   /// The order whose earnings paid this down.
   customOrderId String?                @db.Uuid
+  customOrder   CustomOrder?           @relation("BrandBalanceRecoveryCustomOrder", fields: [customOrderId], references: [id], onDelete: NoAction)
   orderId       String?                @db.Uuid
+  order         Order?                 @relation("BrandBalanceRecoveryOrder", fields: [orderId], references: [id], onDelete: NoAction)
   note          String?
+  /// Set once the owner was told about this committed row.
+  announcedAt   DateTime?
   createdAt     DateTime               @default(now())
 
   @@index([adjustmentId, createdAt])
+  @@index([orderId])
+  @@index([customOrderId])
 }
 
 enum BrandBalanceAdjustmentType {
@@ -3527,6 +3547,9 @@ model Order {
   checkoutSessionLines     CheckoutSessionLine[]
   lifecycleReviews         Review[]                 @relation("ReviewOrder")
   reviewPrompts            ReviewPrompt[]           @relation("ReviewPromptOrder")
+  refund                   StandardOrderRefund?
+  balanceAdjustments       BrandBalanceAdjustment[] @relation("BrandBalanceAdjustmentOrder")
+  balanceRecoveries        BrandBalanceRecovery[]   @relation("BrandBalanceRecoveryOrder")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -3536,6 +3559,48 @@ model Order {
   @@index([buyerId])
   @@index([paymentReference])
   @@index([unifiedCheckoutSessionId])
+}
+
+/// One provider refund of one standard order's own share of its capture.
+/// `amount`/`currency` are what the shopper paid for this order;
+/// `settlementAmount`/`settlementCurrency` are the escrow's NGN amount at the
+/// original payment rate. Status lifecycle matches CustomOrderQueueRefund:
+/// REQUESTED → SUBMITTING → PROCESSING → SETTLED, plus FAILED (definitely not
+/// submitted) and NEEDS_ATTENTION (uncertain; never resubmitted automatically).
+model StandardOrderRefund {
+  id                 String         @id @default(uuid()) @db.Uuid
+  requestKey         String         @unique
+  orderId            String         @unique @db.Uuid
+  order              Order          @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  paymentAttemptId   String         @db.Uuid
+  paymentAttempt     PaymentAttempt @relation(fields: [paymentAttemptId], references: [id], onDelete: Restrict)
+  escrowHoldId       String         @unique @db.Uuid
+  escrowHold         EscrowHold     @relation(fields: [escrowHoldId], references: [id], onDelete: Restrict)
+  provider           String
+  trigger            String
+  reason             String
+  amount             Decimal        @db.Decimal(12, 2)
+  currency           String
+  settlementAmount   Decimal        @db.Decimal(12, 2)
+  settlementCurrency String
+  breakdownJson      Json
+  status             String         @default("REQUESTED")
+  providerRefundId   String?
+  attempts           Int            @default(0)
+  leaseToken         String?        @db.Uuid
+  lockedAt           DateTime?
+  nextAttemptAt      DateTime       @default(now())
+  lastError          String?
+  actorId            String?        @db.Uuid
+  settledAt          DateTime?
+  /// Set once the shopper was told the provider processed the refund.
+  buyerNotifiedAt    DateTime?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  @@unique([provider, providerRefundId])
+  @@index([status, nextAttemptAt])
+  @@index([paymentAttemptId])
 }
 
 model EscrowHold {
@@ -3571,15 +3636,18 @@ model EscrowHold {
   createdAt                     DateTime                       @default(now())
   updatedAt                     DateTime                       @updatedAt
   payoutSourceAllocations       PayoutLedgerSourceAllocation[]
+  refund                        StandardOrderRefund?
 
   @@index([brandId, status])
   @@index([status, secondReleaseEligibleAt])
   @@index([buyerId])
 }
 
+/// One account per (code, currency). Amounts in different currencies never
+/// share a balance; every entry's account currency equals its transaction's.
 model LedgerAccount {
   id              String            @id @default(uuid()) @db.Uuid
-  code            String            @unique
+  code            String
   name            String
   type            LedgerAccountType
   subType         String
@@ -3588,7 +3656,7 @@ model LedgerAccount {
   childAccounts   LedgerAccount[]   @relation("LedgerAccountParent")
   entityType      String?
   entityId        String?           @db.Uuid
-  currency        String            @default("NGN")
+  currency        String
   currentBalance  Decimal           @default(0) @db.Decimal(18, 2)
   isSystemAccount Boolean           @default(false)
   isActive        Boolean           @default(true)
@@ -3596,7 +3664,8 @@ model LedgerAccount {
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
 
-  @@index([entityType, entityId])
+  @@unique([code, currency])
+  @@index([entityType, entityId, currency])
   @@index([type, subType])
 }
 
@@ -3761,6 +3830,8 @@ model CustomOrder {
   cancellationActorType         CustomOrderActorType?
   predecessorOrderId            String? @db.Uuid
   queueRefunds                  CustomOrderQueueRefund[]
+  balanceAdjustments            BrandBalanceAdjustment[]             @relation("BrandBalanceAdjustmentCustomOrder")
+  balanceRecoveries             BrandBalanceRecovery[]               @relation("BrandBalanceRecoveryCustomOrder")
   paymentStatus                 PaymentStatus                        @default(PENDING)
   paymentMethod                 PaymentMethod                        @default(PENDING_SELECTION)
   paymentReference              String?
@@ -4480,6 +4551,7 @@ model PaymentAttempt {
   webhookIngressAudits           WebhookIngressAudit[]
   retryHistory                   PaymentAttemptRetryHistory[]
   queueRefunds                   CustomOrderQueueRefund[]
+  standardOrderRefunds           StandardOrderRefund[]
   checkoutIntentLinks            PaymentAttemptCheckoutIntentLink[]
 
   @@index([buyerId, createdAt])

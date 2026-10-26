@@ -10,6 +10,7 @@ const { SettlementPolicyService } = require('../src/finance/settlement-policy.se
 const { SettlementSnapshotService } = require('../src/finance/settlement-snapshot.service');
 const { CommissionService } = require('../src/finance/commission.service');
 const { FinancialDocumentsService } = require('../src/finance/financial-documents.service');
+const { BrandBalanceService } = require('../src/finance/brand-balance.service');
 const { lockCheckoutSession } = require('../src/payment/checkout-session-query');
 const { lockBuyerCart, consumePaidCartLines } = require('../src/bagging/cart-transaction.util');
 
@@ -22,7 +23,7 @@ module.exports = async function verifyUnifiedCheckout({ prisma, queries, buyer, 
   await prisma.settlementPolicy.create({ data: { orderType: 'STANDARD_ORDER', scope: 'PLATFORM', currency: 'NGN', releaseMode: 'HOLD_UNTIL_DELIVERY', upfrontReleaseEnabled: false, upfrontReleasePercent: 0, isDefault: true, effectiveFrom: new Date('2000-01-01') } });
   const calculator = new SettlementCalculatorService(new SettlementPolicyService(prisma, config), new CommissionService(prisma, config));
   const documents = new FinancialDocumentsService(prisma);
-  const standard = new StandardOrderFinanceSyncService(prisma, new StandardOrderEscrowService(prisma, config, queue.ledger, calculator, new SettlementSnapshotService(prisma), {}), documents);
+  const standard = new StandardOrderFinanceSyncService(prisma, new StandardOrderEscrowService(prisma, config, queue.ledger, calculator, new SettlementSnapshotService(prisma), new BrandBalanceService(prisma)), documents);
   const notifications = new NotificationsService(prisma, {}, { del: async () => {} }, { getConfig: () => undefined }, { getAppName: () => 'WIEZ', send: async () => {} }, {}, { enqueue: async () => {} }, { publishOrEmit: async () => true });
   notifications.logger = logger;
   const payments = new PaymentService(prisma, new FxRateService(prisma), standard, finance, notifications, {}, undefined, undefined, queue);

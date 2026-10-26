@@ -40,7 +40,13 @@ async function main() {
     prisma = new PrismaClient({ adapter: new PrismaPg(pool), log: [{ emit: 'event', level: 'query' }] });
     prisma.$on('query', event => queries.push(event.query));
     const index = new TagIndexService(prisma);
-    const entityIds = Array.from({ length: 10 }, () => randomUUID());
+    // Bindings reference real rows: typed TagBinding foreign keys refuse missing targets.
+    const fixtureOwner = randomUUID(), fixtureBrand = randomUUID();
+    await prisma.user.create({ data: { id: fixtureOwner, username: fixtureOwner, email: `${fixtureOwner}@example.invalid` } });
+    await prisma.brand.create({ data: { id: fixtureBrand, ownerId: fixtureOwner, name: 'Tag sync fixture' } });
+    const productIds = Array.from({ length: 13 }, () => randomUUID());
+    await prisma.product.createMany({ data: productIds.map(id => ({ id, brandId: fixtureBrand, name: 'Tag sync fixture', price: 1000, isActive: true, publicationStatus: 'PUBLISHED' })) });
+    const entityIds = productIds.slice(0, 10);
     await index.syncEntitiesTags(entityIds.map((entityId) => ({ entityType: 'PRODUCT', entityId, previousTags: [], nextTags: ['casual', 'african'] })));
     let casual = await prisma.tag.findUniqueOrThrow({ where: { normalizedName: 'casual' } });
     assert.equal(casual.usageCount, 10); evidence.cases.push('shared tags across ten products');
@@ -48,12 +54,17 @@ async function main() {
     casual = await prisma.tag.findUniqueOrThrow({ where: { normalizedName: 'casual' } });
     assert.equal(casual.usageCount, 0); assert.equal(casual.lastUsedAt, null);
     assert.equal(await prisma.tagBinding.count(), 10); evidence.cases.push('joined removal isolates each entity and clears zero counts');
-    await Promise.all(Array.from({ length: 2 }, () => index.syncEntityTags('PRODUCT', randomUUID(), [], ['casual'])));
+    await Promise.all(productIds.slice(10, 12).map((productId) => index.syncEntityTags('PRODUCT', productId, [], ['casual'])));
     casual = await prisma.tag.findUniqueOrThrow({ where: { normalizedName: 'casual' } });
     assert.equal(casual.usageCount, 2); evidence.cases.push('concurrent shared-tag additions retain both bindings');
     await prisma.tag.update({ where: { id: casual.id }, data: { isBanned: true } });
-    await assert.rejects(index.syncEntityTags('PRODUCT', randomUUID(), [], ['casual']), /tags are blocked/);
+    await assert.rejects(index.syncEntityTags('PRODUCT', productIds[12], [], ['casual']), /tags are blocked/);
     assert.equal(await prisma.tagBinding.count(), 12); evidence.cases.push('moderation failure rolls back bindings');
+    const africanBefore = (await prisma.tag.findUniqueOrThrow({ where: { normalizedName: 'african' } })).usageCount;
+    await assert.rejects(index.syncEntityTags('PRODUCT', randomUUID(), [], ['african']), (error) => /P2003|23503|fkey|foreign key/i.test(`${error.code} ${error.message} ${JSON.stringify(error.meta ?? {})}`));
+    assert.equal(await prisma.tagBinding.count(), 12);
+    assert.equal((await prisma.tag.findUniqueOrThrow({ where: { normalizedName: 'african' } })).usageCount, africanBefore);
+    evidence.cases.push('a binding to a product that does not exist is refused by the typed foreign key and its usage count rolls back');
     await prisma.tag.update({ where: { id: casual.id }, data: { isBanned: false } });
     const tags = new TagsService(prisma, index);
     await tags.mergeTags('african', 'casual');
@@ -73,9 +84,13 @@ async function main() {
     const rebuilt = await index.reindexAll();
     evidence.reindexSelects = queries.filter(query => /^\s*SELECT\b/i.test(query)).length;
     evidence.reindexGroupedCountWrites = queries.filter(query => /^\s*WITH\s+counts\b/i.test(query) && /UPDATE\s+"Tag"/i.test(query)).length;
-    evidence.reindexSourceReads = queries.filter(query => /^\s*SELECT/i.test(query) && /FROM\s+(?:"public"\.)?"(?:Collection|Product|Brand)"/.test(query)).length;
+    const isEligibilityScan = query => /FROM "TagBinding" b/.test(query) && /NOT EXISTS/.test(query);
+    evidence.reindexSourceReads = queries.filter(query => /^\s*SELECT/i.test(query) && /FROM\s+(?:"public"\.)?"(?:Collection|Product|Brand)"/.test(query) && !isEligibilityScan(query)).length;
+    evidence.reindexEligibilityScans = queries.filter(query => /^\s*SELECT/i.test(query) && isEligibilityScan(query)).length;
     assert.equal(evidence.reindexSourceReads, 12, 'Two data pages and one empty cursor page for each of four source types');
-    assert(evidence.reindexSelects <= 40, `Shared tags must be synchronized per page, not entity: SELECTs=${evidence.reindexSelects}`);
+    assert.equal(evidence.reindexEligibilityScans, 1, 'One bounded scan for bindings whose target is no longer indexable');
+    // No global delete: each page also reads its current bindings. Reads grow with pages (eight here), never with the 2004 entities.
+    assert(evidence.reindexSelects <= 60, `Shared tags must be synchronized per page, not entity: SELECTs=${evidence.reindexSelects}`);
     assert.equal(evidence.reindexGroupedCountWrites, 8, 'One post-lock usage-count update per nonempty source page');
     assert.equal(rebuilt.bindingsCreated, 2004);
     assert.equal(await prisma.tagBinding.count(), 2004);
@@ -103,4 +118,4 @@ async function main() {
     console.log(JSON.stringify(evidence));
   }
 }
-main().catch((error) => { console.error(error.code || error.message); process.exitCode = 1; });
+main().catch((error) => { console.error(error instanceof assert.AssertionError ? error.message : error.code || error.message); process.exitCode = 1; });

@@ -6,15 +6,20 @@
  * anyone. Where the brand had already been paid for that order, WIEZ is out of
  * pocket and the brand carries a debt.
  *
- * Before this, that shortfall was invisible: `availableBalance` is
- * `released - reserved - paidOut`, so a clawback simply made the number go
- * negative, with no record of what caused it, no history, and nothing a brand
- * could be shown or an admin could explain. A negative number is not an account.
+ * One number decides it: the brand's position in its settlement currency
+ * (`loadBrandPosition`) — released earnings net of refunds, minus payouts,
+ * minus manual debits and chargebacks, plus manual credits. A refund removes
+ * its released money from that position once; the REFUND_CLAWBACK row records
+ * why, so a brand can be shown WHAT it owes and WHY. Debt is the negative part
+ * of the position. Recovery is automatic and oldest-first: whenever later
+ * earnings lift the position, the oldest recorded debts are marked paid down,
+ * with a statement line per payment.
  *
- * Recovery is automatic and oldest-first: every later release is applied to the
- * longest-standing debt before anything becomes payable. A brand carrying a debt
- * must acknowledge it in words before accepting new custom work — see
- * `assertCustomOrderAcceptanceAllowed`.
+ * A brand carrying a debt must acknowledge it in words before accepting new
+ * custom work — see `assertCustomOrderAcceptanceAllowed`.
+ *
+ * Lock order: callers that also hold order/escrow/refund rows take those
+ * first; this service takes the Brand row, then debt rows (oldest first).
  */
 import {
   BadRequestException,
@@ -22,6 +27,7 @@ import {
   Logger,
   Optional,
 } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import {
   BrandBalanceAdjustmentStatus,
   BrandBalanceAdjustmentType,
@@ -31,6 +37,10 @@ import {
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { loadBrandDebtContext } from './brand-debt-query';
+import {
+  BRAND_SETTLEMENT_CURRENCY,
+  loadBrandPosition,
+} from './brand-position-query';
 
 /** Statuses that still take money out of what a brand can withdraw. */
 const ACTIVE_DEBT_STATUSES: BrandBalanceAdjustmentStatus[] = [
@@ -38,23 +48,35 @@ const ACTIVE_DEBT_STATUSES: BrandBalanceAdjustmentStatus[] = [
   BrandBalanceAdjustmentStatus.PARTIALLY_RECOVERED,
 ];
 
+/** Adjustment types that are money the brand owes (credits are not debts). */
+const DEBT_TYPES: BrandBalanceAdjustmentType[] = [
+  BrandBalanceAdjustmentType.REFUND_CLAWBACK,
+  BrandBalanceAdjustmentType.CHARGEBACK,
+  BrandBalanceAdjustmentType.MANUAL_DEBIT,
+];
+
+const ANNOUNCE_BATCH = 50;
+
 export type BrandDebtSnapshot = {
-  /** Total still owed across every live adjustment. */
+  /** Total still owed: the negative part of the brand's position. */
   outstanding: number;
   currency: string;
-  /** How many separate debts make it up. */
+  /** How many separate recorded debts are still open. */
   count: number;
   /** The oldest unpaid one, which is what recovery hits first. */
   oldestAt: Date | null;
   inDebt: boolean;
 };
 
-const round = (value: number) =>
-  Math.round((value + Number.EPSILON) * 100) / 100;
+type Amount = Prisma.Decimal | number | string;
+
+const decimal = (value: Amount) =>
+  value instanceof Prisma.Decimal ? value : new Prisma.Decimal(String(value));
 
 @Injectable()
 export class BrandBalanceService {
   private readonly logger = new Logger(BrandBalanceService.name);
+  private announcing = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -69,207 +91,266 @@ export class BrandBalanceService {
     return (await loadBrandDebtContext(this.prisma, brandId)).snapshot;
   }
 
+  /** Serializes every money command for one brand. */
+  async lockBrand(tx: Prisma.TransactionClient, brandId: string) {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "_id" AS id FROM "Brand" WHERE "_id" = ${brandId}::uuid FOR UPDATE`;
+    if (!rows.length) throw new BadRequestException('Brand not found');
+  }
+
   /**
-   * Record a debt. Called when the platform has refunded money the brand was
-   * already paid, so the brand's own balance has to answer for it.
+   * Record a debt (or a manual credit). Called when the platform has refunded
+   * money the brand was already paid, so the brand's own balance has to answer
+   * for it.
    *
-   * Idempotent per order and type: a refund retried, or a webhook delivered
-   * twice, must not bill the brand twice for the same money.
+   * Exactly once per `sourceKey`: a refund retried, or a webhook delivered
+   * twice, must not bill the brand twice for the same money. The key is
+   * enforced by a unique index, so concurrent callers converge on one row.
    */
   async raiseAdjustment(
     tx: Prisma.TransactionClient,
     params: {
       brandId: string;
       type: BrandBalanceAdjustmentType;
-      amount: number;
+      amount: Amount;
       currency?: string;
       reason: string;
       customOrderId?: string | null;
       orderId?: string | null;
       createdById?: string | null;
+      sourceKey?: string | null;
     },
   ) {
-    const amount = round(params.amount);
-    if (!Number.isFinite(amount) || amount <= 0) {
+    const amount = decimal(params.amount).toDecimalPlaces(
+      2,
+      Prisma.Decimal.ROUND_HALF_UP,
+    );
+    if (!amount.isFinite() || !amount.greaterThan(0)) {
       throw new BadRequestException(
         'A balance adjustment must be a positive amount',
       );
     }
-
-    const duplicate = await tx.brandBalanceAdjustment.findFirst({
-      where: {
-        brandId: params.brandId,
-        type: params.type,
-        ...(params.customOrderId
-          ? { customOrderId: params.customOrderId }
-          : {}),
-        ...(params.orderId ? { orderId: params.orderId } : {}),
-      },
-      select: { id: true },
-    });
-    if (duplicate && (params.customOrderId || params.orderId)) {
-      return duplicate;
+    const currency = String(params.currency ?? BRAND_SETTLEMENT_CURRENCY)
+      .trim()
+      .toUpperCase();
+    const isSystemRaised = !params.createdById;
+    if (isSystemRaised && !params.sourceKey) {
+      throw new BadRequestException('A system adjustment needs a source key');
     }
 
-    const created = await tx.brandBalanceAdjustment.create({
-      data: {
-        brandId: params.brandId,
-        type: params.type,
-        amount: new Prisma.Decimal(amount),
-        currency: params.currency ?? 'NGN',
-        reason: params.reason,
-        customOrderId: params.customOrderId ?? null,
-        orderId: params.orderId ?? null,
-        createdById: params.createdById ?? null,
-      },
-      select: { id: true },
-    });
-
-    // Told, not discovered. Queued outside the transaction's success path on
-    // purpose: a notification that fails must not roll back the debt record.
-    void this.announce({
+    await this.lockBrand(tx, params.brandId);
+    const isCredit = params.type === BrandBalanceAdjustmentType.MANUAL_CREDIT;
+    const data = {
       brandId: params.brandId,
-      direction: 'DEBIT',
+      type: params.type,
       amount,
-      currency: params.currency ?? 'NGN',
+      currency,
       reason: params.reason,
       customOrderId: params.customOrderId ?? null,
       orderId: params.orderId ?? null,
-    });
-
-    return created;
-  }
-
-  /**
-   * Tell the brand owner that their balance moved, in either direction.
-   *
-   * Deliberately best-effort and fire-and-forget: the money record is the
-   * source of truth, and a notification outage must not be able to undo it.
-   */
-  private async announce(params: {
-    brandId: string;
-    direction: 'DEBIT' | 'RECOVERY';
-    amount: number;
-    currency: string;
-    reason?: string;
-    customOrderId?: string | null;
-    orderId?: string | null;
-  }): Promise<void> {
-    if (!this.notifications) return;
-    try {
-      const { ownerId, snapshot } = await loadBrandDebtContext(
-        this.prisma,
-        params.brandId,
-      );
-      if (!ownerId) return;
-
-      await this.notifications.create(
-        ownerId,
-        NotificationType.BRAND_BALANCE_ADJUSTED,
-        {
-          payload: {
-            direction: params.direction,
-            amount: params.amount,
-            currency: params.currency,
-            outstanding: snapshot.outstanding,
-            reason: params.reason,
-            customOrderId: params.customOrderId ?? undefined,
-            orderId: params.orderId ?? undefined,
-            targetUrl: '/studio/finance',
-          },
-        },
-      );
-    } catch (error) {
-      this.logger.warn(
-        `Could not announce a balance adjustment for brand ${params.brandId}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+      createdById: params.createdById ?? null,
+      sourceKey: params.sourceKey ?? null,
+      // A credit is applied in full the moment it exists.
+      ...(isCredit
+        ? {
+            status: BrandBalanceAdjustmentStatus.RECOVERED,
+            recoveredAmount: amount,
+            settledAt: new Date(),
+          }
+        : {}),
+    };
+    let row: { id: string; amount: Prisma.Decimal; currency: string };
+    if (params.sourceKey) {
+      await tx.brandBalanceAdjustment.createMany({
+        data: [data],
+        skipDuplicates: true,
+      });
+      row = await tx.brandBalanceAdjustment.findUniqueOrThrow({
+        where: { sourceKey: params.sourceKey },
+        select: { id: true, amount: true, currency: true },
+      });
+      if (!row.amount.equals(amount) || row.currency !== currency) {
+        throw new BadRequestException('BRAND_ADJUSTMENT_SOURCE_CONFLICT');
+      }
+    } else {
+      row = await tx.brandBalanceAdjustment.create({
+        data,
+        select: { id: true, amount: true, currency: true },
+      });
     }
+
+    await this.reconcileRecoveries(tx, params.brandId, currency, {
+      orderId: params.orderId ?? null,
+      customOrderId: params.customOrderId ?? null,
+    });
+    return { id: row.id };
   }
 
   /**
-   * Apply earnings against outstanding debt, oldest first.
-   *
-   * Returns what was consumed, so the caller can release only the remainder.
-   * Partial payment is the normal case — a brand owing ₦40,000 who earns
-   * ₦15,000 pays down ₦15,000 and keeps nothing, and the statement says exactly
-   * that rather than showing a balance that silently failed to grow.
+   * Mark recorded debts paid down, oldest first, until what they say is still
+   * owed equals what the position says is owed. Idempotent; the caller already
+   * holds (or this takes) the Brand lock, so concurrent recoveries serialize.
    */
-  async applyEarningsToDebt(
+  async reconcileRecoveries(
     tx: Prisma.TransactionClient,
-    params: {
-      brandId: string;
-      amount: number;
-      customOrderId?: string | null;
-      orderId?: string | null;
-      note?: string;
-    },
-  ): Promise<{ recovered: number; remaining: number }> {
-    let available = round(params.amount);
-    if (!Number.isFinite(available) || available <= 0) {
-      return { recovered: 0, remaining: 0 };
-    }
-
-    const debts = await tx.brandBalanceAdjustment.findMany({
-      where: {
-        brandId: params.brandId,
-        status: { in: ACTIVE_DEBT_STATUSES },
-        type: { not: BrandBalanceAdjustmentType.MANUAL_CREDIT },
-      },
-      orderBy: { createdAt: 'asc' },
-    });
-
-    let recovered = 0;
+    brandId: string,
+    currency: string = BRAND_SETTLEMENT_CURRENCY,
+    source: { orderId?: string | null; customOrderId?: string | null; note?: string } = {},
+  ): Promise<{ recovered: Prisma.Decimal; outstanding: Prisma.Decimal }> {
+    await this.lockBrand(tx, brandId);
+    const debts = await tx.$queryRaw<
+      Array<{ id: string; amount: Prisma.Decimal; recoveredAmount: Prisma.Decimal }>
+    >(Prisma.sql`
+      SELECT id, amount, "recoveredAmount" FROM "BrandBalanceAdjustment"
+      WHERE "brandId" = ${brandId}::uuid AND currency = ${currency}
+        AND status::text IN (${Prisma.join(ACTIVE_DEBT_STATUSES)})
+        AND type::text IN (${Prisma.join(DEBT_TYPES)})
+      ORDER BY "createdAt", id FOR UPDATE
+    `);
+    const { position } = await loadBrandPosition(tx, brandId, currency);
+    const owed = position.isNegative() ? position.negated() : new Prisma.Decimal(0);
+    const recorded = debts.reduce(
+      (sum, debt) => sum.plus(debt.amount.minus(debt.recoveredAmount)),
+      new Prisma.Decimal(0),
+    );
+    let toRecover = recorded.minus(owed);
+    const recovered = toRecover.greaterThan(0) ? toRecover : new Prisma.Decimal(0);
+    const now = new Date();
     for (const debt of debts) {
-      if (available <= 0) break;
-      const remaining = round(
-        Number(debt.amount) - Number(debt.recoveredAmount),
-      );
-      if (remaining <= 0) continue;
-
-      const payment = round(Math.min(remaining, available));
-      available = round(available - payment);
-      recovered = round(recovered + payment);
-
-      const nextRecovered = round(Number(debt.recoveredAmount) + payment);
-      const settled = nextRecovered >= Number(debt.amount);
-
+      if (!toRecover.greaterThan(0)) break;
+      const open = debt.amount.minus(debt.recoveredAmount);
+      if (!open.greaterThan(0)) continue;
+      const payment = Prisma.Decimal.min(open, toRecover);
+      toRecover = toRecover.minus(payment);
+      const nextRecovered = debt.recoveredAmount.plus(payment);
+      const settled = nextRecovered.greaterThanOrEqualTo(debt.amount);
       await tx.brandBalanceAdjustment.update({
         where: { id: debt.id },
         data: {
-          recoveredAmount: new Prisma.Decimal(nextRecovered),
+          recoveredAmount: nextRecovered,
           status: settled
             ? BrandBalanceAdjustmentStatus.RECOVERED
             : BrandBalanceAdjustmentStatus.PARTIALLY_RECOVERED,
-          settledAt: settled ? new Date() : null,
+          settledAt: settled ? now : null,
         },
       });
-
       await tx.brandBalanceRecovery.create({
         data: {
           adjustmentId: debt.id,
-          amount: new Prisma.Decimal(payment),
-          currency: debt.currency,
-          customOrderId: params.customOrderId ?? null,
-          orderId: params.orderId ?? null,
-          note: params.note ?? null,
+          amount: payment,
+          currency,
+          orderId: source.orderId ?? null,
+          customOrderId: source.customOrderId ?? null,
+          // Later earnings, or earnings not yet withdrawn when the refund came.
+          note: source.note ?? 'Settled from the brand balance',
         },
       });
     }
+    return { recovered, outstanding: owed };
+  }
 
-    if (recovered > 0) {
-      void this.announce({
-        brandId: params.brandId,
-        direction: 'RECOVERY',
-        amount: recovered,
-        currency: debts[0]?.currency ?? 'NGN',
-        customOrderId: params.customOrderId ?? null,
-        orderId: params.orderId ?? null,
-      });
+  /**
+   * How much of a release may be paid out now: never more than the brand's
+   * position, so earnings settle any debt before anything becomes payable.
+   * Partial payment is the normal case — a brand owing ₦40,000 who earns
+   * ₦15,000 pays down ₦15,000 and keeps nothing.
+   */
+  async payableFromRelease(
+    tx: Prisma.TransactionClient,
+    params: { brandId: string; amount: Amount; currency?: string },
+  ): Promise<{ payable: Prisma.Decimal; withheld: Prisma.Decimal }> {
+    const currency = params.currency ?? BRAND_SETTLEMENT_CURRENCY;
+    await this.lockBrand(tx, params.brandId);
+    const amount = decimal(params.amount);
+    const { position } = await loadBrandPosition(tx, params.brandId, currency);
+    const capped = Prisma.Decimal.max(0, Prisma.Decimal.min(amount, position));
+    return { payable: capped, withheld: amount.minus(capped) };
+  }
+
+  /**
+   * Tell brand owners about committed balance changes. Runs after commit, so a
+   * rolled-back refund never produces a notice; keyed by the row id, so a
+   * repeated sweep or two processes never send one twice.
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async announcePending(): Promise<number> {
+    if (!this.notifications || this.announcing) return 0;
+    this.announcing = true;
+    try {
+      const [debts, recoveries] = await Promise.all([
+        this.prisma.brandBalanceAdjustment.findMany({
+          where: { announcedAt: null },
+          orderBy: { createdAt: 'asc' },
+          take: ANNOUNCE_BATCH,
+          select: {
+            id: true, brandId: true, type: true, amount: true, currency: true,
+            reason: true, orderId: true, customOrderId: true,
+          },
+        }),
+        this.prisma.brandBalanceRecovery.findMany({
+          where: { announcedAt: null },
+          orderBy: { createdAt: 'asc' },
+          take: ANNOUNCE_BATCH,
+          select: {
+            id: true, amount: true, currency: true, orderId: true, customOrderId: true,
+            adjustment: { select: { brandId: true } },
+          },
+        }),
+      ]);
+      let sent = 0;
+      const events = [
+        ...debts.map((row) => ({
+          table: 'adjustment' as const, id: row.id, brandId: row.brandId,
+          direction: row.type === BrandBalanceAdjustmentType.MANUAL_CREDIT ? 'CREDIT' : 'DEBIT',
+          amount: row.amount, currency: row.currency, reason: row.reason,
+          orderId: row.orderId, customOrderId: row.customOrderId,
+        })),
+        ...recoveries.map((row) => ({
+          table: 'recovery' as const, id: row.id, brandId: row.adjustment.brandId,
+          direction: 'RECOVERY', amount: row.amount, currency: row.currency,
+          reason: undefined as string | undefined,
+          orderId: row.orderId, customOrderId: row.customOrderId,
+        })),
+      ];
+      for (const event of events) {
+        try {
+          const { ownerId, snapshot } = await loadBrandDebtContext(
+            this.prisma,
+            event.brandId,
+          );
+          if (ownerId) {
+            await this.notifications.create(
+              ownerId,
+              NotificationType.BRAND_BALANCE_ADJUSTED,
+              {
+                notificationId: event.id,
+                payload: {
+                  direction: event.direction,
+                  amount: event.amount.toNumber(),
+                  currency: event.currency,
+                  outstanding: snapshot.outstanding,
+                  reason: event.reason,
+                  customOrderId: event.customOrderId ?? undefined,
+                  orderId: event.orderId ?? undefined,
+                  targetUrl: '/studio/finance',
+                },
+              },
+            );
+          }
+          const mark = { where: { id: event.id, announcedAt: null }, data: { announcedAt: new Date() } };
+          if (event.table === 'adjustment') await this.prisma.brandBalanceAdjustment.updateMany(mark);
+          else await this.prisma.brandBalanceRecovery.updateMany(mark);
+          sent += 1;
+        } catch (error) {
+          this.logger.warn(
+            `Balance notice ${event.id} not yet delivered: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+      return sent;
+    } finally {
+      this.announcing = false;
     }
-
-    return { recovered, remaining: available };
   }
 
   /**
@@ -319,11 +400,11 @@ export class BrandBalanceService {
         id: adjustment.id,
         type: adjustment.type,
         status: adjustment.status,
-        amount: Number(adjustment.amount),
-        recoveredAmount: Number(adjustment.recoveredAmount),
-        outstanding: round(
-          Number(adjustment.amount) - Number(adjustment.recoveredAmount),
-        ),
+        amount: adjustment.amount.toNumber(),
+        recoveredAmount: adjustment.recoveredAmount.toNumber(),
+        outstanding: adjustment.amount
+          .minus(adjustment.recoveredAmount)
+          .toNumber(),
         currency: adjustment.currency,
         reason: adjustment.reason,
         customOrderId: adjustment.customOrderId,
@@ -332,7 +413,7 @@ export class BrandBalanceService {
         createdAt: adjustment.createdAt,
         recoveries: adjustment.recoveries.map((recovery) => ({
           id: recovery.id,
-          amount: Number(recovery.amount),
+          amount: recovery.amount.toNumber(),
           currency: recovery.currency,
           customOrderId: recovery.customOrderId,
           orderId: recovery.orderId,

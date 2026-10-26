@@ -28,25 +28,27 @@ Subscription tier definitions and access policy are unchanged.
 These shared backend paths serve desktop, tablet, browser-mobile and native records.
 No client layout, notification-permission UI or device behavior changed here.
 
-## Standard-order timeout context
+## Standard-order refunds (canonical since 26 October)
 
-Standard refunds now read current order status and capture identity/amount in one
-scalar LATERAL JOIN. Canonical payment references use their own branch; the existing
-empty-reference/array fallback is separate. Native Decimal amounts are retained.
-Missing order and missing capture remain distinct failures. Current paid/refunded
-and conditional capture-claim checks still precede independent financial commands.
+Every standard refund (return, SLA timeout, admin SLA cancellation, product
+deletion) is a durable `StandardOrderRefund` row: one per order, for that
+order's own share of the capture, never the whole parent. A request locks the
+capture (`SELECT … FROM "PaymentAttempt" WHERE reference = $1 FOR UPDATE`), then
+the order and the escrow hold, inside the caller's transaction. It never
+contacts the provider. Submission, polling and completion run later, outside
+every lock, through one provider client. An uncertain outcome is looked up by the
+refund's merchant note and is never resubmitted. Operator procedures:
+[STANDARD_ORDER_REFUND_RUNBOOK.md](STANDARD_ORDER_REFUND_RUNBOOK.md).
 
-Actual PostgreSQL runs the SLA cron with26 independent test-mode captures and the
-real escrow/ledger services:26context JOINs,26refunded holds/journals and52recipient
-event handoffs. Cron/direct replay add no duplicate refund. Notification delivery
-is not exercised. Test mode bypasses the provider in the existing implementation;
-these cases are not a live or simulated-provider standard-refund completion test.
-
-The live implementation still contacts its provider within the database transaction
-and refunds the whole parent capture. Canonical refund completion, provider/database
-atomicity and mixed-checkout accounting remain separate unresolved release gates.
-The old array lookup is retained by this query pass and will retire with the wider
-single-flow contraction; this does not certify that legacy retirement is finished.
+The SLA cron on 26 independent captures performs 26 capture locks, 26 escrow
+reservations and reserve journals, and pending-refund notices for 52 recipients.
+Replays converge on the same refunds, and no settlement journal exists before the
+provider confirms (`verify-ledger-concurrency.cjs`). Provider transport,
+webhooks, lost answers, stale leases, lease loss, definitive rejection, admin
+reconciliation and product removal run against a loopback Paystack-shaped
+simulator (`verify-standard-refund-integrity.cjs`). An order without a payment
+reference is refused (`ORDER_CAPTURE_REQUIRES_REVIEW`). Paid orders are created
+with the capture reference, and no legacy rows exist on local or SIT.
 
 ## Queue refund and callback context
 

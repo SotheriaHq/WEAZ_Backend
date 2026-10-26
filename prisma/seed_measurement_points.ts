@@ -121,9 +121,10 @@ export async function seedMeasurementPoints(prisma: PrismaClient): Promise<void>
       maxValueChildCm: point.childMax,
     };
 
+    // Created once; an admin's later edits to a point are never overwritten.
     await (prisma as any).measurementPoint.upsert({
       where: { key: point.key },
-      update: values,
+      update: {},
       create: { key: point.key, ...values },
     });
   }

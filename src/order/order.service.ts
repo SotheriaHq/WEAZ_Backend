@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
@@ -492,9 +493,14 @@ export class OrderService {
 
     const previousStatus = order.status;
 
+    const refundRequested =
+      status === OrderStatus.RETURNED &&
+      order.paymentStatus === PaymentStatus.PAID;
     const updated = await this.prisma.$transaction(async (tx) => {
-      const next = await tx.order.update({
-        where: { id: orderId },
+      // Conditional on the status this command validated: a concurrent
+      // transition makes this one fail instead of overwriting it.
+      const moved = await tx.order.updateMany({
+        where: { id: orderId, status: previousStatus },
         data: {
           status,
           ...(status === OrderStatus.DELIVERED && !order.deliveredAt
@@ -502,6 +508,9 @@ export class OrderService {
             : {}),
         },
       });
+      if (moved.count !== 1) {
+        throw new ConflictException('ORDER_STATUS_CHANGED');
+      }
 
       if (status === OrderStatus.SHIPPED) {
         await this.standardOrderEscrowService.releaseShipmentPortion(
@@ -510,18 +519,16 @@ export class OrderService {
         );
       }
 
-      if (
-        status === OrderStatus.RETURNED &&
-        order.paymentStatus === PaymentStatus.PAID
-      ) {
+      if (refundRequested) {
         await this.orderRefundService.initiateRefund(tx, {
           orderId,
           reason: 'ORDER_RETURNED',
+          trigger: 'RETURN',
           actorId: actorUserId,
         });
       }
 
-      return next;
+      return tx.order.findUniqueOrThrow({ where: { id: orderId } });
     });
 
     // Notify buyer about status change
@@ -549,6 +556,8 @@ export class OrderService {
             status,
             previousStatus,
             brandName: order.brand?.name ?? null,
+            // Pending until the payment provider confirms; never "refunded" here.
+            ...(refundRequested ? { refundStatus: 'PENDING' } : {}),
             targetUrl: `/orders/${order.id}`,
           },
         },
@@ -615,6 +624,7 @@ export class OrderService {
       await this.orderRefundService.initiateRefund(tx, {
         orderId,
         reason: 'SLA_FULFILLMENT_TIMEOUT_ADMIN',
+        trigger: 'ADMIN_SLA_CANCEL',
         actorId: actorUserId,
       });
       return true;
@@ -638,6 +648,7 @@ export class OrderService {
             orderId,
             autoCancelled: true,
             reason: 'SLA_FULFILLMENT_TIMEOUT',
+            refundStatus: 'PENDING',
             targetUrl: `/orders/${orderId}`,
           },
         },
@@ -650,8 +661,8 @@ export class OrderService {
 
     return {
       statusCode: 200,
-      message: 'Order cancelled and refund initiated',
-      data: { orderId, cancelled: true },
+      message: 'Order cancelled; the refund is pending provider confirmation',
+      data: { orderId, cancelled: true, refundStatus: 'PENDING' },
     };
   }
 

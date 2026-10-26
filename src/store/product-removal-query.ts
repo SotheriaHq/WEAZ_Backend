@@ -64,23 +64,51 @@ export async function loadProductRemovalEffects(
   );
 }
 
+export type ProductActiveOrder = {
+  id: string;
+  buyerId: string | null;
+  status: 'PENDING' | 'PROCESSING' | 'SHIPPED';
+  paymentStatus: string;
+};
+
 /** Product-specific active orders; normalized rows take precedence over old JSON snapshots. */
 export function loadProductActiveOrders(
   tx: Pick<Prisma.TransactionClient, '$queryRaw'>,
   brandId: string,
   productId: string,
 ) {
-  return tx.$queryRaw<Array<{ id: string; buyerId: string | null }>>(Prisma.sql`
-    SELECT o."_id" AS id, o."buyerId" FROM "OrderItem" item
+  return tx.$queryRaw<ProductActiveOrder[]>(Prisma.sql`
+    SELECT o."_id" AS id, o."buyerId", o.status::text AS status, o."paymentStatus"::text AS "paymentStatus"
+    FROM "OrderItem" item
     JOIN "Order" o ON o."_id" = item."orderId"
     WHERE item."productId" = ${productId}::uuid AND o."brandId" = ${brandId}::uuid
       AND o.status IN ('PENDING', 'PROCESSING', 'SHIPPED')
     UNION
-    SELECT o."_id" AS id, o."buyerId" FROM "Order" o
+    SELECT o."_id" AS id, o."buyerId", o.status::text AS status, o."paymentStatus"::text AS "paymentStatus"
+    FROM "Order" o
     WHERE o."brandId" = ${brandId}::uuid AND o.status IN ('PENDING', 'PROCESSING', 'SHIPPED')
       AND NOT EXISTS (SELECT 1 FROM "OrderItem" item WHERE item."orderId" = o."_id")
       AND EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(o.items) = 'array' THEN o.items ELSE '[]'::jsonb END) item
         WHERE item ->> 'productId' = ${productId}::text)
     ORDER BY id
   `);
+}
+
+/**
+ * Checkouts that may still turn into an order for this product: awaiting
+ * payment and not expired, or with a payment still being confirmed.
+ */
+export async function countProductCheckoutsInProgress(
+  tx: Pick<Prisma.TransactionClient, '$queryRaw'>,
+  productId: string,
+) {
+  const [row] = await tx.$queryRaw<Array<{ count: number; until: Date | null }>>(Prisma.sql`
+    SELECT COUNT(DISTINCT s.id)::int AS count, MAX(s."expiresAt") AS until
+    FROM "CheckoutSessionLine" line JOIN "CheckoutSession" s ON s.id = line."checkoutSessionId"
+    WHERE line."productId" = ${productId}::uuid
+      AND ((s.status = 'PENDING_PAYMENT' AND s."expiresAt" > (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'))
+        OR (s.status = 'PAYMENT_PROCESSING'
+          AND s."updatedAt" > (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') - INTERVAL '24 hours'))
+  `);
+  return { count: row?.count ?? 0, until: row?.until ?? null };
 }

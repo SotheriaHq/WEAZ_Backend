@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   lockCheckoutProducts,
+  isSellableAfterLock,
   releaseCheckoutReservations,
 } from './checkout-inventory-query';
 import { PaymentService } from './payment.service';
@@ -15,6 +16,11 @@ function fixture() {
     sizeStock: { M: 4, S: 3 },
     trackInventory: true,
     allowBackorders: false,
+    deletedAt: null,
+    archivedAt: null,
+    isActive: true,
+    publishAt: null,
+    standardCheckoutEnabled: true,
   };
   const tx = {
     $queryRaw: jest.fn().mockResolvedValue([]),
@@ -33,6 +39,24 @@ function fixture() {
   return { id, product, tx };
 }
 describe('checkout inventory bulk reads', () => {
+  it('rejects missing, removed, inactive and future products independently of stock tracking', () => {
+    const { product } = fixture();
+    const now = new Date('2026-10-26T12:00:00Z');
+    expect(isSellableAfterLock(undefined, now)).toBe(false);
+    expect(isSellableAfterLock(product, now)).toBe(true);
+    expect(
+      isSellableAfterLock({ ...product, trackInventory: false }, now),
+    ).toBe(true);
+    for (const change of [
+      { deletedAt: now },
+      { archivedAt: now },
+      { isActive: false },
+      { standardCheckoutEnabled: false },
+      { publishAt: new Date(now.getTime() + 1) },
+    ])
+      expect(isSellableAfterLock({ ...product, ...change }, now)).toBe(false);
+    expect(isSellableAfterLock({ ...product, publishAt: now }, now)).toBe(true);
+  });
   it('locks in sorted order and hydrates a deduplicated batch only after locking', async () => {
     const { id, tx } = fixture();
     await lockCheckoutProducts(tx as any, [id, id.toUpperCase()]);

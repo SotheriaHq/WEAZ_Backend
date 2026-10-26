@@ -11,7 +11,12 @@ import { refreshCollectionPriceRanges } from './collection-price-range.util';
 import { withCartTransaction } from '../bagging/cart-transaction.util';
 import type { NotificationEvent } from '../notifications/notification-batch-query';
 import { loadStockLifecycleProducts } from './product-lifecycle-query';
-import { loadProductRemovalContext, loadProductRemovalEffects, loadProductActiveOrders } from './product-removal-query';
+import {
+  countProductCheckoutsInProgress,
+  loadProductActiveOrders,
+  loadProductRemovalContext,
+  loadProductRemovalEffects,
+} from './product-removal-query';
 import { loadProductPublications, loadProductPatchers, ProductPublication } from './product-publication-query';
 import { productPublicationNamespace, recipientNotificationId } from '../queue/notification-identity';
 import {
@@ -112,6 +117,7 @@ import { TAG_ENTITY_TYPE } from 'src/tags/tag-entity-type';
 import { CategoriesService } from 'src/categories/categories.service';
 import { reconcileStandardOrderPaymentStatuses } from 'src/common/payments/order-payment-reconciliation.util';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
+import { StandardOrderRefundsService } from 'src/finance/standard-order-refunds.service';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 import { buildPayoutSourceBreakdown } from 'src/payout/payout-detail.presenter';
 import {
@@ -220,6 +226,8 @@ export class StoreService {
     private readonly contentIntegrity?: ContentIntegrityService,
     @Optional()
     private readonly legalService?: LegalService,
+    @Optional()
+    private readonly standardOrderRefunds?: StandardOrderRefundsService,
   ) {}
 
   private readonly maxProductsPerCollection = Math.max(
@@ -4000,46 +4008,37 @@ export class StoreService {
       'You can only check your own products',
     );
 
-    const activeOrders = await this.prisma.order.findMany({
-      where: {
-        brandId: product.brandId,
-        status: { in: ['PENDING', 'PROCESSING', 'SHIPPED'] },
-      },
-      select: {
-        items: true,
-        orderItems: {
-          select: { productId: true },
-        },
-      },
-    });
-
-    let activeOrdersCount = 0;
-    for (const order of activeOrders) {
-      if (this.orderContainsProduct(order, productId)) {
-        activeOrdersCount++;
-      }
-    }
-
-    // Count carts and wishlists
-    const [inCarts, inWishlists] = await Promise.all([
+    // Product-specific reads only; no scan of every order the brand has.
+    const [activeOrders, checkouts, inCarts, inWishlists] = await Promise.all([
+      loadProductActiveOrders(this.prisma, product.brandId, productId),
+      countProductCheckoutsInProgress(this.prisma, productId),
       this.prisma.cartItem.count({ where: { productId } }),
       this.prisma.wishlistItem.count({ where: { productId } }),
     ]);
 
+    const activeOrdersCount = activeOrders.length;
+    const shippedOrdersCount = activeOrders.filter(
+      (order) => order.status === 'SHIPPED',
+    ).length;
     const hasActiveOrders = activeOrdersCount > 0;
+    const blocked = hasActiveOrders || checkouts.count > 0;
 
     return {
       productName: product.name,
       hasActiveOrders,
       activeOrdersCount,
+      shippedOrdersCount,
+      checkoutsInProgress: checkouts.count,
       inCarts,
       inWishlists,
       totalViews: product.viewsCount ?? 0,
       totalThreads: product.threadsCount ?? 0,
-      canDelete: !hasActiveOrders,
+      canDelete: !blocked,
       mustArchiveReason: hasActiveOrders
         ? 'This product has active orders and can only be archived.'
-        : undefined,
+        : checkouts.count > 0
+          ? 'A shopper is paying for this product right now. Archive it to stop new sales.'
+          : undefined,
     };
   }
 
@@ -4266,13 +4265,13 @@ export class StoreService {
       product.tags ?? [],
     );
 
-    const activeOrders = await loadProductActiveOrders(this.prisma, product.brandId, productId);
-    const activeOrdersCount = activeOrders.length;
-
-    if (activeOrdersCount > 0 && !cancelPendingOrders) {
-      throw new BadRequestException(
-        'Cannot delete product with active orders. Pass cancelPendingOrders=true to cancel pending orders and refund.',
-      );
+    if (product.deletedAt) {
+      return {
+        success: true,
+        message: 'Product already deleted',
+        affectedCollections: [],
+        cancelledOrders: [],
+      };
     }
 
     const effects = await loadProductRemovalEffects(this.prisma, productId, false);
@@ -4280,18 +4279,62 @@ export class StoreService {
     // Get affected collection titles for notification
     const affectedCollections = effects.collectionTitles;
 
-    const cancelledOrders: { id: string; buyerId?: string | null }[] = [];
+    const cancelledOrders: Array<{
+      id: string;
+      buyerId: string | null;
+      refund: { amount: Prisma.Decimal; currency: string } | null;
+    }> = [];
 
-    await this.prisma.$transaction(async (tx) => {
-      if (activeOrdersCount > 0 && cancelPendingOrders) {
-        const orders = await loadProductActiveOrders(tx, product.brandId, productId);
+    const deleted = await this.prisma.$transaction(async (tx) => {
+      // Checkout locks this row before reserving stock, so a sale either
+      // commits before this check or sees the product as deleted.
+      const [current] = await tx.$queryRaw<Array<{ deletedAt: Date | null }>>`
+        SELECT "deletedAt" FROM "Product" WHERE "_id" = ${productId}::uuid FOR UPDATE`;
+      if (!current || current.deletedAt) return false;
 
-        for (const order of orders) {
-          await tx.order.update({
-              where: { id: order.id },
-              data: { status: 'CANCELLED', paymentStatus: 'REFUNDED' },
-            });
-          cancelledOrders.push({ id: order.id, buyerId: order.buyerId });
+      const orders = await loadProductActiveOrders(tx, product.brandId, productId);
+      if (orders.some((order) => order.status === 'SHIPPED')) {
+        throw new ConflictException({
+          code: 'PRODUCT_HAS_SHIPPED_ORDERS',
+          message:
+            'This product has orders on their way to shoppers. Archive it now to stop new sales; it can be deleted once those orders are delivered.',
+        });
+      }
+      const checkouts = await countProductCheckoutsInProgress(tx, productId);
+      if (checkouts.count > 0) {
+        throw new ConflictException({
+          code: 'PRODUCT_CHECKOUT_IN_PROGRESS',
+          message:
+            'A shopper is paying for this product right now. Archive it to stop new sales, then try deleting again shortly.',
+          retryAfter: checkouts.until,
+        });
+      }
+      if (orders.length > 0 && !cancelPendingOrders) {
+        throw new BadRequestException(
+          'Cannot delete product with active orders. Pass cancelPendingOrders=true to cancel pending orders and request their refunds.',
+        );
+      }
+
+      for (const order of orders) {
+        let refund: { amount: Prisma.Decimal; currency: string } | null = null;
+        if (order.paymentStatus === PaymentStatus.PAID) {
+          if (!this.standardOrderRefunds)
+            throw new InternalServerErrorException('Refund processing is unavailable');
+          // Request the refund first: it takes the capture lock before the order lock.
+          const requested = await this.standardOrderRefunds.requestInTransaction(tx, {
+            orderId: order.id,
+            trigger: 'PRODUCT_REMOVAL',
+            reason: 'PRODUCT_REMOVED_BY_BRAND',
+            actorId: brandOwnerId,
+          });
+          refund = { amount: requested.settlementAmount, currency: requested.settlementCurrency };
+        }
+        const cancelled = await tx.order.updateMany({
+          where: { id: order.id, status: { in: ['PENDING', 'PROCESSING'] } },
+          data: { status: 'CANCELLED' },
+        });
+        if (cancelled.count === 1) {
+          cancelledOrders.push({ id: order.id, buyerId: order.buyerId, refund });
         }
       }
 
@@ -4301,34 +4344,45 @@ export class StoreService {
         data: { deletedAt: new Date(), isActive: false, collectionId: null },
       });
       await tx.cartItem.deleteMany({ where: { productId } });
+      return true;
     });
 
-    if (cancelledOrders.length > 0) {
-      for (const order of cancelledOrders) {
-        if (!order.buyerId) continue;
-        try {
-          await this.notifications?.create(
-            order.buyerId,
-            NotificationType.ORDER_STATUS_UPDATED,
-            {
-              payload: {
-                orderId: order.id,
-                status: 'CANCELLED',
-                reason: 'Product deleted by brand',
-                refundStatus: 'REFUNDED',
-                targetUrl: `/orders/${order.id}`,
-              },
-            },
-          );
-        } catch (error) {
-          console.warn('Failed to notify buyer about cancellation', error);
-        }
-      }
+    if (!deleted) {
+      return {
+        success: true,
+        message: 'Product already deleted',
+        affectedCollections: [],
+        cancelledOrders: [],
+      };
+    }
 
-      console.warn('[AdminNotice] Cancelled orders due to product deletion', {
-        productId,
-        orderIds: cancelledOrders.map((o) => o.id),
-      });
+    for (const order of cancelledOrders) {
+      if (!order.buyerId) continue;
+      try {
+        await this.notifications?.create(
+          order.buyerId,
+          NotificationType.ORDER_STATUS_UPDATED,
+          {
+            payload: {
+              orderId: order.id,
+              status: 'CANCELLED',
+              reason: 'Product removed by the brand',
+              // Pending until the payment provider confirms the refund.
+              ...(order.refund
+                ? {
+                    refundStatus: 'PENDING',
+                    message: `Your order was cancelled because the brand removed the product. ${StandardOrderRefundsService.pendingMessage(order.refund.currency, order.refund.amount)}`,
+                  }
+                : {}),
+              targetUrl: `/orders/${order.id}`,
+            },
+          },
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Failed to notify buyer about cancellation of order ${order.id}`,
+        );
+      }
     }
 
     await this.recalculateCollectionPriceRanges(
@@ -4371,8 +4425,14 @@ export class StoreService {
 
     return {
       success: true,
-      message: 'Product deleted',
+      message: cancelledOrders.some((order) => order.refund)
+        ? 'Product deleted. Affected orders were cancelled and their refunds are pending provider confirmation.'
+        : 'Product deleted',
       affectedCollections,
+      cancelledOrders: cancelledOrders.map((order) => ({
+        orderId: order.id,
+        refundStatus: order.refund ? 'PENDING' : null,
+      })),
     };
   }
 

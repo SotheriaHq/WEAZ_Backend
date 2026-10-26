@@ -5,6 +5,7 @@ import { Pool } from 'pg';
 import { withUtcDatabaseUrl } from '../src/prisma/database-connection';
 import { randomUUID } from 'crypto';
 import { FILTER_TAG_SUGGESTIONS } from '../src/categories/default-taxonomy';
+import { normalizeTag } from '../src/common/utils/tag-validator';
 
 /** Shared, idempotent platform-tag bootstrap. Existing moderation decisions are never overwritten. */
 
@@ -48,9 +49,32 @@ export async function seedPlatformTags(prisma: PrismaClient): Promise<number> {
   const allTags = Array.from(tagSet);
   console.log(`Seeding ${allTags.length} platform tags...`);
 
+  // Seed names use the same normalizer as runtime tagging, so a shopper's
+  // "#african-fashion" matches the approved platform tag.
+  const canonical = allTags.map((tagName) => ({
+    tagName,
+    name: normalizeTag(tagName),
+    legacy: tagName.toLowerCase().replace(/[^a-z0-9]/g, ''),
+  }));
+
+  // Bounded repair of rows an older seed wrote with separators stripped: only
+  // seed-owned (no creator), never used, approved rows whose canonical name is
+  // still free. Anything else is left for a person to decide.
+  let renamed = 0;
+  for (const tag of canonical) {
+    if (tag.legacy === tag.name) continue;
+    const result = await prisma.$executeRaw`
+      UPDATE "Tag" SET "normalizedName" = ${tag.name}, "updatedAt" = NOW()
+      WHERE "normalizedName" = ${tag.legacy} AND "createdById" IS NULL AND status = 'APPROVED'
+        AND "usageCount" = 0 AND NOT EXISTS (SELECT 1 FROM "TagBinding" b WHERE b."tagId" = "Tag"."_id")
+        AND NOT EXISTS (SELECT 1 FROM "Tag" other WHERE other."normalizedName" = ${tag.name})`;
+    renamed += result;
+  }
+  if (renamed > 0) console.log(`Renamed ${renamed} legacy platform tags to their canonical names`);
+
   await prisma.tag.createMany({
-    data: allTags.map((tagName) => ({
-      id: randomUUID(), normalizedName: tagName.toLowerCase().replace(/[^a-z0-9]/g, ''),
+    data: canonical.map(({ tagName, name }) => ({
+      id: randomUUID(), normalizedName: name,
       displayName: tagName.replace(/-/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()),
       status: 'APPROVED' as const, isBanned: false, usageCount: 0, createdById: null, aliasOfTagId: null,
     })),

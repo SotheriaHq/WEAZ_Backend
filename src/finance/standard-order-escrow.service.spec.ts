@@ -189,15 +189,24 @@ function buildHarness(mode: 'HOLD' | 'SPLIT' = 'HOLD') {
   const orders = new Map<string, any>();
   const ledgerTransactions = new Set<string>();
 
+  const sqlText = (query: any) =>
+    Array.isArray(query) ? query.join('?') : String(query?.sql ?? query);
   const tx: any = {
+    // Row locks return the current row, as `SELECT * … FOR UPDATE` does.
+    $queryRaw: jest.fn(async (query: any, ...values: any[]) => {
+      const sql = sqlText(query);
+      if (sql.includes('"EscrowHold" WHERE "orderId"'))
+        return holds.filter((hold) => hold.orderId === values[0]);
+      if (sql.includes('"EscrowHold" WHERE id'))
+        return holds.filter((hold) => hold.id === values[0]);
+      if (sql.includes('FROM "Brand"')) return [{ id: values[0] }];
+      return [];
+    }),
     escrowHold: {
-      upsert: jest.fn(async ({ where, update, create }: any) => {
-        const existing = holds.find((hold) => hold.orderId === where.orderId);
-        if (existing) {
-          Object.assign(existing, update);
-          return existing;
-        }
-
+      createMany: jest.fn(async ({ data }: any) => {
+        const create = Array.isArray(data) ? data[0] : data;
+        if (holds.some((hold) => hold.orderId === create.orderId))
+          return { count: 0 };
         const created: HoldRow = {
           id: `hold_${holds.length + 1}`,
           orderId: create.orderId,
@@ -226,7 +235,7 @@ function buildHarness(mode: 'HOLD' | 'SPLIT' = 'HOLD') {
           refundReason: null,
         };
         holds.push(created);
-        return created;
+        return { count: 1 };
       }),
       findUnique: jest.fn(async ({ where }: any) => {
         if (where.orderId !== undefined) {
@@ -317,6 +326,17 @@ function buildHarness(mode: 'HOLD' | 'SPLIT' = 'HOLD') {
         orders.set(where.id, updated);
         return updated;
       }),
+      updateMany: jest.fn(async ({ where, data }: any) => {
+        const current = orders.get(where.id);
+        if (
+          !current ||
+          (where.buyerConfirmedDeliveryAt === null &&
+            current.buyerConfirmedDeliveryAt)
+        )
+          return { count: 0 };
+        orders.set(where.id, { ...current, ...data });
+        return { count: 1 };
+      }),
     },
     settlementSnapshot: {
       findFirst: jest.fn(async ({ where }: any) => {
@@ -335,6 +355,7 @@ function buildHarness(mode: 'HOLD' | 'SPLIT' = 'HOLD') {
 
   const prisma: any = {
     ...tx,
+    // The delivery-candidate scan; row locks go through `tx.$queryRaw`.
     $queryRaw: jest.fn(async () =>
       holds
         .filter((hold) => {
@@ -388,8 +409,14 @@ function buildHarness(mode: 'HOLD' | 'SPLIT' = 'HOLD') {
     postStandardOrderFinalRelease: jest.fn(async (_tx: any, hold: HoldRow) => {
       ledgerTransactions.add(`final:${hold.orderId}`);
     }),
-    postStandardOrderRefund: jest.fn(async (_tx: any, hold: HoldRow) => {
-      ledgerTransactions.add(`refund:${hold.orderId}`);
+    standardRefundSplit: jest.fn((hold: HoldRow) =>
+      LedgerService.prototype.standardRefundSplit.call(null, hold),
+    ),
+    postStandardOrderRefundReserved: jest.fn(async (_tx: any, params: any) => {
+      ledgerTransactions.add(`refund_reserved:${params.orderId}`);
+    }),
+    postStandardOrderRefundSettled: jest.fn(async (_tx: any, params: any) => {
+      ledgerTransactions.add(`refund_settled:${params.orderId}`);
     }),
   };
 
@@ -424,7 +451,11 @@ function buildHarness(mode: 'HOLD' | 'SPLIT' = 'HOLD') {
 
   const brandBalanceService = {
     raiseAdjustment: jest.fn(async () => ({ id: 'adjustment_1' })),
-    applyEarningsToDebt: jest.fn(async () => ({ recovered: 0, remaining: 0 })),
+    lockBrand: jest.fn(async () => undefined),
+    reconcileRecoveries: jest.fn(async () => ({
+      recovered: decimal(0),
+      outstanding: decimal(0),
+    })),
   };
 
   const service = new StandardOrderEscrowService(
@@ -450,6 +481,7 @@ function buildHarness(mode: 'HOLD' | 'SPLIT' = 'HOLD') {
     calculatorService,
     snapshotService,
     systemConfigService,
+    brandBalanceService,
   };
 }
 
@@ -652,38 +684,90 @@ describe('StandardOrderEscrowService', () => {
     );
   });
 
-  it('refund before any release reverses only held escrow', async () => {
-    const { service, tx, holds, ledgerService } = buildHarness('HOLD');
+  it('refund before any release reserves only held escrow and settles on confirmation', async () => {
+    const { service, tx, holds, ledgerService, brandBalanceService } =
+      buildHarness('HOLD');
     await service.ensureHoldsForPaidOrders(tx, [makeOrder()], 1000, 'NGN');
 
-    await service.refundOrderHold(tx, 'order_1', 'buyer refund');
+    const reserved = await service.reserveRefund(tx, {
+      orderId: 'order_1',
+      refundId: 'refund_1',
+      reason: 'buyer refund',
+    });
 
+    expect(holds[0].status).toBe(EscrowHoldStatus.REFUND_PENDING);
+    expect(reserved!.split.unreleasedGross.toFixed(2)).toBe('1000.00');
+    expect(reserved!.split.releasedNet.toFixed(2)).toBe('0.00');
+    expect(ledgerService.postStandardOrderRefundReserved).toHaveBeenCalledTimes(1);
+    expect(brandBalanceService.raiseAdjustment).not.toHaveBeenCalled();
+
+    // A pending refund freezes release.
+    await service.releaseFinalPortionNow(tx, 'order_1');
+    expect(ledgerService.postStandardOrderFinalRelease).not.toHaveBeenCalled();
+
+    await service.settleRefund(tx, {
+      orderId: 'order_1',
+      refundId: 'refund_1',
+      captureCurrency: 'NGN',
+      captureAmount: decimal(1000),
+    });
     expect(holds[0].status).toBe(EscrowHoldStatus.REFUNDED);
-    expect(ledgerService.postStandardOrderRefund).toHaveBeenCalledWith(
-      tx,
-      expect.objectContaining({
-        firstReleasedAt: null,
-        secondReleasedAt: null,
-      }),
-    );
+    expect(holds[0].refundedAt).toBeInstanceOf(Date);
+    expect(ledgerService.postStandardOrderRefundSettled).toHaveBeenCalledTimes(1);
+
+    // Replays change nothing.
+    await service.reserveRefund(tx, { orderId: 'order_1', refundId: 'refund_1', reason: 'again' });
+    await service.settleRefund(tx, {
+      orderId: 'order_1',
+      refundId: 'refund_1',
+      captureCurrency: 'NGN',
+      captureAmount: decimal(1000),
+    });
+    expect(ledgerService.postStandardOrderRefundReserved).toHaveBeenCalledTimes(1);
+    expect(ledgerService.postStandardOrderRefundSettled).toHaveBeenCalledTimes(1);
   });
 
-  it('refund after upfront release reverses released and held portions', async () => {
-    const { service, tx, holds, ledgerService } = buildHarness('SPLIT');
+  it('refund after upfront release claws back the released net exactly once', async () => {
+    const { service, tx, holds, ledgerService, brandBalanceService } =
+      buildHarness('SPLIT');
     await service.ensureHoldsForPaidOrders(tx, [makeOrder()], 1000, 'NGN');
 
-    await service.refundOrderHold(tx, 'order_1', 'buyer refund');
+    const reserved = await service.reserveRefund(tx, {
+      orderId: 'order_1',
+      refundId: 'refund_2',
+      reason: 'buyer refund',
+    });
 
-    expect(holds[0].status).toBe(EscrowHoldStatus.REFUNDED);
-    expect(ledgerService.postStandardOrderRefund).toHaveBeenCalledWith(
+    expect(holds[0].status).toBe(EscrowHoldStatus.REFUND_PENDING);
+    expect(reserved!.split.releasedGross.toFixed(2)).toBe('300.00');
+    expect(reserved!.split.releasedCommission.toFixed(2)).toBe('30.00');
+    expect(reserved!.split.releasedNet.toFixed(2)).toBe('270.00');
+    expect(reserved!.split.unreleasedGross.toFixed(2)).toBe('700.00');
+    expect(brandBalanceService.raiseAdjustment).toHaveBeenCalledWith(
       tx,
       expect.objectContaining({
-        firstReleasedAt: expect.any(Date),
-        firstReleaseAmount: decimal(300),
-        secondReleasedAt: null,
-        secondReleaseAmount: decimal(700),
+        type: 'REFUND_CLAWBACK',
+        orderId: 'order_1',
+        currency: 'NGN',
+        sourceKey: 'standard-order-refund:refund_2',
       }),
     );
+    const call = (brandBalanceService.raiseAdjustment as jest.Mock).mock.calls[0][1];
+    expect(call.amount.toFixed(2)).toBe('270.00');
+    expect(ledgerService.postStandardOrderRefundReserved).toHaveBeenCalledTimes(1);
+  });
+
+  it('settling a refund that was never reserved is refused', async () => {
+    const { service, tx } = buildHarness('HOLD');
+    await service.ensureHoldsForPaidOrders(tx, [makeOrder()], 1000, 'NGN');
+    await expect(
+      service.settleRefund(tx, {
+        orderId: 'order_1',
+        refundId: 'refund_3',
+        captureCurrency: 'NGN',
+        captureAmount: decimal(1000),
+      }),
+    ).rejects.toThrow('ESCROW_HOLD_NOT_REFUND_PENDING');
   });
 
   it('frozen hold blocks final release', async () => {

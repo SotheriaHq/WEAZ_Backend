@@ -10,6 +10,7 @@ describe('bounded tag rebuild', () => {
           { id: 'design', tags: ['Casual', 'Blocked', 'rejected'] },
         ]),
       },
+      storeCollection: { findMany: pages([]) },
       product: { findMany: pages([{ id: 'product', tags: ['Casual'] }]) },
       brand: {
         findMany: jest
@@ -35,7 +36,17 @@ describe('bounded tag rebuild', () => {
         updateMany: jest.fn(),
         count: jest.fn().mockResolvedValue(15),
       },
-      tagBinding: { deleteMany: jest.fn() },
+      tagBinding: {
+        deleteMany: jest.fn(),
+        // The design already carries a stale binding the rebuild must remove.
+        findMany: jest.fn(async ({ where }: any) =>
+          where.entityType === 'COLLECTION'
+            ? [{ entityId: 'design', tag: { normalizedName: 'old-tag' } }]
+            : [],
+        ),
+      },
+      // Ineligible-binding sweep: nothing stale in this fixture.
+      $queryRaw: jest.fn().mockResolvedValue([]),
       $transaction: jest.fn(async (run) => run(prisma)),
     };
     const service = new TagIndexService(prisma as any);
@@ -54,19 +65,21 @@ describe('bounded tag rebuild', () => {
     });
     expect(single).not.toHaveBeenCalled();
     expect(sync).toHaveBeenCalledTimes(4);
+    // Converges from the current bindings instead of deleting the whole index.
+    expect(prisma.tagBinding.deleteMany).not.toHaveBeenCalled();
     expect(sync.mock.calls[0][0]).toEqual([
       {
         entityType: 'COLLECTION',
         entityId: 'design',
-        previousTags: [],
+        previousTags: ['old-tag'],
         nextTags: ['casual'],
-        options: { maxCount: 30, notifyMentions: false },
+        options: { maxCount: 1000, notifyMentions: false },
       },
     ]);
     expect(sync.mock.calls[3][0][0]).toMatchObject({
       entityType: 'USER_BRAND',
       entityId: 'owner',
-      options: { maxCount: 10, notifyMentions: false },
+      options: { maxCount: 1000, notifyMentions: false },
     });
     expect(sync.mock.calls[3][0][0].nextTags).toHaveLength(10);
     expect(prisma.collection.findMany.mock.calls[0][0]).toMatchObject({
@@ -76,6 +89,11 @@ describe('bounded tag rebuild', () => {
     });
     expect(prisma.collection.findMany.mock.calls[1][0].where.id).toEqual({
       gt: 'design',
+    });
+    // Store collections are indexed under their own type.
+    expect(prisma.storeCollection.findMany.mock.calls[0][0]).toMatchObject({
+      where: { status: 'PUBLISHED', visibility: 'PUBLIC', deletedAt: null },
+      take: 500,
     });
     expect(prisma.product.findMany.mock.calls[0][0]).toMatchObject({
       where: {
@@ -92,6 +110,7 @@ describe('bounded tag rebuild', () => {
     expect(prisma.brand.findMany.mock.calls[2][0].where).toEqual({
       owner: { type: 'BRAND' },
     });
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
   });
 
   it('does no synchronization or moderation lookups for empty sources', async () => {

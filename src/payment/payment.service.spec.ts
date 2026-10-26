@@ -715,7 +715,24 @@ describe('PaymentService', () => {
       nextAction: null,
       expiresAt: new Date(Date.now() + 30 * 60 * 1000),
     };
+    // Read after the product lock: checkout re-checks sellability there.
+    const lockedProduct = {
+      id: 'product-1',
+      totalStock: 0,
+      sizeStock: null,
+      trackInventory: false,
+      allowBackorders: true,
+      deletedAt: null as Date | null,
+      archivedAt: null,
+      isActive: true,
+      publishAt: null,
+      standardCheckoutEnabled: true,
+    };
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      product: {
+        findMany: jest.fn().mockResolvedValue([lockedProduct]),
+      },
       checkoutSession: {
         create: jest.fn().mockResolvedValue(checkoutSession),
       },
@@ -880,6 +897,38 @@ describe('PaymentService', () => {
         }),
       }),
     );
+
+    // A product deleted while the shopper was checking out is refused after the lock.
+    tx.product.findMany.mockResolvedValue([
+      { ...lockedProduct, deletedAt: new Date() },
+    ]);
+    tx.paymentAttempt.create.mockClear();
+    initializeGatewaySpy.mockClear();
+    await expect(
+      target.initializeUnifiedCheckout(
+        {
+          customerName: 'Ada Okafor',
+          shippingAddress: {
+            firstName: 'Ada',
+            lastName: 'Okafor',
+            street: '1 Allen Avenue',
+            city: 'Lagos',
+            state: 'Lagos',
+            country: 'Nigeria',
+            phone: '08030000000',
+          },
+          contactInfo: { phone: '08030000000' },
+          paymentMethod: PaymentMethod.PAYSTACK,
+          email: 'ada@example.com',
+          idempotencyKey: 'idem-product-removed',
+          paymentData: { phone: '08030000000', channel: 'CARD' },
+        },
+        'buyer_1',
+        'corr-product-removed',
+      ),
+    ).rejects.toThrow('Product is no longer available: WIEZ Tee');
+    expect(tx.paymentAttempt.create).not.toHaveBeenCalled();
+    expect(initializeGatewaySpy).not.toHaveBeenCalled();
   });
 
   it('rejects unified checkout when a required measurement snapshot is missing', async () => {
