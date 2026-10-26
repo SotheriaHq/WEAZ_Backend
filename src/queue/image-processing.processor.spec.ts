@@ -12,6 +12,7 @@ function build(overrides: { getObject?: jest.Mock; status?: string; processed?: 
     fileUpload: {
       findUnique: jest.fn().mockResolvedValue(file),
       updateMany: jest.fn(async ({ where, data }: any) => {
+        if (where.processingStatus?.not === file.processingStatus) return { count: 0 };
         if (where.OR && file.processingLeaseUntil && file.processingLeaseUntil > new Date()) return { count: 0 };
         if (where.processingLeaseToken && where.processingLeaseToken !== file.processingLeaseToken) return { count: 0 };
         Object.assign(file, data); return { count: 1 };
@@ -85,6 +86,32 @@ function build(overrides: { getObject?: jest.Mock; status?: string; processed?: 
 }
 
 describe('ImageProcessingProcessor re-encode (newVersion)', () => {
+  it('checks normal READY skips in the claim instead of reading the file before claiming', async () => {
+    const { prisma, upload, run } = build();
+    await run({ force: false, newVersion: false });
+    expect(prisma.fileUpload.findUnique).not.toHaveBeenCalled();
+    expect(upload.getObjectBufferByKey).not.toHaveBeenCalled();
+    expect(prisma.fileUpload.updateMany.mock.calls[0][0].where.processingStatus).toEqual({ not: 'READY' });
+  });
+
+  it('reads the authoritative PENDING file once only after winning its lease', async () => {
+    const { prisma, run } = build({ status: 'PENDING' });
+    await run({ force: false, newVersion: false });
+    expect(prisma.fileUpload.findUnique).toHaveBeenCalledTimes(1);
+    expect(prisma.fileUpload.updateMany.mock.invocationCallOrder[0]).toBeLessThan(prisma.fileUpload.findUnique.mock.invocationCallOrder[0]);
+  });
+
+  it('does no file read or storage work when another worker holds the lease or the file is missing', async () => {
+    const { prisma, upload, file, run } = build({ status: 'PENDING' });
+    file.processingLeaseUntil = new Date(Date.now() + 60000);
+    await run({ force: true });
+    expect(prisma.fileUpload.findUnique).not.toHaveBeenCalled();
+    prisma.fileUpload.updateMany.mockResolvedValueOnce({ count: 0 });
+    await run({ fileId: 'missing' });
+    expect(prisma.fileUpload.findUnique).not.toHaveBeenCalled();
+    expect(upload.getObjectBufferByKey).not.toHaveBeenCalled();
+  });
+
   it('writes the next asset version, switches the file to it, then drops older variant rows', async () => {
     const { prisma, upload, run } = build();
 

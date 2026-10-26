@@ -1,17 +1,25 @@
 # Release gates — 23 October 2026
 
-Deployment remains blocked. Notification work remains last. This report does not certify a bug-free system or production capacity.
+## Current release direction — 26 October 2026
+
+The owner now authorizes committing, pushing, branch integration and SIT deployment of verified work, while remaining item-1 follow-up work stays held. This supersedes the earlier deployment pause recorded below. Only SIT and local are in use. Actual database resets and reference/admin seeding completed earlier; do not repeat them for this release.
+
+The N+1 inventory is locally reviewed, while the wider race audit remains incomplete. Current notification/conversation/extension handoff checks pass 78 combined PostgreSQL/Redis cases (including 12 channel cases), 96 focused unit tests, types and affected-source lint. These results do not close financial/debt, product/order, indexing or semantic-deduplication risks. Normalization and canonical refunds remain open work. A successful SIT deployment is not production-readiness approval or proof of provider/device delivery.
+
+GitHub web history checked on 26 October shows subscription/client PR7 already merged into SIT on 25 October, followed by additional design merges. Preserve that existing history; further item-1 work remains held. Historical statuses below must not be used to undo other contributors' merges or infer current deployment state.
+
+Release validation and actual deployed revisions must be recorded after the integration gates finish; an integration commit alone is not deployment evidence.
 
 | Gate | Verified progress | Remaining blocker |
 | --- | --- | --- |
-| Subscription database cutover | Four paid tiers retained; grandfather tier/flag contraction and strict financial preconditions tested; all 143 migrations and reference/admin seeds pass twice in a disposable database. | Real SIT/local reset and cutover have not run. One SIT paid order lacks a lane; the approved fresh reset must precede contraction. Match running code, schema and process configuration during the controlled cutover. |
-| N+1 queries | All 15 explicitly open entries in the frozen 178-candidate inventory now have batched implementations and focused evidence. Four additional queue-promotion read sites and per-line ledger account reads from the stateful category are fixed. | The remaining 46 recipient-policy and 59 stateful-command entries still require semantic review. Stateful product mutation can still carry incidental taxonomy/media/index reads; a zero open count in one category is not an all-codebase clearance. |
+| Subscription database cutover | Actual SIT/local reset, migrations, reference/admin seeding and backend/native cutover verified earlier. Four current tiers and customer aggregation retained. Web PR7 subsequently merged externally on25October. | Further item-1 follow-up remains on hold; accepted temporary Runway/Market rendering budget5seconds. Preserve existing remote history. |
+| N+1 queries | LOCAL COMPLETE:178frozen candidates individually reviewed,105FIXED_AFTER_CAPTURE; no unreviewed policy/stateful entries.98tests/7suites and full backend types PASS; actual PostgreSQL ledger35/issue25/bulk18cases PASS with cleanup, including local provider HTTP. | Final release CI/telemetry still required; a static inventory cannot certify universal runtime query absence or production capacity. Broader races/currency/provider correctness remain independent gates. |
 | Race conditions | Ordered collection/tag locks, post-lock price/count reads, conditional expiry claims and conflict-safe custom-order creation tested. Current paid admission still runs inside capture finalization. | Tag reindex against concurrent writes, stale source/index update ordering, product lifecycle/order-cancellation synchronization and remaining financial/outbox/worker entry points require closure. Product deletion currently writes REFUNDED directly; it must be reconciled with the canonical refund/escrow flow before release. |
 | Normalization/integrity | Read-only audit covers 190 models and selected relational invariants. Added guarded one-primary-membership unique index and an appended migration repairing verified physical-verification schema drift. | Existing data inconsistencies, polymorphic tag targets/design-store distinction, primary-membership projection discipline and JSON-versus-relational order read/write sources need closure and post-reset verification. |
 
-## Actual database findings
+## Historical pre-reset database findings —23October
 
-The audits ran read-only, with aggregate counts only. No existing database was reset or repaired.
+These23October audits were read-only. The subsequently authorized actual SIT/local reset and reseeding completed; this table is historical and does not request another reset. Current post-change integrity verification remains its own normalization gate.
 
 | Finding | Local | SIT |
 | --- | ---: | ---: |
@@ -68,4 +76,6 @@ PostgreSQL recommends consistent object lock ordering and documents that a subse
 
 These backend changes serve desktop, tablet, mobile web and native API consumers. No new UI or physical-device delivery claim is included in this tranche.
 
-The first e93eebf GitHub validation passed ledger and complaint scenarios but failed when the complaint fixture terminated leftover pool connections during cleanup (57P01). The fixtures now let PrismaPg own and dispose its pool from connection options, removing external-pool lifetime ambiguity. Both fixtures were rerun locally and passed with successful cleanup. A new GitHub validation is required; the initial failed run is not a release pass.
+The first e93eebf GitHub validation passed ledger and complaint scenarios but failed when the complaint fixture terminated leftover pool connections during cleanup (57P01). The fixtures now let PrismaPg own and dispose its pool from connection options, removing external-pool lifetime ambiguity. Both fixtures were rerun locally and passed with successful cleanup. Subsequent backend validation 99eee27 passed, with deployment skipped: https://github.com/SotheriaHq/WEAZ_Backend/actions/runs/39987749862. Later uncommitted work has local evidence only; workflow dispatch is paused under the current owner instruction.
+
+Bulk import migration144/checkpoint/lease is locally verified in seven real PostgreSQL cases. Mixed scheduled events now have eight real PostgreSQL batching/privacy scenarios overall (fanout9 SELECTs, 26 mixed events5 SELECTs, 25 actor privacy8 SELECTs, including assertion reads). These do not clear the remaining 22 policy/49 stateful inventory entries or provider/device/reset gates.

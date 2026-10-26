@@ -14,6 +14,21 @@
  * they can be asked, and how much time they can be asked for in total.
  */
 import { BadRequestException } from '@nestjs/common';
+import { CustomOrderStatus } from '@prisma/client';
+
+export function isExtensionTargetPending(
+  status: CustomOrderStatus,
+  targetType: string,
+): boolean {
+  const production =
+    status === CustomOrderStatus.ACCEPTED ||
+    status === CustomOrderStatus.IN_PRODUCTION;
+  return targetType === 'DELIVERY'
+    ? production ||
+        status === CustomOrderStatus.READY_FOR_DISPATCH ||
+        status === CustomOrderStatus.IN_TRANSIT
+    : production;
+}
 
 export const EXTENSION_POLICY = {
   /** How many times a shopper may be asked to grant time on one order. */
@@ -125,7 +140,10 @@ export function findOutstandingRequest<T extends ExtensionRequestLike>(
  * the refusal to copy a brand can act on, rather than showing a raw sentence.
  */
 export function assertExtensionRequestAllowed(params: {
-  order: BudgetSource & { rushSelected?: boolean | null; rushFeeSnapshot?: unknown };
+  order: BudgetSource & {
+    rushSelected?: boolean | null;
+    rushFeeSnapshot?: unknown;
+  };
   requests: readonly ExtensionRequestLike[];
   requestedExtraDays: number;
 }): { budget: ExtensionBudgetState; sequence: number } {
@@ -144,10 +162,14 @@ export function assertExtensionRequestAllowed(params: {
     throw new BadRequestException('CUSTOM_ORDER_EXTENSION_LIMIT_REACHED');
   }
   if (budget.remainingDays <= 0) {
-    throw new BadRequestException('CUSTOM_ORDER_EXTENSION_DAY_BUDGET_EXHAUSTED');
+    throw new BadRequestException(
+      'CUSTOM_ORDER_EXTENSION_DAY_BUDGET_EXHAUSTED',
+    );
   }
   if (requestedExtraDays > budget.maxRequestableDays) {
-    throw new BadRequestException('CUSTOM_ORDER_EXTENSION_EXCEEDS_REMAINING_DAYS');
+    throw new BadRequestException(
+      'CUSTOM_ORDER_EXTENSION_EXCEEDS_REMAINING_DAYS',
+    );
   }
 
   return {
@@ -165,7 +187,10 @@ export function assertExtensionRequestAllowed(params: {
  * different number from the one that was validated when the request was raised.
  */
 export function assertExtensionGrantAllowed(params: {
-  order: BudgetSource & { rushSelected?: boolean | null; rushFeeSnapshot?: unknown };
+  order: BudgetSource & {
+    rushSelected?: boolean | null;
+    rushFeeSnapshot?: unknown;
+  };
   days: number;
 }): void {
   const { order, days } = params;
@@ -182,10 +207,14 @@ export function assertExtensionGrantAllowed(params: {
     throw new BadRequestException('CUSTOM_ORDER_EXTENSION_LIMIT_REACHED');
   }
   if (days > EXTENSION_POLICY.maxDaysPerRequest) {
-    throw new BadRequestException('CUSTOM_ORDER_EXTENSION_EXCEEDS_PER_REQUEST_LIMIT');
+    throw new BadRequestException(
+      'CUSTOM_ORDER_EXTENSION_EXCEEDS_PER_REQUEST_LIMIT',
+    );
   }
   if (days > budget.remainingDays) {
-    throw new BadRequestException('CUSTOM_ORDER_EXTENSION_EXCEEDS_REMAINING_DAYS');
+    throw new BadRequestException(
+      'CUSTOM_ORDER_EXTENSION_EXCEEDS_REMAINING_DAYS',
+    );
   }
 }
 
@@ -202,7 +231,9 @@ export function resolveRespondByAt(params: {
   dueAt?: Date | null;
 }): Date {
   const { now, dueAt } = params;
-  const window = new Date(now.getTime() + EXTENSION_POLICY.buyerResponseWindowMs);
+  const window = new Date(
+    now.getTime() + EXTENSION_POLICY.buyerResponseWindowMs,
+  );
   if (!dueAt) return window;
   const floor = new Date(now.getTime() + 60 * 60 * 1000);
   const earliest = dueAt.getTime() < window.getTime() ? dueAt : window;

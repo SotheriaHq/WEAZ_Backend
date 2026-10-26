@@ -1,0 +1,32 @@
+{
+  "checkedAt": "2026-10-26T09:41:31.568Z",
+  "passed": true,
+  "cleanupPassed": true,
+  "cases": [
+    "26 unused message files use two SELECTs and one key INSERT/JOIN; all78 original/version keys queue atomically while seven reference paths, processing leases, recent files and other types are retained",
+    "owned deletion rejects another user without touching metadata or storage, queues all versions for the owner and retains missing-file error behavior",
+    "all seven live reference paths refuse explicit file deletion before any object is queued; internal unlink cleanup retains shared files without failure",
+    "published required-view protection still refuses unlinking before any media or storage metadata mutation",
+    "real product-media unlink keeps the file used by a second product and queues its original/versions only after the last link is removed",
+    "transaction rollback retains original metadata and variants and cancels every deletion-outbox insert",
+    "an attachment wins an actual FK-lock race: owned deletion rechecks after waiting and background cleanup skips the locked file",
+    "when metadata deletion wins the real FK-lock race, a later attachment is refused and no broken message attachment commits",
+    "competing cleanup workers remove26 files once with at most four SELECTs total and exactly78 unique storage-key jobs",
+    "processing eligibility follows the actual lease fields: active leases refuse deletion and expired leases permit owned cleanup",
+    "a real deletion-outbox insert failure leaves file metadata and variants intact",
+    "actual FK catalog matches all guarded relations, five supporting indexes exist and metadata deletion makes zero storage requests",
+    "26 blocked email deliveries retain one fresh suppression guard per independently claimed attempt, one shared due scan, durable audit records and zero transport calls",
+    "26 push attempts use three grouped badge SELECTs instead of26 counts, one due scan and26 fresh token guards; actual SDK rejects invalid tokens, inactive tokens are excluded, all rows handled and no transport called"
+  ],
+  "orphanSelectsFor26": 2,
+  "orphanStorageKeyInsertCommands": 1,
+  "competingCleanupSelects": 3,
+  "storageRequestsDuringMetadataDeletion": 0,
+  "suppressedEmailGuardSelectsFor26": 26,
+  "suppressedEmailOtherSelectsFor26": 1,
+  "suppressedEmailTransportCalls": 0,
+  "pushBadgeSelectsFor26": 3,
+  "pushTokenGuardSelectsFor26": 26,
+  "pushDueSelectsFor26": 1,
+  "pushTransportCalls": 0
+}

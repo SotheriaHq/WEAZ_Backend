@@ -4,6 +4,7 @@ import {
   NotificationType,
   Prisma,
   PushDeviceToken,
+  PushOutbox,
   PushOutboxStatus,
   PushProvider,
   PushReceiptStatus,
@@ -22,6 +23,17 @@ import {
 } from './notifications.types';
 import { normalizeCatalogTarget } from 'src/common/domain/catalog-target';
 import { getPushCollapseId, getPushPresentation } from './push-presentation';
+import {
+  claimPushOutbox,
+  loadPendingPushTokens,
+  PendingPushToken,
+  reapExhaustedPushOutbox,
+} from './push-outbox-claim-query';
+import {
+  applyPushReceipt,
+  completeResolvedPushOutbox,
+  expireOldPushReceipts,
+} from './push-receipt-query';
 
 const INVALID_EXPO_TOKEN_DISABLED_REASON = 'INVALID_EXPO_TOKEN';
 const DEVICE_NOT_REGISTERED_DISABLED_REASON = 'DEVICE_NOT_REGISTERED';
@@ -93,7 +105,7 @@ export type PushDeliveryResult = {
   skippedReason?: string;
 };
 
-type PushOutboxPayload = {
+export type PushOutboxPayload = {
   title: string;
   body: string;
   data: Record<string, unknown>;
@@ -105,6 +117,7 @@ type PushOutboxPayload = {
 const PUSH_OUTBOX_MAX_ATTEMPTS = 6;
 const PUSH_OUTBOX_BATCH_SIZE = 100;
 const PUSH_OUTBOX_CONCURRENCY = 10;
+const PUSH_DELIVERY_TIMEOUT_MS = 30_000;
 const PUSH_OUTBOX_DISPATCH_CRON = '*/10 * * * * *';
 // Wait briefly before polling a ticket's receipt (Expo needs time to attempt
 // delivery); receipts are retained by Expo for roughly a day.
@@ -116,7 +129,6 @@ const PUSH_OUTBOX_EXHAUSTED_RETENTION_DAYS = 60;
 @Injectable()
 export class PushNotificationsService {
   private readonly logger = new Logger(PushNotificationsService.name);
-  private readonly lockOwner = `push-${process.pid}`;
   private expoClientPromise: Promise<ExpoClientLike> | null = null;
   private expoModulePromise: Promise<ExpoModuleLike> | null = null;
 
@@ -633,13 +645,17 @@ export class PushNotificationsService {
    * sender (push enabled / type enabled / quiet hours) and snapshots the fully
    * built payload so the dispatcher needs no settings at send time.
    */
-  async enqueue(args: {
-    recipientId: string;
-    notification: PushDeliveryNotification;
-    settings: NotificationSettings;
-    notificationTypeEnabled: boolean;
-    date?: Date;
-  }): Promise<{ status: 'enqueued' | 'skipped'; reason?: string }> {
+  async enqueue(
+    args: {
+      recipientId: string;
+      notification: PushDeliveryNotification;
+      settings: NotificationSettings;
+      notificationTypeEnabled: boolean;
+      date?: Date;
+      preparedPayload?: PushOutboxPayload;
+    },
+    tx?: Prisma.TransactionClient,
+  ): Promise<{ status: 'enqueued' | 'skipped'; reason?: string }> {
     const now = args.date ?? new Date();
     const pushAllowed = this.isPushAllowed({
       type: args.notification.type,
@@ -651,31 +667,42 @@ export class PushNotificationsService {
       return { status: 'skipped', reason: pushAllowed.reason };
     }
 
-    const payload = this.buildPushPayload({
-      notification: args.notification,
-      settings: args.settings,
-    });
+    const payload =
+      args.preparedPayload ??
+      this.buildPushPayload({
+        notification: args.notification,
+        settings: args.settings,
+      });
 
-    await this.prisma.pushOutbox.create({
-      data: {
-        notificationId: args.notification.id,
-        recipientId: args.recipientId,
-        type: args.notification.type,
-        title: payload.title,
-        body: payload.body,
-        dataJson: (payload.data ?? {}) as Prisma.InputJsonValue,
-        channelId: payload.channelId ?? null,
-        collapseId: payload.collapseId ?? null,
-        sound: payload.sound,
-        status: PushOutboxStatus.PENDING,
-      },
-    });
+    const data: Prisma.PushOutboxCreateManyInput = {
+      notificationId: args.notification.id,
+      recipientId: args.recipientId,
+      type: args.notification.type,
+      title: payload.title,
+      body: payload.body,
+      dataJson: (payload.data ?? {}) as Prisma.InputJsonValue,
+      channelId: payload.channelId ?? null,
+      collapseId: payload.collapseId ?? null,
+      sound: payload.sound,
+      status: PushOutboxStatus.PENDING,
+    };
+    if (tx)
+      await tx.pushOutbox.createMany({
+        data: [{ ...data, id: args.notification.id }],
+        skipDuplicates: true,
+      });
+    else await this.prisma.pushOutbox.create({ data });
 
     return { status: 'enqueued' };
   }
 
   @Cron(PUSH_OUTBOX_DISPATCH_CRON)
   async dispatchPendingPush(batchSize = PUSH_OUTBOX_BATCH_SIZE): Promise<void> {
+    const take = Number.isFinite(batchSize)
+      ? Math.min(PUSH_OUTBOX_BATCH_SIZE, Math.max(0, Math.trunc(batchSize)))
+      : PUSH_OUTBOX_BATCH_SIZE;
+    if (!take) return;
+    await reapExhaustedPushOutbox(this.prisma);
     const now = new Date();
     const rows = await this.prisma.pushOutbox.findMany({
       where: {
@@ -692,7 +719,7 @@ export class PushNotificationsService {
         ],
       },
       orderBy: [{ createdAt: 'asc' }],
-      take: batchSize,
+      take,
     });
 
     if (rows.length === 0) {
@@ -704,8 +731,13 @@ export class PushNotificationsService {
     let skipped = 0;
     for (let i = 0; i < rows.length; i += PUSH_OUTBOX_CONCURRENCY) {
       const chunk = rows.slice(i, i + PUSH_OUTBOX_CONCURRENCY);
+      const badges = await this.resolveBadgeCounts(
+        chunk.map((row) => row.recipientId),
+      );
       const results = await Promise.all(
-        chunk.map((row) => this.dispatchOutboxRow(row)),
+        chunk.map((row) =>
+          this.dispatchOutboxRow(row, badges.get(row.recipientId) ?? null),
+        ),
       );
       for (const result of results) {
         if (result === 'SENT') sent += 1;
@@ -719,58 +751,27 @@ export class PushNotificationsService {
     );
   }
 
-  private async dispatchOutboxRow(row: {
-    id: string;
-    status: PushOutboxStatus;
-    attempts: number;
-    recipientId: string;
-    title: string;
-    body: string;
-    dataJson: Prisma.JsonValue | null;
-    channelId: string | null;
-    collapseId: string | null;
-    sound: boolean;
-  }): Promise<'SENT' | 'FAILED' | 'SKIPPED'> {
-    const claim = await this.prisma.pushOutbox.updateMany({
-      where: { id: row.id, status: row.status },
-      data: {
-        status: PushOutboxStatus.PROCESSING,
-        attempts: { increment: 1 },
-        lockedAt: new Date(),
-        lockOwner: this.lockOwner,
-        lockExpiresAt: new Date(Date.now() + 60_000),
-        lastError: null,
-      },
-    });
-    if (claim.count === 0) {
-      return 'SKIPPED';
-    }
-
-    const attemptNo = row.attempts + 1;
+  private async dispatchOutboxRow(
+    candidate: {
+      id: string;
+      recipientId: string;
+    },
+    badge: number | null,
+  ): Promise<'SENT' | 'FAILED' | 'SKIPPED'> {
+    const row = await claimPushOutbox(this.prisma, candidate.id);
+    if (!row) return 'SKIPPED';
+    const attemptNo = row.attempts;
     const now = new Date();
 
     try {
-      const tokens = await this.prisma.pushDeviceToken.findMany({
-        where: {
-          userId: row.recipientId,
-          isActive: true,
-          provider: PushProvider.EXPO,
-        },
-        select: {
-          id: true,
-          token: true,
-          userId: true,
-          provider: true,
-          isActive: true,
-        },
-      });
+      const tokens = await loadPendingPushTokens(this.prisma, row);
 
       if (tokens.length === 0) {
-        await this.markOutboxSent(row.id, now, 'no-active-tokens');
-        return 'SENT';
+        return (await this.markOutboxSent(row, now, 'no-pending-active-tokens'))
+          ? 'SENT'
+          : 'SKIPPED';
       }
 
-      const badge = await this.resolveBadgeCount(row.recipientId);
       const payload: PushOutboxPayload = {
         title: row.title,
         body: row.body,
@@ -780,14 +781,31 @@ export class PushNotificationsService {
         sound: row.sound,
       };
 
-      const validEntries: PushDeliveryEntry[] = [];
+      const validEntries: Array<{
+        token: PendingPushToken;
+        message: ExpoPushMessage;
+      }> = [];
+      const invalidTokens: Array<{
+        token: PendingPushToken;
+        data: Prisma.PushDeviceTokenUpdateManyMutationInput;
+      }> = [];
+      if (row.recipientId !== candidate.recipientId) {
+        badge =
+          (await this.resolveBadgeCounts([row.recipientId])).get(
+            row.recipientId,
+          ) ?? null;
+      }
       for (const token of tokens) {
         if (!(await this.isExpoPushToken(token.token))) {
-          await this.markTokenInactive(
-            token.id,
-            INVALID_EXPO_TOKEN_DISABLED_REASON,
-            now,
-          );
+          invalidTokens.push({
+            token,
+            data: {
+              isActive: false,
+              lastFailureAt: now,
+              failureCount: { increment: 1 },
+              disabledReason: INVALID_EXPO_TOKEN_DISABLED_REASON,
+            },
+          });
           continue;
         }
         validEntries.push({
@@ -796,31 +814,53 @@ export class PushNotificationsService {
         });
       }
 
-      if (validEntries.length === 0) {
-        await this.markOutboxSent(row.id, now, 'no-valid-expo-tokens');
-        return 'SENT';
-      }
+      if (
+        invalidTokens.length &&
+        !(await this.writePushClaim(row, {}, [], invalidTokens))
+      )
+        return 'SKIPPED';
+      if (validEntries.length === 0)
+        return (await this.markOutboxSent(row, now, 'no-valid-expo-tokens'))
+          ? 'SENT'
+          : 'SKIPPED';
 
       const expo = await this.getExpoClient();
       const messages = validEntries.map((entry) => entry.message);
       const chunks = expo.chunkPushNotifications(messages);
-      const receiptRows: Prisma.PushDeliveryReceiptCreateManyInput[] = [];
       let cursor = 0;
 
       for (const chunk of chunks) {
         const chunkEntries = validEntries.slice(cursor, cursor + chunk.length);
         cursor += chunk.length;
-        const tickets = await expo.sendPushNotificationsAsync(chunk);
+        // Renew before each external chunk; a stale owner must stop before another send.
+        if (!(await this.writePushClaim(row, {}))) return 'SKIPPED';
+        const tickets = await this.withPushDeliveryTimeout(
+          expo.sendPushNotificationsAsync(chunk),
+        );
+        const receiptRows: Prisma.PushDeliveryReceiptCreateManyInput[] = [];
+        const tokenUpdates: Array<{
+          token: PendingPushToken;
+          data: Prisma.PushDeviceTokenUpdateManyMutationInput;
+        }> = [];
+        let retryRequired = false;
 
         for (let index = 0; index < chunkEntries.length; index += 1) {
           const ticket = tickets[index];
           const entry = chunkEntries[index];
 
           if (ticket?.status === 'ok' && ticket.id) {
-            await this.markTokenSuccess(entry.token.id, now);
+            tokenUpdates.push({
+              token: entry.token,
+              data: {
+                lastSuccessAt: now,
+                failureCount: 0,
+                disabledReason: null,
+              },
+            });
             receiptRows.push({
               pushOutboxId: row.id,
               tokenId: entry.token.id,
+              tokenRegistrationVersion: entry.token.registrationVersion,
               ticketId: ticket.id,
               status: PushReceiptStatus.PENDING,
             });
@@ -830,17 +870,26 @@ export class PushNotificationsService {
           if (ticket?.status === 'error') {
             const errorCode = ticket.details?.error;
             if (errorCode === 'DeviceNotRegistered') {
-              await this.markTokenInactive(
-                entry.token.id,
-                DEVICE_NOT_REGISTERED_DISABLED_REASON,
-                now,
-              );
+              tokenUpdates.push({
+                token: entry.token,
+                data: {
+                  isActive: false,
+                  lastFailureAt: now,
+                  failureCount: { increment: 1 },
+                  disabledReason: DEVICE_NOT_REGISTERED_DISABLED_REASON,
+                },
+              });
             } else {
-              await this.markTokenTransientFailure(entry.token.id, now);
+              retryRequired = true;
+              tokenUpdates.push({
+                token: entry.token,
+                data: { lastFailureAt: now, failureCount: { increment: 1 } },
+              });
             }
             receiptRows.push({
               pushOutboxId: row.id,
               tokenId: entry.token.id,
+              tokenRegistrationVersion: entry.token.registrationVersion,
               status: PushReceiptStatus.ERROR,
               errorCode: errorCode ?? 'UnknownTicketError',
               errorMessage: this.truncate(ticket.message),
@@ -849,33 +898,40 @@ export class PushNotificationsService {
             continue;
           }
 
-          // Defensive: an `ok` ticket without an id leaves nothing to poll.
-          await this.markTokenSuccess(entry.token.id, now);
+          retryRequired = true;
+          receiptRows.push({
+            pushOutboxId: row.id,
+            tokenId: entry.token.id,
+            tokenRegistrationVersion: entry.token.registrationVersion,
+            status: PushReceiptStatus.ERROR,
+            errorCode: 'MissingTicket',
+            errorMessage: 'Expo did not return a usable delivery ticket',
+            checkedAt: now,
+          });
         }
+        // Persist each accepted chunk before starting the next one so retries skip its tickets.
+        if (!(await this.writePushClaim(row, {}, receiptRows, tokenUpdates)))
+          return 'SKIPPED';
+        if (retryRequired)
+          throw new Error('Expo ticket delivery requires retry');
       }
-
-      if (receiptRows.length > 0) {
-        await this.prisma.pushDeliveryReceipt.createMany({ data: receiptRows });
-      }
-
-      await this.markOutboxSent(row.id, now, null);
-      return 'SENT';
+      return (await this.markOutboxSent(row, now, null)) ? 'SENT' : 'SKIPPED';
     } catch (error) {
       const message = this.formatError(error);
       const exhausted = attemptNo >= PUSH_OUTBOX_MAX_ATTEMPTS;
       const backoffSeconds = Math.min(3600, Math.pow(2, attemptNo) * 10);
 
-      await this.prisma.pushOutbox.update({
-        where: { id: row.id },
-        data: {
-          status: PushOutboxStatus.FAILED,
-          lastError: exhausted ? `DLQ_EXHAUSTED:${message}` : message,
-          availableAt: exhausted
-            ? new Date(Date.now() + 24 * 60 * 60 * 1000)
-            : new Date(Date.now() + backoffSeconds * 1000),
-          lockExpiresAt: null,
-        },
+      const acknowledged = await this.writePushClaim(row, {
+        status: PushOutboxStatus.FAILED,
+        lastError: exhausted ? `DLQ_EXHAUSTED:${message}` : message,
+        availableAt: exhausted
+          ? new Date(Date.now() + 24 * 60 * 60 * 1000)
+          : new Date(Date.now() + backoffSeconds * 1000),
+        lockedAt: null,
+        lockOwner: null,
+        lockExpiresAt: null,
       });
+      if (!acknowledged) return 'SKIPPED';
 
       if (exhausted) {
         this.logger.error(`Push outbox exhausted retries id=${row.id}`);
@@ -889,33 +945,105 @@ export class PushNotificationsService {
   }
 
   private async markOutboxSent(
-    id: string,
+    row: PushOutbox,
     sentAt: Date,
     note: string | null,
-  ): Promise<void> {
-    await this.prisma.pushOutbox.update({
-      where: { id },
-      data: {
-        status: PushOutboxStatus.SENT,
-        sentAt,
-        lastError: note,
-        lockExpiresAt: null,
-      },
+  ): Promise<boolean> {
+    return this.writePushClaim(row, {
+      status: PushOutboxStatus.SENT,
+      sentAt,
+      lastError: note,
+      lockedAt: null,
+      lockOwner: null,
+      lockExpiresAt: null,
     });
   }
 
-  private async resolveBadgeCount(recipientId: string): Promise<number | null> {
-    try {
-      return await this.prisma.notification.count({
-        where: { recipientId, isRead: false },
+  private async writePushClaim(
+    row: PushOutbox,
+    data: Prisma.PushOutboxUpdateManyMutationInput,
+    receipts: Prisma.PushDeliveryReceiptCreateManyInput[] = [],
+    tokens: Array<{
+      token: PendingPushToken;
+      data: Prisma.PushDeviceTokenUpdateManyMutationInput;
+    }> = [],
+  ): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const owned = await tx.pushOutbox.updateMany({
+        where: {
+          id: row.id,
+          status: PushOutboxStatus.PROCESSING,
+          lockOwner: row.lockOwner,
+        },
+        data: { lockExpiresAt: new Date(Date.now() + 60_000), ...data },
       });
-    } catch {
-      return null;
+      if (!owned.count) return false;
+      if (receipts.length)
+        await tx.pushDeliveryReceipt.createMany({
+          data: receipts,
+          skipDuplicates: true,
+        });
+      for (const change of tokens) {
+        await tx.pushDeviceToken.updateMany({
+          where: {
+            id: change.token.id,
+            userId: row.recipientId,
+            token: change.token.token,
+            isActive: true,
+            registrationVersion: change.token.registrationVersion,
+          },
+          data: change.data,
+        });
+      }
+      return true;
+    });
+  }
+
+  private async withPushDeliveryTimeout<T>(operation: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Push provider timeout')),
+            PUSH_DELIVERY_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
+  }
+
+  private async resolveBadgeCounts(recipientIds: string[]) {
+    const ids = [...new Set(recipientIds)];
+    const badges = new Map<string, number | null>(ids.map((id) => [id, null]));
+    if (!ids.length) return badges;
+    try {
+      const groups = await this.prisma.notification.groupBy({
+        by: ['recipientId'],
+        where: { recipientId: { in: ids }, isRead: false },
+        _count: { _all: true },
+      });
+      // Badges are a display snapshot for this concurrency group. Device tokens
+      // remain a fresh per-attempt read after the delivery claim.
+      for (const id of ids) badges.set(id, 0);
+      for (const group of groups)
+        badges.set(group.recipientId, group._count._all);
+    } catch {
+      // An optional badge lookup must not prevent push delivery.
+    }
+    return badges;
   }
 
   @Cron(CronExpression.EVERY_MINUTE)
   async pollPushReceipts(batchSize = 500): Promise<void> {
+    const take = Number.isFinite(batchSize)
+      ? Math.min(500, Math.max(0, Math.trunc(batchSize)))
+      : 500;
+    if (!take) return;
+    await expireOldPushReceipts(this.prisma, take);
     const nowMs = Date.now();
     const pending = await this.prisma.pushDeliveryReceipt.findMany({
       where: {
@@ -927,7 +1055,7 @@ export class PushNotificationsService {
         },
       },
       select: { id: true, ticketId: true, tokenId: true },
-      take: batchSize,
+      take,
     });
 
     if (pending.length === 0) {
@@ -940,7 +1068,10 @@ export class PushNotificationsService {
       return;
     }
 
-    const byTicketId = new Map<string, { id: string; tokenId: string | null }>();
+    const byTicketId = new Map<
+      string,
+      { id: string; tokenId: string | null }
+    >();
     for (const receipt of pending) {
       if (receipt.ticketId) {
         byTicketId.set(receipt.ticketId, {
@@ -954,12 +1085,12 @@ export class PushNotificationsService {
     const chunks = expo.chunkPushNotificationReceiptIds
       ? expo.chunkPushNotificationReceiptIds(ticketIds)
       : [ticketIds];
-    const checkedAt = new Date();
-
     for (const chunk of chunks) {
       let receipts: Record<string, ExpoPushReceipt>;
       try {
-        receipts = await expo.getPushNotificationReceiptsAsync(chunk);
+        receipts = await this.withPushDeliveryTimeout(
+          expo.getPushNotificationReceiptsAsync(chunk),
+        );
       } catch (error) {
         this.logger.warn(
           `Push receipts poll failed: ${this.formatError(error)}`,
@@ -972,31 +1103,22 @@ export class PushNotificationsService {
         if (!entry) continue;
 
         if (receipt.status === 'ok') {
-          await this.prisma.pushDeliveryReceipt.update({
-            where: { id: entry.id },
-            data: { status: PushReceiptStatus.OK, checkedAt },
+          await applyPushReceipt(this.prisma, {
+            id: entry.id,
+            ticketId,
+            status: 'OK',
           });
           continue;
         }
 
         const errorCode = receipt.details?.error ?? 'ExpoError';
-        await this.prisma.pushDeliveryReceipt.update({
-          where: { id: entry.id },
-          data: {
-            status: PushReceiptStatus.ERROR,
-            errorCode,
-            errorMessage: this.truncate(receipt.message),
-            checkedAt,
-          },
+        await applyPushReceipt(this.prisma, {
+          id: entry.id,
+          ticketId,
+          status: 'ERROR',
+          errorCode,
+          errorMessage: this.truncate(receipt.message),
         });
-
-        if (errorCode === 'DeviceNotRegistered' && entry.tokenId) {
-          await this.markTokenInactive(
-            entry.tokenId,
-            DEVICE_NOT_REGISTERED_DISABLED_REASON,
-            checkedAt,
-          );
-        }
       }
     }
 
@@ -1004,20 +1126,7 @@ export class PushNotificationsService {
   }
 
   private async completeFullyResolvedOutbox(): Promise<void> {
-    const resolved = await this.prisma.pushOutbox.findMany({
-      where: {
-        status: PushOutboxStatus.SENT,
-        receipts: { none: { status: PushReceiptStatus.PENDING } },
-      },
-      select: { id: true },
-      take: 500,
-    });
-    if (resolved.length === 0) return;
-
-    await this.prisma.pushOutbox.updateMany({
-      where: { id: { in: resolved.map((row) => row.id) } },
-      data: { status: PushOutboxStatus.COMPLETED },
-    });
+    await completeResolvedPushOutbox(this.prisma);
   }
 
   @Cron(CronExpression.EVERY_DAY_AT_3AM)
@@ -1140,7 +1249,10 @@ export class PushNotificationsService {
     }
   }
 
-  private truncate(value: string | null | undefined, maxLength = 240): string | null {
+  private truncate(
+    value: string | null | undefined,
+    maxLength = 240,
+  ): string | null {
     if (!value) return null;
     const trimmed = value.trim();
     if (trimmed.length <= maxLength) return trimmed;

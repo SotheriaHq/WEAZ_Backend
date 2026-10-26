@@ -125,7 +125,9 @@ describe('CustomOrdersService', () => {
         count: jest.fn(),
       },
       $transaction: jest.fn(),
+      $queryRaw: jest.fn().mockResolvedValue([]),
     };
+    prisma.$transaction.mockImplementation(async run => run(prisma));
 
     pricingService = {
       buildPricePreview: jest.fn(),
@@ -517,13 +519,18 @@ describe('CustomOrdersService', () => {
     });
 
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       customOrderExtensionRequest: {
         update: jest.fn().mockResolvedValue(undefined),
       },
+      brand: prisma.brand,
+      user: prisma.user,
       customOrderDispute: {
         create: jest.fn().mockResolvedValue(undefined),
       },
       customOrder: {
+        findFirst: prisma.customOrder.findFirst,
+        updateMany: prisma.customOrder.updateMany,
         update: jest
           .fn()
           .mockResolvedValueOnce(undefined)
@@ -546,7 +553,7 @@ describe('CustomOrdersService', () => {
     );
 
     expect(tx.customOrderExtensionRequest.update).toHaveBeenCalledWith({
-      where: { id: 'extension_1' },
+      where: { id: 'extension_1', customOrderId: 'co_1', buyerResponseStatus: CustomOrderExtensionResponseStatus.OPEN },
       data: {
         buyerResponseStatus: CustomOrderExtensionResponseStatus.REJECTED,
         buyerCounterDays: null,
@@ -613,15 +620,18 @@ describe('CustomOrdersService', () => {
       expect.objectContaining({
         notificationType: 'CUSTOM_ORDER_BUYER_REJECTED_EXTENSION',
       }),
+      tx,
     );
     // And the shopper gets it in writing that declining did not cancel anything.
     expect(sideEffects.enqueueNotification).toHaveBeenCalledWith(
       expect.objectContaining({
         notificationType: 'CUSTOM_ORDER_EXTENSION_RESOLVED',
+        actorId: null,
         payload: expect.objectContaining({
           message: expect.stringContaining('not cancelled'),
         }),
       }),
+      tx,
     );
   });
 
@@ -1088,9 +1098,12 @@ describe('CustomOrdersService', () => {
     );
 
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       customOrderExtensionRequest: { update: jest.fn() },
       customOrderDispute: { create: jest.fn() },
+      brand: prisma.brand,
       customOrder: {
+        findFirst: prisma.customOrder.findFirst,
         // applyExtensionDays re-reads the order inside the transaction.
         findUnique: jest.fn().mockResolvedValue({
           id: 'co_1',
@@ -1117,7 +1130,7 @@ describe('CustomOrdersService', () => {
     });
 
     expect(tx.customOrderExtensionRequest.update).toHaveBeenCalledWith({
-      where: { id: 'extension_1' },
+      where: { id: 'extension_1', customOrderId: 'co_1', buyerResponseStatus: CustomOrderExtensionResponseStatus.OPEN },
       data: expect.objectContaining({
         buyerResponseStatus: CustomOrderExtensionResponseStatus.ACCEPTED,
         buyerNote: 'Fine, take the time.',

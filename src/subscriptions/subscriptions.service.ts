@@ -56,14 +56,25 @@ import {
   encryptSubscriptionAuthorization,
   subscriptionAuthorizationStorageReady,
 } from './subscription-authorization.crypto';
+import {
+  loadSubscriptionDebitContext,
+  loadSubscriptionRenewalContext,
+} from './subscription-renewal-query';
+import {
+  loadSubscriptionVerificationInvoice,
+  SubscriptionVerificationInvoice,
+} from './subscription-invoice-query';
 
 const REQUIRED_TERMS = [
   LegalDocumentKey.TERMS_OF_SERVICE,
   LegalDocumentKey.SELLER_TERMS,
   LegalDocumentKey.PAYMENT_POLICY,
 ];
-type InvoiceWithSubscription = BrandSubscriptionInvoice & {
-  subscription: BrandSubscription;
+type CompensationInvoiceContext = Pick<
+  BrandSubscriptionInvoice,
+  'id' | 'amount' | 'currency'
+> & {
+  subscription: Pick<BrandSubscription, 'brandId'>;
 };
 type BillingQuote = {
   kind: 'INITIAL' | 'UPGRADE' | 'DOWNGRADE' | 'UNCHANGED';
@@ -104,10 +115,13 @@ export class SubscriptionsService {
     heading: string,
     message: string,
   ) {
-    const brand = await tx.brand.findUnique({
-      where: { id: brandId },
-      select: { ownerId: true, owner: { select: { email: true } } },
-    });
+    const [brand] = await tx.$queryRaw<
+      Array<{ ownerId: string; email: string | null }>
+    >(Prisma.sql`
+      SELECT b."ownerId", u.email FROM "Brand" b
+      JOIN "User" u ON u."_id" = b."ownerId"
+      WHERE b."_id" = ${brandId}::uuid
+    `);
     if (!brand) return;
     const targetUrl = `/settings?tab=subscription-billing&brandId=${brandId}`;
     const notificationId = uuidv5(`wiez-subscription-${eventKey}`, uuidv5.URL);
@@ -117,17 +131,18 @@ export class SubscriptionsService {
       message,
       targetUrl,
     };
-    await tx.notification.upsert({
-      where: { id: notificationId },
-      create: {
-        id: notificationId,
-        recipientId: brand.ownerId,
-        type: NotificationType.ADMIN_ACTION,
-        payload,
-      },
-      update: {},
+    await tx.notification.createMany({
+      data: [
+        {
+          id: notificationId,
+          recipientId: brand.ownerId,
+          type: NotificationType.ADMIN_ACTION,
+          payload,
+        },
+      ],
+      skipDuplicates: true,
     });
-    if (!brand.owner?.email) return;
+    if (!brand.email) return;
     const base = String(
       process.env.WEB_APP_URL ?? process.env.FRONTEND_URL ?? 'https://wiez.com',
     ).replace(/\/$/, '');
@@ -139,27 +154,28 @@ export class SubscriptionsService {
       notificationType: NotificationType.ADMIN_ACTION,
       payload,
     });
-    await tx.emailOutbox.upsert({
-      where: { idempotencyKey: `subscription-${eventKey}` },
-      create: {
-        recipientUserId: brand.ownerId,
-        recipientEmailSnapshot: brand.owner.email.toLowerCase(),
-        scenarioKey: 'billing.subscription.transactional',
-        notificationType: NotificationType.ADMIN_ACTION,
-        subject: heading,
-        html: rendered.html,
-        text: rendered.text,
-        payloadJson: payload,
-        priority: 'P1_TRANSACTIONAL',
-        idempotencyKey: `subscription-${eventKey}`,
-      },
-      update: {},
+    await tx.emailOutbox.createMany({
+      data: [
+        {
+          recipientUserId: brand.ownerId,
+          recipientEmailSnapshot: brand.email.toLowerCase(),
+          scenarioKey: 'billing.subscription.transactional',
+          notificationType: NotificationType.ADMIN_ACTION,
+          subject: heading,
+          html: rendered.html,
+          text: rendered.text,
+          payloadJson: payload,
+          priority: 'P1_TRANSACTIONAL',
+          idempotencyKey: `subscription-${eventKey}`,
+        },
+      ],
+      skipDuplicates: true,
     });
   }
 
   private async compensationAttention(
     tx: Prisma.TransactionClient,
-    invoice: InvoiceWithSubscription,
+    invoice: CompensationInvoiceContext,
     reference: string,
     reason: string,
   ) {
@@ -577,10 +593,7 @@ export class SubscriptionsService {
         'This subscription tier is currently unavailable.',
       );
     const current = await this.current(tx, brandId);
-    if (
-      current?.status === 'ACTIVE' &&
-      current.currentPeriodEnd > now
-    ) {
+    if (current?.status === 'ACTIVE' && current.currentPeriodEnd > now) {
       if (current.tierKey === tierKey)
         return {
           kind: 'UNCHANGED',
@@ -742,10 +755,7 @@ export class SubscriptionsService {
         'Saved-card checkout is temporarily unavailable.',
       );
     const existingPeriod = await this.current(this.prisma, resolved.brandId);
-    if (
-      existingPeriod &&
-      existingPeriod.currentPeriodEnd <= new Date()
-    )
+    if (existingPeriod && existingPeriod.currentPeriodEnd <= new Date())
       await this.prepareRenewal(
         existingPeriod.id,
         resolved.brandId,
@@ -1080,7 +1090,10 @@ export class SubscriptionsService {
     return result;
   }
 
-  private paymentEmail(invoice: InvoiceWithSubscription, reference: string) {
+  private paymentEmail(
+    invoice: SubscriptionVerificationInvoice,
+    reference: string,
+  ) {
     return (
       this.paymentIdentities(invoice.paymentIdentityJson)[reference]?.email ??
       invoice.payerEmail ??
@@ -1104,11 +1117,11 @@ export class SubscriptionsService {
   }
 
   private async prepareHostedPayment(id: string, fallbackEmail: string) {
-    const invoice =
-      await this.prisma.brandSubscriptionInvoice.findUniqueOrThrow({
-        where: { id },
-        include: { subscription: true },
-      });
+    const invoice = await loadSubscriptionVerificationInvoice(this.prisma, {
+      id,
+    });
+    if (!invoice)
+      throw new NotFoundException('Subscription payment not found.');
     if (
       invoice.lockedAt &&
       invoice.lockedAt.getTime() > Date.now() - 10 * 60_000
@@ -1117,8 +1130,13 @@ export class SubscriptionsService {
         'Another billing request is being reconciled. Refresh its status before opening a payment.',
       );
     const statuses = new Map<string, string>();
+    const recordedCaptures = await this.recordedInvoiceCaptures(invoice);
     for (const reference of this.paymentReferences(invoice)) {
-      const status = await this.verifyInvoice(invoice, reference);
+      const status = await this.verifyInvoice(
+        invoice,
+        reference,
+        recordedCaptures,
+      );
       statuses.set(reference, status);
       if (status === 'PAID' || status === 'PAID_REVIEW')
         throw new ConflictException(
@@ -1180,11 +1198,6 @@ export class SubscriptionsService {
         identities[reference]?.email ??
         this.paymentEmail(invoice, reference) ??
         fallbackEmail;
-      identities[reference]?.email ??
-        (statuses.get(reference) === 'NOT_FOUND' && history.includes(reference)
-          ? this.paymentEmail(invoice, reference)
-          : fallbackEmail) ??
-        fallbackEmail;
       identities[reference] = { email };
       if (!history.includes(reference) && history.length >= 20)
         throw new ConflictException(
@@ -1224,18 +1237,20 @@ export class SubscriptionsService {
       userId,
       brandId,
     );
-    const invoice = await this.prisma.brandSubscriptionInvoice.findFirst({
-      where: {
-        reference: this.invoiceReference(reference),
-        subscription: { brandId: resolved.brandId },
-      },
-      include: { subscription: true },
+    const invoice = await loadSubscriptionVerificationInvoice(this.prisma, {
+      reference: this.invoiceReference(reference),
+      brandId: resolved.brandId,
     });
     if (!invoice)
       throw new NotFoundException('Subscription payment not found.');
     let pending = false;
+    const recordedCaptures = await this.recordedInvoiceCaptures(invoice);
     for (const candidate of this.paymentReferences(invoice)) {
-      const result = await this.verifyInvoice(invoice, candidate);
+      const result = await this.verifyInvoice(
+        invoice,
+        candidate,
+        recordedCaptures,
+      );
       pending ||= result === 'PENDING';
     }
     if (pending)
@@ -1262,27 +1277,46 @@ export class SubscriptionsService {
   async handleProviderCharge(reference: string): Promise<boolean> {
     if (!/^wzsub-[a-f0-9-]+(?:-a[1-4]|-h[a-f0-9-]{36})?$/.test(reference))
       return false;
-    const invoice = await this.prisma.brandSubscriptionInvoice.findUnique({
-      where: { reference: this.invoiceReference(reference) },
-      include: { subscription: true },
+    const invoice = await loadSubscriptionVerificationInvoice(this.prisma, {
+      reference: this.invoiceReference(reference),
     });
     if (!invoice) return false;
     await this.verifyInvoice(invoice, reference);
     return true;
   }
 
+  private async recordedInvoiceCaptures(invoice: BrandSubscriptionInvoice) {
+    if (!['PAID', 'PAID_REVIEW'].includes(invoice.status)) return undefined;
+    const captures = await this.prisma.brandSubscriptionPaymentCapture.findMany(
+      {
+        where: {
+          invoiceId: invoice.id,
+          reference: { in: this.paymentReferences(invoice) },
+        },
+        select: { reference: true, status: true },
+      },
+    );
+    return new Map(
+      captures.map((capture) => [capture.reference, capture.status]),
+    );
+  }
+
   private async verifyInvoice(
-    invoice: InvoiceWithSubscription,
+    invoice: SubscriptionVerificationInvoice,
     reference: string,
+    recordedCaptures?: ReadonlyMap<string, string>,
   ): Promise<string> {
     if (invoice.status === 'PAID' || invoice.status === 'PAID_REVIEW') {
-      const recorded =
-        await this.prisma.brandSubscriptionPaymentCapture.findUnique({
-          where: { reference },
-          select: { status: true },
-        });
-      if (recorded)
-        return recorded.status === 'APPLIED' ? 'PAID' : 'PAID_REVIEW';
+      const recordedStatus = recordedCaptures
+        ? recordedCaptures.get(reference)
+        : (
+            await this.prisma.brandSubscriptionPaymentCapture.findUnique({
+              where: { reference },
+              select: { status: true },
+            })
+          )?.status;
+      if (recordedStatus)
+        return recordedStatus === 'APPLIED' ? 'PAID' : 'PAID_REVIEW';
     }
     const result = await this.paystack.verify(reference);
     if (!result) return 'NOT_FOUND';
@@ -1327,11 +1361,11 @@ export class SubscriptionsService {
     invoiceId: string,
     provider: SubscriptionProviderTransaction,
   ) {
-    const initial =
-      await this.prisma.brandSubscriptionInvoice.findUniqueOrThrow({
-        where: { id: invoiceId },
-        include: { subscription: true },
-      });
+    const initial = await loadSubscriptionVerificationInvoice(this.prisma, {
+      id: invoiceId,
+    });
+    if (!initial)
+      throw new NotFoundException('Subscription payment not found.');
     return this.prisma.$transaction(async (tx) => {
       await this.lock(tx, initial.subscription.brandId);
       const invoice = await tx.brandSubscriptionInvoice.findUniqueOrThrow({
@@ -1634,9 +1668,9 @@ export class SubscriptionsService {
   private async prepareRenewal(id: string, brandId: string, now: Date) {
     await this.prisma.$transaction(async (tx) => {
       await this.lock(tx, brandId);
-      const current = await tx.brandSubscription.findUniqueOrThrow({
-        where: { id },
-      });
+      const context = await loadSubscriptionRenewalContext(tx, id);
+      if (!context) throw new NotFoundException('Subscription not found.');
+      const { subscription: current, targetTier } = context;
       if (
         !['ACTIVE', 'PAST_DUE'].includes(current.status) ||
         current.currentPeriodEnd > now
@@ -1673,11 +1707,8 @@ export class SubscriptionsService {
         'Subscription renewal needs attention',
         'Your paid period has ended. New custom-order intake is paused while your existing paid orders continue. Recover the renewal within seven days at the existing agreed price, or review a new agreement after that window.',
       );
-      const targetTier = current.scheduledTierKey
-        ? await tx.subscriptionTier.findUniqueOrThrow({
-            where: { key: current.scheduledTierKey },
-          })
-        : null;
+      if (current.scheduledTierKey && !targetTier)
+        throw new NotFoundException('Scheduled subscription tier not found.');
       let subscription = current;
       if (targetTier) {
         const pending = await tx.brandSubscription.findFirst({
@@ -1766,11 +1797,11 @@ export class SubscriptionsService {
       },
     });
     if (!claimed.count) return;
-    const invoice =
-      await this.prisma.brandSubscriptionInvoice.findUniqueOrThrow({
-        where: { id },
-        include: { subscription: true },
-      });
+    const invoice = await loadSubscriptionVerificationInvoice(this.prisma, {
+      id,
+    });
+    if (!invoice)
+      throw new NotFoundException('Subscription payment not found.');
     try {
       // Check every durably named prior attempt before considering another charge.
       for (const reference of this.paymentReferences(invoice)) {
@@ -1812,28 +1843,17 @@ export class SubscriptionsService {
         });
         return;
       }
-      const subscription =
-        await this.prisma.brandSubscription.findUniqueOrThrow({
-          where: { id: invoice.subscriptionId },
-        });
-      const sourceAgreement = await this.prisma.brandSubscription.findUnique({
-        where: { id: invoice.previousSubscriptionId ?? subscription.id },
-        select: { cancelAtPeriodEnd: true, status: true },
-      });
+      const debitContext = await loadSubscriptionDebitContext(
+        this.prisma,
+        invoice.subscriptionId,
+        invoice.previousSubscriptionId,
+      );
+      if (!debitContext) throw new NotFoundException('Subscription not found.');
+      const { subscription, sourceAgreement, linkedCard } = debitContext;
       const authorizationCode = decryptSubscriptionAuthorization(
         subscription.providerAuthorizationCode,
         subscription.brandId,
       );
-      const linkedCard = subscription.savedPaymentMethodId
-        ? await this.prisma.savedPaymentMethod.findFirst({
-            where: {
-              id: subscription.savedPaymentMethodId,
-              status: 'ACTIVE',
-              buyer: { brand: { id: subscription.brandId } },
-            },
-            select: { id: true },
-          })
-        : null;
       if (
         !sourceAgreement ||
         sourceAgreement.cancelAtPeriodEnd ||
@@ -1976,11 +1996,7 @@ export class SubscriptionsService {
           },
         });
       if (!claimed.count) continue;
-      const capture =
-        await this.prisma.brandSubscriptionPaymentCapture.findUniqueOrThrow({
-          where: { id: row.id },
-          include: { invoice: { include: { subscription: true } } },
-        });
+      const capture = await this.loadCompensationCapture(this.prisma, row.id);
       try {
         if (
           capture.status === 'REFUND_SUBMITTING' &&
@@ -2105,7 +2121,7 @@ export class SubscriptionsService {
 
   private async refundNeedsAttention(id: string, reason: string) {
     await this.prisma.$transaction(async (tx) => {
-      const capture = await tx.brandSubscriptionPaymentCapture.update({
+      await tx.brandSubscriptionPaymentCapture.update({
         where: { id },
         data: {
           status: 'NEEDS_ATTENTION',
@@ -2113,8 +2129,8 @@ export class SubscriptionsService {
           nextAttemptAt: null,
           lastError: reason,
         },
-        include: { invoice: { include: { subscription: true } } },
       });
+      const capture = await this.loadCompensationCapture(tx, id);
       await this.compensationAttention(
         tx,
         capture.invoice,
@@ -2122,6 +2138,45 @@ export class SubscriptionsService {
         reason,
       );
     });
+  }
+
+  private async loadCompensationCapture(
+    db: PrismaService | Prisma.TransactionClient,
+    id: string,
+  ) {
+    const [row] = await db.$queryRaw<
+      Array<{
+        id: string;
+        reference: string;
+        status: string;
+        amount: Prisma.Decimal;
+        currency: string;
+        providerRefundId: string | null;
+        providerTransactionId: string | null;
+        invoiceId: string;
+        invoiceAmount: Prisma.Decimal;
+        invoiceCurrency: string;
+        brandId: string;
+      }>
+    >(Prisma.sql`
+      SELECT c.id, c.reference, c.status, c.amount, c.currency,
+        c."providerRefundId", c."providerTransactionId", i.id AS "invoiceId",
+        i.amount AS "invoiceAmount", i.currency AS "invoiceCurrency", s."brandId"
+      FROM "BrandSubscriptionPaymentCapture" c
+      JOIN "BrandSubscriptionInvoice" i ON i.id = c."invoiceId"
+      JOIN "BrandSubscription" s ON s.id = i."subscriptionId"
+      WHERE c.id = ${id}::uuid
+    `);
+    if (!row) throw new NotFoundException('Subscription capture not found');
+    return {
+      ...row,
+      invoice: {
+        id: row.invoiceId,
+        amount: row.invoiceAmount,
+        currency: row.invoiceCurrency,
+        subscription: { brandId: row.brandId },
+      },
+    };
   }
 
   private assertAdmin(actor: SubscriptionAdminActor, permission: string) {

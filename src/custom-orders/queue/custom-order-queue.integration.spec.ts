@@ -11,6 +11,8 @@ import { CustomOrderQueueRefundsService } from './custom-order-queue-refunds.ser
 import { CustomOrderDisputeService } from '../custom-order-dispute.service';
 import { CustomOrderRefundService } from '../custom-order-refund.service';
 import { SubscriptionsService } from '../../subscriptions/subscriptions.service';
+import { BrandCommerceAccessService } from '../../brands/brand-commerce-access.service';
+import { BrandCustomersService } from '../../brands/brand-customers.service';
 
 const databaseUrl = process.env.QUEUE_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -173,6 +175,42 @@ integration('paid queue PostgreSQL transaction integration', () => {
     else process.env.PAYSTACK_SECRET_KEY = originalPaystackKey;
     await prisma?.$disconnect();
     await pool?.end();
+  });
+
+  it('keeps saved customer criteria while paid access expires at the exact recorded boundary', async () => {
+    let reads = 0;
+    const commerce = new BrandCommerceAccessService({ $queryRaw: (query: Prisma.Sql) => { reads++; return prisma.$queryRaw(query); } } as any);
+    const agreement = await prisma.brandSubscription.findFirstOrThrow({ where: { brandId } });
+    const before = await commerce.get(brandId);
+    expect(reads).toBe(1);
+    expect(before).toMatchObject({ tierKey: 'ARU', canConfigureCustomers: true, customerMinimumOrders: 3, effectiveMinimumOrders: 3 });
+    expect(before.entitlementExpiresAt).toBe(agreement.currentPeriodEnd.toISOString());
+    await prisma.brand.update({ where: { id: brandId }, data: { customerMinimumOrders: 4 } });
+    try {
+      expect(await commerce.get(brandId)).toMatchObject({ effectiveMinimumOrders: 4 });
+      expect(await commerce.get(brandId, agreement.currentPeriodEnd)).toMatchObject({
+        tierKey: 'FREE', canConfigureCustomers: false, customerMinimumOrders: 4, effectiveMinimumOrders: 1, entitlementExpiresAt: null,
+      });
+    } finally {
+      await prisma.brand.update({ where: { id: brandId }, data: { customerMinimumOrders: 3 } });
+    }
+  });
+
+  it('refuses a paid customer-setting write when the agreement expires after preflight', async () => {
+    const preflight = { get: async () => ({ canConfigureCustomers: true }) };
+    const customers = new BrandCustomersService(prisma as any, { assertBrandOwnerAndResolve: async () => ({ brandId }) } as any, {} as any, preflight as any);
+    const agreement = await prisma.brandSubscription.findFirstOrThrow({ where: { brandId } });
+    await prisma.brand.update({ where: { id: brandId }, data: { customerMinimumOrders: 3 } });
+    try {
+      await customers.updateSettings(ownerId, brandId, 4);
+      expect((await prisma.brand.findUniqueOrThrow({ where: { id: brandId } })).customerMinimumOrders).toBe(4);
+      await prisma.brandSubscription.update({ where: { id: agreement.id }, data: { currentPeriodEnd: new Date(Date.now() - 1000) } });
+      await expect(customers.updateSettings(ownerId, brandId, 5)).rejects.toThrow('Paid owner access expired or changed');
+      expect((await prisma.brand.findUniqueOrThrow({ where: { id: brandId } })).customerMinimumOrders).toBe(4);
+    } finally {
+      await prisma.brandSubscription.update({ where: { id: agreement.id }, data: { currentPeriodEnd: agreement.currentPeriodEnd } });
+      await prisma.brand.update({ where: { id: brandId }, data: { customerMinimumOrders: 3 } });
+    }
   });
 
   it('keeps tier data private and serializes the shared login/Studio notice receipt', async () => {

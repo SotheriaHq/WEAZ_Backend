@@ -8,6 +8,11 @@ import {
 import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationTarget } from 'src/notifications/notifications.types';
 import { NotificationsQueueService } from 'src/queue/notifications.queue.service';
+import {
+  claimCustomOrderOutbox,
+  reapExhaustedCustomOrderOutbox,
+  CUSTOM_ORDER_OUTBOX_MAX_ATTEMPTS,
+} from './custom-order-outbox-query';
 
 type EnqueueCustomOrderNotificationParams = {
   customOrderId: string;
@@ -30,7 +35,7 @@ type RecordCustomOrderAnalyticsEventParams = {
 };
 
 const NOTIFICATION_DISPATCH_CONCURRENCY = 10;
-const MAX_NOTIFICATION_DISPATCH_ATTEMPTS = 8;
+const MAX_NOTIFICATION_DISPATCH_ATTEMPTS = CUSTOM_ORDER_OUTBOX_MAX_ATTEMPTS;
 
 @Injectable()
 export class CustomOrderSideEffectsService {
@@ -121,29 +126,24 @@ export class CustomOrderSideEffectsService {
   }
 
   async dispatchPendingNotifications(batchSize = 100): Promise<number> {
-    const events = await this.prisma.customOrderNotificationOutbox.findMany({
-      where: {
-        status: {
-          in: [CustomOrderOutboxStatus.PENDING, CustomOrderOutboxStatus.FAILED],
-        },
-        availableAt: { lte: new Date() },
-        attempts: { lt: MAX_NOTIFICATION_DISPATCH_ATTEMPTS },
-      },
-      orderBy: { createdAt: 'asc' },
-      take: batchSize,
-    });
+    const take = Number.isFinite(batchSize)
+      ? Math.max(0, Math.min(200, Math.trunc(batchSize)))
+      : 100;
+    if (!take) return 0;
+    await reapExhaustedCustomOrderOutbox(this.prisma, take);
 
     let processedCount = 0;
 
     for (
       let index = 0;
-      index < events.length;
+      index < take;
       index += NOTIFICATION_DISPATCH_CONCURRENCY
     ) {
-      const chunk = events.slice(
-        index,
-        index + NOTIFICATION_DISPATCH_CONCURRENCY,
+      const chunk = await claimCustomOrderOutbox(
+        this.prisma,
+        Math.min(NOTIFICATION_DISPATCH_CONCURRENCY, take - index),
       );
+      if (!chunk.length) break;
       const results = await Promise.all(
         chunk.map((event) => this.dispatchNotificationEvent(event)),
       );
@@ -163,76 +163,103 @@ export class CustomOrderSideEffectsService {
     targetJson: Prisma.JsonValue | null;
     dedupeMs: number | null;
     status: CustomOrderOutboxStatus;
+    attempts: number;
+    lockOwner: string | null;
   }): Promise<boolean> {
+    if (!event.lockOwner) throw new Error('Outbox claim owner is missing');
+    const owned = {
+      id: event.id,
+      status: CustomOrderOutboxStatus.PROCESSING,
+      lockOwner: event.lockOwner,
+    };
     const reminder = this.asRecord(event.payloadJson);
     if (String(reminder?.stage ?? '').startsWith('QUEUE_EXPIRY_')) {
-      const current = await this.prisma.customOrder.findUnique({ where: { id: event.customOrderId }, select: { lane: true, queueExpiresAt: true } });
-      if (!current || !['PENDING', 'UP_NEXT'].includes(current.lane ?? '') || current.queueExpiresAt?.toISOString() !== reminder?.note || current.queueExpiresAt <= new Date()) {
-        await this.prisma.customOrderNotificationOutbox.updateMany({ where: { id: event.id, status: event.status }, data: { status: CustomOrderOutboxStatus.SKIPPED } });
+      const current = await this.prisma.customOrder.findUnique({
+        where: { id: event.customOrderId },
+        select: { lane: true, queueExpiresAt: true },
+      });
+      if (
+        !current ||
+        !['PENDING', 'UP_NEXT'].includes(current.lane ?? '') ||
+        current.queueExpiresAt?.toISOString() !== reminder?.note ||
+        current.queueExpiresAt <= new Date()
+      ) {
+        await this.prisma.customOrderNotificationOutbox.updateMany({
+          where: owned,
+          data: {
+            status: CustomOrderOutboxStatus.SKIPPED,
+            lockOwner: null,
+            lockExpiresAt: null,
+          },
+        });
         return false;
       }
     }
-    const claimed = await this.prisma.customOrderNotificationOutbox.updateMany({
-      where: {
-        id: event.id,
-        status: event.status,
-      },
-      data: {
-        status: CustomOrderOutboxStatus.PROCESSING,
-        attempts: { increment: 1 },
-        lastError: null,
-      },
-    });
-    if (claimed.count === 0) {
-      return false;
-    }
-
+    let handoffTimeout: ReturnType<typeof setTimeout> | undefined;
     try {
-      await this.notificationsQueue.enqueueFanout({
-        recipientIds: [event.recipientId],
-        notificationType: event.notificationType,
-        actorId: event.actorId ?? undefined,
-        payload: this.asRecord(event.payloadJson),
-        target: this.asTarget(event.targetJson),
-        dedupeMs: event.dedupeMs ?? undefined,
-      });
+      await Promise.race([
+        this.notificationsQueue.enqueueFanout(
+          {
+            recipientIds: [event.recipientId],
+            notificationType: event.notificationType,
+            actorId: event.actorId ?? undefined,
+            payload: this.asRecord(event.payloadJson),
+            target: this.asTarget(event.targetJson),
+            dedupeMs: event.dedupeMs ?? undefined,
+            notificationId: event.id,
+          },
+          { jobId: `custom-order-outbox-${event.id}` },
+        ),
+        new Promise<never>((_, reject) => {
+          handoffTimeout = setTimeout(
+            () => reject(new Error('Notification enqueue timed out')),
+            5000,
+          );
+        }),
+      ]);
 
-      await this.prisma.customOrderNotificationOutbox.update({
-        where: { id: event.id },
-        data: {
-          status: CustomOrderOutboxStatus.COMPLETED,
-          processedAt: new Date(),
-          lastError: null,
-        },
-      });
-      return true;
+      const completed =
+        await this.prisma.customOrderNotificationOutbox.updateMany({
+          where: owned,
+          data: {
+            status: CustomOrderOutboxStatus.COMPLETED,
+            processedAt: new Date(),
+            lastError: null,
+            lockOwner: null,
+            lockExpiresAt: null,
+          },
+        });
+      return completed.count > 0;
     } catch (error) {
       this.logger.warn(
         `Failed to dispatch custom-order notification ${event.id}: ${this.formatError(error)}`,
       );
-      const current =
-        await this.prisma.customOrderNotificationOutbox.findUnique({
-          where: { id: event.id },
-          select: { attempts: true, customOrderId: true },
-        });
-      const exhausted =
-        (current?.attempts ?? 0) >= MAX_NOTIFICATION_DISPATCH_ATTEMPTS;
+      const exhausted = event.attempts >= MAX_NOTIFICATION_DISPATCH_ATTEMPTS;
 
-      await this.prisma.customOrderNotificationOutbox.update({
-        where: { id: event.id },
-        data: {
-          status: CustomOrderOutboxStatus.FAILED,
-          lastError: exhausted
-            ? `DLQ_EXHAUSTED:${this.formatError(error)}`
-            : this.formatError(error),
+      const failed = await this.prisma.customOrderNotificationOutbox.updateMany(
+        {
+          where: owned,
+          data: {
+            status: CustomOrderOutboxStatus.FAILED,
+            lastError: exhausted
+              ? `DLQ_EXHAUSTED:${this.formatError(error)}`
+              : this.formatError(error),
+            lockOwner: null,
+            lockExpiresAt: null,
+            availableAt: new Date(
+              Date.now() + Math.min(3600, 15 * 2 ** event.attempts) * 1000,
+            ),
+          },
         },
-      });
-      if (exhausted) {
+      );
+      if (exhausted && failed.count > 0) {
         this.logger.error(
-          `Custom-order notification outbox exhausted retries eventId=${event.id} customOrderId=${current?.customOrderId ?? 'unknown'}`,
+          `Custom-order notification outbox exhausted retries eventId=${event.id} customOrderId=${event.customOrderId}`,
         );
       }
       return false;
+    } finally {
+      if (handoffTimeout) clearTimeout(handoffTimeout);
     }
   }
 

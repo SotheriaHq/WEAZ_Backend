@@ -41,6 +41,11 @@ import { BrandBalanceService } from 'src/finance/brand-balance.service';
 import { reserveFullOrderRefund } from './queue-refund-reservation';
 import { refundSettlement } from './queue-refund-settlement';
 import { allocatePartialRefund } from './partial-refund-allocation';
+import { loadQueueCapacityContext } from './queue-capacity-query';
+import {
+  loadQueueCancellationOrder,
+  QueueCancellationOrder,
+} from './queue-cancellation-query';
 
 type Tx = Prisma.TransactionClient;
 const WAITING: CustomOrderLane[] = ['PENDING', 'UP_NEXT'];
@@ -85,31 +90,11 @@ export class CustomOrderQueueService {
   }
 
   async capacity(tx: Tx | PrismaService, brandId: string, now = new Date()) {
-    const brand = await tx.brand.findUnique({
-      where: { id: brandId },
-      include: { owner: { select: { id: true, status: true } } },
-    });
-    if (!brand) throw new NotFoundException('Brand not found');
-    const agreement = await tx.brandSubscription.findFirst({
-      where: { brandId, status: { in: ['ACTIVE', 'PAST_DUE', 'CANCELLED'] } },
-      orderBy: { createdAt: 'desc' },
-      include: { tier: true },
-    });
-    const tier =
-      agreement?.tier ??
-      (await tx.subscriptionTier.findUnique({
-        where: { key: 'THREAD' },
-      }));
+    const context = await loadQueueCapacityContext(tx, brandId, now);
+    if (!context) throw new NotFoundException('Brand not found');
+    const { brand, agreement, tier } = context;
     if (!tier)
       throw new ConflictException('CUSTOM_ORDER_TIER_CONFIGURATION_MISSING');
-    const campaign = await tx.capacityCampaign.findFirst({
-      where: {
-        startsAt: { lte: now },
-        resetAt: null,
-        OR: [{ resetMode: 'MANUAL' }, { endsAt: { gt: now } }],
-      },
-      orderBy: { startsAt: 'desc' },
-    });
     const override =
       brand.activeOrderCapOverride !== null &&
       (!brand.activeOrderCapOverrideUntil ||
@@ -120,7 +105,7 @@ export class CustomOrderQueueService {
       override ??
       (tier.maxActive === null
         ? null
-        : Math.max(0, tier.maxActive + (campaign?.deltaActive ?? 0)));
+        : Math.max(0, tier.maxActive + context.deltaActive));
     const safetyAllowed =
       brand.verificationStatus === 'APPROVED' &&
       brand.owner.status === 'ACTIVE';
@@ -477,12 +462,16 @@ export class CustomOrderQueueService {
       brandId: string;
       queueExpiresAt: Date | null;
     },
+    knownBrandOwnerId?: string,
   ) {
     if (!order.queueExpiresAt) return;
-    const brand = await tx.brand.findUnique({
-      where: { id: order.brandId },
-      select: { ownerId: true },
-    });
+    const brand =
+      knownBrandOwnerId === undefined
+        ? await tx.brand.findUnique({
+            where: { id: order.brandId },
+            select: { ownerId: true },
+          })
+        : { ownerId: knownBrandOwnerId };
     await tx.customOrderNotificationOutbox.createMany({
       data: [48, 24, 5].flatMap((hours) =>
         [
@@ -518,11 +507,12 @@ export class CustomOrderQueueService {
 
   /** Called within every successful payment finalization transaction. */
   async admitPaid(tx: Tx, orderId: string) {
-    let order = await tx.customOrder.findUniqueOrThrow({
+    const source = await tx.customOrder.findUniqueOrThrow({
       where: { id: orderId },
+      select: { brandId: true },
     });
-    const now = await this.lockBrand(tx, order.brandId);
-    order = await tx.customOrder.findUniqueOrThrow({ where: { id: orderId } });
+    const now = await this.lockBrand(tx, source.brandId);
+    let order = await tx.customOrder.findUniqueOrThrow({ where: { id: orderId } });
     if (order.lane !== null || order.paymentStatus !== 'PAID') return;
     const summary = object(order.buyerPriceSummaryJson);
     const jumpFee = Number(summary.queueJumpFee ?? 0);
@@ -560,14 +550,17 @@ export class CustomOrderQueueService {
       releaseEligibleAt: now,
       queueHold: true,
     });
+    const cap = await this.capacity(tx, order.brandId, now);
     await this.record(
       tx,
       order,
       'QUEUE_PLACED',
       'Payment captured. Your custom order has entered the queue; its funds remain held until work becomes Active.',
+      'SYSTEM',
+      undefined,
+      cap.brand.ownerId,
     );
-    await this.schedule(tx, order);
-    const cap = await this.capacity(tx, order.brandId, now);
+    await this.schedule(tx, order, cap.brand.ownerId);
     const buyer = await tx.user.findUnique({
       where: { id: order.buyerId },
       select: { type: true, status: true },
@@ -585,6 +578,8 @@ export class CustomOrderQueueService {
         now,
         'Eligibility changed before payment finalization',
         'SYSTEM',
+        undefined,
+        cap.brand.ownerId,
       );
       return;
     }
@@ -715,23 +710,20 @@ export class CustomOrderQueueService {
     const gross = Number(order.jumpFeeAmount),
       commission = Math.round(gross * 10) / 100,
       net = Math.round((gross - commission) * 100) / 100;
-    const existing = await tx.customOrderLedgerAllocation.findFirst({
-      where: { customOrderId: order.id, allocationType: 'JUMP_FEE' },
+    await tx.customOrderLedgerAllocation.createMany({
+      skipDuplicates: true,
+      data: {
+        customOrderId: order.id,
+        allocationType: 'JUMP_FEE',
+        amount: gross,
+        commissionRate: 10,
+        commissionAmount: commission,
+        netBrandAmount: net,
+        currency: order.currency,
+        status: 'PAYOUT_ELIGIBLE',
+        eligibleAt: new Date(),
+      },
     });
-    if (!existing)
-      await tx.customOrderLedgerAllocation.create({
-        data: {
-          customOrderId: order.id,
-          allocationType: 'JUMP_FEE',
-          amount: gross,
-          commissionRate: 10,
-          commissionAmount: commission,
-          netBrandAmount: net,
-          currency: order.currency,
-          status: 'PAYOUT_ELIGIBLE',
-          eligibleAt: new Date(),
-        },
-      });
     await this.ledger.postTransaction(tx, {
       idempotencyKey: `ledger:custom-order:${order.id}:jump_release`,
       type: LedgerTransactionType.ESCROW_RELEASE,
@@ -929,6 +921,17 @@ export class CustomOrderQueueService {
     expectedRevision?: number,
     actorType?: CustomOrderActorType,
   ) {
+    await this.cancelCommand(userId, id, reason, expectedRevision, actorType);
+    return { queue: (await this.present([id]))[id] };
+  }
+
+  private async cancelCommand(
+    userId: string | undefined,
+    id: string,
+    reason: string,
+    expectedRevision?: number,
+    actorType?: CustomOrderActorType,
+  ) {
     const source =
       actorType === 'SYSTEM' || actorType === 'ADMIN'
         ? await this.prisma.customOrder.findUniqueOrThrow({ where: { id } })
@@ -939,9 +942,8 @@ export class CustomOrderQueueService {
         // Parent capture first, then brand: matches payment finalization lock order.
         await this.lockCapture(tx, source);
         const now = await this.lockBrand(tx, source.brandId);
-        const current = await tx.customOrder.findUniqueOrThrow({
-          where: { id },
-        });
+        const current = await loadQueueCancellationOrder(tx, id);
+        if (!current) throw new NotFoundException('Custom order not found');
         if (current.cancelledAt) return;
         if (
           actor === 'SYSTEM' &&
@@ -952,13 +954,20 @@ export class CustomOrderQueueService {
         )
           return;
         this.checkRevision(current.orderRevision, expectedRevision);
-        await this.cancelLocked(tx, current, now, reason, actor, userId);
+        await this.cancelLocked(
+          tx,
+          current,
+          now,
+          reason,
+          actor,
+          userId,
+          current.brandOwnerId,
+        );
         await this.drain(tx, current.brandId, now);
       },
       { timeout: 15000 },
     );
     if (actor === 'BRAND') await this.flagMassCancellation(source.brandId);
-    return { queue: (await this.present([id]))[id] };
   }
 
   async requestCancellationInTransaction(
@@ -1332,11 +1341,12 @@ export class CustomOrderQueueService {
 
   private async cancelLocked(
     tx: Tx,
-    order: Prisma.CustomOrderGetPayload<object>,
+    order: QueueCancellationOrder,
     now: Date,
     reason: string,
     actor: CustomOrderActorType,
     actorId?: string,
+    knownBrandOwnerId?: string,
   ) {
     if (
       !order.lane ||
@@ -1412,6 +1422,7 @@ export class CustomOrderQueueService {
       `Your waiting custom order was cancelled. Refund requested: ${order.currency} ${quote.refundAmount.toFixed(2)}. VAT ${quote.vatAmount.toFixed(2)}, garment charge ${quote.garmentCharge.toFixed(2)}, and priority charge ${quote.jumpCharge.toFixed(2)} are retained; delivery is refunded in full.`,
       actor,
       actorId,
+      knownBrandOwnerId,
     );
   }
 
@@ -1438,7 +1449,7 @@ export class CustomOrderQueueService {
       [];
     for (const row of orders) {
       try {
-        await this.cancel(userId, row.id, reason);
+        await this.cancelCommand(userId, row.id, reason);
         results.push({ id: row.id, cancelled: true });
       } catch (error) {
         results.push({
@@ -1689,7 +1700,7 @@ export class CustomOrderQueueService {
     });
     for (const row of due) {
       try {
-        await this.cancel(
+        await this.cancelCommand(
           undefined,
           row.id,
           'Waiting period expired after 42 days',

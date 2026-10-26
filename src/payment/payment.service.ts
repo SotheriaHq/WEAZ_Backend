@@ -1,4 +1,9 @@
 import { consumePaidCartLines } from '../bagging/cart-transaction.util';
+import { loadStandardPaymentOrders } from './standard-payment-order-query';
+import { lockCheckoutSession } from './checkout-session-query';
+import type { NotificationEvent } from '../notifications/notification-batch-query';
+import { lockStandardPlacementThread, loadStandardPlacementContext } from './standard-order-message-query';
+import { nextMessageTimestamp, withMessagingTransaction } from '../messaging/messaging-transaction.util';
 import {
   BadRequestException,
   ConflictException,
@@ -50,6 +55,7 @@ import {
 } from 'src/brand-verification/verification-truth.util';
 import { v4 as uuidv4 } from 'uuid';
 import { FxRateService } from './fx-rate.service';
+import { lockPaymentAttempt } from './payment-attempt-query';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-sync.service';
 import { CustomOrderQueueService } from 'src/custom-orders/queue/custom-order-queue.service';
@@ -103,6 +109,7 @@ import {
   PHONE_REQUIRED_MESSAGE,
 } from 'src/common/utils/phone-number';
 import { LegalService } from 'src/legal/legal.service';
+import { lockCheckoutProducts, lockCheckoutVariants, LockedCheckoutProduct, releaseCheckoutReservations } from './checkout-inventory-query';
 
 type PaymentAttemptRecord = Awaited<
   ReturnType<PrismaService['paymentAttempt']['findUnique']>
@@ -348,6 +355,9 @@ export class PaymentService implements OnModuleInit {
     private readonly queueRefunds?: CustomOrderQueueRefundsService,
     @Optional()
     private readonly telegramEvents?: TelegramEventsService,
+    @Optional()
+    @Inject('PAYMENT_PAYSTACK_BASE_URL')
+    private readonly paystackVerificationBaseUrl = 'https://api.paystack.co',
   ) {}
 
   onModuleInit(): void {
@@ -702,6 +712,9 @@ export class PaymentService implements OnModuleInit {
             },
           });
 
+          const reservedLines = standardLineDrafts.filter(line => line.reserveInventory);
+          const lockedInventory = await lockCheckoutProducts(tx, reservedLines.map(line => line.productId));
+          await lockCheckoutVariants(tx, reservedLines.flatMap(line => line.variantId ? [line.variantId] : []));
           for (let index = 0; index < standardLineDrafts.length; index += 1) {
             const line = standardLineDrafts[index];
             const createdLine = await tx.checkoutSessionLine.create({
@@ -743,6 +756,7 @@ export class PaymentService implements OnModuleInit {
               createdLine.id,
               line,
               initialAttemptExpiresAt,
+              lockedInventory,
             );
           }
 
@@ -917,7 +931,7 @@ export class PaymentService implements OnModuleInit {
             attempt: createdAttempt,
             checkoutSession,
           };
-        });
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
         let gatewayResult: GatewayInitializationResult;
         try {
@@ -4166,10 +4180,7 @@ export class PaymentService implements OnModuleInit {
     const eventPayload = payload?.eventPayload ?? null;
     const responseSnapshotPatch = payload?.responseSnapshotPatch ?? null;
     const transitionResult = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT "reference" FROM "PaymentAttempt" WHERE "reference" = ${reference} FOR UPDATE`;
-      const attempt = await tx.paymentAttempt.findUnique({
-        where: { reference },
-      });
+      const attempt = await lockPaymentAttempt(tx, reference);
 
       // System sources may run without a buyer JWT. User-facing sources must
       // always match attempt.buyerId (no soft "null buyerId" bypass).
@@ -4339,29 +4350,7 @@ export class PaymentService implements OnModuleInit {
     const linkedOrders =
       transitionResult.transitionedToPaid &&
       updatedAttempt.subjectType === PaymentSubjectType.STANDARD_ORDER
-        ? await this.prisma.order.findMany({
-            where: {
-              paymentReference: reference,
-              ...(updatedAttempt.buyerId
-                ? { buyerId: updatedAttempt.buyerId }
-                : {}),
-            },
-            select: {
-              id: true,
-              brandId: true,
-              buyerId: true,
-              customerName: true,
-              totalAmount: true,
-              currency: true,
-              brand: {
-                select: {
-                  ownerId: true,
-                  name: true,
-                },
-              },
-            },
-            orderBy: { createdAt: 'asc' },
-          })
+        ? await loadStandardPaymentOrders(this.prisma, reference, updatedAttempt.buyerId)
         : [];
 
     if (transitionResult.transitionedToPaid && linkedOrders.length > 0) {
@@ -4554,28 +4543,17 @@ export class PaymentService implements OnModuleInit {
     const subjectLabel =
       orderCount === 1 ? 'standard order' : 'standard orders';
 
-    await Promise.allSettled(
-      recipientIds.map((recipientId) =>
-        this.notificationsService.create(
-          recipientId,
-          NotificationType.ADMIN_ACTION,
-          {
-            actorId: linkedOrders[0]?.buyerId ?? undefined,
-            dedupeMs: 5 * 60 * 1000,
-            payload: {
-              action: 'FINANCE_PAYMENT_RECEIVED',
-              paymentAttemptId: attempt.id,
-              reference: attempt.reference,
-              amount: Number(attempt.amount ?? 0),
-              currency: attempt.currency,
-              orderIds: linkedOrders.map((order) => order.id),
-              message: `Payment received: ${attempt.reference} for ${orderCount} ${subjectLabel} worth ${attempt.currency} ${amount}.`,
-              targetUrl: '/admin/finance',
-            },
-          },
-        ),
-      ),
-    );
+    await this.notificationsService.createForRecipients(recipientIds, NotificationType.ADMIN_ACTION, {
+      actorId: linkedOrders[0]?.buyerId ?? undefined,
+      dedupeMs: 5 * 60 * 1000,
+      payload: {
+        action: 'FINANCE_PAYMENT_RECEIVED', paymentAttemptId: attempt.id, reference: attempt.reference,
+        amount: Number(attempt.amount ?? 0), currency: attempt.currency,
+        orderIds: linkedOrders.map(order => order.id),
+        message: `Payment received: ${attempt.reference} for ${orderCount} ${subjectLabel} worth ${attempt.currency} ${amount}.`,
+        targetUrl: '/admin/finance',
+      },
+    });
   }
 
   private async ensureStandardOrderPlacedMessage(order: {
@@ -4597,88 +4575,58 @@ export class PaymentService implements OnModuleInit {
     const pairKey = `BUYER_BRAND:${order.buyerId}:${order.brandId}`;
     const bodyText = `A new order for ${order.brand.name} has been placed by ${order.customerName || 'Customer'}.`;
 
-    return this.prisma.$transaction(async (tx) => {
-      const linked = await tx.messageThreadOrderLink.findUnique({
-        where: { orderId: order.id },
-        include: { thread: true },
+    return withMessagingTransaction(this.prisma, async (tx) => {
+      // Same pair lock as the main messaging flow; fresh row data is read after its lock wait.
+      await tx.$executeRaw(
+        Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${'wiez-message-pair-' + pairKey}, 0))`,
+      );
+      const selected = await lockStandardPlacementThread(tx, {
+        orderId: order.id,
+        brandId: order.brandId,
+        buyerId: order.buyerId!,
+        pairKey,
       });
-
+      const current = selected
+        ? await loadStandardPlacementContext(tx, selected.id, order.id)
+        : null;
+      if (selected && !current)
+        throw new NotFoundException('Message thread not found');
+      const placementMessageId = current?.placementMessageId ?? null;
       const thread =
-        linked?.thread ??
-        (await (async () => {
-          const existingPair = await tx.messageThread.findFirst({
-            where: { pairKey },
-          });
-          if (existingPair) {
-            await tx.messageThreadOrderLink.upsert({
-              where: { orderId: order.id },
-              create: { threadId: existingPair.id, orderId: order.id },
-              update: { threadId: existingPair.id },
-            });
-            return existingPair;
-          }
-
-          const legacyPair = await tx.messageThread.findFirst({
-            where: {
-              pairKey: null,
-              brandId: order.brandId,
-              buyerId: order.buyerId,
+        current ??
+        (await tx.messageThread.create({
+          data: {
+            contextType: MessageContextType.DIRECT,
+            conversationType: MessageConversationType.BUYER_BRAND,
+            brandId: order.brandId,
+            buyerId: order.buyerId,
+            buyerUserId: order.buyerId,
+            brandOwnerUserId: order.brand!.ownerId,
+            pairKey,
+            status: MessageThreadStatus.OPEN,
+            subjectSnapshotJson: {
+              type: 'BUYER_BRAND_CONVERSATION',
+              brandName: order.brand!.name,
             },
-            orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'desc' }],
-          });
-          if (legacyPair) {
-            const updated = await tx.messageThread.update({
-              where: { id: legacyPair.id },
-              data: {
-                contextType: MessageContextType.DIRECT,
-                conversationType: MessageConversationType.BUYER_BRAND,
-                buyerUserId: order.buyerId,
-                brandOwnerUserId: order.brand!.ownerId,
-                pairKey,
-                status: MessageThreadStatus.OPEN,
-              },
-            });
-            await tx.messageThreadOrderLink.upsert({
-              where: { orderId: order.id },
-              create: { threadId: updated.id, orderId: order.id },
-              update: { threadId: updated.id },
-            });
-            return updated;
-          }
-
-          const created = await tx.messageThread.create({
-            data: {
-              contextType: MessageContextType.DIRECT,
-              conversationType: MessageConversationType.BUYER_BRAND,
-              brandId: order.brandId,
-              buyerId: order.buyerId,
-              buyerUserId: order.buyerId,
-              brandOwnerUserId: order.brand!.ownerId,
-              pairKey,
-              status: MessageThreadStatus.OPEN,
-              subjectSnapshotJson: {
-                type: 'BUYER_BRAND_CONVERSATION',
-                brandName: order.brand!.name,
-              },
-              participants: {
-                create: [
-                  {
-                    userId: order.buyerId!,
-                    role: MessageParticipantRole.BUYER,
-                  },
-                  {
-                    userId: order.brand!.ownerId,
-                    role: MessageParticipantRole.BRAND_OWNER,
-                  },
-                ],
-              },
-            },
-          });
-          await tx.messageThreadOrderLink.create({
-            data: { threadId: created.id, orderId: order.id },
-          });
-          return created;
-        })());
+          },
+        }));
+      if (selected?.origin === 'LEGACY') {
+        await tx.messageThread.update({
+          where: { id: thread.id },
+          data: {
+            contextType: MessageContextType.DIRECT,
+            conversationType: MessageConversationType.BUYER_BRAND,
+            buyerUserId: order.buyerId,
+            brandOwnerUserId: order.brand!.ownerId,
+            pairKey,
+            status: MessageThreadStatus.OPEN,
+          },
+        });
+      }
+      await tx.messageThreadOrderLink.createMany({
+        data: [{ threadId: thread.id, orderId: order.id }],
+        skipDuplicates: true,
+      });
 
       await tx.messageThreadParticipant.createMany({
         data: [
@@ -4696,21 +4644,8 @@ export class PaymentService implements OnModuleInit {
         skipDuplicates: true,
       });
 
-      const existingMessage = await tx.message.findFirst({
-        where: {
-          threadId: thread.id,
-          orderId: order.id,
-          kind: MessageKind.SYSTEM,
-          metadataJson: {
-            path: ['eventType'],
-            equals: 'STANDARD_ORDER_PLACED',
-          },
-        },
-        select: { id: true },
-      });
-      if (existingMessage) {
-        return existingMessage;
-      }
+      if (placementMessageId) return { id: placementMessageId };
+      const createdAt = await nextMessageTimestamp(tx, thread.lastMessageAt);
 
       const message = await tx.message.create({
         data: {
@@ -4721,6 +4656,7 @@ export class PaymentService implements OnModuleInit {
           senderRole: MessageParticipantRole.SYSTEM,
           kind: MessageKind.SYSTEM,
           bodyText,
+          createdAt,
           metadataJson: {
             eventType: 'STANDARD_ORDER_PLACED',
             orderId: order.id,
@@ -4795,64 +4731,70 @@ export class PaymentService implements OnModuleInit {
       } | null;
     }>,
   ) {
-    const jobs: Array<Promise<unknown>> = [];
+    const jobs: Array<() => Promise<unknown>> = [];
+    const events: NotificationEvent[] = [];
 
     for (const order of linkedOrders) {
       const totalAmount = Number(order.totalAmount ?? 0);
       const brandName = order.brand?.name ?? 'Brand';
 
       if (order.buyerId && order.brand?.ownerId) {
-        jobs.push(this.ensureStandardOrderPlacedMessage(order));
+        jobs.push(() => this.ensureStandardOrderPlacedMessage(order));
       }
 
       if (order.brand?.ownerId) {
-        jobs.push(
-          this.notificationsService.create(
-            order.brand.ownerId,
-            NotificationType.ORDER_PLACED,
-            {
-              actorId: order.buyerId ?? undefined,
-              dedupeMs: 5 * 60 * 1000,
-              payload: {
-                orderId: order.id,
-                totalAmount,
-                brandId: order.brandId,
-                brandName,
-                customerName: order.customerName || 'Customer',
-                targetUrl: `/studio?tab=orders&orderId=${order.id}`,
-              },
+        events.push({
+          recipientId: order.brand.ownerId,
+          type: NotificationType.ORDER_PLACED,
+          opts: {
+            actorId: order.buyerId ?? undefined,
+            dedupeMs: 5 * 60 * 1000,
+            payload: {
+              orderId: order.id,
+              totalAmount,
+              brandId: order.brandId,
+              brandName,
+              customerName: order.customerName || 'Customer',
+              targetUrl: `/studio?tab=orders&orderId=${order.id}`,
             },
-          ),
-        );
+          },
+        });
       }
 
       if (order.buyerId) {
-        jobs.push(
-          this.notificationsService.create(
-            order.buyerId,
-            NotificationType.ORDER_PLACED,
-            {
-              actorId: null,
-              dedupeMs: 5 * 60 * 1000,
-              payload: {
-                orderId: order.id,
-                totalAmount,
-                brandId: order.brandId,
-                brandName,
-                isBuyerCopy: true,
-                targetUrl: `/orders/${order.id}`,
-              },
+        events.push({
+          recipientId: order.buyerId,
+          type: NotificationType.ORDER_PLACED,
+          opts: {
+            actorId: null,
+            dedupeMs: 5 * 60 * 1000,
+            payload: {
+              orderId: order.id,
+              totalAmount,
+              brandId: order.brandId,
+              brandName,
+              isBuyerCopy: true,
+              targetUrl: `/orders/${order.id}`,
             },
-          ),
-        );
+          },
+        });
       }
     }
 
-    if (jobs.length === 0) {
+    if (jobs.length === 0 && events.length === 0) {
       return;
     }
-
-    const results = await Promise.allSettled(jobs);
+    const noticeWork = this.sendPlacementEvents(events, 'order');
+    const results: PromiseSettledResult<unknown>[] = [];
+    // Keep post-payment transactions bounded so a large checkout cannot exhaust the pool.
+    for (let offset = 0; offset < jobs.length; offset += 4) {
+      results.push(
+        ...(await Promise.allSettled(
+          jobs.slice(offset, offset + 4).map((run) => run()),
+        )),
+      );
+    }
+    await noticeWork;
     const rejected = results.filter((result) => result.status === 'rejected');
     if (rejected.length > 0) {
       this.logger.warn(
@@ -4890,21 +4832,28 @@ export class PaymentService implements OnModuleInit {
       return;
     }
 
-    const orders = await this.prisma.customOrder.findMany({
-      where: { id: { in: ids } },
-      select: {
-        id: true,
-        buyerId: true,
-        currency: true,
-        sourceTitleSnapshot: true,
-        sourceBrandNameSnapshot: true,
-        buyerPriceSummaryJson: true,
-        brand: { select: { ownerId: true, name: true } },
-        buyer: { select: { username: true } },
-      },
-    });
+    const orders = await this.prisma.customOrder
+      .findMany({
+        where: { id: { in: ids } },
+        select: {
+          id: true,
+          buyerId: true,
+          currency: true,
+          sourceTitleSnapshot: true,
+          sourceBrandNameSnapshot: true,
+          buyerPriceSummaryJson: true,
+          brand: { select: { ownerId: true, name: true } },
+          buyer: { select: { username: true } },
+        },
+      })
+      .catch((error) => {
+        this.logger.warn(
+          `Failed to load custom-order notification recipients after payment confirmation: ${String(error)}`,
+        );
+        return [];
+      });
 
-    const jobs: Array<Promise<unknown>> = [];
+    const events: NotificationEvent[] = [];
 
     for (const order of orders) {
       // The grand total lives in the buyer price summary; there is no scalar
@@ -4919,64 +4868,69 @@ export class PaymentService implements OnModuleInit {
       const buyerUsername = order.buyer?.username || undefined;
 
       if (order.buyerId) {
-        jobs.push(
-          this.notificationsService.create(
-            order.buyerId,
-            NotificationType.CUSTOM_ORDER_PAYMENT_RECEIVED,
-            {
-              // The buyer is the actor here, and `create()` drops a
-              // notification whose actor is its own recipient.
-              actorId: null,
-              dedupeMs: 5 * 60 * 1000,
-              target: { type: 'SYSTEM', id: order.id },
-              payload: {
-                customOrderId: order.id,
-                sourceTitle,
-                sourceBrandName,
-                orderAmount,
-                currency: order.currency,
-                buyerUsername,
-                targetUrl: `/custom-orders/${order.id}`,
-              },
+        events.push({
+          recipientId: order.buyerId,
+          type: NotificationType.CUSTOM_ORDER_PAYMENT_RECEIVED,
+          opts: {
+            // The buyer is the actor here, and `create()` drops a
+            // notification whose actor is its own recipient.
+            actorId: null,
+            dedupeMs: 5 * 60 * 1000,
+            target: { type: 'SYSTEM', id: order.id },
+            payload: {
+              customOrderId: order.id,
+              sourceTitle,
+              sourceBrandName,
+              orderAmount,
+              currency: order.currency,
+              buyerUsername,
+              targetUrl: `/custom-orders/${order.id}`,
             },
-          ),
-        );
+          },
+        });
       }
 
       if (order.brand?.ownerId) {
-        jobs.push(
-          this.notificationsService.create(
-            order.brand.ownerId,
-            NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED,
-            {
-              actorId: order.buyerId ?? undefined,
-              dedupeMs: 5 * 60 * 1000,
-              target: { type: 'SYSTEM', id: order.id },
-              payload: {
-                customOrderId: order.id,
-                sourceTitle,
-                sourceBrandName,
-                buyerName: buyerUsername || 'A buyer',
-                buyerUsername,
-                orderAmount,
-                currency: order.currency,
-                targetUrl: `/studio/custom-orders/${order.id}`,
-              },
+        events.push({
+          recipientId: order.brand.ownerId,
+          type: NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED,
+          opts: {
+            actorId: order.buyerId ?? undefined,
+            dedupeMs: 5 * 60 * 1000,
+            target: { type: 'SYSTEM', id: order.id },
+            payload: {
+              customOrderId: order.id,
+              sourceTitle,
+              sourceBrandName,
+              buyerName: buyerUsername || 'A buyer',
+              buyerUsername,
+              orderAmount,
+              currency: order.currency,
+              targetUrl: `/studio/custom-orders/${order.id}`,
             },
-          ),
-        );
+          },
+        });
       }
     }
 
-    if (jobs.length === 0) {
-      return;
-    }
+    await this.sendPlacementEvents(events, 'custom-order');
+  }
 
-    const results = await Promise.allSettled(jobs);
-    const rejected = results.filter((result) => result.status === 'rejected');
-    if (rejected.length > 0) {
+  private async sendPlacementEvents(
+    events: NotificationEvent[],
+    subject: string,
+  ) {
+    if (!events.length) return;
+    try {
+      const results = await this.notificationsService.createEvents(events);
+      const rejected = results.filter((result) => result.status === 'rejected');
+      if (rejected.length)
+        this.logger.warn(
+          `Failed to send ${rejected.length} ${subject} placement notification(s) after payment confirmation`,
+        );
+    } catch (error) {
       this.logger.warn(
-        `Failed to send ${rejected.length} custom-order placement notification(s) after payment confirmation`,
+        `Failed ${subject} placement notification batch after payment confirmation: ${String(error)}`,
       );
     }
   }
@@ -7792,7 +7746,7 @@ export class PaymentService implements OnModuleInit {
       'Paystack payment verification',
     );
     const response = await fetch(
-      `https://api.paystack.co/transaction/verify/${encodeURIComponent(attempt.reference)}`,
+      `${this.paystackVerificationBaseUrl.replace(/\/$/, '')}/transaction/verify/${encodeURIComponent(attempt.reference)}`,
       {
         headers: {
           Authorization: `Bearer ${secret}`,
@@ -8514,13 +8468,14 @@ export class PaymentService implements OnModuleInit {
     checkoutSessionLineId: string,
     line: UnifiedCheckoutStandardLineDraft,
     expiresAt: Date,
+    inventory?: Map<string, LockedCheckoutProduct>,
   ): Promise<void> {
     if (!line.reserveInventory) {
       return;
     }
 
-    await tx.$queryRaw`SELECT "_id" FROM "Product" WHERE "_id" = ${line.productId}::uuid FOR UPDATE`;
-    const lockedProduct = await tx.product.findUnique({
+    if (!inventory) await tx.$queryRaw`SELECT "_id" FROM "Product" WHERE "_id" = ${line.productId}::uuid FOR UPDATE`;
+    const lockedProduct = inventory ? inventory.get(line.productId) : await tx.product.findUnique({
       where: { id: line.productId },
       select: {
         id: true,
@@ -8545,7 +8500,7 @@ export class PaymentService implements OnModuleInit {
     const nextSizeStock = this.parseSizeStock(lockedProduct.sizeStock);
 
     if (line.variantId) {
-      await tx.$queryRaw`SELECT "_id" FROM "ProductVariant" WHERE "_id" = ${line.variantId}::uuid FOR UPDATE`;
+      if (!inventory) await tx.$queryRaw`SELECT "_id" FROM "ProductVariant" WHERE "_id" = ${line.variantId}::uuid FOR UPDATE`;
       const updatedVariant = await tx.productVariant.updateMany({
         where: {
           id: line.variantId,
@@ -8595,6 +8550,10 @@ export class PaymentService implements OnModuleInit {
         },
       });
 
+      if (inventory) {
+        lockedProduct.totalStock -= line.quantity;
+        if (nextSizeStock) lockedProduct.sizeStock = nextSizeStock;
+      }
       await tx.inventoryReservation.create({
         data: {
           checkoutSessionId,
@@ -8641,6 +8600,10 @@ export class PaymentService implements OnModuleInit {
       },
     });
 
+    if (inventory) {
+      lockedProduct.totalStock -= line.quantity;
+      if (nextSizeStock) lockedProduct.sizeStock = nextSizeStock;
+    }
     await tx.inventoryReservation.create({
       data: {
         checkoutSessionId,
@@ -8716,65 +8679,10 @@ export class PaymentService implements OnModuleInit {
         return;
       }
 
-      for (const reservation of checkoutSession.inventoryReservations) {
-        await tx.$queryRaw`SELECT "_id" FROM "Product" WHERE "_id" = ${reservation.productId}::uuid FOR UPDATE`;
-
-        const product = await tx.product.findUnique({
-          where: { id: reservation.productId },
-          select: {
-            id: true,
-            sizeStock: true,
-          },
-        });
-
-        if (!product) {
-          continue;
-        }
-
-        const nextSizeStock = this.parseSizeStock(product.sizeStock);
-        if (
-          reservation.reservedSize &&
-          nextSizeStock &&
-          nextSizeStock[reservation.reservedSize] !== undefined
-        ) {
-          nextSizeStock[reservation.reservedSize] =
-            Number(nextSizeStock[reservation.reservedSize] ?? 0) +
-            reservation.quantity;
-        }
-
-        if (reservation.productVariantId) {
-          await tx.productVariant.updateMany({
-            where: {
-              id: reservation.productVariantId,
-              productId: reservation.productId,
-            },
-            data: {
-              stock: {
-                increment: reservation.quantity,
-              },
-            },
-          });
-        }
-
-        await tx.product.update({
-          where: { id: reservation.productId },
-          data: {
-            totalStock: {
-              increment: reservation.quantity,
-            },
-            ...(nextSizeStock ? { sizeStock: nextSizeStock } : {}),
-          },
-        });
-
-        await tx.inventoryReservation.update({
-          where: { id: reservation.id },
-          data: {
-            status: InventoryReservationStatus.RELEASED,
-            releasedAt: now,
-            releaseReason: reason,
-          },
-        });
-      }
+      await releaseCheckoutReservations(
+        tx, checkoutSession.inventoryReservations, now, reason,
+        value => this.parseSizeStock(value),
+      );
 
       const standardLineIdsToCancel = checkoutSession.lines
         .filter(
@@ -8867,7 +8775,7 @@ export class PaymentService implements OnModuleInit {
           failureReason: reason,
         },
       });
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
   }
 
   private async finalizeUnifiedCheckoutAttempt(
@@ -8879,10 +8787,7 @@ export class PaymentService implements OnModuleInit {
     let finalized: UnifiedCheckoutFinalizeResult | null;
     try {
       finalized = await this.prisma.$transaction(async (tx) => {
-        await tx.$queryRaw`SELECT "reference" FROM "PaymentAttempt" WHERE "reference" = ${reference} FOR UPDATE`;
-        const attempt = await tx.paymentAttempt.findUnique({
-          where: { reference },
-        });
+        const attempt = await lockPaymentAttempt(tx, reference);
 
         if (
           !attempt ||
@@ -8900,15 +8805,7 @@ export class PaymentService implements OnModuleInit {
           return null;
         }
 
-        await tx.$queryRaw`SELECT "id" FROM "CheckoutSession" WHERE "id" = ${attempt.checkoutSessionId}::uuid FOR UPDATE`;
-        const checkoutSession = await tx.checkoutSession.findUnique({
-          where: { id: attempt.checkoutSessionId },
-          include: {
-            lines: {
-              orderBy: { lineOrder: 'asc' },
-            },
-          },
-        });
+        const checkoutSession = await lockCheckoutSession(tx, attempt.checkoutSessionId);
 
         if (!checkoutSession) {
           return null;
@@ -9498,27 +9395,7 @@ export class PaymentService implements OnModuleInit {
 
     let checkoutBrandNames: string[] = [];
     if (finalized && finalized.orderIds.length > 0) {
-      const linkedOrders = await this.prisma.order.findMany({
-        where: {
-          id: {
-            in: finalized.orderIds,
-          },
-        },
-        select: {
-          id: true,
-          brandId: true,
-          buyerId: true,
-          customerName: true,
-          totalAmount: true,
-          currency: true,
-          brand: {
-            select: {
-              ownerId: true,
-              name: true,
-            },
-          },
-        },
-      });
+      const linkedOrders = await loadStandardPaymentOrders(this.prisma, reference, null, finalized.orderIds);
 
       checkoutBrandNames = Array.from(
         new Set(

@@ -33,7 +33,8 @@ import {
   NotificationType,
   Prisma,
 } from '@prisma/client';
-import { v4 as uuidv4 } from 'uuid';
+import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
+import type { NotificationEvent } from 'src/notifications/notification-batch-query';
 import { MonitoringService } from 'src/monitoring/monitoring.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -2774,6 +2775,7 @@ export class ContentIntegrityService {
   async notifyContentSubmitted(
     ownerId: string,
     payload: Record<string, unknown>,
+    deferredEvents?: NotificationEvent[],
   ) {
     const title = await this.resolveContentTitleForNotification(payload);
     const when = this.formatUserFacingTime();
@@ -2789,6 +2791,20 @@ export class ContentIntegrityService {
     const message = title
       ? `Your ${entityLabel} "${title}" was submitted for review on ${when} and is pending approval. We'll notify you as soon as the review is complete.`
       : `Your ${entityLabel} was submitted for review on ${when} and is pending approval. We'll notify you as soon as the review is complete.`;
+    if (deferredEvents) {
+      deferredEvents.push({
+        recipientId: ownerId,
+        type: NotificationType.CONTENT_SUBMITTED_FOR_REVIEW,
+        opts: {
+          notificationId: uuidv5(
+            `content-submitted:${String(payload.submissionId)}:${ownerId}`,
+            uuidv5.URL,
+          ),
+          payload: { ...payload, title, contentTitle: title, message },
+        },
+      });
+      return;
+    }
     await this.notifyContentReviewOutcome(ownerId, {
       type: NotificationType.CONTENT_SUBMITTED_FOR_REVIEW,
       ...payload,
@@ -2796,6 +2812,30 @@ export class ContentIntegrityService {
       contentTitle: title,
       message,
     });
+  }
+
+  /** Import pages retain individual notices while sharing current recipient policy reads. */
+  async flushContentSubmittedNotifications(events: NotificationEvent[]) {
+    const pending = events.splice(0);
+    if (!pending.length || !this.notifications) return;
+    try {
+      const results = await this.notifications.createEvents(pending);
+      results.forEach((result, index) => {
+        if (result.status === 'rejected')
+          this.emitIntegrityAlert('content_review_notification_failed', {
+            ownerId: pending[index].recipientId,
+            notificationType: pending[index].type,
+            submissionId: pending[index].opts?.payload?.submissionId,
+          });
+      });
+    } catch {
+      for (const event of pending)
+        this.emitIntegrityAlert('content_review_notification_failed', {
+          ownerId: event.recipientId,
+          notificationType: event.type,
+          submissionId: event.opts?.payload?.submissionId,
+        });
+    }
   }
 
   private async notifyContentReviewOutcome(

@@ -7,22 +7,37 @@
     "Static frozen AST/call-graph inventory, not production telemetry or a universal N+1/race proof.",
     "Scanner excludes tests and follows its supported receivers/call graph only; aliases/runtime dispatch can be missed.",
     "Source line numbers refer to the frozen scan; locate by class/method/call.",
-    "All 15 explicitly open read-fanout entries are resolved with focused evidence. The 46 recipient-policy and 59 stateful-command entries remain an open semantic audit, not automatic approval.",
-    "Product bulk mutation still executes guarded per-product effects; incidental taxonomy/media/index reads in those commands require review before the overall N+1 gate can clear.",
+    "All 178 frozen candidates individually reviewed; 105 FIXED_AFTER_CAPTURE. Other dispositions retain bounded batches or specifically justified fresh guarded commands. No frozen semantic review remains open.",
+    "Bulk import source-index ordering, transaction conflict recovery and channel-delivery races remain separate gates; query review does not certify those invariants.",
     "Tag sync/merge competing counts are tested. Reindex-versus-write and stale source publication ordering remain open race findings."
   ],
   "counts": {
-    "NOTIFICATION_POLICY_FANOUT": 46,
-    "FIXED_AFTER_CAPTURE": 34,
+    "FIXED_AFTER_CAPTURE": 105,
     "BOUNDED_BULK_QUERY": 8,
     "DEPENDENT_RETRY": 12,
     "PREFETCHED_CONTEXT": 3,
     "FIXED_SOURCE_PROJECTION": 2,
     "STATIC_SEED": 6,
-    "STATEFUL_ENTITY_WORK": 59,
+    "REQUIRED_LOCKED_AGGREGATE_COMMAND": 2,
+    "REQUIRED_CHECKPOINT_PRODUCT_COMMAND": 2,
+    "REQUIRED_FINANCIAL_POSTING": 7,
+    "REQUIRED_QUEUE_TRANSITION_COMMAND": 3,
+    "REQUIRED_DURABLE_QUEUE_COMMAND": 1,
+    "REQUIRED_REFUND_ATTENTION_COMMAND": 1,
+    "REQUIRED_SETTLEMENT_ORDER_COMMAND": 2,
+    "REQUIRED_QUEUE_CANCELLATION_COMMAND": 2,
+    "REQUIRED_SETTLEMENT_PAYMENT_COMMAND": 1,
     "PAGINATED_BATCH": 7,
-    "HTTP_COMPATIBILITY_FALLBACK": 1,
-    "READ_FANOUT_OPEN": 0
+    "REQUIRED_LEASED_QUEUE_COMMAND": 1,
+    "REQUIRED_DELIVERABILITY_CHECK": 1,
+    "REQUIRED_DELIVERY_TOKEN_CHECK": 1,
+    "REQUIRED_DURABLE_EVENT_COMMAND": 1,
+    "REQUIRED_LOCKED_MESSAGE_COMMAND": 1,
+    "REQUIRED_LEASED_FILE_COMMAND": 1,
+    "REQUIRED_PROVIDER_REFERENCE_COMMAND": 2,
+    "REQUIRED_COMPENSATION_CAPTURE_COMMAND": 1,
+    "REQUIRED_TRANSACTIONAL_RECEIPT": 4,
+    "HTTP_COMPATIBILITY_FALLBACK": 1
   },
   "verification": {
     "earlierFocusedTestsPassed": 75,
@@ -49,6 +64,435 @@
       ],
       "allMigrationsAndDoubleSeed": 143,
       "queuePromotionFocusedTests": 25
+    },
+    "item2Current": {
+      "defaultJestSuites": 10,
+      "defaultJestTestsAcrossRuns": 155,
+      "cleanupRuntimeTests": 6,
+      "postgresCommerceScenarios": 6,
+      "postgresUploadFenceChecks": 13,
+      "postgresEvidence": "checkout-media-batching-postgres-2026-10-23.json",
+      "fanoutSelectCountIncludingAssertion": 9,
+      "additionalCustomerBackendTests": 10,
+      "additionalCustomerWebTests": 8,
+      "nativeExpiryContract": "passed",
+      "remainingAudit": "open"
+    },
+    "mixedEventPostgres": {
+      "passed": true,
+      "eventCount": 26,
+      "eventSelectsIncludingAssertion": 5,
+      "actorsPerPrivacyBatch": 25,
+      "actorPrivacySelectsIncludingAssertion": 8,
+      "cleanupPassed": true
+    },
+    "bulkImportPostgres": {
+      "passed": true,
+      "cases": 7,
+      "products": 26,
+      "brandContextReads": 2,
+      "cleanupPassed": true
+    },
+    "orderSlaBatching20261024": {
+      "closedCandidateIds": [
+        106,
+        108,
+        109,
+        110
+      ],
+      "runtimeTestsPassed": 22,
+      "actualPostgresCases": 8,
+      "mixedEvents": 26,
+      "mixedEventSelects": 5,
+      "actorsWithPatchPrivacy": 25,
+      "mixedActorPrivacySelects": 8,
+      "cleanupPassed": true
+    },
+    "categoryModeration20261024": {
+      "closedCandidateIds": [
+        51,
+        52,
+        53,
+        54
+      ],
+      "checkedAt": "2026-10-24T13:53:01.661Z",
+      "focusedTestsPassed": 32,
+      "actualPostgresCases": 11,
+      "cleanupPassed": true,
+      "drafts": 26,
+      "projectionSelects": 3,
+      "approvalSelects": 9,
+      "rejectionSelects": 9
+    },
+    "cronPlacementStore20261024": {
+      "closedCandidateIds": [
+        65,
+        70,
+        119,
+        120,
+        121,
+        122,
+        141,
+        142,
+        156
+      ],
+      "checkedAt": "2026-10-24T14:11:59.386Z",
+      "actualPostgresCases": 14,
+      "cleanupPassed": true,
+      "cronTests": 13,
+      "placementPaymentTests": 36,
+      "schedulerTests": 18,
+      "cronBrands": 26,
+      "cronOwnerSelects": 1,
+      "stockProducts": 26,
+      "stockSelects": 8,
+      "stockTimestampWrites": 1,
+      "bagShoppers": 26,
+      "bagSelects": 8,
+      "additionalSitesOutsideFrozenInventory": [
+        "CustomOrderOpsCronService.remindBrandBeforeProductionDeadline -> notifyBrandOwner",
+        "CustomOrderOpsCronService.expireOpenExtensionRequests -> notifyBrandOwner"
+      ]
+    },
+    "tagBillingImage20261024": {
+      "closedCandidateIds": [
+        164,
+        165,
+        169,
+        170,
+        171,
+        172,
+        130
+      ],
+      "sharedCheckedAt": "2026-10-24T14:26:44.793Z",
+      "sharedPostgresCases": 16,
+      "sharedCleanupPassed": true,
+      "billingReceiptSelects": 1,
+      "subscriptionTests": 18,
+      "imageClaimSelects": 1,
+      "imageTests": 11,
+      "tagCheckedAt": "2026-10-24T14:25:29.375Z",
+      "tagPostgresCases": 6,
+      "tagCleanupPassed": true,
+      "tagTests": 10,
+      "reindexEntitiesPerType": 501,
+      "reindexBindings": 2004,
+      "reindexSelects": 37,
+      "reindexGroupedCountWrites": 8,
+      "limitation": "Source reindex-versus-live-write ordering remains an item3 race gate; no production-capacity or image-quality claim."
+    },
+    "placementOutbox20261024": {
+      "closedCandidateIds": [
+        118,
+        71
+      ],
+      "checkedAt": "2026-10-24T18:12:18.682Z",
+      "actualPostgresCases": 22,
+      "cleanupPassed": true,
+      "paymentTests": 37,
+      "outboxCronTests": 17,
+      "placementReplayDataReads": 2,
+      "competingOutboxScans": 2,
+      "competingSuccessfulHandoffs": 25,
+      "limitation": "Custom-order outbox crash recovery/fencing and separate custom bootstrap race remain item3 gates; no actual Redis/push delivery proof."
+    },
+    "productPublication20261024": {
+      "closedCandidateIds": [
+        140,
+        102
+      ],
+      "checkedAt": "2026-10-24T18:35:11.497Z",
+      "actualPostgresCases": 25,
+      "cleanupPassed": true,
+      "focusedTests": 100,
+      "messagingTests": 10,
+      "productMetadataAudienceSelects": 2,
+      "durableReplayLookupsFor26": 2,
+      "messageBatchClaims": 2,
+      "messageStandaloneSelects": 0,
+      "limitations": "Captured queue/provider calls; no live delivery or production capacity certification. Producer requires the updated consumer."
+    },
+    "bulkCheckpoint20261024": {
+      "closedCandidateIds": [
+        55,
+        56
+      ],
+      "checkedAt": "2026-10-24T18:55:10.099Z",
+      "actualPostgresCases": 13,
+      "cleanupPassed": true,
+      "limitation": "Per-product write-time guards retained; no live notification delivery or universal race/capacity proof."
+    },
+    "finalFocused20261024": {
+      "suites": 11,
+      "tests": 169,
+      "passed": true,
+      "typecheckPassed": true,
+      "sharedPostgresCases": 25,
+      "bulkPostgresCases": 13,
+      "cleanupPassed": true,
+      "liveProviderDeliveryVerified": false
+    },
+    "fileDeletionAndEmail20261024": {
+      "checkedAt": "2026-10-24T19:43:13.925Z",
+      "closedCandidateIds": [
+        103,
+        104
+      ],
+      "actualPostgresCases": 13,
+      "cleanupPassed": true,
+      "unitTests": 86,
+      "suites": 6,
+      "typecheckPassed": true,
+      "limitation": "No storage or email transport called; no physical-deletion, live-delivery, full-race or capacity proof."
+    },
+    "cleanupEmailPush20261024": {
+      "checkedAt": "2026-10-24T20:08:48.828Z",
+      "closedCandidateIds": [
+        103,
+        104,
+        105
+      ],
+      "actualPostgresCases": 15,
+      "cleanupPassed": true,
+      "focusedTests": 98,
+      "suites": 8,
+      "typecheckPassed": true,
+      "optionalHttp": {
+        "passed": true,
+        "requests": 2,
+        "messages": 3,
+        "pendingReceipts": 3,
+        "badgeSelects": 1,
+        "source": "Official Expo send/ticket contract; installed SDK HTTP transport, local Postman simulator; owner mock search unavailable while CLI signed out."
+      },
+      "fullRaceAuditComplete": false
+    },
+    "financialPosting20261025": {
+      "checkedAt": "2026-10-25T13:38:23.889Z",
+      "closedCandidateIds": [
+        69,
+        90,
+        94,
+        95,
+        96,
+        97,
+        98
+      ],
+      "actualPostgresCases": 18,
+      "cleanupPassed": true,
+      "focusedTests": 60,
+      "suites": 6,
+      "limitation": "Local PostgreSQL/query proof only; financial currency, general transition races, provider delivery and remaining31 reviews are still open."
+    },
+    "refundContext20261025": {
+      "closedCandidateIds": [
+        74,
+        75
+      ],
+      "checkedAt": "2026-10-25T15:41:12.285Z",
+      "actualPostgresCases": 19,
+      "cleanupPassed": true,
+      "contextReadsFor26": 78,
+      "relationHydrationReads": 0,
+      "boundedWebhookReads": 1,
+      "unitTests": 17
+    },
+    "queueContext20261025": {
+      "closedCandidateIds": [
+        66,
+        67,
+        68,
+        80,
+        85,
+        87
+      ],
+      "checkedAt": "2026-10-25T14:12:14.996Z",
+      "actualPostgresCases": 10,
+      "cleanupPassed": true,
+      "queueCronIntakeTests": 47,
+      "customFinanceTests": 7,
+      "typecheckPassed": true,
+      "newHelperLintPassed": true,
+      "limitation": "No provider/device delivery, whole-race, currency or final-release certification."
+    },
+    "queueCancellation20261025": {
+      "closedCandidateIds": [
+        81,
+        83,
+        84
+      ],
+      "checkedAt": "2026-10-25T14:24:54.695Z",
+      "actualPostgresCases": 13,
+      "cleanupPassed": true,
+      "priorityAllocationReadsFor26Replayed": 0,
+      "bulkCancellationContextJoinsFor26": 27,
+      "expiryCancellationContextJoinsFor26": 26,
+      "unitTests": 28,
+      "typecheckPassed": true
+    },
+    "subscriptionQueries20261025": {
+      "closedCandidateIds": [
+        157,
+        158,
+        159,
+        160,
+        161
+      ],
+      "checkedAt": "2026-10-25T14:47:08.209Z",
+      "actualPostgresCases": 29,
+      "cleanupPassed": true,
+      "subscriptionTests": 21,
+      "typecheckPassed": true,
+      "lintPassed": true,
+      "paidInvoiceReceiptBatchReads": 1,
+      "renewalContextJoinsFor26": 26,
+      "renewalTierReloadsFor26": 0,
+      "passed": true,
+      "cases": [
+        "hosted recovery verifies both definitive failed references over real HTTP before reserving a new reference, retains original payer identity and makes no debit",
+        "missing automatic-attempt reference returns the documented missing response over HTTP and blocks another hosted payment without a charge",
+        "pending reference blocks both hosted recovery and claimed invoice reconciliation from issuing a second debit",
+        "real HTTP amount, currency and payer-email mismatches move invoices to review without recording a capture or granting entitlement",
+        "provider503 through real fetch leaves no charge, unlocks invoice and schedules reconciliation of the existing reference",
+        "real billing cron processes26 renewals with26 fresh agreement/source/card JOINs and78 HTTP requests, records one confirmed capture per invoice and repeats without another provider call or entitlement extension",
+        "fresh debit JOIN refuses a saved card owned by another brand and a cancelled renewal after reference verification; neither submits a charge"
+      ],
+      "debitContextJoinsFor26": 26,
+      "invoiceContextJoinsFor26": 52,
+      "httpCallsFor26Renewals": 78,
+      "chargesFor26Renewals": 26,
+      "liveProviderOrDeviceVerified": false
+    },
+    "standardRefundQueries20261025": {
+      "checkedAt": "2026-10-25T14:59:21.200Z",
+      "actualPostgresCases": 31,
+      "cleanupPassed": true,
+      "standardRefundContextJoinsFor26": 26,
+      "typecheckPassed": true,
+      "changedSourceLintPassed": true,
+      "liveProviderVerified": false
+    },
+    "debtQuery20261025": {
+      "checkedAt": "2026-10-25T15:06:14.570Z",
+      "actualPostgresCases": 15,
+      "cleanupPassed": true,
+      "debtListReadsFor26Allocations": 1,
+      "debtSummaryContextReads": 1,
+      "debtNoticeContextReads": 1,
+      "typecheckPassed": true,
+      "changedSourceLintPassed": true,
+      "liveProviderOrDeviceVerified": false
+    },
+    "paidAdmissionQueries20261025": {
+      "checkedAt": "2026-10-25T15:12:11.797Z",
+      "actualPostgresCases": 16,
+      "cleanupPassed": true,
+      "admissionBrandMetadataReadsFor26": 0,
+      "queueUnitTests": 28,
+      "typecheckPassed": true,
+      "providerOrDeviceVerified": false
+    },
+    "paymentLocks20261025": {
+      "closedCandidateIds": [
+        113,
+        116
+      ],
+      "checkedAt": "2026-10-25T15:28:08.640Z",
+      "actualPostgresCases": 34,
+      "cleanupPassed": true,
+      "unitTests": 41,
+      "typecheckPassed": true,
+      "newHelperLintPassed": true,
+      "stalePaymentLockedReadsFor26": 26,
+      "stalePaymentPrismaScansFor26": 1
+    },
+    "customPayment20261025": {
+      "closedCandidateIds": [
+        64
+      ],
+      "checkedAt": "2026-10-25T18:45:45.207Z",
+      "actualPostgresCases": 21,
+      "cleanupPassed": true,
+      "contextReadsFor26": 26,
+      "attemptPrismaReadsFor26": 27,
+      "providerRequestsFor26": 26,
+      "messagingHandoffs": 26
+    },
+    "standardPayment20261025": {
+      "closedCandidateIds": [
+        114
+      ],
+      "checkedAt": "2026-10-25T18:50:33.192Z",
+      "contextReadsFor26": 26,
+      "providerRequestsFor26": 26,
+      "noticesFor26": 52,
+      "notificationActorBrandReadsFor26": 52
+    },
+    "unifiedCheckout20261025": {
+      "closedCandidateIds": [
+        115
+      ],
+      "checkedAt": "2026-10-25T18:56:19.276Z",
+      "sessionLockReads": 1,
+      "standardContextReads": 1,
+      "intentReadsFor26": 1,
+      "configurationReadsFor26": 1,
+      "versionReadsFor26": 1
+    },
+    "productarchive20261025": {
+      "closedCandidateIds": [
+        152
+      ],
+      "checkedAt": "2026-10-25T19:02:40.928Z",
+      "archiveContextReadsFor27": 27,
+      "archiveEffectReadsFor26": 26,
+      "noticeIdentityFileReads": 52
+    },
+    "productunpublish20261025": {
+      "closedCandidateIds": [
+        155
+      ],
+      "checkedAt": "2026-10-25T19:05:00.385Z",
+      "archiveContextReadsFor27": 27,
+      "archiveEffectReadsFor26": 26,
+      "noticeIdentityFileReads": 52,
+      "unpublishTaxonomyJoinsFor26": 26,
+      "unpublishProductSelectsFor26": 1,
+      "unpublishVariantSelectsFor26": 1
+    },
+    "productdelete20261025": {
+      "closedCandidateIds": [
+        151
+      ],
+      "checkedAt": "2026-10-25T19:08:18.381Z",
+      "archiveContextReadsFor27": 27,
+      "archiveEffectReadsFor26": 26,
+      "noticeIdentityFileReads": 52,
+      "unpublishTaxonomyJoinsFor26": 26,
+      "unpublishProductSelectsFor26": 1,
+      "unpublishVariantSelectsFor26": 1,
+      "deleteActiveOrderJoinsFor26": 26
+    },
+    "item2LocalClosure20261025": {
+      "checkedAt": "2026-10-25T19:12:23.739Z",
+      "candidateCount": 178,
+      "unreviewed": 0,
+      "unitTests": 98,
+      "unitSuites": 7,
+      "typecheckPassed": true,
+      "postgresCases": [
+        35,
+        25,
+        18
+      ],
+      "cleanupPassed": true,
+      "deployed": false,
+      "productionCapacityCertified": false
+    },
+    "customOutboxConcurrency20261025": {
+      "checkedAt": "2026-10-25T19:43:41.695Z",
+      "claimFencingVerified": true,
+      "redisVerified": true
     }
   },
   "candidates": [
@@ -69,8 +513,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Super-admin email-change alerts use createForRecipients; recipient writes retain failure propagation. Shared joined consent/suppression/dedupe implementation has real PostgreSQL coverage."
     },
     {
       "id": 1,
@@ -105,8 +549,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Mixed createEvents path batches policy/suppression/actor/patch/dedupe reads per 25 events and preserves individual payload/target/type. PostgreSQL checks: 26 mixed events=5 SELECTs; 25 actors with patch privacy=8 SELECTs including assertion. Scheduled-event tests retain recipient links, counters/errors, review/dispute exclusions and fitting refresh. Original per-item write guards remain."
     },
     {
       "id": 3,
@@ -126,8 +570,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Mixed createEvents path batches policy/suppression/actor/patch/dedupe reads per 25 events and preserves individual payload/target/type. PostgreSQL checks: 26 mixed events=5 SELECTs; 25 actors with patch privacy=8 SELECTs including assertion. Scheduled-event tests retain recipient links, counters/errors, review/dispute exclusions and fitting refresh. Original per-item write guards remain."
     },
     {
       "id": 4,
@@ -308,8 +752,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Mixed createEvents path batches policy/suppression/actor/patch/dedupe reads per 25 events and preserves individual payload/target/type. PostgreSQL checks: 26 mixed events=5 SELECTs; 25 actors with patch privacy=8 SELECTs including assertion. Scheduled-event tests retain recipient links, counters/errors, review/dispute exclusions and fitting refresh. Original per-item write guards remain."
     },
     {
       "id": 16,
@@ -328,8 +772,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Mixed createEvents path batches policy/suppression/actor/patch/dedupe reads per 25 events and preserves individual payload/target/type. PostgreSQL checks: 26 mixed events=5 SELECTs; 25 actors with patch privacy=8 SELECTs including assertion. Scheduled-event tests retain recipient links, counters/errors, review/dispute exclusions and fitting refresh. Original per-item write guards remain."
     },
     {
       "id": 17,
@@ -362,8 +806,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Mixed createEvents path batches policy/suppression/actor/patch/dedupe reads per 25 events and preserves individual payload/target/type. PostgreSQL checks: 26 mixed events=5 SELECTs; 25 actors with patch privacy=8 SELECTs including assertion. Scheduled-event tests retain recipient links, counters/errors, review/dispute exclusions and fitting refresh. Original per-item write guards remain."
     },
     {
       "id": 19,
@@ -382,8 +826,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Mixed createEvents path batches policy/suppression/actor/patch/dedupe reads per 25 events and preserves individual payload/target/type. PostgreSQL checks: 26 mixed events=5 SELECTs; 25 actors with patch privacy=8 SELECTs including assertion. Scheduled-event tests retain recipient links, counters/errors, review/dispute exclusions and fitting refresh. Original per-item write guards remain."
     },
     {
       "id": 20,
@@ -402,8 +846,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Mixed createEvents path batches policy/suppression/actor/patch/dedupe reads per 25 events and preserves individual payload/target/type. PostgreSQL checks: 26 mixed events=5 SELECTs; 25 actors with patch privacy=8 SELECTs including assertion. Scheduled-event tests retain recipient links, counters/errors, review/dispute exclusions and fitting refresh. Original per-item write guards remain."
     },
     {
       "id": 21,
@@ -422,8 +866,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Mixed createEvents path batches policy/suppression/actor/patch/dedupe reads per 25 events and preserves individual payload/target/type. PostgreSQL checks: 26 mixed events=5 SELECTs; 25 actors with patch privacy=8 SELECTs including assertion. Scheduled-event tests retain recipient links, counters/errors, review/dispute exclusions and fitting refresh. Original per-item write guards remain."
     },
     {
       "id": 22,
@@ -442,8 +886,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Mixed createEvents path batches policy/suppression/actor/patch/dedupe reads per 25 events and preserves individual payload/target/type. PostgreSQL checks: 26 mixed events=5 SELECTs; 25 actors with patch privacy=8 SELECTs including assertion. Scheduled-event tests retain recipient links, counters/errors, review/dispute exclusions and fitting refresh. Original per-item write guards remain."
     },
     {
       "id": 23,
@@ -560,8 +1004,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Mixed createEvents path batches policy/suppression/actor/patch/dedupe reads per 25 events and preserves individual payload/target/type. PostgreSQL checks: 26 mixed events=5 SELECTs; 25 actors with patch privacy=8 SELECTs including assertion. Scheduled-event tests retain recipient links, counters/errors, review/dispute exclusions and fitting refresh. Original per-item write guards remain."
     },
     {
       "id": 31,
@@ -574,8 +1018,8 @@
       "queries": [
         "tx.$queryRaw"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_LOCKED_AGGREGATE_COMMAND",
+      "evidence": "Reviewed current deleteExpiredCollection command: one conditional FOR UPDATE SKIP LOCKED claim joined to all media/files/variants, then batched deletes and durable storage-deletion rows in the same per-collection transaction. This is the write-time eligibility guard, not per-child hydration. Preserve independent aggregate failure/rollback. Six cleanup runtime cases verify edited/restored/claimed skips, deduplicated keys, DB failure and provider retry; actual storage delivery remains separate."
     },
     {
       "id": 32,
@@ -594,8 +1038,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Mixed createEvents path batches policy/suppression/actor/patch/dedupe reads per 25 events and preserves individual payload/target/type. PostgreSQL checks: 26 mixed events=5 SELECTs; 25 actors with patch privacy=8 SELECTs including assertion. Scheduled-event tests retain recipient links, counters/errors, review/dispute exclusions and fitting refresh. Original per-item write guards remain."
     },
     {
       "id": 33,
@@ -608,8 +1052,8 @@
       "queries": [
         "tx.$queryRaw"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_LOCKED_AGGREGATE_COMMAND",
+      "evidence": "Reviewed current deleteExpiredCollection command: one conditional FOR UPDATE SKIP LOCKED claim joined to all media/files/variants, then batched deletes and durable storage-deletion rows in the same per-collection transaction. This is the write-time eligibility guard, not per-child hydration. Preserve independent aggregate failure/rollback. Six cleanup runtime cases verify edited/restored/claimed skips, deduplicated keys, DB failure and provider retry; actual storage delivery remains separate."
     },
     {
       "id": 34,
@@ -622,8 +1066,8 @@
       "queries": [
         "this.prisma.presignedUpload.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Finalization reads the deduplicated presign batch once and validates the whole request before canonical per-file capability finalization. Existing six-media cap enforced at DTO/service boundary."
     },
     {
       "id": 35,
@@ -636,8 +1080,8 @@
       "queries": [
         "this.prisma.fileUpload.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "The captured inline FileUpload reread no longer exists: canonical UploadService returns the committed FileUpload used for attachment. Per-file lease/USED replay reads remain current recovery guards, not list hydration."
     },
     {
       "id": 36,
@@ -650,8 +1094,8 @@
       "queries": [
         "this.prisma.fileUpload.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "The second captured inline FileUpload reread no longer exists in current finalizeCollection; the verified canonical result is reused without another file lookup."
     },
     {
       "id": 37,
@@ -665,8 +1109,8 @@
         "(this.prisma as any)['presignedUpload'].findUnique",
         "this.prisma.fileUpload.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Canonical upload finalization reuses the server-read operation-local presign snapshot from the bounded collection batch; no per-file presign reload. Snapshot ID, owner, key, expiry, object HEAD/type/size/signature and conditional DB-clock lease/publication checks remain. Default Jest upload34PASS; actual PG lease/UTC13checksPASS including20claims. Terminal committed-file replay and failed-claim recovery remain guarded entity operations."
     },
     {
       "id": 38,
@@ -679,8 +1123,8 @@
       "queries": [
         "tx.collectionMedia.findFirst"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "attachFinalizedMedia locks the collection, reads existing links once and createMany attaches only missing files. Actual concurrent finalizers, retries and conflicting-slot rollback pass PostgreSQL."
     },
     {
       "id": 39,
@@ -693,8 +1137,8 @@
       "queries": [
         "tx.brand.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "attachFinalizedMedia loads the owner brand once per transaction for the verified media batch; actual six-file integration checks its query count."
     },
     {
       "id": 40,
@@ -713,8 +1157,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Collection publication fallback and shared queue worker use bounded createForRecipients joined consent/suppression/dedupe/actor context. Real 25-recipient PostgreSQL fanout uses 9 SELECTs including assertion read."
     },
     {
       "id": 41,
@@ -847,8 +1291,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Collection reaction fanout fallback and worker share the bounded recipient policy batch; independent owner notification remains a single-recipient operation."
     },
     {
       "id": 50,
@@ -867,8 +1311,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Media-thread fanout fallback and worker share bounded recipient policy reads, preserving owner notification, consent and semantic dedupe."
     },
     {
       "id": 51,
@@ -887,8 +1331,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Category moderation uses 25-row keyset pages and one LATERAL JOIN for media existence, with shared createEvents policy/suppression/dedupe reads. Actual PostgreSQL:26 drafts,3 projection SELECTs; approval9 total SELECTs, rejection9 total SELECTs including email suppression. Focused moderation/collection32 tests PASS:write/recipient failure independence, changed/deleted draft guards, exact per-draft payloads, optional notification service. Each draft mutation/cleanup remains independent. Existing category auto-publication readiness bypass is separately recorded for canonical-flow review; this closure is specifically recipient-policy N+1 lookup work."
     },
     {
       "id": 52,
@@ -907,8 +1351,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Category moderation uses 25-row keyset pages and one LATERAL JOIN for media existence, with shared createEvents policy/suppression/dedupe reads. Actual PostgreSQL:26 drafts,3 projection SELECTs; approval9 total SELECTs, rejection9 total SELECTs including email suppression. Focused moderation/collection32 tests PASS:write/recipient failure independence, changed/deleted draft guards, exact per-draft payloads, optional notification service. Each draft mutation/cleanup remains independent. Existing category auto-publication readiness bypass is separately recorded for canonical-flow review; this closure is specifically recipient-policy N+1 lookup work."
     },
     {
       "id": 53,
@@ -927,8 +1371,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Category moderation uses 25-row keyset pages and one LATERAL JOIN for media existence, with shared createEvents policy/suppression/dedupe reads. Actual PostgreSQL:26 drafts,3 projection SELECTs; approval9 total SELECTs, rejection9 total SELECTs including email suppression. Focused moderation/collection32 tests PASS:write/recipient failure independence, changed/deleted draft guards, exact per-draft payloads, optional notification service. Each draft mutation/cleanup remains independent. Existing category auto-publication readiness bypass is separately recorded for canonical-flow review; this closure is specifically recipient-policy N+1 lookup work."
     },
     {
       "id": 54,
@@ -947,8 +1391,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Category moderation uses 25-row keyset pages and one LATERAL JOIN for media existence, with shared createEvents policy/suppression/dedupe reads. Actual PostgreSQL:26 drafts,3 projection SELECTs; approval9 total SELECTs, rejection9 total SELECTs including email suppression. Focused moderation/collection32 tests PASS:write/recipient failure independence, changed/deleted draft guards, exact per-draft payloads, optional notification service. Each draft mutation/cleanup remains independent. Existing category auto-publication readiness bypass is separately recorded for canonical-flow review; this closure is specifically recipient-policy N+1 lookup work."
     },
     {
       "id": 55,
@@ -996,8 +1440,21 @@
         "(this.prisma as any).productMedia.findMany",
         "(this.prisma as any).fileVariant.findMany"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_CHECKPOINT_PRODUCT_COMMAND",
+      "evidence": "Reviewed current shared import/retry pipeline after batching incidental reads: one authorized brand/collection JOIN per25-row page; no response/media hydration; atomic product/checkpoint transaction; one fresh post-collection-lock taxonomy JOIN reused for validation; fresh creation reuses persisted scalars, recovery one Product/membership/latest-submission LATERAL JOIN. Slug probe now returns one scalar preserving earliest suffix gaps rather than all prefix matches. Canonical per-product checkpoint/collection locks, membership order/capacity, conditional tag mutation and locked collection-price aggregate remain write-time commands. Current CSV does not map structured filter/media fields and active input still must pass canonical validation; these checks were not bypassed. Recovery uses persisted tags/names; review notices and publication metadata/audiences flush per import page before SUCCESS, stable submission/recipient IDs prevent duplicate notice replay. Actual generated-Prisma PostgreSQL13 cases PASS/cleanup:26drafts2contexts/0display+checkpoint reloads,26authoritative taxonomyJOINs/no duplicate category reads;1recoveryJOIN;1scalar slug probe over1000 matches incl holes/large/leading-zero suffixes;26recovered notices2policy reads and2publication metadata+2audience reads; repeated replay and preflush interruption recover safely. Five focused suites81tests and types PASS at source stage; broader final regression recorded separately. Source-index ordering, unique-conflict retry inside failed transactions and notification/provider durability remain item3/later gates, not certified by the N1 review.",
+      "verification": {
+        "checkedAt": "2026-10-24T18:55:10.099Z",
+        "status": "REVIEWED_CURRENT_CHECKPOINT_PIPELINE",
+        "actualPostgresCases": 13,
+        "cleanupPassed": true,
+        "brandContextReadsFor26": 2,
+        "recoveryProjectionReads": 1,
+        "postLockTaxonomyReadsFor26": 26,
+        "recoveredReviewPolicyReadsFor26": 2,
+        "bulkPublicationMetadataReadsFor26": 2,
+        "bulkPublicationAudienceReadsFor26": 2,
+        "scalarSlugReads": 1
+      }
     },
     {
       "id": 56,
@@ -1045,8 +1502,21 @@
         "(this.prisma as any).productMedia.findMany",
         "(this.prisma as any).fileVariant.findMany"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_CHECKPOINT_PRODUCT_COMMAND",
+      "evidence": "Reviewed current shared import/retry pipeline after batching incidental reads: one authorized brand/collection JOIN per25-row page; no response/media hydration; atomic product/checkpoint transaction; one fresh post-collection-lock taxonomy JOIN reused for validation; fresh creation reuses persisted scalars, recovery one Product/membership/latest-submission LATERAL JOIN. Slug probe now returns one scalar preserving earliest suffix gaps rather than all prefix matches. Canonical per-product checkpoint/collection locks, membership order/capacity, conditional tag mutation and locked collection-price aggregate remain write-time commands. Current CSV does not map structured filter/media fields and active input still must pass canonical validation; these checks were not bypassed. Recovery uses persisted tags/names; review notices and publication metadata/audiences flush per import page before SUCCESS, stable submission/recipient IDs prevent duplicate notice replay. Actual generated-Prisma PostgreSQL13 cases PASS/cleanup:26drafts2contexts/0display+checkpoint reloads,26authoritative taxonomyJOINs/no duplicate category reads;1recoveryJOIN;1scalar slug probe over1000 matches incl holes/large/leading-zero suffixes;26recovered notices2policy reads and2publication metadata+2audience reads; repeated replay and preflush interruption recover safely. Five focused suites81tests and types PASS at source stage; broader final regression recorded separately. Source-index ordering, unique-conflict retry inside failed transactions and notification/provider durability remain item3/later gates, not certified by the N1 review.",
+      "verification": {
+        "checkedAt": "2026-10-24T18:55:10.099Z",
+        "status": "REVIEWED_CURRENT_CHECKPOINT_PIPELINE",
+        "actualPostgresCases": 13,
+        "cleanupPassed": true,
+        "brandContextReadsFor26": 2,
+        "recoveryProjectionReads": 1,
+        "postLockTaxonomyReadsFor26": 26,
+        "recoveredReviewPolicyReadsFor26": 2,
+        "bulkPublicationMetadataReadsFor26": 2,
+        "bulkPublicationAudienceReadsFor26": 2,
+        "scalarSlugReads": 1
+      }
     },
     {
       "id": 57,
@@ -1065,8 +1535,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Comment fanout fallback uses createForRecipients with patched-only comment privacy checked from one batch relation query; single owner/reply recipients retain canonical individual delivery."
     },
     {
       "id": 58,
@@ -1133,8 +1603,19 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_FINANCIAL_POSTING",
+      "evidence": "Actual admin source already groups allocations by brand/currency, not one debt lookup per allocation. Real26NGN allocations verify one current debt-list read, two oldest debts recovered15, one219payout from234earnings, replay zero new payout/recovery. Separate brand/currency commands retain current debt mutation and reservation-count rollback guards. Debt snapshot/notice now share one scalar Brand/debt aggregate JOIN rather than per-notice owner plus materialized debt list; native SQL monetary aggregate preserves manual-credit/read-contract semantics and empty defaults. Actual context/owner handoff one query each. Current recovery still lacks currency filtering/locking and notification is outside financial commit; these are explicit unresolved financial/race gates, not certified by this N1 review.",
+      "verification": {
+        "checkedAt": "2026-10-25T15:06:14.570Z",
+        "actualPostgresCases": 15,
+        "cleanupPassed": true,
+        "debtListReadsFor26Allocations": 1,
+        "debtSummaryContextReads": 1,
+        "debtNoticeContextReads": 1,
+        "typecheckPassed": true,
+        "changedSourceLintPassed": true,
+        "liveProviderOrDeviceVerified": false
+      }
     },
     {
       "id": 61,
@@ -1224,8 +1705,19 @@
         "this.prisma.customOrder.findUnique",
         "this.prisma.paymentAttempt.findFirst"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Cron retains one bounded identity scan and fresh per-reference authorized verification. Private order verifier now reuses the already authorized PaymentAttempt, then still locks/reloads current attempt before mutation. Native current order/owner/buyer-name JOIN replaces nested full profile/file reads and separate owner read; paid repair uses same JOIN after brand lock and atomic capture lock/read. Actual26 provider HTTP confirmations:26contextJOINs,27Prisma capture SELECTs including scan,0profile/media/brand hydration; real queue/finance/receipt/thread/outbox writes/replay and wrong buyer/gateway/missing profile/amount/provider503 guards verified. Independent financial/provider commands remain per reference; fresh intent creation and wider races remain separate canonical-flow gates.",
+      "verification": {
+        "checkedAt": "2026-10-25T18:45:45.207Z",
+        "actualPostgresCases": 21,
+        "cleanupPassed": true,
+        "localProviderHTTP": true,
+        "providerRequestsFor26": 26,
+        "customPaymentUnitTests": 9,
+        "typecheckPassed": true,
+        "lintPassed": true,
+        "liveProviderVerified": false
+      }
     },
     {
       "id": 65,
@@ -1238,8 +1730,8 @@
       "queries": [
         "this.prisma.brand.findUnique"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Cron uses existing operation-local loadBrandOwnerMap once for the bounded100/200-order scan, rather than a brand.findUnique per notification. No cross-job identity cache. Thirteen runtime cron tests PASS, including repeated/missing brands, empty scan, buyer/brand identities and completion guards; final helper-reuse regression PASS in29-test combined run. Actual generated-Prisma PG:26brand recipients1SELECT, duplicate/missing/empty cases. Existing financial transaction/complaint locks remain separate audited commands."
     },
     {
       "id": 66,
@@ -1263,8 +1755,17 @@
         "(tx as any).ledgerAccount.findUnique",
         "tx.customOrderLedgerAllocation.findFirst"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_QUEUE_TRANSITION_COMMAND",
+      "evidence": "Reviewed current bounded queue drain/cursor sweep after capacity and settlement context joins. FIFO heads share bounded priority reads; each promotion still mutates its own order/reminder/financial/outbox state under brand lock. Current capacity one JOIN, financial context one scalar JOIN, no per-candidate owner/display hydration. Actual drain holds two Active/one Up Next, repeats without over-admission; real timeout cron uses it and final allocation guard; expiry blocks new intake while paid work progresses; actual cursor sweep one capacity JOIN respects subsequent suspension. Sibling cancellation84 and jump-release81 remain separate OPEN reviews.",
+      "verification": {
+        "checkedAt": "2026-10-25T14:12:14.996Z",
+        "actualPostgresCases": 10,
+        "cleanupPassed": true,
+        "capacitySelectsPerGuard": 1,
+        "customSettlementContextJoinsFor26": 26,
+        "customSettlementRelationHydrationFor26": 0,
+        "providerDeliveryVerified": false
+      }
     },
     {
       "id": 67,
@@ -1280,8 +1781,17 @@
         "tx.subscriptionTier.findUnique",
         "tx.capacityCampaign.findFirst"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Capacity context now one fresh indexed Brand/User/latestAgreement/Tier/Campaign JOIN instead of separate owner/agreement/tier/campaign hydration. Brand mutations retain their lock and current capacity read; no global cache. Actual PostgreSQL verifies no-agreement refusal, exact expiry with paid-work safety, zero/expired override, manual/automatic campaigns, null unlimited limits, suspended owner and missing brand; one SELECT per guard. Public queue summary fields/plan privacy unchanged.",
+      "verification": {
+        "checkedAt": "2026-10-25T14:12:14.996Z",
+        "actualPostgresCases": 10,
+        "cleanupPassed": true,
+        "capacitySelectsPerGuard": 1,
+        "customSettlementContextJoinsFor26": 26,
+        "customSettlementRelationHydrationFor26": 0,
+        "providerDeliveryVerified": false
+      }
     },
     {
       "id": 68,
@@ -1294,8 +1804,17 @@
       "queries": [
         "tx.customOrderLedgerAllocation.findFirst"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_FINANCIAL_POSTING",
+      "evidence": "Current cron locks brand/order, conditionally completes only the still-eligible complaint/dispute-free order, then reads one narrow currently HELD final allocation before transitioning/posting it. That is an authoritative per-order financial amount/status guard, without display/owner hydration. Actual real cron with real queue/ledger records one final journal and buyer/owner notices; replay adds no money. Complaint-lock races also tested. Broader allocation/currency/fencing audit remains separate.",
+      "verification": {
+        "checkedAt": "2026-10-25T14:12:14.996Z",
+        "actualPostgresCases": 10,
+        "cleanupPassed": true,
+        "capacitySelectsPerGuard": 1,
+        "customSettlementContextJoinsFor26": 26,
+        "customSettlementRelationHydrationFor26": 0,
+        "providerDeliveryVerified": false
+      }
     },
     {
       "id": 69,
@@ -1309,8 +1828,15 @@
         "(tx as any).ledgerTransaction.findUnique",
         "(tx as any).ledgerAccount.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_FINANCIAL_POSTING",
+      "evidence": "Reviewed postCustomOrderFinalRelease current call graph: one independent idempotency key and balanced journal per completed order, no User/Brand metadata hydration. Ledger accounts are already loaded/locked/written in batches per journal; fresh account balances and duplicate receipt checks cannot be cached across changing journal commands. Actual PostgreSQL26 distinct custom final-release postings and their replays produce26 journals without duplicate money and zero brand/user SELECTs. This closes only the frozen ledger callee read review, not the separately open queue/capacity/allocation/completion checks66/67/68 or currency/race gates.",
+      "verification": {
+        "checkedAt": "2026-10-25T13:38:23.889Z",
+        "actualPostgresCases": 18,
+        "cleanupPassed": true,
+        "localOnly": true,
+        "generalRaceAuditComplete": false
+      }
     },
     {
       "id": 70,
@@ -1323,8 +1849,8 @@
       "queries": [
         "this.prisma.brand.findUnique"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Cron uses existing operation-local loadBrandOwnerMap once for the bounded100/200-order scan, rather than a brand.findUnique per notification. No cross-job identity cache. Thirteen runtime cron tests PASS, including repeated/missing brands, empty scan, buyer/brand identities and completion guards; final helper-reuse regression PASS in29-test combined run. Actual generated-Prisma PG:26brand recipients1SELECT, duplicate/missing/empty cases. Existing financial transaction/complaint locks remain separate audited commands."
     },
     {
       "id": 71,
@@ -1338,8 +1864,18 @@
         "this.prisma.customOrder.findUnique",
         "this.prisma.customOrderNotificationOutbox.findUnique"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "REQUIRED_DURABLE_QUEUE_COMMAND",
+      "evidence": "Updated concurrency/query proof: dispatch claims groups of at most10 current rows with ordered SKIP LOCKED UPDATE RETURNING using DB UTC, no separate SELECT. Each event retains independent queue handoff and owner-fenced acknowledgement; stable event UUID/job ID makes inbox replay idempotent. Actual32PG+Redis cases include32competing sweeps, lease recovery/stale success+failure fencing/final-attempt crash/backoff/locked head and real Redis lost-ack replay after auto-removal. Five bounded claim commands/zero separate SELECTs for competing26-event fixture. Broader channel/device durability remains separate.",
+      "verification": {
+        "checkedAt": "2026-10-25T19:43:41.695Z",
+        "actualPostgresRedisCases": 32,
+        "cleanupPassed": true,
+        "claimCommandsFor26": 5,
+        "standaloneSelects": 0,
+        "typecheckPassed": true,
+        "modifiedHelperLintPassed": true,
+        "liveDeviceVerified": false
+      }
     },
     {
       "id": 72,
@@ -1367,8 +1903,15 @@
       "queries": [
         "tx.customOrderQueueRefund.findUniqueOrThrow"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_REFUND_ATTENTION_COMMAND",
+      "evidence": "Refund attention retains an independently guarded transaction per outcome, now followed by one narrow fresh Refund/CustomOrder JOIN for customOrderId/paymentAttemptId/buyerId instead of eager payment/order hydration. Actual PostgreSQL26 stale refunds/two bounded sweeps:26 scalar joins/zero PaymentAttempt hydration SELECTs,26 buyer-isolated notices/alerts/events, refused claim zero context read, real event insert failure rolls back state/alert/outbox. Sweep counts only winning transitions. Seventeen unit cases and types/lint PASS. Provider submission/poll/fencing remain separate74/75 and later gates.",
+      "verification": {
+        "checkedAt": "2026-10-25T13:48:09.880Z",
+        "actualPostgresCases": 5,
+        "cleanupPassed": true,
+        "localOnly": true,
+        "providerDeliveryVerified": false
+      }
     },
     {
       "id": 74,
@@ -1384,8 +1927,17 @@
         "(tx as any).ledgerTransaction.findUnique",
         "(tx as any).ledgerAccount.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Each refund retains its own fresh reservation/claim/provider/financial command. Current refund, native capture amounts and current child identity now load through one narrow JOIN rather than eager relation hydration. Actual26 internal-simulation refunds use78 JOINs/zero eager payment-order reads; real ledger reservations/completions, parent PAID state, isolated recipients and replay verified. No live provider acceptance claimed.",
+      "verification": {
+        "checkedAt": "2026-10-25T15:41:12.285Z",
+        "actualPostgresCases": 19,
+        "cleanupPassed": true,
+        "unitTests": 17,
+        "typecheckPassed": true,
+        "newHelperLintPassed": true,
+        "liveProviderVerified": false
+      }
     },
     {
       "id": 75,
@@ -1400,8 +1952,17 @@
         "(tx as any).ledgerTransaction.findUnique",
         "(tx as any).ledgerAccount.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Reference-only callbacks load at most20 matching gateway/PROCESSING siblings in one JOIN; provider-ID callbacks use the same native projection. Current poll lease and guarded completion remain per refund. Actual bounded equal-price siblings, wrong gateway/missing ID, reserved sibling completion/replay and wrong-amount attention verified. Incoming signature, live provider polling and lease fencing remain separate gates.",
+      "verification": {
+        "checkedAt": "2026-10-25T15:41:12.285Z",
+        "actualPostgresCases": 19,
+        "cleanupPassed": true,
+        "unitTests": 17,
+        "typecheckPassed": true,
+        "newHelperLintPassed": true,
+        "liveProviderVerified": false
+      }
     },
     {
       "id": 76,
@@ -1475,8 +2036,17 @@
         "(tx as any).ledgerTransaction.findUnique",
         "(tx as any).ledgerAccount.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_SETTLEMENT_ORDER_COMMAND",
+      "evidence": "Current applyPaidSettlement retains the brand lock and one fresh scalar CustomOrder/Brand/User JOIN (status/lane/queue markers/captured summary/jump Decimal and safety status), replacing nested relation hydration. Allocation types/statuses and per-journal current balances remain write-time guards. Real26 waiting-order repairs:26 context JOINs/zero relation hydration,26 whole placement captures HELD/no upfront release; actual queue activation releases only admitted work, suspension/cancellation/partial-refund guards retain unit coverage. Snapshot/policy and ledger receipt checks belong to each financial command; no stale cross-transaction cache. No blanket race/currency/provider claim.",
+      "verification": {
+        "checkedAt": "2026-10-25T14:12:14.996Z",
+        "actualPostgresCases": 10,
+        "cleanupPassed": true,
+        "capacitySelectsPerGuard": 1,
+        "customSettlementContextJoinsFor26": 26,
+        "customSettlementRelationHydrationFor26": 0,
+        "providerDeliveryVerified": false
+      }
     },
     {
       "id": 81,
@@ -1491,8 +2061,17 @@
         "(tx as any).ledgerTransaction.findUnique",
         "(tx as any).ledgerAccount.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_FINANCIAL_POSTING",
+      "evidence": "Priority allocation creation now INSERT ON CONFLICT DO NOTHING through createMany(skipDuplicates), zero existence SELECTs. Existing financial-event unique key and ledger idempotency key preserve allocation/payout state and unique posting. Actual26 commands replay with26 allocations/journals,20gross/2commission/18net each, zero allocation reads; PAID_OUT remains unchanged. Caller activates under brand lock. Currency/precision and broader race review remain separate.",
+      "verification": {
+        "checkedAt": "2026-10-25T14:24:54.695Z",
+        "actualPostgresCases": 13,
+        "cleanupPassed": true,
+        "unitTests": 28,
+        "typecheckPassed": true,
+        "newHelperLintPassed": true,
+        "providerDeliveryVerified": false
+      }
     },
     {
       "id": 82,
@@ -1541,8 +2120,17 @@
         "tx.customOrder.findMany",
         "tx.$queryRaw"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_QUEUE_CANCELLATION_COMMAND",
+      "evidence": "Bulk cancellation/expiry invoke the shared mutation command without per-order response-only queue/refund/rank hydration. Public cancel still returns its queue projection. Current post-capture/brand-lock order and recipient context use one scalar JOIN, avoiding a second owner read. Each command retains current participant authorization, revision/expiry/lane/payment guards, fresh shared-capture refund budget, original FX settlement rounding, per-order transaction/rollback, drain and durable recipient effects. Actual bulk26 plus one in-delivery failure uses27 context joins, expiry26 uses26, zero internal presentations; unauthorized/missing selections refused, repeat creates no extra refund, public response retained. Payment/FX cumulative financial guards deliberately remain fresh; no provider transport or blanket race claim.",
+      "verification": {
+        "checkedAt": "2026-10-25T14:24:54.695Z",
+        "actualPostgresCases": 13,
+        "cleanupPassed": true,
+        "unitTests": 28,
+        "typecheckPassed": true,
+        "newHelperLintPassed": true,
+        "providerDeliveryVerified": false
+      }
     },
     {
       "id": 84,
@@ -1577,8 +2165,17 @@
         "tx.customOrder.findMany",
         "tx.$queryRaw"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_QUEUE_CANCELLATION_COMMAND",
+      "evidence": "Bulk cancellation/expiry invoke the shared mutation command without per-order response-only queue/refund/rank hydration. Public cancel still returns its queue projection. Current post-capture/brand-lock order and recipient context use one scalar JOIN, avoiding a second owner read. Each command retains current participant authorization, revision/expiry/lane/payment guards, fresh shared-capture refund budget, original FX settlement rounding, per-order transaction/rollback, drain and durable recipient effects. Actual bulk26 plus one in-delivery failure uses27 context joins, expiry26 uses26, zero internal presentations; unauthorized/missing selections refused, repeat creates no extra refund, public response retained. Payment/FX cumulative financial guards deliberately remain fresh; no provider transport or blanket race claim.",
+      "verification": {
+        "checkedAt": "2026-10-25T14:24:54.695Z",
+        "actualPostgresCases": 13,
+        "cleanupPassed": true,
+        "unitTests": 28,
+        "typecheckPassed": true,
+        "newHelperLintPassed": true,
+        "providerDeliveryVerified": false
+      }
     },
     {
       "id": 85,
@@ -1602,8 +2199,17 @@
         "(tx as any).ledgerAccount.findUnique",
         "tx.customOrderLedgerAllocation.findFirst"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_QUEUE_TRANSITION_COMMAND",
+      "evidence": "Reviewed current bounded queue drain/cursor sweep after capacity and settlement context joins. FIFO heads share bounded priority reads; each promotion still mutates its own order/reminder/financial/outbox state under brand lock. Current capacity one JOIN, financial context one scalar JOIN, no per-candidate owner/display hydration. Actual drain holds two Active/one Up Next, repeats without over-admission; real timeout cron uses it and final allocation guard; expiry blocks new intake while paid work progresses; actual cursor sweep one capacity JOIN respects subsequent suspension. Sibling cancellation84 and jump-release81 remain separate OPEN reviews.",
+      "verification": {
+        "checkedAt": "2026-10-25T14:12:14.996Z",
+        "actualPostgresCases": 10,
+        "cleanupPassed": true,
+        "capacitySelectsPerGuard": 1,
+        "customSettlementContextJoinsFor26": 26,
+        "customSettlementRelationHydrationFor26": 0,
+        "providerDeliveryVerified": false
+      }
     },
     {
       "id": 86,
@@ -1634,8 +2240,17 @@
         "(tx as any).ledgerTransaction.findUnique",
         "(tx as any).ledgerAccount.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_SETTLEMENT_ORDER_COMMAND",
+      "evidence": "Current applyPaidSettlement retains the brand lock and one fresh scalar CustomOrder/Brand/User JOIN (status/lane/queue markers/captured summary/jump Decimal and safety status), replacing nested relation hydration. Allocation types/statuses and per-journal current balances remain write-time guards. Real26 waiting-order repairs:26 context JOINs/zero relation hydration,26 whole placement captures HELD/no upfront release; actual queue activation releases only admitted work, suspension/cancellation/partial-refund guards retain unit coverage. Snapshot/policy and ledger receipt checks belong to each financial command; no stale cross-transaction cache. No blanket race/currency/provider claim.",
+      "verification": {
+        "checkedAt": "2026-10-25T14:12:14.996Z",
+        "actualPostgresCases": 10,
+        "cleanupPassed": true,
+        "capacitySelectsPerGuard": 1,
+        "customSettlementContextJoinsFor26": 26,
+        "customSettlementRelationHydrationFor26": 0,
+        "providerDeliveryVerified": false
+      }
     },
     {
       "id": 88,
@@ -1676,8 +2291,15 @@
       "queries": [
         "tx.settlementSnapshot.findFirst"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Operator snapshot writes now use INSERT ON CONFLICT DO NOTHING in100-row chunks, no per-record pre-read or failed-transaction P2002 recovery. Actual PostgreSQL102 eligible records use two INSERTs/zero SELECTs, create101 rows/skip one existing, replay102 without mutation. Safe/unsafe audit filtering, dry-run, immutable snapshots and no ledger/payout side effects retain ten unit checks. This operator maintenance feature is not activated automatically; old-data retirement remains a separate scoped task.",
+      "verification": {
+        "checkedAt": "2026-10-25T13:38:23.889Z",
+        "actualPostgresCases": 18,
+        "cleanupPassed": true,
+        "localOnly": true,
+        "generalRaceAuditComplete": false
+      }
     },
     {
       "id": 91,
@@ -1691,7 +2313,7 @@
         "(tx??this.prisma).$queryRaw"
       ],
       "disposition": "BOUNDED_BULK_QUERY",
-      "evidence": "Loop processes bounded ID batches or request-cached rule fallback types, rather than issuing one related-row lookup per result."
+      "evidence": "Loop processes bounded ID batches or request-cached rule fallback types, rather than issuing one related-row lookup per result. Actual end-to-end PostgreSQL settlement later exposed the wrong raw table identifier; corrected to the schema-mapped settlement_policy and exercised canonical calculator/escrow/receipt paths. Unit-only call mocks did not establish that mapping."
     },
     {
       "id": 92,
@@ -1733,8 +2355,15 @@
         "(tx as any).ledgerTransaction.findUnique",
         "(tx as any).ledgerAccount.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_FINANCIAL_POSTING",
+      "evidence": "Paid-order metadata policies/commissions resolve through shared LATERAL JOINs; snapshots now insert/return up to100 at a time with shared conflict fallback. Each distinct order retains its own idempotent payment journal and fresh locked account balances, rather than merging unrelated payments. Real26-order split settlement creates52 payment/upfront journals, one snapshot INSERT, zero hold/snapshot SELECT reloads; replay retains original terms and creates no duplicate money. Current policy-table mapping corrected to persisted settlement_policy after the actual database test caught the previous wrong table name.",
+      "verification": {
+        "checkedAt": "2026-10-25T13:38:23.889Z",
+        "actualPostgresCases": 18,
+        "cleanupPassed": true,
+        "localOnly": true,
+        "generalRaceAuditComplete": false
+      }
     },
     {
       "id": 95,
@@ -1749,8 +2378,15 @@
         "(tx as any).ledgerTransaction.findUnique",
         "(tx as any).ledgerAccount.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Split upfront release now reuses the hold returned by the same transaction upsert and the immutable snapshot returned by the shared snapshot insert/replay. No immediate hold/snapshot re-read. Canonical first-released/frozen/refunded/positive-amount/release-mode guards and separate ledger receipts remain. Real26-order PostgreSQL fixture has zero redundant hold/snapshot SELECTs, correct PARTIALLY_RELEASED flags, immutable policy replay, rollback and competing snapshot insert checks.",
+      "verification": {
+        "checkedAt": "2026-10-25T13:38:23.889Z",
+        "actualPostgresCases": 18,
+        "cleanupPassed": true,
+        "localOnly": true,
+        "generalRaceAuditComplete": false
+      }
     },
     {
       "id": 96,
@@ -1763,8 +2399,15 @@
       "queries": [
         "tx.escrowHold.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Timeout scan now joins EscrowHold, actual mapped Order._id and settlement_snapshot, maximum200 in deterministic delivery/id order. It shares immutable per-order release-day/delay values; existing missing-snapshot global fallback loads once per page. Fresh hold check remains inside each independent mutation transaction. Real26 timeouts use one joined scan/no snapshot reloads and preserve original48h delay; unit tests verify per-order override, empty page and shared fallback. General order/hold transition locking race is not certified by this N1 change.",
+      "verification": {
+        "checkedAt": "2026-10-25T13:38:23.889Z",
+        "actualPostgresCases": 18,
+        "cleanupPassed": true,
+        "localOnly": true,
+        "generalRaceAuditComplete": false
+      }
     },
     {
       "id": 97,
@@ -1779,8 +2422,15 @@
         "(tx as any).ledgerTransaction.findUnique",
         "(tx as any).ledgerAccount.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_FINANCIAL_POSTING",
+      "evidence": "Reviewed bounded200-row due scan followed by independent final-release mutation commands. Each command rechecks its current hold/released/frozen/refunded state, then posts its own balanced idempotent journal with batched account guards; no display/owner/policy hydration per candidate. Actual PostgreSQL26 final releases produce26 additional journals, correct RELEASED flags, and an empty repeated sweep/no duplicate posting. Broad eligibility/fencing/currency races remain separate gates; no blanket approval of all escrow transitions.",
+      "verification": {
+        "checkedAt": "2026-10-25T13:38:23.889Z",
+        "actualPostgresCases": 18,
+        "cleanupPassed": true,
+        "localOnly": true,
+        "generalRaceAuditComplete": false
+      }
     },
     {
       "id": 98,
@@ -1796,8 +2446,15 @@
         "(tx as any).ledgerAccount.findUnique",
         "tx.escrowHold.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_SETTLEMENT_PAYMENT_COMMAND",
+      "evidence": "Finance sync already shares order/paid-attempt scans and groups linked orders by payment reference. Its per-payment transaction now uses batched snapshot insertion/shared replay and reuses written holds, plus one distinct buyer receipt. Actual PostgreSQL26 orders across two payment references:one order scan,one attempt scan,two snapshot replay reads (one per payment),two buyer receipts and no duplicate journal/document on repeat. Payment boundaries, original terms and accounting isolation retained; provider settlement/FX and document-creation race audits remain separate.",
+      "verification": {
+        "checkedAt": "2026-10-25T13:38:23.889Z",
+        "actualPostgresCases": 18,
+        "cleanupPassed": true,
+        "localOnly": true,
+        "generalRaceAuditComplete": false
+      }
     },
     {
       "id": 99,
@@ -1859,8 +2516,8 @@
         "this.prisma.messageNotificationOutbox.findMany",
         "this.prisma.messageNotificationOutbox.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_LEASED_QUEUE_COMMAND",
+      "evidence": "Current source dispatchMessageOutboxForMessage delegates to the same atomic UPDATE RETURNING/SKIP LOCKED batch claim as pending sweep, maximum100 rows/four concurrent queue operations, no per-message recipient/metadata SELECT. Each row retains token-fenced completion/failure and stable notification/job IDs; recipient policy handled by consumer. No source change needed after review. Actual PG25-scenario shared fixture PASS/cleanup:two competing claims, zero standalone SELECTs, exactly one handoff per row, completed rows not replayed. Ten existing side-effect tests PASS incl timeout, lease fencing, enqueue/ack failure and stable IDs. Queue calls captured locally, not live provider delivery."
     },
     {
       "id": 103,
@@ -1873,8 +2530,16 @@
       "queries": [
         "this.prisma.fileUpload.findFirst"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Orphan cleanup now delegates one bounded transaction, at most100 files with the same48h cutoff. FOR UPDATE SKIP LOCKED followed by a fresh relational/reference and processing-lease check replaces per-file ownership reads and synchronous storage calls. One INSERT SELECT UNION/JOIN queues every original and FileVariant key; metadata and deletion jobs commit together. Shared owned-file helper preserves owner isolation, rejects referenced/busy files and supports product unlink without deleting shared media. Actual PostgreSQL13-scenario fixture PASS/cleanup:26 files2 SELECTs/one INSERT/78 unique key jobs, all seven live reference paths, shared product media, published required views, real competing workers, both FK-lock race orders, rollback and outbox failure. Metadata makes zero storage requests. Existing physical-deletion worker/provider delivery and general race audit remain separate release gates.",
+      "verification": {
+        "checkedAt": "2026-10-24T19:43:13.925Z",
+        "actualPostgresCases": 13,
+        "cleanupPassed": true,
+        "orphanSelectsFor26": 2,
+        "storageKeysQueuedFor26": 78,
+        "storageRequestsDuringMetadataDeletion": 0
+      }
     },
     {
       "id": 104,
@@ -1888,8 +2553,18 @@
         "this.prisma.emailSuppression.findFirst",
         "this.prisma.emailDeliveryAttempt.count"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_DELIVERABILITY_CHECK",
+      "evidence": "Reviewed actual current dispatchRow call graph: a bounded150-row due scan and10-way delivery concurrency, one fresh normalized-email/expiry suppression lookup after each successful row claim and immediately before transport. This is a per-attempt deliverability guard; do not replace it with a stale batch cache. The historical emailDeliveryAttempt.count is absent from current source. Actual PostgreSQL fixture26 blocked attempts:one due scan,26 fresh suppression guards,26 durable suppressed-attempt records/completed rows and zero transport calls. Five existing/new dispatcher unit tests PASS, including batch clamp/zero work and password-reset retry/delay behavior. This closes only the N1 semantic review; email claim recovery/completion fencing and real provider delivery remain OPEN in item3/later gates.",
+      "verification": {
+        "checkedAt": "2026-10-24T19:43:13.925Z",
+        "suppressedAttempts": 26,
+        "suppressionSelects": 26,
+        "otherSelects": 1,
+        "transportCalls": 0,
+        "cleanupPassed": true,
+        "unitTestsPassed": 5,
+        "leaseRaceAuditComplete": false
+      }
     },
     {
       "id": 105,
@@ -1903,8 +2578,20 @@
         "this.prisma.pushDeviceToken.findMany",
         "this.prisma.notification.count"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_DELIVERY_TOKEN_CHECK",
+      "evidence": "Unread badges now use one bounded recipient aggregate per10-attempt group, rather than a count per message. Fresh active/provider/recipient device-token SELECT remains after each successful independent delivery claim; do not cache token eligibility across the sweep. Due page clamped100; duplicate recipients/zero unread/optional count failure/lost claim handled. Actual PostgreSQL26 attempts:one due scan,3 badge aggregates instead of26,26 fresh token checks, invalid-token SDK validation and inactive filtering, no transport for unusable tokens. Optional real installed SDK HTTP run through local Postman:3 messages/2 requests, badges0/1 and payload preserved,3 pending receipts saved. Twelve focused push tests PASS. Only the N1 review is closed: existing claim/recovery/fencing, real provider receipts/device delivery and native permissions/settings remain separate OPEN gates.",
+      "verification": {
+        "checkedAt": "2026-10-24T20:08:48.828Z",
+        "actualPostgresCases": 15,
+        "cleanupPassed": true,
+        "dueSelectsFor26": 1,
+        "badgeSelectsFor26": 3,
+        "freshTokenSelectsFor26": 26,
+        "simulatedHttpRequests": 2,
+        "simulatedMessages": 3,
+        "pendingReceipts": 3,
+        "liveDeviceDeliveryVerified": false
+      }
     },
     {
       "id": 106,
@@ -1923,8 +2610,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Standard-order SLA sends mixed createEvents batches instead of per-order recipient-policy lookups; overdue builder is pure and deduplicates recipients per order. Runtime scheduler/helper22 tests PASS including disabled engine, missing owner/payment date, failed recipient continuation, exact links/realtime, closed business-hours and one-hour escalation boundary. Actual PostgreSQL mixed policy fixture PASS:26 events5 SELECTs,25 actors/private patch checks8 SELECTs. Cancellation/refund write guards are preserved; their financial/provider correctness is a separate open audit."
     },
     {
       "id": 107,
@@ -1947,8 +2634,17 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_FINANCIAL_POSTING",
+      "evidence": "Current standard refund order/capture identity and native amount now one scalar LATERAL JOIN instead of two independent reads; no owner/display/card/media hydration. Direct reference and existing latest-array fallback are separate UNION branches so the canonical reference lookup is not combined with an array OR scan. Current paid/refunded status, conditional parent claim, escrow state and ledger idempotency remain per-order financial commands. Actual real SLA cron26 test-mode orders:26joined context reads,26escrow/refund journal transitions,52correct recipient event handoffs; repeat cron/direct replay no duplicate refund. Missing order/capture distinct, empty-reference/latest fallback and Decimal12345678.91 preserved. Existing live provider-inside-DB-transaction and whole-parent/mixed-checkout refund semantics are explicitly separate unresolved canonical provider/refund gates; this closes scoped N1 only, not live-refund correctness.",
+      "verification": {
+        "checkedAt": "2026-10-25T14:59:21.200Z",
+        "actualPostgresCases": 31,
+        "cleanupPassed": true,
+        "standardRefundContextJoinsFor26": 26,
+        "typecheckPassed": true,
+        "changedSourceLintPassed": true,
+        "liveProviderVerified": false
+      }
     },
     {
       "id": 108,
@@ -1967,8 +2663,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Standard-order SLA sends mixed createEvents batches instead of per-order recipient-policy lookups; overdue builder is pure and deduplicates recipients per order. Runtime scheduler/helper22 tests PASS including disabled engine, missing owner/payment date, failed recipient continuation, exact links/realtime, closed business-hours and one-hour escalation boundary. Actual PostgreSQL mixed policy fixture PASS:26 events5 SELECTs,25 actors/private patch checks8 SELECTs. Cancellation/refund write guards are preserved; their financial/provider correctness is a separate open audit."
     },
     {
       "id": 109,
@@ -1987,8 +2683,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Standard-order SLA sends mixed createEvents batches instead of per-order recipient-policy lookups; overdue builder is pure and deduplicates recipients per order. Runtime scheduler/helper22 tests PASS including disabled engine, missing owner/payment date, failed recipient continuation, exact links/realtime, closed business-hours and one-hour escalation boundary. Actual PostgreSQL mixed policy fixture PASS:26 events5 SELECTs,25 actors/private patch checks8 SELECTs. Cancellation/refund write guards are preserved; their financial/provider correctness is a separate open audit."
     },
     {
       "id": 110,
@@ -2007,8 +2703,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Standard-order SLA sends mixed createEvents batches instead of per-order recipient-policy lookups; overdue builder is pure and deduplicates recipients per order. Runtime scheduler/helper22 tests PASS including disabled engine, missing owner/payment date, failed recipient continuation, exact links/realtime, closed business-hours and one-hour escalation boundary. Actual PostgreSQL mixed policy fixture PASS:26 events5 SELECTs,25 actors/private patch checks8 SELECTs. Cancellation/refund write guards are preserved; their financial/provider correctness is a separate open audit."
     },
     {
       "id": 111,
@@ -2039,8 +2735,8 @@
       "queries": [
         "tx.product.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Unified inventory admission locks all required products then variants in UUID order, batch-loads stock after locks and reuses mutable transaction-local stock for repeated product lines. Real PG oversell rollback and unit checks pass."
     },
     {
       "id": 113,
@@ -2093,8 +2789,17 @@
         "this.prisma.userEmailPreference.findUnique",
         "this.prisma.userEmailScenarioPreference.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "applyAttemptStatus now acquires lock and current native PaymentAttempt row in one SELECT FOR UPDATE instead of a lock-only read plus reload. Same buyer/system-source/terminal/FX/order/event checks retained. Real stale26expired reconciliation:one shared scan/26locked reads/zero separate per-attempt reloads, NGN settlement and26order/event changes; repeat and competing terminal replay do not transition twice. Real waiting reader sees committed writer fields, native Decimal12345678.91 and missing reference tested. Provider-verified success sibling114 remains OPEN for its complete notification/settlement path.",
+      "verification": {
+        "checkedAt": "2026-10-25T15:28:08.640Z",
+        "actualPostgresCases": 34,
+        "cleanupPassed": true,
+        "paymentAndCustomPaymentUnitTests": 41,
+        "typecheckPassed": true,
+        "newHelperLintPassed": true,
+        "liveProviderVerified": false
+      }
     },
     {
       "id": 114,
@@ -2147,8 +2852,18 @@
         "this.prisma.userEmailPreference.findUnique",
         "this.prisma.userEmailScenarioPreference.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Each independently captured reference retains provider verification, locked current transition, fresh NGN settlement/finance/permission/notification guards. Post-commit payment order/owner identity now one native JOIN instead of nested eager Brand hydration. Actual26successful stale captures over local provider HTTP:26contextJOINs,26escrow/receipt/message records,52correct buyer-owner notices and safe replay/missing/wrong buyer. The two independent notice commands per capture retain fresh actor identity reads(52Brand SELECTs for26captures); these are not claimed removed. Full unified finalizer115 and broader delivery/races remain separate gates.",
+      "verification": {
+        "checkedAt": "2026-10-25T18:50:33.192Z",
+        "actualPostgresCases": 35,
+        "cleanupPassed": true,
+        "unitTests": 41,
+        "typecheckPassed": true,
+        "newHelperLintPassed": true,
+        "localProviderHTTP": true,
+        "liveProviderVerified": false
+      }
     },
     {
       "id": 115,
@@ -2200,8 +2915,18 @@
         "tx.message.findFirst",
         "this.prisma.customOrder.findMany"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Every independently captured checkout retains current capture/session locks and fresh dependent line state. Native session lock returns current row directly, saving separate reload; post-commit selected standard orders use one reference+ID-scoped owner JOIN. Existing intent/configuration/version reads shared for26 custom lines; fresh per-order queue/finance guards retained because each changes capacity. Actual26standard brands/26fresh custom lines finalize with conserved records/held captures/receipts/reservations/cart quantities, replay no duplicate money. Missing intent and wrong buyer refused, real waiting session sees committed current fields. Fresh real cart path exposed void decoding error; buyer advisory lock fixed to executeRaw and actual wait/quantity preservation verified. Broader races, mixed-refund accounting and canonical compatibility retirement remain separate.",
+      "verification": {
+        "checkedAt": "2026-10-25T18:56:19.276Z",
+        "actualPostgresCases": 25,
+        "cleanupPassed": true,
+        "paymentUnitTests": 41,
+        "bagUnitTests": 6,
+        "typecheckPassed": true,
+        "helperLintPassed": true,
+        "liveProviderVerified": false
+      }
     },
     {
       "id": 116,
@@ -2250,8 +2975,17 @@
         "this.prisma.exchangeRateSnapshot.findUnique",
         "tx.product.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_DURABLE_EVENT_COMMAND",
+      "evidence": "Stored webhook reprocess already batches receipt and related attempt identities. Each processWebhookPayload then reads current payment lifecycle/correlation/amount/currency before handling its own receipt; authoritative transition delegates to locked current command. No per-receipt display/owner/media hydration. Actual26terminal receipts processed then0onrepeat, original lifecycle events unchanged. This is individually reviewed current-state command work, not a blanket stateful exemption. Nonterminal provider/amount paths, incoming signature transport, lease/fencing and full unified checkout remain separate gates; existing unit signature/amount checks also pass.",
+      "verification": {
+        "checkedAt": "2026-10-25T15:28:08.640Z",
+        "actualPostgresCases": 34,
+        "cleanupPassed": true,
+        "paymentAndCustomPaymentUnitTests": 41,
+        "typecheckPassed": true,
+        "newHelperLintPassed": true,
+        "liveProviderVerified": false
+      }
     },
     {
       "id": 117,
@@ -2270,8 +3004,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Finance-admin payment notifications use the shared bounded recipient policy batch; the original admin permission query and best-effort result handling remain."
     },
     {
       "id": 118,
@@ -2286,8 +3020,8 @@
         "tx.messageThread.findFirst",
         "tx.message.findFirst"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "REQUIRED_LOCKED_MESSAGE_COMMAND",
+      "evidence": "Each paid order retains an independent transactional conversation/message/outbox command. Standard placement now uses the main messaging pair advisory-lock key, a joined chosen-thread row lock and a separate fresh post-wait thread/placement JOIN. Duplicate-safe link/participant inserts avoid ORM upsert reads; message timestamp uses existing monotonic clock helper. Post-payment transaction work capped4. Actual PG22-case shared fixture PASS/cleanup:competing callbacks1thread/1placement per order/2recipient outbox events, replay2data reads, real lock-wait timestamp advance, FK rollback, legacy adoption and missing-shopper no-op. Payment/placement37tests PASS; backend types PASS. This does not certify the separate custom-order bootstrap race."
     },
     {
       "id": 119,
@@ -2306,8 +3040,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Paid standard/custom-order recipient events now share createEvents policy/actor hydration in pages25; all event payloads, monetary metadata, buyer/brand identities, distinct custom-order target dedupe and URLs retained.36 placement/payment runtime tests PASS including independent message/recipient failures, empty/missing recipients and nonthrowing post-commit lookup/batch failures. Shared actual PG14-case fixture PASS validates policy/suppression/dedupe implementation. Standard conversation command118 remains open; financial/provider mutations unchanged."
     },
     {
       "id": 120,
@@ -2326,8 +3060,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Paid standard/custom-order recipient events now share createEvents policy/actor hydration in pages25; all event payloads, monetary metadata, buyer/brand identities, distinct custom-order target dedupe and URLs retained.36 placement/payment runtime tests PASS including independent message/recipient failures, empty/missing recipients and nonthrowing post-commit lookup/batch failures. Shared actual PG14-case fixture PASS validates policy/suppression/dedupe implementation. Standard conversation command118 remains open; financial/provider mutations unchanged."
     },
     {
       "id": 121,
@@ -2346,8 +3080,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Paid standard/custom-order recipient events now share createEvents policy/actor hydration in pages25; all event payloads, monetary metadata, buyer/brand identities, distinct custom-order target dedupe and URLs retained.36 placement/payment runtime tests PASS including independent message/recipient failures, empty/missing recipients and nonthrowing post-commit lookup/batch failures. Shared actual PG14-case fixture PASS validates policy/suppression/dedupe implementation. Standard conversation command118 remains open; financial/provider mutations unchanged."
     },
     {
       "id": 122,
@@ -2366,8 +3100,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Paid standard/custom-order recipient events now share createEvents policy/actor hydration in pages25; all event payloads, monetary metadata, buyer/brand identities, distinct custom-order target dedupe and URLs retained.36 placement/payment runtime tests PASS including independent message/recipient failures, empty/missing recipients and nonthrowing post-commit lookup/batch failures. Shared actual PG14-case fixture PASS validates policy/suppression/dedupe implementation. Standard conversation command118 remains open; financial/provider mutations unchanged."
     },
     {
       "id": 123,
@@ -2380,8 +3114,8 @@
       "queries": [
         "tx.product.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Unified checkout release groups repeated product/variant increments, performs joined VALUES updates and marks reservations in bounded batches under the checkout lock. Real 40-reservation competing release test passes exactly once."
     },
     {
       "id": 124,
@@ -2440,8 +3174,17 @@
         "tx.customOrder.findFirst",
         "tx.customOrderLedgerAllocation.findFirst"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_QUEUE_TRANSITION_COMMAND",
+      "evidence": "Paid admission retains fresh brand lock/current order, position guard, financial capture, current capacity/buyer eligibility and queue drain. Initial routing lookup selects brandId only. Placement notice and expiry schedule reuse owner from the current capacity JOIN in the same transaction; no duplicated owner/display fetch. Ineligible-cancellation notice also reuses it. Real26admissions inside shared parent-capture transaction perform zero standalone Brand SELECTs, preserve26whole captures HELD at zero Active capacity,52placement notices/156expiry reminders; replay no new money/reminders. Per-order current-state/eligibility and financial commands are necessary, not replaced by stale cross-command caches. Earlier FIFO/intake/boundary/suspension tests retained. Full upstream unified checkout/provider finalization and general cross-subscription locking races remain separate reviews.",
+      "verification": {
+        "checkedAt": "2026-10-25T15:12:11.797Z",
+        "actualPostgresCases": 16,
+        "cleanupPassed": true,
+        "admissionBrandMetadataReadsFor26": 0,
+        "queueUnitTests": 28,
+        "typecheckPassed": true,
+        "providerOrDeviceVerified": false
+      }
     },
     {
       "id": 127,
@@ -2488,8 +3231,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Post-thread fanout fallback uses the shared bounded recipient policy/dedupe/actor batch; the existing queue path uses the same implementation."
     },
     {
       "id": 130,
@@ -2502,8 +3245,8 @@
       "queries": [
         "this.prisma.fileUpload.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_LEASED_FILE_COMMAND",
+      "evidence": "Reviewed independent file-processing lease boundary. Removed preclaim file SELECT; READY filtering occurs atomically in the conditional lease claim. Only the winner reads the current file after claiming; do not reuse a preclaim image/storage snapshot. Actual generated-Prisma PG competing claims perform1postlease SELECT, READY/missing jobs0;16 shared scenarios PASS/cleanup. Image worker11 tests PASS for skips, held/missing files, pending processing, new immutable versions, stale publisher rejection and storage-failure retry. Pixel quality/storage-provider behavior is not certified by this claim-only proof."
     },
     {
       "id": 131,
@@ -2522,8 +3265,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Queue processor uses createForRecipients, with joined consent/scenario and bounded LATERAL dedupe reads, shared actor hydration and direct FK inserts. Durable failures still propagate; ordinary fanout remains best-effort. Real PG policy, suppression, replay and query counts pass."
     },
     {
       "id": 132,
@@ -2542,8 +3285,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Mixed createEvents path batches policy/suppression/actor/patch/dedupe reads per 25 events and preserves individual payload/target/type. PostgreSQL checks: 26 mixed events=5 SELECTs; 25 actors with patch privacy=8 SELECTs including assertion. Scheduled-event tests retain recipient links, counters/errors, review/dispute exclusions and fitting refresh. Original per-item write guards remain."
     },
     {
       "id": 133,
@@ -2646,8 +3389,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Product-patcher fallback and queue worker use bounded createForRecipients rather than one full policy lookup per recipient."
     },
     {
       "id": 140,
@@ -2667,8 +3410,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Owner confirms first publication only, including handled empty audiences. Scheduled and immediate alerts share bounded Product/Brand/User JOIN eligibility and 500-connection keyset pages across distinct owners, reusing audiences across products. Successful queue/fallback/empty products stamped in one conditional write, failures remain pending; null publishAt also recovered. Stable per-product/per-recipient UUIDs shared by consumer/fallback; createEvents batches durable replay identities25/event page. Actual PG25 scenarios PASS/cleanup:26products two SELECTs, empty stamp, republish exclusion, pending/brand/self connection exclusion;26durable recipients two replay lookups and zero duplicate notification inserts on replay. Six focused suites100 tests/typecheck PASS. Current audience/publication edits during scan, exhausted queue handling and provider-side effect recovery remain separate item3/notification/load gates; no live push proof."
     },
     {
       "id": 141,
@@ -2687,8 +3430,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Store scheduler batches bag and stock lifecycle recipient events. Stock projection uses2explicit Product/Brand JOINs, successful reminder IDs use1conditional timestamp UPDATE, failed recipients retain retry eligibility; product state guards recheck restock/disable/delete conditions. Actual PG26stock reminders8SELECTs/1timestampwrite,26bag shoppers8SELECTs. Scheduler18 tests PASS plus Store22 tests PASS before JOIN-only projection follow-up; latest full TypeScript PASS. Existing2hbag/6hstock dedupe, quantities, routing and optional-service behavior tested."
     },
     {
       "id": 142,
@@ -2707,8 +3450,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Store scheduler batches bag and stock lifecycle recipient events. Stock projection uses2explicit Product/Brand JOINs, successful reminder IDs use1conditional timestamp UPDATE, failed recipients retain retry eligibility; product state guards recheck restock/disable/delete conditions. Actual PG26stock reminders8SELECTs/1timestampwrite,26bag shoppers8SELECTs. Scheduler18 tests PASS plus Store22 tests PASS before JOIN-only projection follow-up; latest full TypeScript PASS. Existing2hbag/6hstock dedupe, quantities, routing and optional-service behavior tested."
     },
     {
       "id": 143,
@@ -2783,8 +3526,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Archive wishlist notifications use bounded recipient policy/dedupe context; archive and per-recipient consent remain intact."
     },
     {
       "id": 148,
@@ -2817,8 +3560,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Restore availability notifications use bounded recipient policy/dedupe context; the existing active/published condition is preserved."
     },
     {
       "id": 150,
@@ -2853,8 +3596,16 @@
         "(tx as any).tag.findMany",
         "(tx as any).tagBinding.count"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Deletion uses current product-owner JOIN, current membership effects JOIN and database product-specific active-order lookup rather than hydrating/scanning all brand orders. Bulk retains independent authorization/transaction/effects and partial failures. Actual26 deletions/tags/cart/memberships/price updates/replay, normalized versus old-item guard and foreign actor checked. Canonical provider refund behavior remains separate gate5; this query review does not certify a refund.",
+      "verification": {
+        "checkedAt": "2026-10-25T19:08:18.381Z",
+        "actualPostgresCases": 18,
+        "cleanupPassed": true,
+        "typecheckPassed": true,
+        "helperLintPassed": true,
+        "liveProviderVerified": false
+      }
     },
     {
       "id": 152,
@@ -2885,8 +3636,16 @@
         "(this.prisma as any).fileVariant.findMany",
         "this.prisma.fileUpload.findMany"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Archive commands now load narrow current product-owner JOIN and current collection/wishlist JOIN; bulk skips discarded response hydration/signing, public response retained. Actual26 archives plus duplicate/missing/mixed refusal,60day expiry, tag removal, price recomputation, correct wishlist notices and real owner permission/refusal/replay verified. Fresh independent notification identity file reads retained(52), not claimed removed.",
+      "verification": {
+        "checkedAt": "2026-10-25T19:02:40.928Z",
+        "actualPostgresCases": 15,
+        "cleanupPassed": true,
+        "typecheckPassed": true,
+        "helperLintPassed": true,
+        "liveProviderVerified": false
+      }
     },
     {
       "id": 153,
@@ -2962,8 +3721,16 @@
         "(this.prisma as any).fileVariant.findMany",
         "this.prisma.fileUpload.findMany"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Bulk metadata/permissions already shared. Each independent update now reuses its written scalar row plus current membership IDs instead of full brand/variant/media response reload; fresh taxonomy validates through one JOIN per guarded mutation. Tags, current price ranges, permission/archived/deleted guards and mixed results retained. Actual26 categorized updates/replay/isolation/precision verified; no response signing.",
+      "verification": {
+        "checkedAt": "2026-10-25T19:05:00.385Z",
+        "actualPostgresCases": 16,
+        "cleanupPassed": true,
+        "typecheckPassed": true,
+        "helperLintPassed": true,
+        "liveProviderVerified": false
+      }
     },
     {
       "id": 156,
@@ -2982,8 +3749,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Store scheduler batches bag and stock lifecycle recipient events. Stock projection uses2explicit Product/Brand JOINs, successful reminder IDs use1conditional timestamp UPDATE, failed recipients retain retry eligibility; product state guards recheck restock/disable/delete conditions. Actual PG26stock reminders8SELECTs/1timestampwrite,26bag shoppers8SELECTs. Scheduler18 tests PASS plus Store22 tests PASS before JOIN-only projection follow-up; latest full TypeScript PASS. Existing2hbag/6hstock dedupe, quantities, routing and optional-service behavior tested."
     },
     {
       "id": 157,
@@ -3003,8 +3770,18 @@
         "tx.brandSubscription.findUnique",
         "tx.savedPaymentMethod.findFirst"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Hosted preparation shares current invoice/agreement identity JOIN and paid receipt batch, retains bounded named-reference history, prior-attempt verification, current brand lock/latest invoice conflict guard and saved payer identity. Actual client HTTP against contract-based local Postman: definitive failed attempts checked before new reference; missing automatic attempt and pending transaction block another debit; paid receipt refuses new hosted charge. No provider stub used for these proof paths.",
+      "verification": {
+        "checkedAt": "2026-10-25T14:47:08.209Z",
+        "actualPostgresCases": 29,
+        "cleanupPassed": true,
+        "subscriptionUnitTests": 21,
+        "typecheckPassed": true,
+        "lintPassed": true,
+        "localPostmanHttpVerified": true,
+        "liveProviderOrDeviceVerified": false
+      }
     },
     {
       "id": 158,
@@ -3024,8 +3801,18 @@
         "tx.brandSubscription.findUnique",
         "tx.savedPaymentMethod.findFirst"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Owner verification authorizes actual brand ownership then one invoice/agreement identity JOIN. Already-paid named captures use one invoice-scoped receipt query for25references rather than per-reference SELECTs. Current owner summary retained, missing receipts still verified with provider. Actual PostgreSQL paid25reference path no transport/period extension, unauthorized refusal; actual HTTP wrong amount/currency/email are refused without capture/entitlement.",
+      "verification": {
+        "checkedAt": "2026-10-25T14:47:08.209Z",
+        "actualPostgresCases": 29,
+        "cleanupPassed": true,
+        "subscriptionUnitTests": 21,
+        "typecheckPassed": true,
+        "lintPassed": true,
+        "localPostmanHttpVerified": true,
+        "liveProviderOrDeviceVerified": false
+      }
     },
     {
       "id": 159,
@@ -3042,8 +3829,18 @@
         "tx.brandSubscription.findFirst",
         "tx.brandSubscriptionInvoice.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Renewal preparation retains brand advisory lock and current status/end/cancellation/recovery checks. Agreement/scheduled-tier pricing now one fresh JOIN; native integer NGN catalog/snapshot prices. Real26renewals use26JOINs/zero tier reloads,13original-price/13scheduled-tier invoices, unique period/price preserved when replayed after catalog change. Current pending replacement/invoice checks and durable notice receipts remain command guards.",
+      "verification": {
+        "checkedAt": "2026-10-25T14:47:08.209Z",
+        "actualPostgresCases": 29,
+        "cleanupPassed": true,
+        "subscriptionUnitTests": 21,
+        "typecheckPassed": true,
+        "lintPassed": true,
+        "localPostmanHttpVerified": true,
+        "liveProviderOrDeviceVerified": false
+      }
     },
     {
       "id": 160,
@@ -3066,8 +3863,18 @@
         "this.prisma.brandSubscription.findUnique",
         "this.prisma.savedPaymentMethod.findFirst"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_PROVIDER_REFERENCE_COMMAND",
+      "evidence": "Each prior provider reference is an independent external payment to reconcile before any new debit. Initial invoice now one native scalar invoice/agreement identity JOIN; before debit, one fresh agreement/source-agreement/linked-card JOIN retains current cancellation/consent/ownership/recovery and encrypted authorization guards. Provider amount/currency/email and brand-locked capture/application uniqueness remain. Real processBilling26 renewals:52 narrow invoice joins,26debit joins,78HTTP calls(26prior+26charge+26verify),26confirmed captures; second cron no new transport or extension.503, unknown/pending prior attempts, foreign card and cancellation do not charge. These per-reference provider/financial guards are specifically reviewed; general lease/cancellation races and live-provider acceptance remain later gates.",
+      "verification": {
+        "checkedAt": "2026-10-25T14:47:08.209Z",
+        "actualPostgresCases": 29,
+        "cleanupPassed": true,
+        "subscriptionUnitTests": 21,
+        "typecheckPassed": true,
+        "lintPassed": true,
+        "localPostmanHttpVerified": true,
+        "liveProviderOrDeviceVerified": false
+      }
     },
     {
       "id": 161,
@@ -3087,8 +3894,18 @@
         "tx.brandSubscription.findUnique",
         "tx.savedPaymentMethod.findFirst"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_PROVIDER_REFERENCE_COMMAND",
+      "evidence": "Each prior provider reference is an independent external payment to reconcile before any new debit. Initial invoice now one native scalar invoice/agreement identity JOIN; before debit, one fresh agreement/source-agreement/linked-card JOIN retains current cancellation/consent/ownership/recovery and encrypted authorization guards. Provider amount/currency/email and brand-locked capture/application uniqueness remain. Real processBilling26 renewals:52 narrow invoice joins,26debit joins,78HTTP calls(26prior+26charge+26verify),26confirmed captures; second cron no new transport or extension.503, unknown/pending prior attempts, foreign card and cancellation do not charge. These per-reference provider/financial guards are specifically reviewed; general lease/cancellation races and live-provider acceptance remain later gates.",
+      "verification": {
+        "checkedAt": "2026-10-25T14:47:08.209Z",
+        "actualPostgresCases": 29,
+        "cleanupPassed": true,
+        "subscriptionUnitTests": 21,
+        "typecheckPassed": true,
+        "lintPassed": true,
+        "localPostmanHttpVerified": true,
+        "liveProviderOrDeviceVerified": false
+      }
     },
     {
       "id": 162,
@@ -3101,8 +3918,15 @@
       "queries": [
         "this.prisma.brandSubscriptionPaymentCapture.findUniqueOrThrow"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_COMPENSATION_CAPTURE_COMMAND",
+      "evidence": "Compensation dispatch retains a fresh read after each successful capture claim, now one scalar capture/invoice/agreement JOIN instead of nested invoice/subscription hydration. Exact native Decimal values returned, no saved authorization loaded. Actual PostgreSQL26 interrupted submissions processed over three ten-row sweeps:52 context JOINs (initial and attention),zero relation hydration reads,26 inbox/email receipts, no provider resubmission or entitlement change. Decimal precision separately checked. Eighteen subscription tests/types/lint PASS. Provider operations, lease/completion fencing and entitlements are not certified by the query review.",
+      "verification": {
+        "checkedAt": "2026-10-25T13:53:34.313Z",
+        "actualPostgresCases": 20,
+        "cleanupPassed": true,
+        "localOnly": true,
+        "providerDeliveryVerified": false
+      }
     },
     {
       "id": 163,
@@ -3115,8 +3939,15 @@
       "queries": [
         "tx.brand.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_TRANSACTIONAL_RECEIPT",
+      "evidence": "Refund attention now updates the capture then loads one current scalar capture/invoice/agreement JOIN inside its transaction, followed by the existing current owner/email JOIN and idempotent financial receipts. No eager subscription/authorization hydration or stale cross-transaction recipient cache. Actual PostgreSQL26 interrupted refunds produce26 inbox/email receipts, stable agreement periods and no provider resubmission; repeated sweep adds none. Both callers163/167 share this tested command. General payment/compensation races and provider integration remain separate gates.",
+      "verification": {
+        "checkedAt": "2026-10-25T13:53:34.313Z",
+        "actualPostgresCases": 20,
+        "cleanupPassed": true,
+        "localOnly": true,
+        "providerDeliveryVerified": false
+      }
     },
     {
       "id": 164,
@@ -3129,8 +3960,8 @@
       "queries": [
         "tx.brand.findUnique"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "REQUIRED_TRANSACTIONAL_RECEIPT",
+      "evidence": "Reviewed payment compensation receipt boundary: each financial result must atomically commit its own inbox/email receipt with a current recipient snapshot in that same transaction. Replaced nested brand/owner hydration with one JOIN and no-change ORM upserts with duplicate-safe scalar inserts, reducing actual PostgreSQL receipt SELECTs5 to1. Idempotent replay and whole-transaction rollback of inbox/email proven in actual PG;18 subscription tests PASS including missing email/recipient and write-error propagation. Do not batch snapshots across separate capture transactions or drop receipts. Subscription access/tier/cutover unchanged."
     },
     {
       "id": 165,
@@ -3143,8 +3974,8 @@
       "queries": [
         "tx.brand.findUnique"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "REQUIRED_TRANSACTIONAL_RECEIPT",
+      "evidence": "Reviewed payment compensation receipt boundary: each financial result must atomically commit its own inbox/email receipt with a current recipient snapshot in that same transaction. Replaced nested brand/owner hydration with one JOIN and no-change ORM upserts with duplicate-safe scalar inserts, reducing actual PostgreSQL receipt SELECTs5 to1. Idempotent replay and whole-transaction rollback of inbox/email proven in actual PG;18 subscription tests PASS including missing email/recipient and write-error propagation. Do not batch snapshots across separate capture transactions or drop receipts. Subscription access/tier/cutover unchanged."
     },
     {
       "id": 166,
@@ -3171,8 +4002,15 @@
       "queries": [
         "tx.brand.findUnique"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "REQUIRED_TRANSACTIONAL_RECEIPT",
+      "evidence": "Refund attention now updates the capture then loads one current scalar capture/invoice/agreement JOIN inside its transaction, followed by the existing current owner/email JOIN and idempotent financial receipts. No eager subscription/authorization hydration or stale cross-transaction recipient cache. Actual PostgreSQL26 interrupted refunds produce26 inbox/email receipts, stable agreement periods and no provider resubmission; repeated sweep adds none. Both callers163/167 share this tested command. General payment/compensation races and provider integration remain separate gates.",
+      "verification": {
+        "checkedAt": "2026-10-25T13:53:34.313Z",
+        "actualPostgresCases": 20,
+        "cleanupPassed": true,
+        "localOnly": true,
+        "providerDeliveryVerified": false
+      }
     },
     {
       "id": 168,
@@ -3201,8 +4039,8 @@
         "(tx as any).tag.findMany",
         "(tx as any).tagBinding.count"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Reindex source reads use500-row keyset pages; syncEntitiesTags replaces per-entity synchronization. Moderation names also read in bounded pages; banned and REJECTED tags excluded. Actual generated-Prisma PG6 cases PASS/cleanup:501 entities per each4types,2004bindings retained,12source reads,37SELECTs plus8post-lock grouped-count UPDATEs. Tag/helper10 runtime tests PASS; backend typecheck PASS. USER_BRAND uses Brand.ownerId with10-tag limit; other sources30. Existing reset/rebuild-vs-live-write race remains separately OPEN for item3; this closes only N+1/page-memory scope."
     },
     {
       "id": 170,
@@ -3217,8 +4055,8 @@
         "(tx as any).tag.findMany",
         "(tx as any).tagBinding.count"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Reindex source reads use500-row keyset pages; syncEntitiesTags replaces per-entity synchronization. Moderation names also read in bounded pages; banned and REJECTED tags excluded. Actual generated-Prisma PG6 cases PASS/cleanup:501 entities per each4types,2004bindings retained,12source reads,37SELECTs plus8post-lock grouped-count UPDATEs. Tag/helper10 runtime tests PASS; backend typecheck PASS. USER_BRAND uses Brand.ownerId with10-tag limit; other sources30. Existing reset/rebuild-vs-live-write race remains separately OPEN for item3; this closes only N+1/page-memory scope."
     },
     {
       "id": 171,
@@ -3233,8 +4071,8 @@
         "(tx as any).tag.findMany",
         "(tx as any).tagBinding.count"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Reindex source reads use500-row keyset pages; syncEntitiesTags replaces per-entity synchronization. Moderation names also read in bounded pages; banned and REJECTED tags excluded. Actual generated-Prisma PG6 cases PASS/cleanup:501 entities per each4types,2004bindings retained,12source reads,37SELECTs plus8post-lock grouped-count UPDATEs. Tag/helper10 runtime tests PASS; backend typecheck PASS. USER_BRAND uses Brand.ownerId with10-tag limit; other sources30. Existing reset/rebuild-vs-live-write race remains separately OPEN for item3; this closes only N+1/page-memory scope."
     },
     {
       "id": 172,
@@ -3249,8 +4087,8 @@
         "(tx as any).tag.findMany",
         "(tx as any).tagBinding.count"
       ],
-      "disposition": "STATEFUL_ENTITY_WORK",
-      "evidence": "Per-record finalization/financial/outbox/refund/write command with read guards. Preserve durable per-record effects; incidental metadata reads may still be batchable. This disposition is not a proof every read is necessary."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Reindex source reads use500-row keyset pages; syncEntitiesTags replaces per-entity synchronization. Moderation names also read in bounded pages; banned and REJECTED tags excluded. Actual generated-Prisma PG6 cases PASS/cleanup:501 entities per each4types,2004bindings retained,12source reads,37SELECTs plus8post-lock grouped-count UPDATEs. Tag/helper10 runtime tests PASS; backend typecheck PASS. USER_BRAND uses Brand.ownerId with10-tag limit; other sources30. Existing reset/rebuild-vs-live-write race remains separately OPEN for item3; this closes only N+1/page-memory scope."
     },
     {
       "id": 173,
@@ -3297,8 +4135,8 @@
         "this.prisma.notification.findFirst",
         "this.prisma.notification.findMany"
       ],
-      "disposition": "NOTIFICATION_POLICY_FANOUT",
-      "evidence": "Recipient-specific consent, suppression, access, or dedupe reads in notification commands. Mixed domain fanout requiring follow-up; not declared fixed or automatically unbatchable."
+      "disposition": "FIXED_AFTER_CAPTURE",
+      "evidence": "Mixed createEvents path batches policy/suppression/actor/patch/dedupe reads per 25 events and preserves individual payload/target/type. PostgreSQL checks: 26 mixed events=5 SELECTs; 25 actors with patch privacy=8 SELECTs including assertion. Scheduled-event tests retain recipient links, counters/errors, review/dispute exclusions and fitting refresh. Original per-item write guards remain."
     },
     {
       "id": 176,

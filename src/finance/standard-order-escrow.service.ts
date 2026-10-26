@@ -2,10 +2,12 @@ import { Injectable } from '@nestjs/common';
 import {
   BrandBalanceAdjustmentType,
   EscrowHoldStatus,
+  EscrowHold,
   EscrowReleaseCondition,
   Prisma,
   SettlementOrderType,
   SettlementReleaseMode,
+  SettlementSnapshot,
 } from '@prisma/client';
 import { BrandBalanceService } from './brand-balance.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -16,6 +18,7 @@ import {
   SettlementCalculatorService,
 } from './settlement-calculator.service';
 import { SettlementSnapshotService } from './settlement-snapshot.service';
+import { loadDeliverySettlementCandidates } from './standard-order-settlement-query';
 
 type OrderSettlementInput = {
   id: string;
@@ -93,13 +96,13 @@ export class StandardOrderEscrowService {
       calculationInputs,
       tx,
     );
+    const snapshots =
+      await this.settlementSnapshotService.createFromCalculations(
+        calculations,
+        tx,
+      );
     for (const [index, order] of orders.entries()) {
-      const calculation = calculations[index];
-      const snapshot =
-        await this.settlementSnapshotService.createFromCalculation(
-          calculation,
-          tx,
-        );
+      const snapshot = snapshots[index];
       const hold = await tx.escrowHold.upsert({
         where: { orderId: order.id },
         update: {
@@ -136,7 +139,7 @@ export class StandardOrderEscrowService {
 
       await this.ledgerService.postStandardOrderPaymentReceived(tx, hold);
       if (this.shouldReleaseUpfront(snapshot, hold)) {
-        await this.releaseStandardOrderUpfrontPortion(tx, order.id);
+        await this.releaseUpfrontHold(tx, hold, snapshot);
       }
     }
   }
@@ -167,6 +170,20 @@ export class StandardOrderEscrowService {
     if (!snapshot || !this.shouldReleaseUpfront(snapshot, hold)) {
       return hold;
     }
+
+    return this.releaseUpfrontHold(tx, hold, snapshot);
+  }
+
+  private async releaseUpfrontHold(
+    tx: Prisma.TransactionClient,
+    hold: EscrowHold,
+    snapshot: SettlementSnapshot,
+  ) {
+    if (
+      !this.shouldReleaseUpfront(snapshot, hold) ||
+      Number(hold.firstReleaseAmount) <= 0
+    )
+      return hold;
 
     const nextStatus = hold.secondReleasedAt
       ? EscrowHoldStatus.RELEASED
@@ -200,6 +217,15 @@ export class StandardOrderEscrowService {
     }
 
     const settlementHours = await this.getSettlementHoursForOrder(tx, orderId);
+    return this.markDeliveryEligibility(tx, hold, settlementHours, condition);
+  }
+
+  private async markDeliveryEligibility(
+    tx: Prisma.TransactionClient,
+    hold: EscrowHold,
+    settlementHours: number,
+    condition: EscrowReleaseCondition,
+  ) {
     const now = new Date();
     return tx.escrowHold.update({
       where: { id: hold.id },
@@ -213,38 +239,25 @@ export class StandardOrderEscrowService {
   }
 
   async autoConfirmDeliveredOrders() {
-    const candidates = await this.prisma.escrowHold.findMany({
-      where: {
-        status: {
-          in: [EscrowHoldStatus.HELD, EscrowHoldStatus.PARTIALLY_RELEASED],
-        },
-        secondReleaseEligibleAt: null,
-        refundedAt: null,
-        order: {
-          is: {
-            deliveredAt: { not: null },
-            buyerConfirmedDeliveryAt: null,
-            status: 'DELIVERED',
-          },
-        },
-      },
-      select: { orderId: true, order: { select: { deliveredAt: true } } },
-      take: 200,
-    });
+    const candidates = await loadDeliverySettlementCandidates(this.prisma);
+    const needsFallback = candidates.some(
+      (row) =>
+        row.autoReleaseDays === null || row.settlementDelayHours === null,
+    );
+    const [fallbackDays, fallbackHours] = needsFallback
+      ? await Promise.all([
+          this.getAutoReleaseDays(),
+          this.getSettlementHours(),
+        ])
+      : [0, 0];
     let confirmedCount = 0;
 
     for (const candidate of candidates) {
-      if (!candidate.orderId || !candidate.order?.deliveredAt) {
-        continue;
-      }
-
-      const autoReleaseDays = await this.getAutoReleaseDaysForOrder(
-        candidate.orderId,
-      );
+      const autoReleaseDays = candidate.autoReleaseDays ?? fallbackDays;
       const threshold = new Date(
         Date.now() - autoReleaseDays * 24 * 60 * 60 * 1000,
       );
-      if (candidate.order.deliveredAt > threshold) {
+      if (candidate.deliveredAt > threshold) {
         continue;
       }
 
@@ -253,9 +266,20 @@ export class StandardOrderEscrowService {
           where: { id: candidate.orderId! },
           data: { buyerConfirmedDeliveryAt: new Date() },
         });
-        await this.markBuyerDeliveryConfirmed(
+        const hold = await tx.escrowHold.findUnique({
+          where: { orderId: candidate.orderId },
+        });
+        if (
+          !hold ||
+          hold.secondReleasedAt ||
+          hold.status === EscrowHoldStatus.REFUNDED ||
+          hold.status === EscrowHoldStatus.FROZEN
+        )
+          return;
+        await this.markDeliveryEligibility(
           tx,
-          candidate.orderId!,
+          hold,
+          candidate.settlementDelayHours ?? fallbackHours,
           EscrowReleaseCondition.BUYER_TIMEOUT,
         );
       });
@@ -518,14 +542,6 @@ export class StandardOrderEscrowService {
       return snapshot.settlementDelayHours;
     }
     return this.getSettlementHours();
-  }
-
-  private async getAutoReleaseDaysForOrder(orderId: string) {
-    const snapshot = await this.settlementSnapshotService.getByOrderId(orderId);
-    if (snapshot) {
-      return snapshot.autoReleaseDays;
-    }
-    return this.getAutoReleaseDays();
   }
 
   private async getSettlementHours() {

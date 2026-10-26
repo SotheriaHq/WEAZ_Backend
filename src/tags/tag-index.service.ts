@@ -468,102 +468,130 @@ export class TagIndexService {
     }
 
     const now = new Date();
-    const [collections, products, brands, userBrandOwners, bannedRows] =
-      await Promise.all([
-        this.prisma.collection.findMany({
-          where: {
-            status: 'PUBLISHED',
-            visibility: 'PUBLIC',
-            deletedAt: null,
-          },
-          select: { id: true, tags: true },
-        }),
-        this.prisma.product.findMany({
-          where: {
-            isActive: true,
-            deletedAt: null,
-            archivedAt: null,
-            OR: [{ publishAt: null }, { publishAt: { lte: now } }],
-          },
-          select: { id: true, tags: true },
-        }),
-        this.prisma.brand.findMany({
-          where: { isStoreOpen: true },
-          select: { id: true, tags: true },
-        }),
-        this.prisma.brand.findMany({
-          where: { owner: { type: 'BRAND' } },
-          select: { ownerId: true, tags: true },
-        }),
-        prismaClient.tag.findMany({
-          where: { isBanned: true },
-          select: { normalizedName: true },
-        }),
-      ]);
-    const banned = new Set<string>(
-      (bannedRows as Array<{ normalizedName: string }>).map(
-        (row) => row.normalizedName,
-      ),
-    );
+    const pageSize = 500;
+    const sources: Array<{
+      entityType: TagEntityTypeValue;
+      maxCount: number;
+      load: (
+        afterId: string | null,
+      ) => Promise<Array<{ id: string; entityId: string; tags: string[] }>>;
+    }> = [
+      {
+        entityType: TAG_ENTITY_TYPE.COLLECTION,
+        maxCount: 30,
+        load: async (afterId) =>
+          (
+            await this.prisma.collection.findMany({
+              where: {
+                status: 'PUBLISHED',
+                visibility: 'PUBLIC',
+                deletedAt: null,
+                ...(afterId ? { id: { gt: afterId } } : {}),
+              },
+              select: { id: true, tags: true },
+              orderBy: { id: 'asc' },
+              take: pageSize,
+            })
+          ).map((row) => ({ ...row, entityId: row.id })),
+      },
+      {
+        entityType: TAG_ENTITY_TYPE.PRODUCT,
+        maxCount: 30,
+        load: async (afterId) =>
+          (
+            await this.prisma.product.findMany({
+              where: {
+                isActive: true,
+                deletedAt: null,
+                archivedAt: null,
+                OR: [{ publishAt: null }, { publishAt: { lte: now } }],
+                ...(afterId ? { id: { gt: afterId } } : {}),
+              },
+              select: { id: true, tags: true },
+              orderBy: { id: 'asc' },
+              take: pageSize,
+            })
+          ).map((row) => ({ ...row, entityId: row.id })),
+      },
+      {
+        entityType: TAG_ENTITY_TYPE.BRAND,
+        maxCount: 30,
+        load: async (afterId) =>
+          (
+            await this.prisma.brand.findMany({
+              where: {
+                isStoreOpen: true,
+                ...(afterId ? { id: { gt: afterId } } : {}),
+              },
+              select: { id: true, tags: true },
+              orderBy: { id: 'asc' },
+              take: pageSize,
+            })
+          ).map((row) => ({ ...row, entityId: row.id })),
+      },
+      {
+        entityType: TAG_ENTITY_TYPE.USER_BRAND,
+        maxCount: 10,
+        load: async (afterId) =>
+          (
+            await this.prisma.brand.findMany({
+              where: {
+                owner: { type: 'BRAND' },
+                ...(afterId ? { id: { gt: afterId } } : {}),
+              },
+              select: { id: true, ownerId: true, tags: true },
+              orderBy: { id: 'asc' },
+              take: pageSize,
+            })
+          ).map((row) => ({
+            id: row.id,
+            entityId: row.ownerId,
+            tags: row.tags,
+          })),
+      },
+    ];
 
     await this.prisma.$transaction(async (tx) => {
-      await (tx as any).tagBinding.deleteMany({});
-      await (tx as any).tag.updateMany({
-        data: { usageCount: 0, lastUsedAt: null },
-      });
-      // Note: systemTag table not in schema, skipping systemTag operations
+      await tx.tagBinding.deleteMany({});
+      await tx.tag.updateMany({ data: { usageCount: 0, lastUsedAt: null } });
     });
 
     let bindingsCreated = 0;
-    for (const c of collections) {
-      const tags = this.normalizeTagList(c.tags ?? [], 30).filter(
-        (tag) => !banned.has(tag),
-      );
-      if (tags.length === 0) continue;
-      bindingsCreated += tags.length;
-      await this.syncEntityTags(TAG_ENTITY_TYPE.COLLECTION, c.id, [], tags, {
-        maxCount: 30,
-        notifyMentions: false,
-      });
-    }
-    for (const p of products) {
-      const tags = this.normalizeTagList(p.tags ?? [], 30).filter(
-        (tag) => !banned.has(tag),
-      );
-      if (tags.length === 0) continue;
-      bindingsCreated += tags.length;
-      await this.syncEntityTags(TAG_ENTITY_TYPE.PRODUCT, p.id, [], tags, {
-        maxCount: 30,
-        notifyMentions: false,
-      });
-    }
-    for (const b of brands) {
-      const tags = this.normalizeTagList(b.tags ?? [], 30).filter(
-        (tag) => !banned.has(tag),
-      );
-      if (tags.length === 0) continue;
-      bindingsCreated += tags.length;
-      await this.syncEntityTags(TAG_ENTITY_TYPE.BRAND, b.id, [], tags, {
-        maxCount: 30,
-        notifyMentions: false,
-      });
-    }
-    for (const u of userBrandOwners) {
-      const tags = this.normalizeTagList(u.tags ?? [], 10).filter(
-        (tag) => !banned.has(tag),
-      );
-      if (tags.length === 0) continue;
-      bindingsCreated += tags.length;
-      await this.syncEntityTags(
-        TAG_ENTITY_TYPE.USER_BRAND,
-        u.ownerId,
-        [],
-        tags,
-        {
-          maxCount: 10,
-          notifyMentions: false,
-        },
-      );
+    for (const source of sources) {
+      let afterId: string | null = null;
+      while (true) {
+        const rows = await source.load(afterId);
+        if (!rows.length) break;
+        const normalized = rows.map((row) => ({
+          ...row,
+          tags: this.normalizeTagList(row.tags ?? [], source.maxCount),
+        }));
+        const names = [...new Set(normalized.flatMap((row) => row.tags))];
+        const blocked = new Set<string>();
+        for (let offset = 0; offset < names.length; offset += pageSize) {
+          const tags = await this.prisma.tag.findMany({
+            where: {
+              normalizedName: { in: names.slice(offset, offset + pageSize) },
+              OR: [{ isBanned: true }, { status: TagStatus.REJECTED }],
+            },
+            select: { normalizedName: true },
+          });
+          for (const tag of tags) blocked.add(tag.normalizedName);
+        }
+        const entries = normalized.map((row) => ({
+          entityType: source.entityType,
+          entityId: row.entityId,
+          previousTags: [] as string[],
+          nextTags: row.tags.filter((tag) => !blocked.has(tag)),
+          options: { maxCount: source.maxCount, notifyMentions: false },
+        }));
+        await this.syncEntitiesTags(entries);
+        bindingsCreated += entries.reduce(
+          (sum, entry) => sum + entry.nextTags.length,
+          0,
+        );
+        afterId = rows[rows.length - 1].id;
+      }
     }
 
     const tagsIndexed = await prismaClient.tag.count();

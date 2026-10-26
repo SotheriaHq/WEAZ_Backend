@@ -111,6 +111,32 @@ describe('PushDeviceTokensService', () => {
     );
   });
 
+  it('changes the registration version even when two registrations have the same timestamp', async () => {
+    prisma.pushDeviceToken.upsert.mockResolvedValue(makeTokenRecord());
+    jest.useFakeTimers().setSystemTime(now);
+    try {
+      await service.register('user-1', {
+        token: 'ExponentPushToken[abcdef1234567890]',
+      });
+      await service.register('user-1', {
+        token: 'ExponentPushToken[abcdef1234567890]',
+      });
+      const [first, second] = prisma.pushDeviceToken.upsert.mock.calls.map(
+        ([call]) => call,
+      );
+      expect(first.update.lastSeenAt).toEqual(second.update.lastSeenAt);
+      expect(first.update.registrationVersion).toMatch(/^[a-f0-9-]{36}$/);
+      expect(first.create.registrationVersion).toBe(
+        first.update.registrationVersion,
+      );
+      expect(second.update.registrationVersion).not.toBe(
+        first.update.registrationVersion,
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('register same token for different user transfers ownership safely', async () => {
     prisma.pushDeviceToken.upsert.mockResolvedValue(
       makeTokenRecord({ userId: 'user-2' }),

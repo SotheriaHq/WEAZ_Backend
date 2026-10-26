@@ -209,6 +209,7 @@ model FileUpload {
 
   @@index([processingStatus, updatedAt])
   @@index([s3Url])
+  @@index([fileType, createdAt, id], map: "FileUpload_type_createdAt_id_idx")
 }
 
 model UserProfile {
@@ -251,6 +252,8 @@ model UserProfile {
   updatedAt             DateTime          @updatedAt
 
   @@index([profileVisibility])
+  @@index([profileImageId])
+  @@index([bannerImageId])
 }
 
 model ProfilePhotoView {
@@ -307,6 +310,7 @@ model Post {
   threads       Thread[]
   threadsCount  Int          @default(0) @map("likesCount")
   commentsCount Int          @default(0)
+  @@index([videoId])
 }
 
 model Comment {
@@ -1227,6 +1231,13 @@ enum PushReceiptStatus {
   ERROR
 }
 
+enum NotificationChannelStatus {
+  PENDING
+  PROCESSING
+  FAILED
+  COMPLETED
+}
+
 enum EmailPriority {
   P0_SECURITY
   P1_TRANSACTIONAL
@@ -1426,7 +1437,6 @@ model Collection {
 
   products         CollectionProduct[]
   draftSessions    CollectionDraftSession[]
-  bulkUploadJobs   CollectionBulkUploadJob[]
   lifecycleReviews Review[]                  @relation("ReviewLegacyCollection")
   reviewPrompts    ReviewPrompt[]            @relation("ReviewPromptLegacyCollection")
 
@@ -1481,6 +1491,7 @@ model StoreCollection {
   viewsCount             Int                      @default(0)
   products               StoreCollectionProduct[]
   primaryProducts        Product[]                @relation("PrimaryStoreCollection")
+  bulkUploadJobs         CollectionBulkUploadJob[]
   lifecycleReviews       Review[]                 @relation("ReviewStoreCollection")
   reviewPrompts          ReviewPrompt[]           @relation("ReviewPromptStoreCollection")
 
@@ -1549,8 +1560,10 @@ model CollectionBulkUploadJob {
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
   completedAt   DateTime?
+  processingToken String? @db.Uuid
+  leaseExpiresAt DateTime?
 
-  collection Collection                @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  collection StoreCollection           @relation(fields: [collectionId], references: [id], onDelete: Cascade)
   owner      User                      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   rows       CollectionBulkUploadRow[]
 
@@ -1567,7 +1580,9 @@ model CollectionBulkUploadRow {
   status           BulkUploadRowStatus @default(PENDING)
   errorMessage     String?
   payload          Json?
-  createdProductId String?
+  createdProductId String?             @unique @db.Uuid
+  productCreatedAt DateTime?
+  createdProduct Product? @relation(fields: [createdProductId], references: [id], onDelete: SetNull)
   createdAt        DateTime            @default(now())
   updatedAt        DateTime            @updatedAt
 
@@ -1858,6 +1873,7 @@ model CollectionMedia {
   @@unique([collectionId, viewSlot])
   @@index([collectionId, viewSlot])
   @@index([reviewStatus])
+  @@index([fileUploadId])
 }
 
 model CollectionReaction {
@@ -1957,10 +1973,36 @@ model Notification {
   createdAt   DateTime         @default(now())
   recipient   User             @relation("UserNotificationsReceived", fields: [recipientId], references: [id], onDelete: Cascade)
   actor       User?            @relation("UserNotificationsActed", fields: [actorId], references: [id])
+  channelOutbox NotificationChannelOutbox?
 
   @@index([recipientId])
   @@index([recipientId, isRead])
   @@index([recipientId, createdAt])
+}
+
+model NotificationChannelOutbox {
+  id String @id @db.Uuid
+  notification Notification @relation(fields: [id], references: [id], onDelete: Cascade)
+  emailEnabled Boolean
+  pushEnabled Boolean
+  messageSnapshot String
+  targetUrl String?
+  settingsJson Json
+  pushPayloadJson Json?
+  emailPolicyJson Json?
+  status NotificationChannelStatus @default(PENDING)
+  attempts Int @default(0)
+  availableAt DateTime @default(now())
+  lockedAt DateTime?
+  lockOwner String? @db.Uuid
+  lockExpiresAt DateTime?
+  lastError String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, availableAt, createdAt])
+  @@index([status, lockExpiresAt])
+  @@index([status, updatedAt])
 }
 
 model PushDeviceToken {
@@ -1976,6 +2018,7 @@ model PushDeviceToken {
   expoProjectId  String?
   isActive       Boolean      @default(true)
   lastSeenAt     DateTime     @default(now())
+  registrationVersion String @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   lastSuccessAt  DateTime?
   lastFailureAt  DateTime?
   failureCount   Int          @default(0)
@@ -2028,6 +2071,7 @@ model PushDeliveryReceipt {
   pushOutboxId String            @db.Uuid
   pushOutbox   PushOutbox        @relation(fields: [pushOutboxId], references: [id], onDelete: Cascade)
   tokenId      String?           @db.Uuid
+  tokenRegistrationVersion String? @db.Uuid
   ticketId     String?           @unique
   status       PushReceiptStatus @default(PENDING)
   errorCode    String?
@@ -4232,6 +4276,9 @@ model CustomOrderNotificationOutbox {
   status           CustomOrderOutboxStatus @default(PENDING)
   attempts         Int                     @default(0)
   availableAt      DateTime                @default(now())
+  lockedAt         DateTime?
+  lockOwner        String?
+  lockExpiresAt    DateTime?               @default(now())
   processedAt      DateTime?
   lastError        String?
   createdAt        DateTime                @default(now())
@@ -4240,6 +4287,7 @@ model CustomOrderNotificationOutbox {
   @@index([status, availableAt, createdAt])
   @@index([customOrderId, createdAt])
   @@index([recipientId, createdAt])
+  @@index([status, lockExpiresAt])
 }
 
 model CustomOrderAnalyticsEvent {
@@ -5185,6 +5233,7 @@ model Product {
   wishlistItems         WishlistItem[]
   variants              ProductVariant[]
   sizingMetadata        ProductSizingMetadata?
+  bulkImportRow         CollectionBulkUploadRow?
   designCollections     CollectionProduct[]
   collections           StoreCollectionProduct[]
   entityFilters         EntityFilter[]           @relation("ProductEntityFilters")

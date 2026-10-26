@@ -28,6 +28,7 @@ import { PaymentService } from './payment.service';
 import { FxRateService } from './fx-rate.service';
 import {
   FxQuoteQueryDto,
+  FxDisplayQueryDto,
   PaymentClientCheckoutPolicy,
   InitializeUnifiedCheckoutDto,
   ValidatePaymentCardDto,
@@ -142,6 +143,14 @@ export class PaymentController {
       amount: Number(query.amount ?? '1'),
     });
     return result;
+  }
+
+  @Get('fx/display')
+  @IsPublic()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
+  async getFxDisplay(@Query() query: FxDisplayQueryDto) {
+    return this.fxRateService.getDisplayRates(query);
   }
 
   @Post('initialize-unified')

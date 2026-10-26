@@ -7,7 +7,7 @@ import {
   NotificationType,
   Prisma,
 } from '@prisma/client';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from 'src/prisma/prisma.service';
 import {
   resolveEmailConfig,
@@ -15,6 +15,13 @@ import {
   type ResolvedEmailConfig,
 } from './email.config';
 import { maskEmailForLog } from 'src/common/utils/sensitive-log';
+import {
+  claimEmailOutbox,
+  EMAIL_OUTBOX_MAX_ATTEMPTS,
+  emailOutboxBackoffSeconds,
+  finishEmailOutboxClaim,
+  withEmailDeliveryTimeout,
+} from 'src/notifications/email-outbox-claim-query';
 
 export type EnqueueEmailOptions = {
   recipientUserId?: string | null;
@@ -85,6 +92,7 @@ export class EmailService {
     html: string,
     text?: string,
     options?: EnqueueEmailOptions,
+    tx?: Prisma.TransactionClient,
   ): Promise<EnqueueEmailResult> {
     let outboxRowId: string | null = null;
     const shouldStoreBody = this.emailConfig.mode !== 'log_only';
@@ -94,6 +102,39 @@ export class EmailService {
     const storedText = shouldStoreBody
       ? (text ?? null)
       : 'Email body omitted in log_only mode.';
+
+    if (tx) {
+      if (options?.dispatchImmediately)
+        throw new Error(
+          'Immediate email transport cannot run in a database transaction',
+        );
+      const id = randomUUID();
+      const inserted = await tx.emailOutbox.createMany({
+        data: [
+          {
+            id,
+            recipientUserId: options?.recipientUserId ?? null,
+            recipientEmailSnapshot: to,
+            scenarioKey: options?.scenarioKey ?? 'legacy.direct',
+            notificationType: options?.notificationType,
+            subject,
+            html: storedHtml,
+            text: storedText,
+            payloadJson: (options?.payloadJson ??
+              null) as Prisma.InputJsonValue,
+            priority: options?.priority ?? EmailPriority.P2_OPERATIONAL,
+            idempotencyKey: options?.idempotencyKey,
+          },
+        ],
+        skipDuplicates: true,
+      });
+      return {
+        outboxId: inserted.count ? id : null,
+        dispatchStatus: inserted.count ? 'QUEUED' : 'SKIPPED',
+        providerMessageId: null,
+        errorMessage: null,
+      };
+    }
 
     try {
       const outboxRow = await this.prisma.emailOutbox.create({
@@ -142,14 +183,7 @@ export class EmailService {
     }
 
     if (options?.dispatchImmediately && outboxRowId) {
-      return this.dispatchOutboxRowNow(
-        outboxRowId,
-        to,
-        subject,
-        storedHtml,
-        storedText ?? undefined,
-        options.idempotencyKey,
-      );
+      return this.dispatchOutboxRowNow(outboxRowId);
     }
 
     return {
@@ -329,119 +363,95 @@ export class EmailService {
 
   private async dispatchOutboxRowNow(
     outboxRowId: string,
-    to: string,
-    subject: string,
-    html: string,
-    text?: string,
-    idempotencyKey?: string | null,
   ): Promise<EnqueueEmailResult> {
-    const now = new Date();
-    const claim = await this.prisma.emailOutbox.updateMany({
-      where: {
-        id: outboxRowId,
-        status: EmailOutboxStatus.PENDING,
-      },
-      data: {
-        status: EmailOutboxStatus.PROCESSING,
-        attempts: { increment: 1 },
-        lockedAt: now,
-        lockOwner: `inline-${process.pid}`,
-        lockExpiresAt: new Date(now.getTime() + 60_000),
-        lastError: null,
-      },
-    });
+    const skipped: EnqueueEmailResult = {
+      outboxId: outboxRowId,
+      dispatchStatus: 'SKIPPED',
+      providerMessageId: null,
+      errorMessage: null,
+    };
+    const row = await claimEmailOutbox(this.prisma, outboxRowId);
+    if (!row) return skipped;
+    const attemptNo = row.attempts;
 
-    if (claim.count === 0) {
-      return {
-        outboxId: outboxRowId,
-        dispatchStatus: 'SKIPPED',
-        providerMessageId: null,
-        errorMessage: null,
-      };
-    }
-
-    const normalizedEmail = to.trim().toLowerCase();
+    const normalizedEmail = row.recipientEmailSnapshot.trim().toLowerCase();
     const emailHash = createHash('sha256')
       .update(normalizedEmail)
       .digest('hex');
-    const suppression = await this.prisma.emailSuppression.findFirst({
-      where: {
-        recipientEmailHash: emailHash,
-        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-      },
-      select: { id: true, reason: true },
-    });
+    try {
+      const suppression = await this.prisma.emailSuppression.findFirst({
+        where: {
+          recipientEmailHash: emailHash,
+          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+        },
+        select: { id: true, reason: true },
+      });
 
-    if (suppression) {
-      await this.prisma.$transaction([
-        this.prisma.emailDeliveryAttempt.create({
-          data: {
+      if (suppression) {
+        const acknowledged = await finishEmailOutboxClaim(
+          this.prisma,
+          row,
+          {
+            status: EmailOutboxStatus.COMPLETED,
+            sentAt: new Date(),
+            lastError: 'SUPPRESSED',
+          },
+          {
             emailOutboxId: outboxRowId,
-            attemptNo: 1,
+            attemptNo,
             provider: 'SUPPRESSION',
             result: 'SUPPRESSED',
             errorCode: String(suppression.reason),
             errorMessage: 'Suppressed by deliverability policy',
           },
-        }),
-        this.prisma.emailOutbox.update({
-          where: { id: outboxRowId },
-          data: {
-            status: EmailOutboxStatus.COMPLETED,
-            sentAt: new Date(),
-            lastError: 'SUPPRESSED',
-            lockExpiresAt: null,
-          },
-        }),
-      ]);
-      this.logger.warn(
-        `Email suppressed by policy outboxId=${outboxRowId} reason=${suppression.reason} to=${maskEmailForLog(normalizedEmail)}`,
-      );
-      return {
-        outboxId: outboxRowId,
-        dispatchStatus: 'SUPPRESSED',
-        providerMessageId: null,
-        errorMessage: `SUPPRESSED:${suppression.reason}`,
-      };
-    }
+        );
+        if (!acknowledged) return skipped;
+        this.logger.warn(
+          `Email suppressed by policy outboxId=${outboxRowId} reason=${suppression.reason} to=${maskEmailForLog(normalizedEmail)}`,
+        );
+        return {
+          outboxId: outboxRowId,
+          dispatchStatus: 'SUPPRESSED',
+          providerMessageId: null,
+          errorMessage: `SUPPRESSED:${suppression.reason}`,
+        };
+      }
 
-    try {
-      const providerResult = await this.sendNow(
-        normalizedEmail,
-        subject,
-        html,
-        text,
+      const providerResult = await withEmailDeliveryTimeout(
+        this.sendNow(
+          normalizedEmail,
+          row.subject,
+          row.html,
+          row.text ?? undefined,
+          {
+            idempotencyKey: row.idempotencyKey ?? `outbox:${outboxRowId}`,
+          },
+        ),
+      );
+
+      const acknowledged = await finishEmailOutboxClaim(
+        this.prisma,
+        row,
         {
-          idempotencyKey: idempotencyKey ?? `outbox:${outboxRowId}`,
+          status: EmailOutboxStatus.COMPLETED,
+          providerMessageId: providerResult.providerMessageId,
+          sentAt: new Date(),
+        },
+        {
+          emailOutboxId: outboxRowId,
+          attemptNo,
+          provider: this.getDeliveryAttemptProvider(),
+          transportHost: this.getTransportHost(),
+          result: 'SENT',
+          providerResponseJson: {
+            providerMessageId: providerResult.providerMessageId,
+            emailMode: providerResult.emailMode,
+            transportRecipient: providerResult.transportRecipient,
+            intendedRecipient: providerResult.intendedRecipientLabel,
+          } as Prisma.InputJsonValue,
         },
       );
-
-      await this.prisma.$transaction([
-        this.prisma.emailDeliveryAttempt.create({
-          data: {
-            emailOutboxId: outboxRowId,
-            attemptNo: 1,
-            provider: this.getDeliveryAttemptProvider(),
-            transportHost: this.getTransportHost(),
-            result: 'SENT',
-            providerResponseJson: {
-              providerMessageId: providerResult.providerMessageId,
-              emailMode: providerResult.emailMode,
-              transportRecipient: providerResult.transportRecipient,
-              intendedRecipient: providerResult.intendedRecipientLabel,
-            } as Prisma.InputJsonValue,
-          },
-        }),
-        this.prisma.emailOutbox.update({
-          where: { id: outboxRowId },
-          data: {
-            status: EmailOutboxStatus.COMPLETED,
-            providerMessageId: providerResult.providerMessageId,
-            sentAt: new Date(),
-            lockExpiresAt: null,
-          },
-        }),
-      ]);
+      if (!acknowledged) return skipped;
       this.logger.log(
         `Email dispatched in real time outboxId=${outboxRowId} to=${maskEmailForLog(normalizedEmail)} providerMessageId=${providerResult.providerMessageId ?? 'n/a'}`,
       );
@@ -453,27 +463,28 @@ export class EmailService {
       };
     } catch (error) {
       const message = this.formatSafeEmailError(error);
-      await this.prisma.$transaction([
-        this.prisma.emailDeliveryAttempt.create({
-          data: {
-            emailOutboxId: outboxRowId,
-            attemptNo: 1,
-            provider: this.getDeliveryAttemptProvider(),
-            transportHost: this.getTransportHost(),
-            result: 'FAILED',
-            errorMessage: message,
-          },
-        }),
-        this.prisma.emailOutbox.update({
-          where: { id: outboxRowId },
-          data: {
-            status: EmailOutboxStatus.FAILED,
-            lastError: message,
-            availableAt: new Date(Date.now() + 30_000),
-            lockExpiresAt: null,
-          },
-        }),
-      ]);
+      const exhausted = attemptNo >= EMAIL_OUTBOX_MAX_ATTEMPTS;
+      const delay = exhausted
+        ? 86400
+        : emailOutboxBackoffSeconds(row.scenarioKey, attemptNo);
+      const acknowledged = await finishEmailOutboxClaim(
+        this.prisma,
+        row,
+        {
+          status: EmailOutboxStatus.FAILED,
+          lastError: exhausted ? `DLQ_EXHAUSTED:${message}` : message,
+          availableAt: new Date(Date.now() + delay * 1000),
+        },
+        {
+          emailOutboxId: outboxRowId,
+          attemptNo,
+          provider: this.getDeliveryAttemptProvider(),
+          transportHost: this.getTransportHost(),
+          result: 'FAILED',
+          errorMessage: message,
+        },
+      );
+      if (!acknowledged) return skipped;
       this.logger.error(
         `Real-time email dispatch failed outboxId=${outboxRowId} to=${maskEmailForLog(normalizedEmail)} error=${message}`,
       );

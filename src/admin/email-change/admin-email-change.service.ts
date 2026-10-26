@@ -154,16 +154,11 @@ export class AdminEmailChangeService {
 
     const NT_ADMIN_EMAIL_CHANGE_REQUESTED =
       'ADMIN_EMAIL_CHANGE_REQUESTED' as NotificationType;
-    for (const sa of superAdmins) {
-      await this.notificationsService.create(
-        sa.id,
-        NT_ADMIN_EMAIL_CHANGE_REQUESTED,
-        {
-          actorId: adminId,
-          payload: { requestId: request.id, newEmail: request.newEmail },
-        },
-      );
-    }
+    const deliveries = await this.notificationsService.createForRecipients(superAdmins.map(admin => admin.id), NT_ADMIN_EMAIL_CHANGE_REQUESTED, {
+      actorId: adminId, payload: { requestId: request.id, newEmail: request.newEmail },
+    });
+    const failed = deliveries.find(result => result.status === 'rejected');
+    if (failed?.status === 'rejected') throw failed.reason;
 
     return {
       message:

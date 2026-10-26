@@ -11,6 +11,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { LedgerService } from './ledger.service';
 import { SettlementCalculatorService } from './settlement-calculator.service';
 import { SettlementSnapshotService } from './settlement-snapshot.service';
+import { loadCustomSettlementContext } from './custom-order-settlement-query';
 
 type PaidCustomOrderSnapshot = {
   id: string;
@@ -59,10 +60,7 @@ export class CustomOrderFinanceSyncService {
     params: CustomOrderSettlementApplyParams,
   ) {
     await tx.$queryRaw`SELECT "_id" FROM "Brand" WHERE "_id" = ${params.brandId}::uuid FOR UPDATE`;
-    const persisted = await tx.customOrder.findUnique({
-      where: { id: params.customOrderId },
-      select: { status: true, lane: true, queuePolicyVersion: true, activatedAt: true, cancelledAt: true, buyerPriceSummaryJson: true, jumpFeeAmount: true, brand: { select: { verificationStatus: true, owner: { select: { status: true } } } } },
-    });
+    const persisted = await loadCustomSettlementContext(tx, params.customOrderId);
     if (persisted?.cancelledAt) return null;
     const summary = persisted?.buyerPriceSummaryJson && typeof persisted.buyerPriceSummaryJson === 'object' && !Array.isArray(persisted.buyerPriceSummaryJson) ? persisted.buyerPriceSummaryJson as Record<string, unknown> : {};
     const captureAmount = this.roundMoney(Number(summary.grandTotal ?? params.grossAmount));

@@ -13,6 +13,7 @@ import {
   Patch,
   UseInterceptors,
   UploadedFile,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -1071,17 +1072,17 @@ export class CollectionsController {
     );
   }
 
-  // ===================== Bulk Upload (Scaffold) =====================
+  // ===================== Bulk Upload (Store Products) =====================
   @UseGuards(JwtAuthGuard)
   @Post(':id/bulk-upload')
   @UseInterceptors(FileInterceptor('file', collectionBulkUploadMulterOptions()))
   @ApiOperation({
     summary: 'Initiate bulk product upload',
     description:
-      'Creates a bulk upload job for CSV/images. Returns upload URL and job ID.',
+      'Imports up to 1,000 CSV product rows into a StoreCollection. Returns job ID and counters; no upload URL. Images/mixed modes still require CSV metadata and canonical publish validation.',
   })
   async initiateBulkUpload(
-    @Param('id') collectionId: string,
+    @Param('id', new ParseUUIDPipe()) collectionId: string,
     @Body() body: { mode?: 'csv' | 'images' | 'mixed' },
     @Req() req: any,
     @UploadedFile() file?: Express.Multer.File,
@@ -1097,7 +1098,7 @@ export class CollectionsController {
   @UseGuards(JwtAuthGuard)
   @Get('bulk-upload/:jobId')
   @ApiOperation({ summary: 'Get bulk upload job status' })
-  async getBulkUploadStatus(@Param('jobId') jobId: string, @Req() req: any) {
+  async getBulkUploadStatus(@Param('jobId', new ParseUUIDPipe()) jobId: string, @Req() req: any) {
     return this.collectionsService.getBulkUploadStatus(jobId, req.user.id);
   }
 
@@ -1105,7 +1106,7 @@ export class CollectionsController {
   @Post('bulk-upload/:jobId/retry')
   @ApiOperation({ summary: 'Retry failed bulk upload rows' })
   async retryBulkUploadRows(
-    @Param('jobId') jobId: string,
+    @Param('jobId', new ParseUUIDPipe()) jobId: string,
     @Body() body: { rowIndices?: number[]; rows?: number[] },
     @Req() req: any,
   ) {

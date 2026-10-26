@@ -1,0 +1,73 @@
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const { PaymentService } = require('../src/payment/payment.service');
+const { FxRateService } = require('../src/payment/fx-rate.service');
+const { NotificationsService } = require('../src/notifications/notifications.service');
+const { loadStandardPaymentOrders } = require('../src/payment/standard-payment-order-query');
+
+module.exports = async function verifyStandardPayments({ prisma, queries, simulationUrl, sync, ownerId, buyerId, brandId }) {
+  const [database] = await prisma.$queryRaw`SELECT current_database() AS name`;
+  assert(/^wiez_ledger_race_[a-f0-9]{32}$/.test(database.name));
+  const base = new URL(simulationUrl);
+  assert.equal(base.protocol, 'http:'); assert.equal(base.hostname, '127.0.0.1'); assert.equal(base.pathname, '/paystack');
+  const saved = process.env.PAYSTACK_SECRET_KEY;
+  process.env.PAYSTACK_SECRET_KEY = 'sk_test_fixture_only_not_a_real_key';
+  const seed = async transactions => {
+    const response = await fetch(`${base}/__fixtures`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ transactions }) });
+    assert.equal(response.status, 200);
+  };
+  const stats = async () => (await (await fetch(`${base}/__stats`)).json()).requests;
+  const cases = [], warnings = [];
+  try {
+    const adminId = randomUUID();
+    await prisma.user.create({ data: { id: adminId, username: adminId, email: `${adminId}@example.invalid`, role: 'SuperAdmin' } });
+    const notifications = new NotificationsService(prisma, {}, { del: async () => {} }, { getConfig: () => undefined }, { getAppName: () => 'WIEZ', send: async () => {} }, {}, { enqueue: async () => {} }, { publishOrEmit: async () => true });
+    notifications.logger = { warn: message => warnings.push(message), error: message => warnings.push(message), debug() {}, log() {} };
+    const payments = new PaymentService(prisma, new FxRateService(prisma), sync, {}, notifications, {}, undefined, undefined, undefined, undefined, undefined, undefined, base.toString());
+    payments.logger = { warn: message => warnings.push(message), error: message => warnings.push(message), log() {} };
+    const references = Array.from({ length: 26 }, () => `standard-http-${randomUUID()}`);
+    const orders = references.map(reference => ({ id: randomUUID(), buyerId, brandId, customerName: 'Standard HTTP fixture', items: [], totalAmount: 100, currency: 'NGN', paymentStatus: 'PENDING', paymentReference: reference }));
+    await prisma.order.createMany({ data: orders });
+    await prisma.paymentAttempt.createMany({ data: references.map((reference,index) => ({ buyerId, subjectType: 'STANDARD_ORDER', provider: 'PAYSTACK', providerMode: 'live', paymentMethod: 'PAYSTACK', reference, status: 'PENDING', amount: 100, currency: 'NGN', orderIds: [orders[index].id], updatedAt: new Date(Date.now() - 7200000) })) });
+    await seed(references.map(reference => ({ reference, status: 'success', amount: 10000, currency: 'NGN', paid_at: new Date().toISOString() })));
+    queries.length = 0;
+    const result = await payments.reconcileStalePaymentAttempts({ olderThanMinutes: 30, limit: 26 }, ownerId);
+    assert.deepEqual(result.failed, []); assert.equal(result.scanned, 26); assert.equal(result.updated, 26);
+    assert.deepEqual(warnings, []);
+    assert.equal((await stats()).length, 26);
+    const contextReads = queries.filter(query => /FROM "Order" o JOIN "Brand" b/.test(query) && /AS "brandOwnerId"/.test(query)).length;
+    assert.equal(contextReads, 26);
+    const notificationActorBrandReads = queries.filter(query => /FROM "public"\."Brand"/.test(query)).length;
+    assert.equal(notificationActorBrandReads, 52, 'The two independent notice commands retain fresh actor identity reads per captured reference');
+    const ids = orders.map(row => row.id);
+    assert.equal(await prisma.order.count({ where: { id: { in: ids }, paymentStatus: 'PAID', paidAt: { not: null } } }), 26);
+    assert.equal(await prisma.escrowHold.count({ where: { orderId: { in: ids } } }), 26);
+    const captures = await prisma.paymentAttempt.findMany({ where: { reference: { in: references } } });
+    assert(captures.every(row => row.status === 'PAID' && row.settlementCurrency === 'NGN' && row.settlementAmount.toFixed(2) === '100.00'));
+    assert.equal(await prisma.financialDocument.count({ where: { paymentAttemptId: { in: captures.map(row => row.id) }, type: 'BUYER_RECEIPT' } }), 26);
+    assert.equal(await prisma.messageThreadOrderLink.count({ where: { orderId: { in: ids } } }), 26);
+    assert.equal(await prisma.message.count({ where: { orderId: { in: ids }, metadataJson: { path: ['eventType'], equals: 'STANDARD_ORDER_PLACED' } } }), 26);
+    const notices = await prisma.notification.findMany({ where: { type: 'ORDER_PLACED', payload: { path: ['orderId'], string_starts_with: '' } } });
+    const ownNotices = notices.filter(row => ids.includes(row.payload.orderId));
+    assert.equal(ownNotices.length, 52);
+    assert(ownNotices.every(row => row.recipientId === buyerId || row.recipientId === ownerId));
+    const countJournals = await prisma.ledgerTransaction.count();
+    assert.equal((await payments.reconcileStalePaymentAttempts({ olderThanMinutes: 30, limit: 26 }, ownerId)).scanned, 0);
+    await payments.applyAttemptStatus(references[0], '', 'PAID', 'reconcile');
+    assert.equal((await stats()).length, 26);
+    assert.equal(await prisma.ledgerTransaction.count(), countJournals);
+    assert.equal(await prisma.notification.count({ where: { type: 'ORDER_PLACED' } }), notices.length);
+    assert.deepEqual(await loadStandardPaymentOrders(prisma, references[0], ownerId), []);
+    assert.deepEqual(await loadStandardPaymentOrders(prisma, `missing-${randomUUID()}`, buyerId), []);
+    queries.length = 0;
+    const current = await loadStandardPaymentOrders(prisma, references[0], buyerId);
+    assert.equal(current[0].totalAmount.toFixed(2), '100.00');
+    assert.equal(current[0].brand.ownerId, ownerId);
+    assert.equal(queries.filter(query => /^\s*SELECT\b/i.test(query)).length, 1, 'The payment context itself is one JOIN, without separate Brand hydration');
+    cases.push('real standard reconciliation verifies26 successful captures over local provider HTTP, reads26 native order-owner JOINs(one standalone context SELECT/no extra Brand hydration), records26 NGN captures/escrow holds/receipts/conversation messages and52 correct buyer-owner notices; two independent notice actor guards per capture remain fresh; missing/wrong buyer and replay add no transport, journal or notice');
+    return { cases, contextReadsFor26: contextReads, providerRequestsFor26: 26, noticesFor26: ownNotices.length, notificationActorBrandReadsFor26: notificationActorBrandReads };
+  } finally {
+    if (saved === undefined) delete process.env.PAYSTACK_SECRET_KEY;
+    else process.env.PAYSTACK_SECRET_KEY = saved;
+  }
+};

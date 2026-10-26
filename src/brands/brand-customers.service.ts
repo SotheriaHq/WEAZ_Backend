@@ -34,9 +34,26 @@ export class BrandCustomersService {
       throw new ForbiddenException(
         'Upgrade to a paid plan to set a customer purchase threshold.',
       );
-    await this.prisma.brand.update({
-      where: { id: brandId },
-      data: { customerMinimumOrders: minimumOrders },
+    await this.prisma.$transaction(async tx => {
+      await tx.$queryRaw(Prisma.sql`SELECT "_id" FROM "Brand" WHERE "_id" = ${brandId}::uuid FOR UPDATE`);
+      // Subscription writers share the brand lock. Read their committed state
+      // in a new statement and evaluate expiry at the actual database write.
+      const changed = await tx.$executeRaw(Prisma.sql`
+        WITH latest AS (
+          SELECT status, "priceSnapshotNgn", "currentPeriodEnd" FROM "BrandSubscription"
+          WHERE "brandId" = ${brandId}::uuid AND status IN ('ACTIVE', 'PAST_DUE')
+          ORDER BY "createdAt" DESC LIMIT 1
+        )
+        UPDATE "Brand" b SET "customerMinimumOrders" = ${minimumOrders}, "updatedAt" = (clock_timestamp() AT TIME ZONE 'UTC')
+        FROM latest s WHERE b."_id" = ${brandId}::uuid AND s.status = 'ACTIVE'
+          AND s."priceSnapshotNgn" > 0 AND s."currentPeriodEnd" > (clock_timestamp() AT TIME ZONE 'UTC')
+          AND (b."ownerId" = ${userId}::uuid OR EXISTS (
+            SELECT 1 FROM "BrandMember" m WHERE m."brandId" = b."_id" AND m."userId" = ${userId}::uuid AND m.role = 'OWNER' AND m.status = 'ACTIVE'
+          ))
+      `);
+      if (!changed) throw new ForbiddenException('Paid owner access expired or changed. Refresh before changing customer settings.');
+    }, {
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
     });
     return this.commerce.get(brandId);
   }
@@ -90,7 +107,8 @@ export class BrandCustomersService {
       page: query.page,
       limit: query.limit,
       hasNextPage: offset + query.limit < total,
-      settings,
+      // ORDERS_READ staff need classification, not private subscription data.
+      settings: { effectiveMinimumOrders: settings.effectiveMinimumOrders },
     };
   }
 }

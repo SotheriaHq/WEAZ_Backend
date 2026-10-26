@@ -8,6 +8,7 @@ import {
   UseGuards,
   Req,
   Param,
+  ParseUUIDPipe,
   Query,
   Body,
   BadRequestException,
@@ -477,8 +478,15 @@ export class UploadController {
 
   @UseGuards(JwtAuthGuard)
   @Delete(':fileId')
-  @ApiOperation({ summary: 'Delete file' })
-  async deleteFile(@Param('fileId') fileId: string, @Req() req: any) {
+  @ApiOperation({
+    summary: 'Delete file',
+    description:
+      'Removes an owned, unattached file record and queues durable deletion of its original and variants. Referenced or actively processing files are retained. Storage cleanup is retried asynchronously.',
+  })
+  async deleteFile(
+    @Param('fileId', new ParseUUIDPipe()) fileId: string,
+    @Req() req: any,
+  ) {
     await this.uploadService.deleteFile(fileId, req.user.id);
     return { message: 'File deleted successfully' };
   }

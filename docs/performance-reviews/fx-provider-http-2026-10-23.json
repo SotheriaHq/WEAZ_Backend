@@ -1,0 +1,13 @@
+{
+  "checkedAt": "2026-10-23T16:47:35.152Z",
+  "passed": true,
+  "cases": [
+    "120 concurrent quotes share one real HTTP table request and exact USD->NGN conversion",
+    "country selection, explicit override, multi-currency choice and unknown-country base fallback",
+    "persisted precision is reused for settlement; changed payload, missing and reversed snapshots cannot reprice money",
+    "outage allows explicitly stale display within 72 hours, blocks new financial snapshots and rejects older cache",
+    "negative/foreign-base/duplicate/old/HTML/429 responses fail safely with bounded retry backoff",
+    "hanging upstream is aborted within the five-second HTTP budget",
+    "unreachable provider produces a controlled unavailable response"
+  ]
+}

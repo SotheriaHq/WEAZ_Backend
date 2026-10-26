@@ -144,24 +144,27 @@ function buildHarness(
       }
       return null;
     }),
-    create: jest.fn(async ({ data }: any) => {
-      const duplicate = snapshots.find(
-        (snapshot) =>
-          (data.orderId && snapshot.orderId === data.orderId) ||
-          (data.customOrderId && snapshot.customOrderId === data.customOrderId),
-      );
-      if (duplicate) {
-        const error: any = new Error('Unique constraint failed');
-        error.code = 'P2002';
-        throw error;
+    createMany: jest.fn(async ({ data: records }: any) => {
+      let count = 0;
+      for (const data of records) {
+        const duplicate = snapshots.find(
+          (snapshot) =>
+            (data.orderId && snapshot.orderId === data.orderId) ||
+            (data.customOrderId &&
+              snapshot.customOrderId === data.customOrderId),
+        );
+        if (duplicate) {
+          continue;
+        }
+        const created = {
+          id: `snapshot_${snapshots.length + 1}`,
+          ...data,
+          createdAt: now,
+        };
+        snapshots.push(created);
+        count++;
       }
-      const created = {
-        id: `snapshot_${snapshots.length + 1}`,
-        ...data,
-        createdAt: now,
-      };
-      snapshots.push(created);
-      return created;
+      return { count };
     }),
     update: jest.fn(),
   };
@@ -296,7 +299,7 @@ describe('SettlementBackfillService', () => {
       'Release gross amounts do not sum to totalAmount',
     );
     expect(report.standard.summary.created).toBe(0);
-    expect(prisma.settlementSnapshot.create).not.toHaveBeenCalled();
+    expect(prisma.settlementSnapshot.createMany).not.toHaveBeenCalled();
   });
 
   it('classifies a custom order with both allocations as safe and backfills from allocation values', async () => {
@@ -350,7 +353,7 @@ describe('SettlementBackfillService', () => {
     expect(report.custom.records[0].unsafeReasons).toContain(
       'Missing FINAL_COMPLETION_PORTION allocation',
     );
-    expect(prisma.settlementSnapshot.create).not.toHaveBeenCalled();
+    expect(prisma.settlementSnapshot.createMany).not.toHaveBeenCalled();
   });
 
   it('flags duplicate custom-order allocation types', async () => {
@@ -405,7 +408,7 @@ describe('SettlementBackfillService', () => {
     expect(report.mode).toBe('dry-run');
     expect(report.standard.summary.safe).toBe(1);
     expect(report.custom.summary.safe).toBe(1);
-    expect(prisma.settlementSnapshot.create).not.toHaveBeenCalled();
+    expect(prisma.settlementSnapshot.createMany).not.toHaveBeenCalled();
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
@@ -453,7 +456,7 @@ describe('SettlementBackfillService', () => {
     await service.auditAndBackfill({ orderType: 'standard', write: true });
     await service.auditAndBackfill({ orderType: 'standard', write: true });
 
-    expect(prisma.settlementSnapshot.create).toHaveBeenCalledTimes(1);
+    expect(prisma.settlementSnapshot.createMany).toHaveBeenCalledTimes(1);
     expect(prisma.settlementSnapshot.update).not.toHaveBeenCalled();
     expect(snapshots).toHaveLength(2);
     expect(snapshots[0]).toBe(existingSnapshot);

@@ -135,7 +135,7 @@ describe('PaymentService', () => {
     ).toEqual(
       expect.objectContaining({
         email: 'buyer@example.com',
-        phone: '08030000000',
+        phone: '+2348030000000',
         channel: 'CARD',
         saveNewCard: true,
         newCardDraft: {
@@ -1479,6 +1479,7 @@ describe('PaymentService', () => {
   it('releases unified checkout reservations and abandons custom bag lines after a failed attempt', async () => {
     const tx = {
       $queryRaw: jest.fn().mockResolvedValue(undefined),
+      $executeRaw: jest.fn().mockResolvedValue(1),
       paymentAttempt: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'attempt-release-1',
@@ -1520,17 +1521,17 @@ describe('PaymentService', () => {
         update: jest.fn().mockResolvedValue(undefined),
       },
       product: {
-        findUnique: jest.fn().mockResolvedValue({
+        findMany: jest.fn().mockResolvedValue([{
           id: 'product-1',
           sizeStock: { M: 3 },
-        }),
+        }]),
         update: jest.fn().mockResolvedValue(undefined),
       },
       productVariant: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       inventoryReservation: {
-        update: jest.fn().mockResolvedValue(undefined),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       checkoutSessionLine: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -1569,8 +1570,8 @@ describe('PaymentService', () => {
       ),
     ).resolves.toBeUndefined();
 
-    expect(tx.inventoryReservation.update).toHaveBeenCalledWith({
-      where: { id: 'reservation-1' },
+    expect(tx.inventoryReservation.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ['reservation-1'] }, status: 'RESERVED' },
       data: expect.objectContaining({
         status: 'RELEASED',
         releaseReason: 'ATTEMPT_FAILED',

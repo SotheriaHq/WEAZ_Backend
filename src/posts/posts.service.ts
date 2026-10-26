@@ -391,26 +391,10 @@ export class PostsService {
           console.warn('Failed to enqueue thread fanout', e);
         }
       } else if (recipientIds.length > 0) {
-        for (const recipientId of recipientIds) {
-          try {
-            await this.notifications.create(
-              recipientId,
-              NotificationType.THREAD,
-              {
-                actorId: userId,
-                payload: {
-                  postId,
-                  targetType: 'POST',
-                  targetUrl: `/posts/${postId}`,
-                  message,
-                },
-                dedupeMs: 2 * 60 * 1000,
-              },
-            );
-          } catch (e) {
-            console.warn('Failed to notify patcher of post thread', e);
-          }
-        }
+        await this.notifications.createForRecipients(recipientIds, NotificationType.THREAD, {
+          actorId: userId, payload: { postId, targetType: 'POST', targetUrl: `/posts/${postId}`, message },
+          dedupeMs: 2 * 60 * 1000,
+        });
       }
     }
 

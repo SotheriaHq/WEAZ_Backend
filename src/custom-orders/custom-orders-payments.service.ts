@@ -11,12 +11,14 @@ import {
   NotificationType,
   PaymentStatus,
   PaymentSubjectType,
+  PaymentAttempt,
   Prisma,
   Role,
 } from '@prisma/client';
 import { ADMIN_PERMISSIONS } from 'src/admin/constants/permissions';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { PaymentService } from 'src/payment/payment.service';
+import { lockPaymentAttempt } from 'src/payment/payment-attempt-query';
 import { CustomOrderSideEffectsService } from './custom-order-side-effects.service';
 import { CustomOrdersService } from './custom-orders.service';
 import { FinancialDocumentsService } from 'src/finance/financial-documents.service';
@@ -24,10 +26,7 @@ import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-
 import { CustomOrderThreadBootstrapService } from 'src/messaging/custom-order-thread-bootstrap.service';
 import { VerifyCustomOrderPaymentDto } from './dto/custom-orders.dto';
 import { CustomOrderQueueService } from './queue/custom-order-queue.service';
-import {
-  canonicalUserProfileSelect,
-  resolveRequiredProfileField,
-} from 'src/common/user-profile-source.helper';
+import { loadCustomPaymentOrder } from './custom-payment-order-query';
 
 const ACTIVE_PAYMENT_ATTEMPT_STATUSES = new Set([
   'PENDING',
@@ -49,10 +48,7 @@ export class CustomOrdersPaymentsService {
   ) {}
 
   private buyerDisplayName(buyer: any): string {
-    return [
-      resolveRequiredProfileField(buyer ?? {}, 'firstName'),
-      resolveRequiredProfileField(buyer ?? {}, 'lastName'),
-    ]
+    return [buyer?.userProfile?.firstName, buyer?.userProfile?.lastName]
       .map((value) => String(value || '').trim())
       .filter(Boolean)
       .join(' ');
@@ -63,36 +59,30 @@ export class CustomOrdersPaymentsService {
     customOrderId: string,
     dto: VerifyCustomOrderPaymentDto,
   ) {
-    const order = await this.prisma.customOrder.findFirst({
-      where: { id: customOrderId, buyerId: userId },
-      select: {
-        id: true,
-        createdAt: true,
-        buyerId: true,
-        brandId: true,
-        currency: true,
-        sourceTitleSnapshot: true,
-        sourceBrandNameSnapshot: true,
-        productionLeadDaysSnapshot: true,
-        deliveryMaxDaysSnapshot: true,
-        buyerPriceSummaryJson: true,
-        buyer: {
-          select: {
-            userProfile: { select: canonicalUserProfileSelect },
-            username: true,
-            email: true,
-          },
-        },
-      },
-    });
+    return this.verifyPaymentForOrder(userId, customOrderId, dto);
+  }
+
+  private async verifyPaymentForOrder(
+    userId: string,
+    customOrderId: string,
+    dto: VerifyCustomOrderPaymentDto,
+    knownAttempt?: PaymentAttempt,
+  ) {
+    const order = await loadCustomPaymentOrder(
+      this.prisma,
+      customOrderId,
+      userId,
+    );
 
     if (!order) {
       throw new NotFoundException('Custom order not found');
     }
 
-    const attempt = await this.prisma.paymentAttempt.findUnique({
-      where: { reference: dto.reference },
-    });
+    const attempt =
+      knownAttempt ??
+      (await this.prisma.paymentAttempt.findUnique({
+        where: { reference: dto.reference },
+      }));
     if (
       !attempt ||
       attempt.customOrderId !== customOrderId ||
@@ -144,19 +134,10 @@ export class CustomOrdersPaymentsService {
       ),
     );
     const brand =
-      nextStatus === 'PAID'
-        ? await this.prisma.brand.findUnique({
-            where: { id: order.brandId },
-            select: { ownerId: true },
-          })
-        : null;
+      nextStatus === 'PAID' ? { ownerId: order.brandOwnerId } : null;
 
     const transitionResult = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT "reference" FROM "PaymentAttempt" WHERE "reference" = ${dto.reference} FOR UPDATE`;
-
-      const lockedAttempt = await tx.paymentAttempt.findUnique({
-        where: { reference: dto.reference },
-      });
+      const lockedAttempt = await lockPaymentAttempt(tx, dto.reference);
 
       if (
         !lockedAttempt ||
@@ -342,14 +323,8 @@ export class CustomOrdersPaymentsService {
 
     if (transitionResult.transitionedToPaid) {
       const buyerDisplayName = this.buyerDisplayName(order.buyer);
-      const buyerFirstName = resolveRequiredProfileField(
-        order.buyer ?? {},
-        'firstName',
-      );
-      const buyerLastName = resolveRequiredProfileField(
-        order.buyer ?? {},
-        'lastName',
-      );
+      const buyerFirstName = order.buyer.userProfile?.firstName ?? '';
+      const buyerLastName = order.buyer.userProfile?.lastName ?? '';
       const buyerName =
         buyerDisplayName || String(order.buyer?.username || 'Buyer');
 
@@ -441,7 +416,12 @@ export class CustomOrdersPaymentsService {
     }
 
     if (attempt.customOrderId) {
-      return this.verifyPayment(userId, attempt.customOrderId, dto);
+      return this.verifyPaymentForOrder(
+        userId,
+        attempt.customOrderId,
+        dto,
+        attempt,
+      );
     }
 
     if (!attempt.checkoutIntentId) {
@@ -532,11 +512,7 @@ export class CustomOrdersPaymentsService {
     );
 
     const transitionResult = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT "reference" FROM "PaymentAttempt" WHERE "reference" = ${dto.reference} FOR UPDATE`;
-
-      const lockedAttempt = await tx.paymentAttempt.findUnique({
-        where: { reference: dto.reference },
-      });
+      const lockedAttempt = await lockPaymentAttempt(tx, dto.reference);
 
       if (
         !lockedAttempt ||
@@ -692,24 +668,7 @@ export class CustomOrdersPaymentsService {
 
   private async ensurePaidCustomOrderSettlement(reference: string) {
     const reconciliation = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT "reference" FROM "PaymentAttempt" WHERE "reference" = ${reference} FOR UPDATE`;
-
-      const attempt = await tx.paymentAttempt.findUnique({
-        where: { reference },
-        select: {
-          id: true,
-          reference: true,
-          buyerId: true,
-          customOrderId: true,
-          checkoutIntentId: true,
-          status: true,
-          channel: true,
-          paymentMethod: true,
-          confirmedAt: true,
-          settlementCurrency: true,
-          settlementAmount: true,
-        },
-      });
+      const attempt = await lockPaymentAttempt(tx, reference);
 
       if (!attempt || attempt.status !== 'PAID') {
         return null;
@@ -805,42 +764,17 @@ export class CustomOrdersPaymentsService {
         return null;
       }
 
-      const queueBrand = await tx.customOrder.findUnique({ where: { id: resolvedCustomOrderId }, select: { brandId: true } });
+      const queueBrand = await tx.customOrder.findUnique({
+        where: { id: resolvedCustomOrderId },
+        select: { brandId: true },
+      });
       if (queueBrand) await this.queue.lockBrand(tx, queueBrand.brandId);
 
-      const order = await tx.customOrder.findUnique({
-        where: { id: resolvedCustomOrderId },
-        select: {
-          id: true,
-          createdAt: true,
-          buyerId: true,
-          brandId: true,
-          currency: true,
-          status: true,
-          sourceTitleSnapshot: true,
-          sourceBrandNameSnapshot: true,
-          productionLeadDaysSnapshot: true,
-          deliveryMaxDaysSnapshot: true,
-          buyerPriceSummaryJson: true,
-          acceptedAt: true,
-          promisedProductionAt: true,
-          promisedDispatchAt: true,
-          promisedDeliveryAt: true,
-          currentProgressStage: true,
-          currentProgressStageEnteredAt: true,
-          lastBrandProgressUpdateAt: true,
-          queuePolicyVersion: true,
-          activatedAt: true,
-          cancelledAt: true,
-          buyer: {
-            select: {
-              userProfile: { select: canonicalUserProfileSelect },
-              username: true,
-              email: true,
-            },
-          },
-        },
-      });
+      const order = await loadCustomPaymentOrder(
+        tx,
+        resolvedCustomOrderId,
+        attempt.buyerId,
+      );
 
       if (!order) {
         return null;
@@ -848,12 +782,18 @@ export class CustomOrdersPaymentsService {
 
       // A replay repairs finance without restarting production or reviving a cancelled order.
       if (order.queuePolicyVersion) {
-        if (!order.cancelledAt) await this.applyPaidCustomOrderSettlement(tx, {
-          customOrderId: order.id, brandId: order.brandId,
-          grossAmount: Number((order.buyerPriceSummaryJson as Record<string, unknown>)?.grandTotal ?? 0),
-          currency: order.currency, effectiveAt: order.createdAt,
-          releaseEligibleAt: order.activatedAt ?? order.createdAt,
-        });
+        if (!order.cancelledAt)
+          await this.applyPaidCustomOrderSettlement(tx, {
+            customOrderId: order.id,
+            brandId: order.brandId,
+            grossAmount: Number(
+              (order.buyerPriceSummaryJson as Record<string, unknown>)
+                ?.grandTotal ?? 0,
+            ),
+            currency: order.currency,
+            effectiveAt: order.createdAt,
+            releaseEligibleAt: order.activatedAt ?? order.createdAt,
+          });
         return null;
       }
 
@@ -874,10 +814,7 @@ export class CustomOrdersPaymentsService {
             order.deliveryMaxDaysSnapshot * 24 * 60 * 60 * 1000,
         );
 
-      const brand = await tx.brand.findUnique({
-        where: { id: order.brandId },
-        select: { ownerId: true },
-      });
+      const brand = { ownerId: order.brandOwnerId };
 
       const existingTimeline = await tx.customOrderTimelineEvent.findFirst({
         where: {
@@ -1018,14 +955,8 @@ export class CustomOrdersPaymentsService {
     }
 
     const buyerDisplayName = this.buyerDisplayName(reconciliation.buyer);
-    const buyerFirstName = resolveRequiredProfileField(
-      reconciliation.buyer ?? {},
-      'firstName',
-    );
-    const buyerLastName = resolveRequiredProfileField(
-      reconciliation.buyer ?? {},
-      'lastName',
-    );
+    const buyerFirstName = reconciliation.buyer.userProfile?.firstName ?? '';
+    const buyerLastName = reconciliation.buyer.userProfile?.lastName ?? '';
 
     await this.sideEffects.enqueueNotification({
       customOrderId: reconciliation.customOrderId,

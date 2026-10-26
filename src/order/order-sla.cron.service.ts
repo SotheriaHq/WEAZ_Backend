@@ -1,3 +1,4 @@
+import type { NotificationEvent } from '../notifications/notification-batch-query';
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import {
@@ -44,7 +45,11 @@ export class OrderSlaCronService {
   ) {}
 
   private isEnabled(): boolean {
-    return String(process.env.ORDER_SLA_ENABLED ?? 'false').trim().toLowerCase() === 'true';
+    return (
+      String(process.env.ORDER_SLA_ENABLED ?? 'false')
+        .trim()
+        .toLowerCase() === 'true'
+    );
   }
 
   private isAutoCancelEnabled(): boolean {
@@ -73,7 +78,10 @@ export class OrderSlaCronService {
     return this.envHours('ORDER_SLA_HARD_CLOSE_HOURS', 72);
   }
 
-  private tiers(): Array<{ key: 'GENTLE' | 'FIRM' | 'FINAL'; atHours: number }> {
+  private tiers(): Array<{
+    key: 'GENTLE' | 'FIRM' | 'FINAL';
+    atHours: number;
+  }> {
     const dispatch = this.dispatchSlaHours();
     return [
       { key: 'GENTLE', atHours: dispatch * 0.5 },
@@ -120,7 +128,11 @@ export class OrderSlaCronService {
         currentlyOpen: isCurrentlyOpen(schedule, tz, nowDate),
       };
     }
-    return { elapsedHours: wallHours, businessMode: false, currentlyOpen: true };
+    return {
+      elapsedHours: wallHours,
+      businessMode: false,
+      currentlyOpen: true,
+    };
   }
 
   @Cron(CronExpression.EVERY_HOUR)
@@ -151,6 +163,8 @@ export class OrderSlaCronService {
       });
 
       let nudged = 0;
+      const events: NotificationEvent[] = [];
+      const selectedOrders: typeof orders = [];
       for (const order of orders) {
         if (!order.paidAt) continue;
         const { elapsedHours, businessMode, currentlyOpen } =
@@ -166,23 +180,33 @@ export class OrderSlaCronService {
         const brandOwnerId = order.brand?.ownerId;
         if (!brandOwnerId) continue;
 
-        await this.notifications.create(
-          brandOwnerId,
-          NotificationType.ORDER_FULFILLMENT_REMINDER,
-          {
+        selectedOrders.push(order);
+        events.push({
+          recipientId: brandOwnerId,
+          type: NotificationType.ORDER_FULFILLMENT_REMINDER,
+          opts: {
             payload: {
               orderId: order.id,
               tier: tier.key,
               status: order.status,
               hoursElapsed: Math.floor(elapsedHours),
-              // Deep-link straight to the exact order (OrderDetail resolves
-              // buyer/brand/admin access + the role-appropriate actions).
               targetUrl: `/orders/${order.id}`,
             },
           },
-        );
-        // Immediate realtime nudge to the brand's order views (free, no worker).
-        await this.notifications.emitOrderUpdated([brandOwnerId], {
+        });
+      }
+
+      const results = await this.notifications.createEvents(events);
+      for (let index = 0; index < results.length; index += 1) {
+        const result = results[index],
+          order = selectedOrders[index];
+        if (result.status === 'rejected') {
+          this.logger.warn(
+            `Fulfilment reminder failed order=${order.id}: ${this.formatError(result.reason)}`,
+          );
+          continue;
+        }
+        await this.notifications.emitOrderUpdated([order.brand!.ownerId], {
           kind: 'STANDARD',
           orderId: order.id,
           status: order.status,
@@ -234,6 +258,7 @@ export class OrderSlaCronService {
       });
 
       let actioned = 0;
+      const events: NotificationEvent[] = [];
       for (const order of orders) {
         const { elapsedHours, businessMode, currentlyOpen } =
           this.computeOrderElapsed(order, now);
@@ -266,14 +291,20 @@ export class OrderSlaCronService {
           }
           if (!cancelled) continue;
 
-          await this.notifyOverdue(
-            order.id,
-            true,
-            [order.buyerId, brandOwnerId, ...admins],
+          events.push(
+            ...this.buildOverdueEvents(order.id, true, [
+              order.buyerId,
+              brandOwnerId,
+              ...admins,
+            ]),
           );
           await this.notifications.emitOrderUpdated(
             [order.buyerId, brandOwnerId],
-            { kind: 'STANDARD', orderId: order.id, status: OrderStatus.CANCELLED },
+            {
+              kind: 'STANDARD',
+              orderId: order.id,
+              status: OrderStatus.CANCELLED,
+            },
           );
           actioned += 1;
         } else {
@@ -282,10 +313,23 @@ export class OrderSlaCronService {
           // doesn't repeat across frozen closed-hour runs.
           if (elapsedHours >= hardCloseHours + 1) continue;
           if (businessMode && !currentlyOpen) continue;
-          await this.notifyOverdue(order.id, false, [brandOwnerId, ...admins]);
+          events.push(
+            ...this.buildOverdueEvents(order.id, false, [
+              brandOwnerId,
+              ...admins,
+            ]),
+          );
           actioned += 1;
         }
       }
+
+      const results = await this.notifications.createEvents(events);
+      results.forEach((result, index) => {
+        if (result.status === 'rejected')
+          this.logger.warn(
+            `Overdue notification failed for ${events[index].recipientId}: ${this.formatError(result.reason)}`,
+          );
+      });
 
       if (actioned > 0) {
         this.logger.log(
@@ -299,39 +343,30 @@ export class OrderSlaCronService {
     }
   }
 
-  private async notifyOverdue(
+  private buildOverdueEvents(
     orderId: string,
     autoCancelled: boolean,
     recipientIds: Array<string | null | undefined>,
-  ): Promise<void> {
-    const uniqueIds = Array.from(
-      new Set(
+  ): NotificationEvent[] {
+    const uniqueIds = [
+      ...new Set(
         recipientIds
           .map((id) => (typeof id === 'string' ? id.trim() : ''))
-          .filter((id) => id.length > 0),
+          .filter(Boolean),
       ),
-    );
-    for (const recipientId of uniqueIds) {
-      try {
-        await this.notifications.create(
-          recipientId,
-          NotificationType.ORDER_FULFILLMENT_OVERDUE,
-          {
-            payload: {
-              orderId,
-              autoCancelled,
-              reason: 'SLA_FULFILLMENT_TIMEOUT',
-              // Exact order for everyone (OrderDetail resolves per-role access).
-              targetUrl: `/orders/${orderId}`,
-            },
-          },
-        );
-      } catch (error) {
-        this.logger.warn(
-          `Overdue notification failed for ${recipientId} on order ${orderId}: ${this.formatError(error)}`,
-        );
-      }
-    }
+    ];
+    return uniqueIds.map((recipientId) => ({
+      recipientId,
+      type: NotificationType.ORDER_FULFILLMENT_OVERDUE,
+      opts: {
+        payload: {
+          orderId,
+          autoCancelled,
+          reason: 'SLA_FULFILLMENT_TIMEOUT',
+          targetUrl: `/orders/${orderId}`,
+        },
+      },
+    }));
   }
 
   private async getActiveAdminIds(): Promise<string[]> {

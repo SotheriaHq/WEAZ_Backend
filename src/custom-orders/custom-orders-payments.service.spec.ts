@@ -28,6 +28,47 @@ function decimal(value: number) {
   return new Prisma.Decimal(value.toFixed(2));
 }
 
+function paymentOrderRow(order: any) {
+  if (!order) return [];
+  const { buyer, ...fields } = order;
+  return [
+    {
+      ...fields,
+      brandOwnerId: 'brand-owner-1',
+      buyerUsername: buyer?.username ?? '',
+      buyerEmail: buyer?.email ?? '',
+      profileId: buyer?.userProfile ? 'profile' : null,
+      buyerFirstName: buyer?.userProfile?.firstName ?? null,
+      buyerLastName: buyer?.userProfile?.lastName ?? null,
+    },
+  ];
+}
+
+function paymentQueryMock(tx: any) {
+  return jest.fn(async (query: TemplateStringsArray | Prisma.Sql) => {
+    if (
+      Array.isArray(query) &&
+      query.join('').includes('FROM "PaymentAttempt"')
+    )
+      return [await tx.paymentAttempt.findUnique()];
+    if ((query as Prisma.Sql).sql?.includes('AS "buyerUsername"'))
+      return paymentOrderRow(await tx.customOrder.findUnique());
+    if ((query as Prisma.Sql).sql?.includes('FROM "CustomOrder" o')) {
+      const order = await tx.customOrder.findUnique();
+      return order
+        ? [
+            {
+              ...order,
+              brandVerificationStatus: 'APPROVED',
+              ownerStatus: 'ACTIVE',
+            },
+          ]
+        : [];
+    }
+    return [];
+  });
+}
+
 function buildSettlementCalculation(
   input: {
     customOrderId: string;
@@ -161,6 +202,9 @@ describe('CustomOrdersPaymentsService', () => {
       },
       $transaction: jest.fn(),
     };
+    prisma.$queryRaw = jest.fn(async () =>
+      paymentOrderRow(await prisma.customOrder.findFirst()),
+    );
 
     const preparePaymentRequest = jest.fn();
     const preparePaymentGatewayRequest = jest.fn();
@@ -302,7 +346,10 @@ describe('CustomOrdersPaymentsService', () => {
       providers: [
         CustomOrdersPaymentsService,
         CustomOrderFinanceSyncService,
-        { provide: CustomOrderQueueService, useValue: { admitPaid: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: CustomOrderQueueService,
+          useValue: { admitPaid: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: PrismaService, useValue: prisma },
         { provide: PaymentService, useValue: paymentService },
         {
@@ -357,7 +404,7 @@ describe('CustomOrdersPaymentsService', () => {
       failureMessage: null,
     };
     const tx = {
-      $queryRaw: jest.fn().mockResolvedValue(undefined),
+      $queryRaw: jest.fn(),
       paymentAttempt: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'attempt_2',
@@ -379,7 +426,15 @@ describe('CustomOrdersPaymentsService', () => {
         update: jest.fn().mockResolvedValue(updatedAttempt),
       },
       customOrder: {
-        findUnique: jest.fn().mockResolvedValue(null),
+        findUnique: jest.fn().mockResolvedValue({
+          status: 'ACCEPTED',
+          lane: 'ACTIVE',
+          queuePolicyVersion: 1,
+          activatedAt: new Date(),
+          cancelledAt: null,
+          buyerPriceSummaryJson: { grandTotal: 1000 },
+          jumpFeeAmount: decimal(0),
+        }),
         update: jest.fn().mockResolvedValue(undefined),
       },
       paymentEvent: {
@@ -401,6 +456,7 @@ describe('CustomOrdersPaymentsService', () => {
         findUnique: jest.fn(),
       },
     };
+    tx.$queryRaw = paymentQueryMock(tx);
     prisma.$transaction.mockImplementation(
       async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
         callback(tx),
@@ -681,7 +737,7 @@ describe('CustomOrdersPaymentsService', () => {
       },
     };
     const tx = {
-      $queryRaw: jest.fn().mockResolvedValue(undefined),
+      $queryRaw: jest.fn(),
       paymentAttempt: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'attempt_live_pending',
@@ -724,6 +780,7 @@ describe('CustomOrdersPaymentsService', () => {
         findUnique: jest.fn(),
       },
     };
+    tx.$queryRaw = paymentQueryMock(tx);
     prisma.$transaction.mockImplementation(
       async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
         callback(tx),
@@ -806,7 +863,7 @@ describe('CustomOrdersPaymentsService', () => {
       failureMessage: null,
     };
     const tx = {
-      $queryRaw: jest.fn().mockResolvedValue(undefined),
+      $queryRaw: jest.fn(),
       paymentAttempt: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'attempt_4',
@@ -855,6 +912,16 @@ describe('CustomOrdersPaymentsService', () => {
         findUnique: jest.fn(),
       },
     };
+    tx.customOrder.findUnique.mockResolvedValue({
+      status: 'ACCEPTED',
+      lane: 'ACTIVE',
+      queuePolicyVersion: 1,
+      activatedAt: new Date(),
+      cancelledAt: null,
+      buyerPriceSummaryJson: { grandTotal: 2000 },
+      jumpFeeAmount: decimal(0),
+    });
+    tx.$queryRaw = paymentQueryMock(tx);
     prisma.$transaction.mockImplementation(
       async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
         callback(tx),

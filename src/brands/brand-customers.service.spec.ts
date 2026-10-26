@@ -1,7 +1,8 @@
 import { ForbiddenException } from '@nestjs/common';
 import { BrandCustomersService } from './brand-customers.service';
 describe('Brand customer authorization and classification', () => {
-  const prisma = { brand: { update: jest.fn() }, $queryRaw: jest.fn() };
+  const tx = { $queryRaw: jest.fn(), $executeRaw: jest.fn() };
+  const prisma = { brand: { update: jest.fn() }, $queryRaw: jest.fn(), $transaction: jest.fn() };
   const access = {
     assertBrandOwnerAndResolve: jest.fn(),
     resolveBrandContext: jest.fn(),
@@ -18,6 +19,7 @@ describe('Brand customer authorization and classification', () => {
     jest.resetAllMocks();
     access.assertBrandOwnerAndResolve.mockResolvedValue({ brandId: 'brand' });
     access.resolveBrandContext.mockResolvedValue({ brandId: 'brand' });
+    prisma.$transaction.mockImplementation(work => work(tx));
   });
   it('rejects cross-brand requests before reading orders', async () => {
     permissions.assertPermission.mockRejectedValue(new ForbiddenException());
@@ -31,6 +33,21 @@ describe('Brand customer authorization and classification', () => {
     await expect(
       service.updateSettings('owner', 'brand', 3),
     ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.brand.update).not.toHaveBeenCalled();
+  });
+  it('returns only customer criteria to staff and keeps billing/settings owner-only', async () => {
+    commerce.get.mockResolvedValue({ tierKey: 'IGWE', canUpgrade: false, canConfigureCustomers: true, customerMinimumOrders: 3, effectiveMinimumOrders: 3, serverNow: 'private-server-time', entitlementExpiresAt: 'private-billing-date' });
+    prisma.$queryRaw.mockResolvedValue([{ items: [], total: 0n }]);
+    const result = await service.list('staff', 'brand', { page: 1, limit: 25 });
+    expect(result.settings).toEqual({ effectiveMinimumOrders: 3 });
+    access.assertBrandOwnerAndResolve.mockRejectedValue(new ForbiddenException());
+    await expect(service.settings('staff', 'brand')).rejects.toBeInstanceOf(ForbiddenException);
+  });
+  it('refuses an expired or revoked entitlement after waiting for the brand lock', async () => {
+    commerce.get.mockResolvedValue({ canConfigureCustomers: true });
+    tx.$executeRaw.mockResolvedValue(0);
+    await expect(service.updateSettings('owner', 'brand', 4)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(tx.$executeRaw.mock.invocationCallOrder[0]);
     expect(prisma.brand.update).not.toHaveBeenCalled();
   });
   it('paginates aggregated customers, including an empty later page', async () => {

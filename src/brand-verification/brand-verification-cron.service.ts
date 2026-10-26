@@ -107,17 +107,19 @@ export class BrandVerificationCronService {
 
     if (expiredCooldownBrands.length > 0) {
       const appName = this.emailService.getAppName();
-      for (const brand of expiredCooldownBrands) {
-        await this.notifications.create(
-          brand.ownerId,
-          NotificationType.VERIFICATION_COOLDOWN_EXPIRED,
-          {
-            payload: {
-              brandId: brand.id,
-              targetUrl: '/studio/verification',
-            },
+      const results = await this.notifications.createEvents(
+        expiredCooldownBrands.map((brand) => ({
+          recipientId: brand.ownerId,
+          type: NotificationType.VERIFICATION_COOLDOWN_EXPIRED,
+          opts: {
+            payload: { brandId: brand.id, targetUrl: '/studio/verification' },
           },
-        );
+        })),
+      );
+      for (let index = 0; index < expiredCooldownBrands.length; index += 1) {
+        const brand = expiredCooldownBrands[index];
+        const notification = results[index];
+        if (notification.status === 'rejected') throw notification.reason;
         if (brand.owner.email) {
           const mail = emailTemplates.verificationCooldownExpiredEmail(
             brand.name,
@@ -166,17 +168,19 @@ export class BrandVerificationCronService {
     });
 
     const appName = this.emailService.getAppName();
-    for (const brand of brands) {
-      await this.notifications.create(
-        brand.ownerId,
-        NotificationType.VERIFICATION_NUDGE,
-        {
-          payload: {
-            brandId: brand.id,
-            targetUrl: '/studio/verification',
-          },
+    const results = await this.notifications.createEvents(
+      brands.map((brand) => ({
+        recipientId: brand.ownerId,
+        type: NotificationType.VERIFICATION_NUDGE,
+        opts: {
+          payload: { brandId: brand.id, targetUrl: '/studio/verification' },
         },
-      );
+      })),
+    );
+    for (let index = 0; index < brands.length; index += 1) {
+      const brand = brands[index];
+      const notification = results[index];
+      if (notification.status === 'rejected') throw notification.reason;
 
       if (brand.owner.email) {
         const mail = emailTemplates.verificationNudgeEmail(brand.name, appName);

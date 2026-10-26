@@ -307,6 +307,7 @@ export class CollectionMetadataDto {
 export class FinalizeCollectionDto {
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(DESIGN_MAX_MEDIA_COUNT)
   @ValidateNested({ each: true })
   @Type(() => CompleteUploadDto)
   completions?: CompleteUploadDto[];

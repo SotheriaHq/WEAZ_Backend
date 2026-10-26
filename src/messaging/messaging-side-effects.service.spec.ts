@@ -49,6 +49,7 @@ describe('MessagingSideEffectsService', () => {
 
     const uploadService = {
       deleteFile: jest.fn(),
+      cleanupOrphanedMessageFiles: jest.fn().mockResolvedValue(0),
     } as any;
 
     const service = new MessagingSideEffectsService(
@@ -60,6 +61,30 @@ describe('MessagingSideEffectsService', () => {
 
     return { service, prisma, notificationsQueue };
   };
+
+  it('delegates the 48-hour orphan cutoff to one bounded cleanup command', async () => {
+    const { service, prisma } = buildService();
+    const uploads = (service as any).uploadService;
+    const before = Date.now() - 48 * 3600000;
+    await service.cleanupOrphanedMessageUploads(25);
+    const [cutoff, limit] = uploads.cleanupOrphanedMessageFiles.mock.calls[0];
+    expect(limit).toBe(25);
+    expect(cutoff.getTime()).toBeGreaterThanOrEqual(before);
+    expect(cutoff.getTime()).toBeLessThanOrEqual(Date.now() - 48 * 3600000);
+    expect(uploads.cleanupOrphanedMessageFiles).toHaveBeenCalledTimes(1);
+    expect(uploads.deleteFile).not.toHaveBeenCalled();
+    expect(prisma.fileUpload.findMany).not.toHaveBeenCalled();
+  });
+
+  it('retains a failed orphan batch for a later sweep without per-file storage calls', async () => {
+    const { service } = buildService();
+    const uploads = (service as any).uploadService;
+    uploads.cleanupOrphanedMessageFiles.mockRejectedValue(new Error('database unavailable'));
+    const warn = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => {});
+    await expect(service.cleanupOrphanedMessageUploads()).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('database unavailable'));
+    expect(uploads.deleteFile).not.toHaveBeenCalled();
+  });
 
   it('dispatchPendingMessageOutbox claims each recipient row once in a bounded batch', async () => {
     const { service, prisma, notificationsQueue } = buildService();

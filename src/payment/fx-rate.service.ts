@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import {
   ExchangeRateSnapshot,
   ExchangeRateSource,
@@ -6,27 +6,49 @@ import {
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
+import { FxMarketRates } from './fx-market-rates';
+import { COUNTRY_CURRENCIES } from './country-currencies';
 
-type GatewayRateResolution = {
-  source: ExchangeRateSource;
-  rate: number;
-  rawPayload?: Record<string, unknown>;
-} | null;
-
-const DEFAULT_FX_QUOTE_SUPPORTED_CURRENCIES = ['NGN', 'USD', 'EUR', 'GBP'];
+const DEFAULT_FX_QUOTE_SUPPORTED_CURRENCIES = [...new Set(Object.values(COUNTRY_CURRENCIES).flatMap(country => country.currencies))];
 const DEFAULT_FX_QUOTE_MAX_AMOUNT = 10_000_000;
 
 @Injectable()
 export class FxRateService {
-  private readonly logger = new Logger(FxRateService.name);
   private readonly baseCurrency = 'NGN';
-  private readonly frankfurterBaseUrl =
-    process.env.FX_RATE_API_URL?.trim() || 'https://api.frankfurter.app';
+  private readonly marketRates = new FxMarketRates();
 
   constructor(private readonly prisma: PrismaService) {}
 
   getBaseCurrency() {
     return this.baseCurrency;
+  }
+
+  async getDisplayRates(params: { country?: string; currency?: string }) {
+    const supported = this.getQuotePreviewSupportedCurrencies();
+    const override = params.currency ? this.normalizeCurrency(params.currency, { supportedCurrencies: supported }) : null;
+    const countryInput = String(params.country ?? '').trim();
+    const countryCode = Object.keys(COUNTRY_CURRENCIES).find(code =>
+      code === countryInput.toUpperCase() || COUNTRY_CURRENCIES[code].name.toLowerCase() === countryInput.toLowerCase(),
+    ) ?? null;
+    const table = await this.marketRates.getTable(true);
+    const localCurrencies = countryCode ? COUNTRY_CURRENCIES[countryCode].currencies.filter(code => supported.has(code) && table.rates[code]) : [];
+    // A country can have several legal currencies. Do not invent a preference.
+    const displayCurrency = override ?? (localCurrencies.length === 1 ? localCurrencies[0] : this.baseCurrency);
+    if (!table.rates[displayCurrency]) throw new BadRequestException('Unsupported currency code');
+    const base = new Prisma.Decimal(table.rates.NGN.rate);
+    const rates = Object.fromEntries(Object.entries(table.rates).filter(([code]) => supported.has(code)).map(([code, observation]) => [code, {
+      rate: new Prisma.Decimal(observation.rate).div(base).toNumber(),
+      asOf: observation.date < table.rates.NGN.date ? observation.date : table.rates.NGN.date,
+    }]));
+    rates.NGN = { rate: 1, asOf: table.rates.NGN.date };
+    return {
+      baseCurrency: this.baseCurrency, displayCurrency, countryCode,
+      selectionSource: override ? 'EXPLICIT' : localCurrencies.length === 1 ? 'COUNTRY' : 'BASE_FALLBACK',
+      countryCurrencies: localCurrencies, needsCurrencyChoice: !override && localCurrencies.length > 1,
+      isEstimate: true, isStale: table.isStale, provider: 'FRANKFURTER_V2',
+      fetchedAt: new Date(table.fetchedAt).toISOString(),
+      expiresAt: new Date(table.fetchedAt + 3600000).toISOString(), rates,
+    };
   }
 
   async quoteAndPersist(params: {
@@ -51,6 +73,8 @@ export class FxRateService {
           }
         : await this.fetchFrankfurterRate(from, to);
 
+    const lockedRate = new Prisma.Decimal(rateData.rate).toDecimalPlaces(8, Prisma.Decimal.ROUND_HALF_UP);
+    if (!lockedRate.greaterThan(0)) throw new BadRequestException('FX rate is below supported precision');
     const snapshot = await this.prisma.exchangeRateSnapshot.create({
       data: {
         id: uuidv4(),
@@ -60,7 +84,7 @@ export class FxRateService {
             : 'FRANKFURTER',
         baseCurrency: from,
         quoteCurrency: to,
-        rate: new Prisma.Decimal(rateData.rate.toFixed(8)),
+        rate: lockedRate,
         capturedAt: new Date(),
         source: rateData.source,
         rawPayload: (rateData.rawPayload ?? null) as Prisma.InputJsonValue,
@@ -70,7 +94,7 @@ export class FxRateService {
 
     return {
       snapshot,
-      convertedAmount: this.convertAmount(amount, rateData.rate),
+      convertedAmount: this.convertAmount(amount, lockedRate),
     };
   }
 
@@ -135,7 +159,7 @@ export class FxRateService {
     exchangeRateSnapshotId: string | null;
   }> {
     const originalCurrency = this.normalizeCurrency(params.attempt.currency);
-    const originalAmount = Number(params.attempt.amount);
+    const originalAmount = params.attempt.amount;
 
     if (originalCurrency === this.baseCurrency) {
       return {
@@ -145,58 +169,21 @@ export class FxRateService {
       };
     }
 
-    const gatewayRate = this.resolveGatewayRate(params.gateway, params.payload);
-    if (gatewayRate) {
-      const snapshot = await this.prisma.exchangeRateSnapshot.create({
-        data: {
-          id: uuidv4(),
-          provider: params.gateway.toUpperCase(),
-          baseCurrency: originalCurrency,
-          quoteCurrency: this.baseCurrency,
-          rate: new Prisma.Decimal(gatewayRate.rate.toFixed(8)),
-          capturedAt: new Date(),
-          source: gatewayRate.source,
-          rawPayload: (gatewayRate.rawPayload ?? null) as Prisma.InputJsonValue,
-        },
-      });
-
+    // Initialization records the payment's conversion before capture. Reuse
+    // it during verification; current market rates cannot repair old money.
+    if (params.attempt.exchangeRateSnapshotId) {
+      const snapshot = params.attempt.exchangeRateSnapshot ?? await this.prisma.exchangeRateSnapshot.findUnique({ where: { id: params.attempt.exchangeRateSnapshotId } });
+      if (!snapshot || snapshot.id !== params.attempt.exchangeRateSnapshotId || snapshot.baseCurrency !== originalCurrency || snapshot.quoteCurrency !== this.baseCurrency || !snapshot.rate.isFinite() || !snapshot.rate.greaterThan(0)) {
+        throw new BadRequestException('FX_ORIGINAL_PAYMENT_SNAPSHOT_INVALID');
+      }
       return {
         settlementCurrency: this.baseCurrency,
-        settlementAmount: this.convertAmount(originalAmount, gatewayRate.rate),
+        settlementAmount: this.convertAmount(originalAmount, snapshot.rate),
         exchangeRateSnapshotId: snapshot.id,
       };
     }
 
-    if (params.attempt.exchangeRateSnapshotId) {
-      const snapshot =
-        params.attempt.exchangeRateSnapshot ??
-        (await this.prisma.exchangeRateSnapshot.findUnique({
-          where: { id: params.attempt.exchangeRateSnapshotId },
-        }));
-
-      if (snapshot) {
-        return {
-          settlementCurrency: this.baseCurrency,
-          settlementAmount: this.convertAmount(
-            originalAmount,
-            Number(snapshot.rate),
-          ),
-          exchangeRateSnapshotId: snapshot.id,
-        };
-      }
-    }
-
-    const fallback = await this.quoteAndPersist({
-      from: originalCurrency,
-      to: this.baseCurrency,
-      amount: originalAmount,
-    });
-
-    return {
-      settlementCurrency: this.baseCurrency,
-      settlementAmount: fallback.convertedAmount,
-      exchangeRateSnapshotId: fallback.snapshot.id,
-    };
+    throw new BadRequestException('FX_ORIGINAL_PAYMENT_SNAPSHOT_REQUIRED');
   }
 
   private async fetchFrankfurterRate(
@@ -207,88 +194,12 @@ export class FxRateService {
     rate: number;
     rawPayload: Record<string, unknown>;
   }> {
-    const url = new URL('/latest', this.frankfurterBaseUrl);
-    url.searchParams.set('from', from);
-    url.searchParams.set('to', to);
-
-    const response = await fetch(url.toString(), {
-      headers: { Accept: 'application/json' },
-    });
-
-    if (!response.ok) {
-      this.logger.error(
-        `FX quote request failed: ${response.status} ${response.statusText}`,
-      );
-      throw new BadRequestException('Unable to fetch FX conversion rate');
-    }
-
-    const data = (await response.json()) as {
-      amount?: number;
-      base?: string;
-      date?: string;
-      rates?: Record<string, number>;
-    };
-    const rate = Number(data?.rates?.[to]);
-    if (!Number.isFinite(rate) || rate <= 0) {
-      throw new BadRequestException('FX provider did not return a valid rate');
-    }
-
+    const quote = await this.marketRates.pair(from, to);
     return {
       source: ExchangeRateSource.FRANKFURTER,
-      rate,
-      rawPayload: data as Record<string, unknown>,
+      rate: quote.rate.toNumber(),
+      rawPayload: { provider: 'FRANKFURTER_V2', referenceBase: 'USD', from, to, fromObservation: quote.table.rates[from], toObservation: quote.table.rates[to], date: quote.date },
     };
-  }
-
-  private resolveGatewayRate(
-    gateway: string,
-    payload?: Record<string, any>,
-  ): GatewayRateResolution {
-    const normalizedGateway = String(gateway || '')
-      .trim()
-      .toUpperCase();
-    const rateCandidate = this.extractNumericRate(payload);
-    if (!rateCandidate || rateCandidate <= 0) return null;
-
-    if (normalizedGateway === 'PAYSTACK') {
-      return {
-        source: ExchangeRateSource.PAYSTACK,
-        rate: rateCandidate,
-        rawPayload: payload,
-      };
-    }
-
-    if (normalizedGateway === 'FLUTTERWAVE') {
-      return {
-        source: ExchangeRateSource.FLUTTERWAVE,
-        rate: rateCandidate,
-        rawPayload: payload,
-      };
-    }
-
-    return null;
-  }
-
-  private extractNumericRate(payload?: Record<string, any>): number | null {
-    if (!payload || typeof payload !== 'object') return null;
-
-    const candidates = [
-      payload?.data?.exchange_rate,
-      payload?.data?.rate,
-      payload?.data?.meta?.exchange_rate,
-      payload?.exchange_rate,
-      payload?.rate,
-      payload?.settlement_rate,
-    ];
-
-    for (const candidate of candidates) {
-      const rate = Number(candidate);
-      if (Number.isFinite(rate) && rate > 0) {
-        return rate;
-      }
-    }
-
-    return null;
   }
 
   private getQuotePreviewSupportedCurrencies(): Set<string> {
@@ -318,7 +229,7 @@ export class FxRateService {
     const normalized = String(currency || '')
       .trim()
       .toUpperCase();
-    if (!normalized || normalized.length !== 3) {
+    if (!/^[A-Z]{3}$/.test(normalized)) {
       throw new BadRequestException('Invalid currency code');
     }
     if (
@@ -341,7 +252,7 @@ export class FxRateService {
     return normalized;
   }
 
-  private convertAmount(amount: number, rate: number): Prisma.Decimal {
-    return new Prisma.Decimal((amount * rate).toFixed(2));
+  private convertAmount(amount: number | Prisma.Decimal, rate: number | Prisma.Decimal): Prisma.Decimal {
+    return new Prisma.Decimal(amount).mul(rate).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   }
 }

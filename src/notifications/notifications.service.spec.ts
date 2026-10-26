@@ -2,7 +2,17 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { NotificationsService } from './notifications.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EventsGateway } from 'src/realtime/events.gateway';
-import { NotificationType } from '@prisma/client';
+import { NotificationType, Prisma } from '@prisma/client';
+import {
+  claimNotificationChannels,
+  reapExhaustedNotificationChannels,
+} from './notification-channel-query';
+
+jest.mock('./notification-channel-query', () => ({
+  cleanupNotificationChannels: jest.fn().mockResolvedValue(0),
+  claimNotificationChannels: jest.fn(),
+  reapExhaustedNotificationChannels: jest.fn(),
+}));
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { NotificationRegistry } from './notifications.registry';
 import { EmailService } from 'src/email/email.service';
@@ -15,11 +25,25 @@ describe('NotificationsService', () => {
   let service: NotificationsService;
   let mockPrisma: any;
   let cacheManager: any;
-  let mockPushNotifications: { enqueue: jest.Mock };
+  let mockPushNotifications: {
+    enqueue: jest.Mock;
+    buildPushPayload: jest.Mock;
+  };
   let mockNotificationRealtimeBus: { publishOrEmit: jest.Mock };
 
   beforeEach(async () => {
+    const channelRows = new Map<string, any>();
     mockPrisma = {
+      $queryRaw: jest.fn(async (query) =>
+        query.values.map((id) => ({
+          id,
+          email: null,
+          globalEnabled: null,
+          securityCriticalEnabled: null,
+          scenarios: {},
+          notificationSettings: null,
+        })),
+      ),
       notification: {
         findMany: jest.fn(),
         count: jest.fn(),
@@ -46,7 +70,67 @@ describe('NotificationsService', () => {
       patchConnection: {
         findFirst: jest.fn(),
       },
+      notificationChannelOutbox: {
+        create: jest.fn(async ({ data }) => {
+          const last = mockPrisma.notification.create.mock.calls.at(-1)[0].data;
+          const row = {
+            ...data,
+            emailPolicyJson:
+              data.emailPolicyJson === Prisma.DbNull
+                ? null
+                : data.emailPolicyJson,
+            pushPayloadJson:
+              data.pushPayloadJson === Prisma.DbNull
+                ? null
+                : data.pushPayloadJson,
+            notificationType: last.type,
+            recipientId: last.recipientId ?? last.recipient.connect.id,
+            actorId: last.actorId ?? last.actor?.connect.id ?? null,
+            payload: last.payload,
+            status: 'PENDING',
+            attempts: 0,
+            availableAt: new Date(),
+            createdAt: new Date(),
+          };
+          channelRows.set(data.id, row);
+          return row;
+        }),
+        updateMany: jest.fn(async ({ where, data }) => {
+          const row = channelRows.get(where.id);
+          if (
+            !row ||
+            (where.status && row.status !== where.status) ||
+            (where.lockOwner && row.lockOwner !== where.lockOwner)
+          )
+            return { count: 0 };
+          Object.assign(row, data);
+          return { count: 1 };
+        }),
+      },
+      $transaction: jest.fn(async (work) => work(mockPrisma)),
     };
+    (reapExhaustedNotificationChannels as jest.Mock).mockResolvedValue(0);
+    (claimNotificationChannels as jest.Mock).mockImplementation(
+      async (_db, take, id) => {
+        const rows = [...channelRows.values()]
+          .filter(
+            (row) =>
+              (!id ||
+                (Array.isArray(id) ? id.includes(row.id) : row.id === id)) &&
+              ['PENDING', 'FAILED'].includes(row.status) &&
+              row.availableAt <= new Date(),
+          )
+          .slice(0, take);
+        rows.forEach((row) =>
+          Object.assign(row, {
+            status: 'PROCESSING',
+            lockOwner: 'unit-claim',
+            attempts: row.attempts + 1,
+          }),
+        );
+        return rows.map((row) => ({ ...row }));
+      },
+    );
     mockPrisma.notification.findMany.mockResolvedValue([]);
 
     const mockEvents = {
@@ -86,6 +170,12 @@ describe('NotificationsService', () => {
       get: jest.fn(),
     };
     mockPushNotifications = {
+      buildPushPayload: jest.fn().mockReturnValue({
+        title: 'WIEZ',
+        body: 'Fixture',
+        data: {},
+        sound: true,
+      }),
       enqueue: jest.fn().mockResolvedValue({
         status: 'skipped',
         reason: 'no-active-tokens',
@@ -201,33 +291,80 @@ describe('NotificationsService', () => {
     const stableId = '4465a9a3-b218-4710-81cd-56c671c8a332';
 
     it('replays a durable notification without generating another delivery or side effect', async () => {
-      const existing = { id: stableId, recipientId: 'recipient-id', actorId: null, type: NotificationType.THREAD };
+      const existing = {
+        id: stableId,
+        recipientId: 'recipient-id',
+        actorId: null,
+        type: NotificationType.THREAD,
+      };
       mockPrisma.notification.findUnique.mockResolvedValue(existing);
-      await expect(service.create('recipient-id', NotificationType.THREAD, { notificationId: stableId })).resolves.toBe(existing);
+      await expect(
+        service.create('recipient-id', NotificationType.THREAD, {
+          notificationId: stableId,
+        }),
+      ).resolves.toBe(existing);
       expect(mockPrisma.notification.create).not.toHaveBeenCalled();
       expect(mockPushNotifications.enqueue).not.toHaveBeenCalled();
     });
 
     it('replays a concurrent primary-key winner after a durable create conflict', async () => {
-      const existing = { id: stableId, recipientId: 'recipient-id', actorId: null, type: NotificationType.THREAD };
-      mockPrisma.notification.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce(existing);
+      const existing = {
+        id: stableId,
+        recipientId: 'recipient-id',
+        actorId: null,
+        type: NotificationType.THREAD,
+      };
+      mockPrisma.notification.findUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(existing);
       mockPrisma.notification.create.mockRejectedValueOnce({ code: 'P2002' });
-      await expect(service.create('recipient-id', NotificationType.THREAD, { notificationId: stableId, payload: { target: { id: 'target-id' } } })).resolves.toBe(existing);
+      await expect(
+        service.create('recipient-id', NotificationType.THREAD, {
+          notificationId: stableId,
+          payload: { target: { id: 'target-id' } },
+        }),
+      ).resolves.toBe(existing);
       expect(mockPushNotifications.enqueue).not.toHaveBeenCalled();
       expect(cacheManager.del).not.toHaveBeenCalled();
     });
 
     it('never returns another recipient notification for a reused durable ID', async () => {
-      mockPrisma.notification.findUnique.mockResolvedValue({ id: stableId, recipientId: 'other-recipient', actorId: null, type: NotificationType.THREAD });
-      await expect(service.create('recipient-id', NotificationType.THREAD, { notificationId: stableId })).rejects.toThrow('Notification identity');
+      mockPrisma.notification.findUnique.mockResolvedValue({
+        id: stableId,
+        recipientId: 'other-recipient',
+        actorId: null,
+        type: NotificationType.THREAD,
+      });
+      await expect(
+        service.create('recipient-id', NotificationType.THREAD, {
+          notificationId: stableId,
+        }),
+      ).rejects.toThrow('Notification identity');
       expect(mockPrisma.notification.create).not.toHaveBeenCalled();
     });
 
     it('persists a fresh durable ID rather than relying on a temporary semantic dedupe window', async () => {
       mockPrisma.notification.findUnique.mockResolvedValue(null);
-      mockPrisma.notification.create.mockResolvedValue({ id: stableId, recipientId: 'recipient-id', actorId: null, type: NotificationType.THREAD, payload: {}, actor: null, createdAt: new Date() });
-      await service.create('recipient-id', NotificationType.THREAD, { notificationId: stableId, payload: { target: { id: 'target-id' } }, suppressEmail: true, suppressPush: true });
-      expect(mockPrisma.notification.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ id: stableId }) }));
+      mockPrisma.notification.create.mockResolvedValue({
+        id: stableId,
+        recipientId: 'recipient-id',
+        actorId: null,
+        type: NotificationType.THREAD,
+        payload: {},
+        actor: null,
+        createdAt: new Date(),
+      });
+      await service.create('recipient-id', NotificationType.THREAD, {
+        notificationId: stableId,
+        payload: { target: { id: 'target-id' } },
+        suppressEmail: true,
+        suppressPush: true,
+      });
+      expect(mockPrisma.notification.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ id: stableId }),
+        }),
+      );
       expect(mockPrisma.notification.findMany).not.toHaveBeenCalled();
     });
 
@@ -270,9 +407,13 @@ describe('NotificationsService', () => {
       expect(mockPushNotifications.enqueue).toHaveBeenCalledWith(
         expect.objectContaining({
           recipientId: 'recipient-id',
-          notification: mockCreated,
+          notification: expect.objectContaining({
+            id: mockCreated.id,
+            type: mockCreated.type,
+          }),
           notificationTypeEnabled: true,
         }),
+        mockPrisma,
       );
     });
 
@@ -482,7 +623,7 @@ describe('NotificationsService', () => {
       const result = await service.getSettings('user-id');
 
       expect(result.push).toEqual({
-        enabled: false,
+        enabled: true,
         sound: true,
         vibration: true,
         showPreview: true,
@@ -598,7 +739,7 @@ describe('NotificationsService', () => {
       expect(result.push.sound).toBe(false);
       expect(result.push.vibration).toBe(false);
       expect(result.push.showPreview).toBe(false);
-      expect(result.push.enabled).toBe(false);
+      expect(result.push.enabled).toBe(true);
     });
 
     it('should accept valid push quiet hours and null values', async () => {

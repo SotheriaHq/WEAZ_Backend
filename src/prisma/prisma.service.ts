@@ -6,7 +6,6 @@ import {
 } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { Pool } from 'pg';
 import { withUtcDatabaseUrl } from './database-connection';
 
 @Injectable()
@@ -23,8 +22,8 @@ export class PrismaService
       throw new Error('DATABASE_URL is required to initialize PrismaClient.');
     }
 
-    const pool = new Pool({ connectionString: withUtcDatabaseUrl(datasourceUrl) });
-    const adapter = new PrismaPg(pool);
+    // The adapter owns its connections so $disconnect also closes the pool.
+    const adapter = new PrismaPg({ connectionString: withUtcDatabaseUrl(datasourceUrl) });
 
     const enableQueryLogs =
       String(process.env.PRISMA_LOG_QUERIES || '')

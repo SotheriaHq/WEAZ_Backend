@@ -1,9 +1,19 @@
-import { Prisma, SettlementOrderType, SettlementReleaseMode } from '@prisma/client';
+import {
+  Prisma,
+  SettlementOrderType,
+  SettlementReleaseMode,
+} from '@prisma/client';
 import { CustomOrderFinanceSyncService } from './custom-order-finance-sync.service';
 
 function decimal(value: number) {
   return new Prisma.Decimal(value.toFixed(2));
 }
+const contextQuery = (row: Record<string, unknown>) =>
+  jest.fn(async (query: Prisma.Sql) =>
+    query.sql?.includes('FROM "CustomOrder"')
+      ? [{ brandVerificationStatus: 'APPROVED', ownerStatus: 'ACTIVE', ...row }]
+      : [],
+  );
 
 describe('CustomOrderFinanceSyncService', () => {
   let service: CustomOrderFinanceSyncService;
@@ -68,23 +78,29 @@ describe('CustomOrderFinanceSyncService', () => {
     };
 
     settlementSnapshotService = {
-      createFromCalculation: jest.fn().mockImplementation(async (calc: any) => ({
-        id: 'snap_1',
-        ...calc,
-        grossAmount: decimal(calc.grossAmount),
-        commissionRate: decimal(calc.commissionRate),
-        commissionAmount: decimal(calc.commissionAmount),
-        brandNetAmount: decimal(calc.brandNetAmount),
-        upfrontReleasePercent: decimal(calc.upfrontReleasePercent),
-        upfrontReleaseGrossAmount: decimal(calc.upfrontReleaseGrossAmount),
-        upfrontReleaseCommissionAmount: decimal(
-          calc.upfrontReleaseCommissionAmount,
-        ),
-        upfrontReleaseNetBrandAmount: decimal(calc.upfrontReleaseNetBrandAmount),
-        finalReleaseGrossAmount: decimal(calc.finalReleaseGrossAmount),
-        finalReleaseCommissionAmount: decimal(calc.finalReleaseCommissionAmount),
-        finalReleaseNetBrandAmount: decimal(calc.finalReleaseNetBrandAmount),
-      })),
+      createFromCalculation: jest
+        .fn()
+        .mockImplementation(async (calc: any) => ({
+          id: 'snap_1',
+          ...calc,
+          grossAmount: decimal(calc.grossAmount),
+          commissionRate: decimal(calc.commissionRate),
+          commissionAmount: decimal(calc.commissionAmount),
+          brandNetAmount: decimal(calc.brandNetAmount),
+          upfrontReleasePercent: decimal(calc.upfrontReleasePercent),
+          upfrontReleaseGrossAmount: decimal(calc.upfrontReleaseGrossAmount),
+          upfrontReleaseCommissionAmount: decimal(
+            calc.upfrontReleaseCommissionAmount,
+          ),
+          upfrontReleaseNetBrandAmount: decimal(
+            calc.upfrontReleaseNetBrandAmount,
+          ),
+          finalReleaseGrossAmount: decimal(calc.finalReleaseGrossAmount),
+          finalReleaseCommissionAmount: decimal(
+            calc.finalReleaseCommissionAmount,
+          ),
+          finalReleaseNetBrandAmount: decimal(calc.finalReleaseNetBrandAmount),
+        })),
     };
 
     service = new CustomOrderFinanceSyncService(
@@ -182,30 +198,118 @@ describe('CustomOrderFinanceSyncService', () => {
     expect(prisma.$transaction).toHaveBeenCalled();
   });
 
-  it.each(['PENDING', 'UP_NEXT'])('holds a persisted %s order even when a finance repair caller omits the hold flag', async lane => {
-    const tx = {
-      $queryRaw: jest.fn().mockResolvedValue([]),
-      customOrder: { findUnique: jest.fn().mockResolvedValue({ lane, queuePolicyVersion: 1, activatedAt: null, cancelledAt: null, buyerPriceSummaryJson: { grandTotal: 1200 }, jumpFeeAmount: decimal(200) }) },
-      customOrderLedgerAllocation: { findMany: jest.fn().mockResolvedValue([]), create: jest.fn(), createMany: jest.fn(), updateMany: jest.fn() },
-    };
-    await service.applyPaidSettlement(tx as any, { customOrderId: 'co_waiting', brandId: 'brand_1', grossAmount: 1200, currency: 'NGN', effectiveAt: new Date(), releaseEligibleAt: new Date() });
-    expect(tx.customOrderLedgerAllocation.create).toHaveBeenCalledWith({ data: expect.objectContaining({ allocationType: 'PLACEMENT_CAPTURE', status: 'HELD', amount: decimal(1200) }) });
-    expect(tx.customOrderLedgerAllocation.createMany).not.toHaveBeenCalled();
-    expect(tx.customOrderLedgerAllocation.updateMany).not.toHaveBeenCalled();
-    expect(ledgerService.postCustomOrderImmediateRelease).not.toHaveBeenCalled();
-    expect(settlementCalculatorService.calculate).toHaveBeenCalledWith(expect.objectContaining({ grossAmount: 1000 }));
-  });
+  it.each(['PENDING', 'UP_NEXT'])(
+    'holds a persisted %s order even when a finance repair caller omits the hold flag',
+    async (lane) => {
+      const tx = {
+        $queryRaw: contextQuery({
+          lane,
+          queuePolicyVersion: 1,
+          activatedAt: null,
+          cancelledAt: null,
+          buyerPriceSummaryJson: { grandTotal: 1200 },
+          jumpFeeAmount: decimal(200),
+        }),
+        customOrderLedgerAllocation: {
+          findMany: jest.fn().mockResolvedValue([]),
+          create: jest.fn(),
+          createMany: jest.fn(),
+          updateMany: jest.fn(),
+        },
+      };
+      await service.applyPaidSettlement(tx as any, {
+        customOrderId: 'co_waiting',
+        brandId: 'brand_1',
+        grossAmount: 1200,
+        currency: 'NGN',
+        effectiveAt: new Date(),
+        releaseEligibleAt: new Date(),
+      });
+      expect(tx.customOrderLedgerAllocation.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          allocationType: 'PLACEMENT_CAPTURE',
+          status: 'HELD',
+          amount: decimal(1200),
+        }),
+      });
+      expect(tx.customOrderLedgerAllocation.createMany).not.toHaveBeenCalled();
+      expect(tx.customOrderLedgerAllocation.updateMany).not.toHaveBeenCalled();
+      expect(
+        ledgerService.postCustomOrderImmediateRelease,
+      ).not.toHaveBeenCalled();
+      expect(settlementCalculatorService.calculate).toHaveBeenCalledWith(
+        expect.objectContaining({ grossAmount: 1000 }),
+      );
+    },
+  );
 
   it('releases only the reduced milestone after a partial refund while a safety hold was active', async () => {
-    const tx = { $queryRaw: jest.fn().mockResolvedValue([]), customOrder: { findUnique: jest.fn().mockResolvedValue({ lane: 'ACTIVE', status: 'ACCEPTED', activatedAt: new Date(), cancelledAt: null, queuePolicyVersion: 1, jumpFeeAmount: decimal(0), buyerPriceSummaryJson: { grandTotal: 1000 }, brand: { verificationStatus: 'APPROVED', owner: { status: 'ACTIVE' } } }) }, customOrderLedgerAllocation: { findMany: jest.fn().mockResolvedValue([{ allocationType: 'BRAND_ACCEPTANCE_PORTION', status: 'HELD', amount: decimal(540), commissionAmount: decimal(54), netBrandAmount: decimal(486) }, { allocationType: 'FINAL_COMPLETION_PORTION', status: 'HELD', amount: decimal(360), commissionAmount: decimal(36), netBrandAmount: decimal(324) }]), createMany: jest.fn(), updateMany: jest.fn() } };
-    await service.applyPaidSettlement(tx as any, { customOrderId: 'co_1', brandId: 'brand_1', grossAmount: 1000, currency: 'NGN', effectiveAt: new Date(), releaseEligibleAt: new Date() });
-    expect(ledgerService.postCustomOrderImmediateRelease).toHaveBeenCalledWith(tx, expect.objectContaining({ amount: 540, commissionAmount: 54, netBrandAmount: 486 }));
+    const tx = {
+      $queryRaw: contextQuery({
+        lane: 'ACTIVE',
+        status: 'ACCEPTED',
+        activatedAt: new Date(),
+        cancelledAt: null,
+        queuePolicyVersion: 1,
+        jumpFeeAmount: decimal(0),
+        buyerPriceSummaryJson: { grandTotal: 1000 },
+      }),
+      customOrderLedgerAllocation: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            allocationType: 'BRAND_ACCEPTANCE_PORTION',
+            status: 'HELD',
+            amount: decimal(540),
+            commissionAmount: decimal(54),
+            netBrandAmount: decimal(486),
+          },
+          {
+            allocationType: 'FINAL_COMPLETION_PORTION',
+            status: 'HELD',
+            amount: decimal(360),
+            commissionAmount: decimal(36),
+            netBrandAmount: decimal(324),
+          },
+        ]),
+        createMany: jest.fn(),
+        updateMany: jest.fn(),
+      },
+    };
+    await service.applyPaidSettlement(tx as any, {
+      customOrderId: 'co_1',
+      brandId: 'brand_1',
+      grossAmount: 1000,
+      currency: 'NGN',
+      effectiveAt: new Date(),
+      releaseEligibleAt: new Date(),
+    });
+    expect(ledgerService.postCustomOrderImmediateRelease).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({
+        amount: 540,
+        commissionAmount: 54,
+        netBrandAmount: 486,
+      }),
+    );
   });
 
   it('does not resurrect finance releases after a cancellation wins the brand lock', async () => {
-    const tx = { $queryRaw: jest.fn().mockResolvedValue([]), customOrder: { findUnique: jest.fn().mockResolvedValue({ cancelledAt: new Date() }) } };
-    expect(await service.applyPaidSettlement(tx as any, { customOrderId: 'co_1', brandId: 'brand_1', grossAmount: 1000, currency: 'NGN', effectiveAt: new Date(), releaseEligibleAt: new Date() })).toBeNull();
+    const tx = {
+      $queryRaw: contextQuery({ cancelledAt: new Date() }),
+    };
+    expect(
+      await service.applyPaidSettlement(tx as any, {
+        customOrderId: 'co_1',
+        brandId: 'brand_1',
+        grossAmount: 1000,
+        currency: 'NGN',
+        effectiveAt: new Date(),
+        releaseEligibleAt: new Date(),
+      }),
+    ).toBeNull();
     expect(settlementCalculatorService.calculate).not.toHaveBeenCalled();
-    expect(ledgerService.postCustomOrderImmediateRelease).not.toHaveBeenCalled();
+    expect(
+      ledgerService.postCustomOrderImmediateRelease,
+    ).not.toHaveBeenCalled();
   });
 });

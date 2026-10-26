@@ -7,22 +7,16 @@ import {
 import { PaymentStatus, PaymentSubjectType, Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
+import {
+  loadStandardOrderRefundContext,
+  RefundAttemptSnapshot,
+} from './order-refund-query';
 
 interface InitiateOrderRefundParams {
   orderId: string;
   reason: string;
   actorId?: string;
 }
-
-type RefundAttemptSnapshot = {
-  id: string;
-  reference: string;
-  provider: string;
-  providerMode: string;
-  amount: Prisma.Decimal;
-  currency: string;
-  status: string;
-};
 
 @Injectable()
 export class OrderRefundService {
@@ -97,18 +91,11 @@ export class OrderRefundService {
     tx: Prisma.TransactionClient,
     params: InitiateOrderRefundParams,
   ) {
-    const order = await tx.order.findUnique({
-      where: { id: params.orderId },
-      select: {
-        id: true,
-        paymentReference: true,
-        paymentStatus: true,
-      },
-    });
-
-    if (!order) {
+    const context = await loadStandardOrderRefundContext(tx, params.orderId);
+    if (!context) {
       throw new NotFoundException('Order not found');
     }
+    const { order, attempt } = context;
 
     if (
       order.paymentStatus !== PaymentStatus.PAID &&
@@ -118,15 +105,6 @@ export class OrderRefundService {
         'Order refund can only be initiated for a paid/refundable order',
       );
     }
-
-    const attempt = order.paymentReference
-      ? await tx.paymentAttempt.findUnique({
-          where: { reference: order.paymentReference },
-        })
-      : await tx.paymentAttempt.findFirst({
-          where: { orderIds: { has: params.orderId } },
-          orderBy: { createdAt: 'desc' },
-        });
 
     if (!attempt) {
       throw new BadRequestException(

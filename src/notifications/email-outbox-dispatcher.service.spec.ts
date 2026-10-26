@@ -21,6 +21,8 @@ describe('EmailOutboxDispatcherService', () => {
       findFirst: jest.fn(),
     },
     $transaction: jest.fn(),
+    $queryRaw: jest.fn(),
+    $executeRaw: jest.fn(),
   } as unknown as PrismaService;
 
   const mockEmailService = {
@@ -31,6 +33,17 @@ describe('EmailOutboxDispatcherService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    (mockPrisma.$executeRaw as jest.Mock).mockResolvedValue(0);
+    (mockPrisma.$queryRaw as jest.Mock).mockImplementation(async () => {
+      const calls = (mockPrisma.emailOutbox.findMany as jest.Mock).mock.results;
+      const rows = await calls[calls.length - 1]?.value;
+      return (rows ?? []).slice(0, 1).map((row: { attempts: number }) => ({
+        ...row,
+        attempts: row.attempts + 1,
+        status: EmailOutboxStatus.PROCESSING,
+        lockOwner: 'fixture-claim',
+      }));
+    });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -41,6 +54,16 @@ describe('EmailOutboxDispatcherService', () => {
     }).compile();
 
     service = module.get(EmailOutboxDispatcherService);
+  });
+
+  it('bounds a sweep at 150 messages and performs no work for an empty requested batch', async () => {
+    (mockPrisma.emailOutbox.findMany as jest.Mock).mockResolvedValue([]);
+    await service.dispatchPendingEmails(1000000);
+    expect(mockPrisma.emailOutbox.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 150 }));
+    (mockPrisma.emailOutbox.findMany as jest.Mock).mockClear();
+    await service.dispatchPendingEmails(0);
+    expect(mockPrisma.emailOutbox.findMany).not.toHaveBeenCalled();
+    expect(mockEmailService.sendNow).not.toHaveBeenCalled();
   });
 
   it('logs password reset delivery delay when a queued email is eventually sent', async () => {
@@ -69,7 +92,7 @@ describe('EmailOutboxDispatcherService', () => {
       null,
     );
     (mockPrisma.$transaction as jest.Mock).mockImplementation(
-      async (operations: Array<Promise<unknown>>) => Promise.all(operations),
+      async (work: any) => typeof work === 'function' ? work(mockPrisma) : Promise.all(work),
     );
     (mockEmailService.sendNow as jest.Mock).mockResolvedValue({
       providerMessageId: 'msg-1',
@@ -143,7 +166,7 @@ describe('EmailOutboxDispatcherService', () => {
       null,
     );
     (mockPrisma.$transaction as jest.Mock).mockImplementation(
-      async (operations: Array<Promise<unknown>>) => Promise.all(operations),
+      async (work: any) => typeof work === 'function' ? work(mockPrisma) : Promise.all(work),
     );
     (mockEmailService.sendNow as jest.Mock).mockResolvedValue({
       providerMessageId: 'msg-2',
@@ -170,7 +193,7 @@ describe('EmailOutboxDispatcherService', () => {
     );
     expect(mockPrisma.emailOutbox.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'outbox-3', status: EmailOutboxStatus.PROCESSING },
+        where: { id: 'outbox-3', status: EmailOutboxStatus.PROCESSING, lockOwner: 'fixture-claim' },
       }),
     );
     expect(mockEmailService.sendNow).toHaveBeenCalledWith(
@@ -210,7 +233,7 @@ describe('EmailOutboxDispatcherService', () => {
       null,
     );
     (mockPrisma.$transaction as jest.Mock).mockImplementation(
-      async (operations: Array<Promise<unknown>>) => Promise.all(operations),
+      async (work: any) => typeof work === 'function' ? work(mockPrisma) : Promise.all(work),
     );
     (mockEmailService.sendNow as jest.Mock).mockResolvedValue({
       providerMessageId: 'msg-timeout',
@@ -260,6 +283,29 @@ describe('EmailOutboxDispatcherService', () => {
         ),
       ),
     ).toBe(true);
+  });
+
+  it('bounds a stalled provider attempt and releases its deadline timer', async () => {
+    jest.useFakeTimers();
+    try {
+      const pending = (service as any).withDeliveryTimeout(new Promise(() => {}));
+      const result = expect(pending).rejects.toThrow('Email provider timeout');
+      await jest.advanceTimersByTimeAsync(30_000);
+      await result;
+      expect(jest.getTimerCount()).toBe(0);
+      await expect((service as any).withDeliveryTimeout(Promise.resolve('sent'))).resolves.toBe('sent');
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not write a delivery log when another worker owns the claim', async () => {
+    (mockPrisma.emailOutbox.updateMany as jest.Mock).mockResolvedValue({ count: 0 });
+    (mockPrisma.$transaction as jest.Mock).mockImplementation(async work => work(mockPrisma));
+    const owned = await (service as any).finishClaim({ id: 'outbox-stale', lockOwner: 'old-owner' }, { status: 'COMPLETED' }, { result: 'SENT' });
+    expect(owned).toBe(false);
+    expect(mockPrisma.emailDeliveryAttempt.create).not.toHaveBeenCalled();
   });
 
   it('escalates stale password reset outbox rows', async () => {

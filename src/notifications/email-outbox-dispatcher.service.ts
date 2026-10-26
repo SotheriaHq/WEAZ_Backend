@@ -1,11 +1,18 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { EmailOutboxStatus, Prisma } from '@prisma/client';
+import { EmailOutbox, EmailOutboxStatus, Prisma } from '@prisma/client';
 import { createHash } from 'crypto';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EmailService } from 'src/email/email.service';
+import {
+  claimEmailOutbox,
+  EMAIL_OUTBOX_MAX_ATTEMPTS,
+  emailOutboxBackoffSeconds,
+  finishEmailOutboxClaim,
+  reapExhaustedEmailOutbox,
+  withEmailDeliveryTimeout,
+} from './email-outbox-claim-query';
 
-const EMAIL_OUTBOX_MAX_ATTEMPTS = 8;
 const EMAIL_OUTBOX_CONCURRENCY = 10;
 const EMAIL_OUTBOX_COMPLETED_RETENTION_DAYS = 30;
 const EMAIL_OUTBOX_EXHAUSTED_RETENTION_DAYS = 90;
@@ -17,12 +24,10 @@ const PASSWORD_RESET_EMAIL_SCENARIOS = [
 const PASSWORD_RESET_EMAIL_DELAY_WARNING_MS = 5 * 60 * 1000;
 const PASSWORD_RESET_EMAIL_DELAY_ERROR_MS = 15 * 60 * 1000;
 const PASSWORD_RESET_EMAIL_SUMMARY_LIMIT = 5;
-const PASSWORD_RESET_EMAIL_MAX_BACKOFF_SECONDS = 5 * 60;
 
 @Injectable()
 export class EmailOutboxDispatcherService {
   private readonly logger = new Logger(EmailOutboxDispatcherService.name);
-  private readonly lockOwner = `api-${process.pid}`;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -31,6 +36,11 @@ export class EmailOutboxDispatcherService {
 
   @Cron(EMAIL_OUTBOX_DISPATCH_CRON)
   async dispatchPendingEmails(batchSize = 150): Promise<void> {
+    const take = Number.isFinite(batchSize)
+      ? Math.min(150, Math.max(0, Math.trunc(batchSize)))
+      : 150;
+    if (!take) return;
+    await reapExhaustedEmailOutbox(this.prisma);
     const now = new Date();
     const rows = await this.prisma.emailOutbox.findMany({
       where: {
@@ -57,7 +67,7 @@ export class EmailOutboxDispatcherService {
         ],
       },
       orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
-      take: batchSize,
+      take,
     });
 
     if (rows.length === 0) {
@@ -158,35 +168,12 @@ export class EmailOutboxDispatcherService {
     this.logger.warn(message);
   }
 
-  private async dispatchRow(row: {
+  private async dispatchRow(candidate: {
     id: string;
-    status: EmailOutboxStatus;
-    attempts: number;
-    recipientEmailSnapshot: string;
-    subject: string;
-    html: string;
-    text: string | null;
-    scenarioKey: string;
-    idempotencyKey?: string | null;
-    createdAt: Date;
-    recipientUserId?: string | null;
   }): Promise<'SENT' | 'FAILED' | 'SUPPRESSED' | 'SKIPPED'> {
-    const claim = await this.prisma.emailOutbox.updateMany({
-      where: { id: row.id, status: row.status },
-      data: {
-        status: EmailOutboxStatus.PROCESSING,
-        attempts: { increment: 1 },
-        lockedAt: new Date(),
-        lockOwner: this.lockOwner,
-        lockExpiresAt: new Date(Date.now() + 60_000),
-        lastError: null,
-      },
-    });
-    if (claim.count === 0) {
-      return 'SKIPPED';
-    }
-
-    const attemptNo = row.attempts + 1;
+    const row = await claimEmailOutbox(this.prisma, candidate.id);
+    if (!row) return 'SKIPPED';
+    const attemptNo = row.attempts;
     const queueAgeMs = Math.max(0, Date.now() - row.createdAt.getTime());
     const normalizedEmail = row.recipientEmailSnapshot.trim().toLowerCase();
     const emailHash = createHash('sha256')
@@ -204,32 +191,28 @@ export class EmailOutboxDispatcherService {
       });
 
       if (suppression) {
-        await this.prisma.$transaction([
-          this.prisma.emailDeliveryAttempt.create({
-            data: {
-              emailOutboxId: row.id,
-              attemptNo,
-              provider: 'SUPPRESSION',
-              result: 'SUPPRESSED',
-              errorCode: String(suppression.reason),
-              errorMessage: 'Suppressed by deliverability policy',
-              providerResponseJson: {
-                queuedAtIso: row.createdAt.toISOString(),
-                queueAgeMs,
-                scenarioKey: row.scenarioKey,
-              } as Prisma.InputJsonValue,
-            },
-          }),
-          this.prisma.emailOutbox.update({
-            where: { id: row.id },
-            data: {
-              status: EmailOutboxStatus.COMPLETED,
-              sentAt: new Date(),
-              lastError: 'SUPPRESSED',
-              lockExpiresAt: null,
-            },
-          }),
-        ]);
+        const acknowledged = await this.finishClaim(
+          row,
+          {
+            status: EmailOutboxStatus.COMPLETED,
+            sentAt: new Date(),
+            lastError: 'SUPPRESSED',
+          },
+          {
+            emailOutboxId: row.id,
+            attemptNo,
+            provider: 'SUPPRESSION',
+            result: 'SUPPRESSED',
+            errorCode: String(suppression.reason),
+            errorMessage: 'Suppressed by deliverability policy',
+            providerResponseJson: {
+              queuedAtIso: row.createdAt.toISOString(),
+              queueAgeMs,
+              scenarioKey: row.scenarioKey,
+            } as Prisma.InputJsonValue,
+          },
+        );
+        if (!acknowledged) return 'SKIPPED';
         const suppressionMessage = `Outbox row suppressed outboxId=${row.id} reason=${suppression.reason}`;
         if (this.isPasswordResetScenario(row.scenarioKey)) {
           this.logger.warn(
@@ -241,78 +224,70 @@ export class EmailOutboxDispatcherService {
         return 'SUPPRESSED';
       }
 
-      providerResult = await this.emailService.sendNow(
-        normalizedEmail,
-        row.subject,
-        row.html,
-        row.text ?? undefined,
-        {
-          idempotencyKey: row.idempotencyKey ?? `outbox:${row.id}`,
-        },
+      providerResult = await this.withDeliveryTimeout(
+        this.emailService.sendNow(
+          normalizedEmail,
+          row.subject,
+          row.html,
+          row.text ?? undefined,
+          {
+            idempotencyKey: row.idempotencyKey ?? `outbox:${row.id}`,
+          },
+        ),
       );
 
-      await this.prisma.$transaction([
-        this.prisma.emailDeliveryAttempt.create({
-          data: {
-            emailOutboxId: row.id,
-            attemptNo,
-            provider: this.emailService.getDeliveryAttemptProvider(),
-            transportHost: this.emailService.getTransportHost(),
-            result: 'SENT',
-            providerResponseJson: {
-              providerMessageId: providerResult.providerMessageId,
-              emailMode: (providerResult as any).emailMode,
-              transportRecipient: (providerResult as any).transportRecipient,
-              intendedRecipient: (providerResult as any).intendedRecipientLabel,
-              queuedAtIso: row.createdAt.toISOString(),
-              queueAgeMs,
-              scenarioKey: row.scenarioKey,
-            } as Prisma.InputJsonValue,
-          },
-        }),
-        this.prisma.emailOutbox.update({
-          where: { id: row.id },
-          data: {
-            status: EmailOutboxStatus.COMPLETED,
+      const acknowledged = await this.finishClaim(
+        row,
+        {
+          status: EmailOutboxStatus.COMPLETED,
+          providerMessageId: providerResult.providerMessageId,
+          sentAt: new Date(),
+        },
+        {
+          emailOutboxId: row.id,
+          attemptNo,
+          provider: this.emailService.getDeliveryAttemptProvider(),
+          transportHost: this.emailService.getTransportHost(),
+          result: 'SENT',
+          providerResponseJson: {
             providerMessageId: providerResult.providerMessageId,
-            sentAt: new Date(),
-            lockExpiresAt: null,
-          },
-        }),
-      ]);
+            emailMode: (providerResult as any).emailMode,
+            transportRecipient: (providerResult as any).transportRecipient,
+            intendedRecipient: (providerResult as any).intendedRecipientLabel,
+            queuedAtIso: row.createdAt.toISOString(),
+            queueAgeMs,
+            scenarioKey: row.scenarioKey,
+          } as Prisma.InputJsonValue,
+        },
+      );
+      if (!acknowledged) return 'SKIPPED';
     } catch (error) {
       const message = this.formatError(error);
       const exhausted = attemptNo >= EMAIL_OUTBOX_MAX_ATTEMPTS;
-      const backoffSeconds = this.isPasswordResetScenario(row.scenarioKey)
-        ? Math.min(
-            PASSWORD_RESET_EMAIL_MAX_BACKOFF_SECONDS,
-            Math.pow(2, attemptNo) * 15,
-          )
-        : Math.min(3600, Math.pow(2, attemptNo) * 15);
+      const backoffSeconds = emailOutboxBackoffSeconds(
+        row.scenarioKey,
+        attemptNo,
+      );
 
-      await this.prisma.$transaction([
-        this.prisma.emailDeliveryAttempt.create({
-          data: {
-            emailOutboxId: row.id,
-            attemptNo,
-            provider: this.emailService.getDeliveryAttemptProvider(),
-            transportHost: this.emailService.getTransportHost(),
-            result: 'FAILED',
-            errorMessage: message,
-          },
-        }),
-        this.prisma.emailOutbox.update({
-          where: { id: row.id },
-          data: {
-            status: EmailOutboxStatus.FAILED,
-            lastError: exhausted ? `DLQ_EXHAUSTED:${message}` : message,
-            availableAt: exhausted
-              ? new Date(Date.now() + 24 * 60 * 60 * 1000)
-              : new Date(Date.now() + backoffSeconds * 1000),
-            lockExpiresAt: null,
-          },
-        }),
-      ]);
+      const acknowledged = await this.finishClaim(
+        row,
+        {
+          status: EmailOutboxStatus.FAILED,
+          lastError: exhausted ? `DLQ_EXHAUSTED:${message}` : message,
+          availableAt: exhausted
+            ? new Date(Date.now() + 24 * 60 * 60 * 1000)
+            : new Date(Date.now() + backoffSeconds * 1000),
+        },
+        {
+          emailOutboxId: row.id,
+          attemptNo,
+          provider: this.emailService.getDeliveryAttemptProvider(),
+          transportHost: this.emailService.getTransportHost(),
+          result: 'FAILED',
+          errorMessage: message,
+        },
+      );
+      if (!acknowledged) return 'SKIPPED';
 
       if (exhausted) {
         this.logger.error(`Email outbox exhausted retries outboxId=${row.id}`);
@@ -338,6 +313,18 @@ export class EmailOutboxDispatcherService {
     }
 
     return 'SENT';
+  }
+
+  private async finishClaim(
+    row: EmailOutbox,
+    data: Prisma.EmailOutboxUpdateManyMutationInput,
+    attempt: Prisma.EmailDeliveryAttemptUncheckedCreateInput,
+  ): Promise<boolean> {
+    return finishEmailOutboxClaim(this.prisma, row, data, attempt);
+  }
+
+  private async withDeliveryTimeout<T>(operation: Promise<T>): Promise<T> {
+    return withEmailDeliveryTimeout(operation);
   }
 
   private isPasswordResetScenario(scenarioKey: string): boolean {

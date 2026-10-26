@@ -83,11 +83,13 @@ export class ImageProcessingProcessor extends WorkerHost {
 
   /** Durable per-file lease; expensive encoding never holds a database connection. */
   private async processOne(fileId: string, force: boolean, newVersion = false): Promise<void> {
-    const initial = await this.prisma.fileUpload.findUnique({ where: { id: fileId } });
-    if (!initial || (!force && !newVersion && initial.processingStatus === 'READY')) return;
     const token = crypto.randomUUID();
     const claim = await this.prisma.fileUpload.updateMany({
-      where: { id: fileId, OR: [{ processingLeaseUntil: null }, { processingLeaseUntil: { lte: new Date() } }] },
+      where: {
+        id: fileId,
+        ...(!force && !newVersion ? { processingStatus: { not: 'READY' as const } } : {}),
+        OR: [{ processingLeaseUntil: null }, { processingLeaseUntil: { lte: new Date() } }],
+      },
       data: { processingLeaseToken: token, processingLeaseUntil: new Date(Date.now() + 10 * 60_000) },
     });
     if (!claim.count) return;

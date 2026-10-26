@@ -528,28 +528,11 @@ export class CommentsV2Service {
           console.warn('Failed to enqueue comment fanout', e);
         }
       } else if (recipientIds.length > 0) {
-        for (const recipientId of recipientIds) {
-          try {
-            await this.notifications.create(
-              recipientId,
-              NotificationType.COMMENT,
-              {
-                actorId: userId,
-                payload: {
-                  targetType,
-                  targetId,
-                  targetUrl: targetUrl ?? undefined,
-                  contentTitle: targetTitle ?? undefined,
-                  commentPreview,
-                  message,
-                },
-                dedupeMs: 2 * 60 * 1000,
-              },
-            );
-          } catch (e) {
-            console.warn('Failed to notify patcher of comment', e);
-          }
-        }
+        await this.notifications.createForRecipients(recipientIds, NotificationType.COMMENT, {
+          actorId: userId,
+          payload: { targetType, targetId, targetUrl: targetUrl ?? undefined, contentTitle: targetTitle ?? undefined, commentPreview, message },
+          dedupeMs: 2 * 60 * 1000,
+        });
       }
     }
 

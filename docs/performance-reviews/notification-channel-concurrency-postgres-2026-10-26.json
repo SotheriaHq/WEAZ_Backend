@@ -1,0 +1,26 @@
+{
+  "checkedAt": "2026-10-26T11:55:48.645Z",
+  "passed": true,
+  "cleanupPassed": true,
+  "cases": [
+    "an API interruption after inbox commit leaves a durable channel instruction; 32 real competing recovery sweeps enqueue one email/one push and replay does not duplicate either",
+    "actual push enqueue constraint failure preserves the inbox and rolls back an earlier email enqueue; durable retry commits both channels together",
+    "actual email enqueue failure preserves the inbox with a failed durable instruction; replay after backoff queues both channels once",
+    "failure to persist the durable instruction rolls back the inbox creation; retry with the same notification identity safely commits the complete handoff",
+    "unexpired channel leases cannot be stolen; an expired old owner cannot enqueue channels or acknowledge a replacement claim",
+    "a late channel failure after transaction rollback cannot reset the newer lease, overwrite its error or insert a partial channel job",
+    "a crash on the last channel claim is recovered into an explicit exhausted failure while retaining the inbox and avoiding invented delivery jobs",
+    "32 cold writers for one notification identity retain one inbox, one channel instruction and one email/push without requiring the winning process to stay alive",
+    "26 individually persisted notifications recover in three bounded policy/suppression reads, with no per-event preference/user reads; global opt-out, scenario opt-out and suppression each prevent their email while push remains independent",
+    "existing batch email snapshots retain their creation-time policy without fallback reads; final email suppression remains the separate delivery dispatcher responsibility",
+    "retiring a completed channel instruction does not recreate it or duplicate channel jobs when the long-lived inbox identity is replayed",
+    "indexed retention removes at most 1000 completed instructions per category per run, progresses on the next sweep and preserves an equally old pending instruction"
+  ],
+  "providerCalls": 0,
+  "policyBatchProof": {
+    "notifications": 26,
+    "policyReads": 3,
+    "suppressionReads": 3,
+    "otherPolicyReads": 0
+  }
+}

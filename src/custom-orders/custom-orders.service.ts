@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -45,6 +46,7 @@ import { CustomOrderAccessService } from './custom-order-access.service';
 import {
   clearAdminAttention,
   getCachedActiveAdminIds,
+  loadActiveAdminIds,
   markAdminAttention,
   type AdminAttentionReason,
 } from './custom-order-admin-attention';
@@ -62,6 +64,7 @@ import {
   assertExtensionRequestAllowed,
   EXTENSION_POLICY,
   isRushOrder,
+  isExtensionTargetPending,
   readExtensionBudget,
   resolveExtensionTargetDate,
   resolveRespondByAt,
@@ -691,7 +694,8 @@ export class CustomOrdersService {
     );
     this.assertCustomOrderDuplicateAllowsNewCustomFlow(duplicateContext);
 
-    if (this.queue) await this.queue.assertIntake(userId, configuration.brandId);
+    if (this.queue)
+      await this.queue.assertIntake(userId, configuration.brandId);
 
     const requiredMeasurementKeys = await this.resolveRequiredMeasurementKeys(
       configuration.requiredMeasurementKeys,
@@ -772,11 +776,18 @@ export class CustomOrdersService {
         rule.isFallback === preview.matchedRule.isFallback,
     );
 
-    const queueSummary = this.queue ? await this.queue.summary(configuration.brandId, userId) : null;
-    if (dto.queueJumpSelected && !queueSummary?.jumpAvailable) throw new BadRequestException('CUSTOM_ORDER_QUEUE_JUMP_UNAVAILABLE');
-    const jumpFee = dto.queueJumpSelected ? Math.round(Number(preview.buyerPriceSummary.outfitTotal) * 20) / 100 : 0;
+    const queueSummary = this.queue
+      ? await this.queue.summary(configuration.brandId, userId)
+      : null;
+    if (dto.queueJumpSelected && !queueSummary?.jumpAvailable)
+      throw new BadRequestException('CUSTOM_ORDER_QUEUE_JUMP_UNAVAILABLE');
+    const jumpFee = dto.queueJumpSelected
+      ? Math.round(Number(preview.buyerPriceSummary.outfitTotal) * 20) / 100
+      : 0;
     preview.buyerPriceSummary.queueJumpFee = jumpFee.toFixed(2);
-    preview.buyerPriceSummary.grandTotal = (Number(preview.buyerPriceSummary.grandTotal) + jumpFee).toFixed(2);
+    preview.buyerPriceSummary.grandTotal = (
+      Number(preview.buyerPriceSummary.grandTotal) + jumpFee
+    ).toFixed(2);
 
     const requestSnapshot = this.buildCheckoutIntentRequestSnapshot(
       submittedMeasurementValues,
@@ -961,17 +972,32 @@ export class CustomOrdersService {
     );
     const alreadySubmitted =
       submissionMeta.submissionIdempotencyKey === dto.idempotencyKey;
-    if (alreadySubmitted && submissionMeta.previousOrderId !== (dto.previousOrderId ?? null)) throw new BadRequestException('CUSTOM_ORDER_PREDECESSOR_MISMATCH');
+    if (
+      alreadySubmitted &&
+      submissionMeta.previousOrderId !== (dto.previousOrderId ?? null)
+    )
+      throw new BadRequestException('CUSTOM_ORDER_PREDECESSOR_MISMATCH');
 
     const configuration = await this.getConfigurationVersion(
       intent.configurationId,
       intent.configurationVersionId,
     );
-    if (this.queue) await this.queue.assertIntake(userId, configuration.configuration.brandId);
-    if (dto.previousOrderId) await this.assertOrderPredecessor(userId, dto.previousOrderId, configuration.configuration);
+    if (this.queue)
+      await this.queue.assertIntake(
+        userId,
+        configuration.configuration.brandId,
+      );
+    if (dto.previousOrderId)
+      await this.assertOrderPredecessor(
+        userId,
+        dto.previousOrderId,
+        configuration.configuration,
+      );
 
     if (
-      !isBrandStoreVerified(configuration.configuration.brand?.verificationStatus)
+      !isBrandStoreVerified(
+        configuration.configuration.brand?.verificationStatus,
+      )
     ) {
       throw new ForbiddenException(BRAND_ORDER_VERIFICATION_MESSAGE);
     }
@@ -1306,7 +1332,12 @@ export class CustomOrdersService {
       params.intent.configurationId,
       params.intent.configurationVersionId,
     );
-    if (submissionMeta.previousOrderId) await this.assertOrderPredecessor(params.buyerId, submissionMeta.previousOrderId, configuration.configuration);
+    if (submissionMeta.previousOrderId)
+      await this.assertOrderPredecessor(
+        params.buyerId,
+        submissionMeta.previousOrderId,
+        configuration.configuration,
+      );
     const requiredMeasurementKeys = await this.resolveRequiredMeasurementKeys(
       configuration.snapshot.requiredMeasurementKeys ?? [],
       configuration.snapshot.requiredFreeformPointIds ?? [],
@@ -1500,7 +1531,12 @@ export class CustomOrdersService {
     return {
       statusCode: 200,
       message: 'Custom order retrieved',
-      data: { ...this.mapDetail(hydratedOrder, { sourceMediaUrls }), queue: this.queue ? (await this.queue.present([customOrderId]))[customOrderId] : undefined },
+      data: {
+        ...this.mapDetail(hydratedOrder, { sourceMediaUrls }),
+        queue: this.queue
+          ? (await this.queue.present([customOrderId]))[customOrderId]
+          : undefined,
+      },
     };
   }
 
@@ -1621,9 +1657,14 @@ export class CustomOrdersService {
     );
 
     const items: CheckoutBagLine[] = [];
-    const sourceSnapshots = await this.loadCheckoutBagSourceSnapshots(configurations);
+    const sourceSnapshots =
+      await this.loadCheckoutBagSourceSnapshots(configurations);
     for (const session of sessions) {
-      const mapped = await this.mapCheckoutBagLine(session, configurationById, sourceSnapshots);
+      const mapped = await this.mapCheckoutBagLine(
+        session,
+        configurationById,
+        sourceSnapshots,
+      );
       if (mapped) {
         items.push(mapped);
       }
@@ -1909,11 +1950,18 @@ export class CustomOrdersService {
 
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 30 * 60 * 1000);
-    const queueSummary = this.queue ? await this.queue.summary(configuration.configuration.brandId, userId) : null;
-    if (intentSnapshot.queueJumpSelected && !queueSummary?.jumpAvailable) throw new BadRequestException('CUSTOM_ORDER_QUEUE_JUMP_UNAVAILABLE');
-    const jumpFee = intentSnapshot.queueJumpSelected ? Math.round(Number(preview.buyerPriceSummary.outfitTotal) * 20) / 100 : 0;
+    const queueSummary = this.queue
+      ? await this.queue.summary(configuration.configuration.brandId, userId)
+      : null;
+    if (intentSnapshot.queueJumpSelected && !queueSummary?.jumpAvailable)
+      throw new BadRequestException('CUSTOM_ORDER_QUEUE_JUMP_UNAVAILABLE');
+    const jumpFee = intentSnapshot.queueJumpSelected
+      ? Math.round(Number(preview.buyerPriceSummary.outfitTotal) * 20) / 100
+      : 0;
     preview.buyerPriceSummary.queueJumpFee = jumpFee.toFixed(2);
-    preview.buyerPriceSummary.grandTotal = (Number(preview.buyerPriceSummary.grandTotal) + jumpFee).toFixed(2);
+    preview.buyerPriceSummary.grandTotal = (
+      Number(preview.buyerPriceSummary.grandTotal) + jumpFee
+    ).toFixed(2);
     const requestSnapshot = this.buildCheckoutIntentRequestSnapshot(
       intentSnapshot.measurementValues,
       intentSnapshot.rushSelected,
@@ -2090,10 +2138,21 @@ export class CustomOrdersService {
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
-      const confirmedAt = this.queue ? await this.queue.lockBrand(tx, order.brandId) : new Date();
-      const current = await tx.customOrder.findUniqueOrThrow({ where: { id: customOrderId } });
-      if (current.status !== CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION) throw new BadRequestException('CUSTOM_ORDER_INVALID_STATE');
-      const canRelease = !this.queue || (await this.queue.capacity(tx, order.brandId, confirmedAt)).safetyAllowed;
+      const confirmedAt = this.queue
+        ? await this.queue.lockBrand(tx, order.brandId)
+        : new Date();
+      const current = await tx.customOrder.findUniqueOrThrow({
+        where: { id: customOrderId },
+      });
+      if (
+        current.status !==
+        CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION
+      )
+        throw new BadRequestException('CUSTOM_ORDER_INVALID_STATE');
+      const canRelease =
+        !this.queue ||
+        (await this.queue.capacity(tx, order.brandId, confirmedAt))
+          .safetyAllowed;
       const next = await tx.customOrder.update({
         where: { id: customOrderId },
         data: {
@@ -2114,18 +2173,19 @@ export class CustomOrdersService {
         include: this.detailIncludes,
       });
 
-      if (canRelease) await tx.customOrderLedgerAllocation.updateMany({
-        where: {
-          customOrderId,
-          allocationType:
-            CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
-          status: CustomOrderLedgerAllocationStatus.HELD,
-        },
-        data: {
-          status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
-          eligibleAt: confirmedAt,
-        },
-      });
+      if (canRelease)
+        await tx.customOrderLedgerAllocation.updateMany({
+          where: {
+            customOrderId,
+            allocationType:
+              CustomOrderLedgerAllocationType.FINAL_COMPLETION_PORTION,
+            status: CustomOrderLedgerAllocationStatus.HELD,
+          },
+          data: {
+            status: CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
+            eligibleAt: confirmedAt,
+          },
+        });
 
       const finalAllocation = await tx.customOrderLedgerAllocation.findFirst({
         where: {
@@ -2224,8 +2284,13 @@ export class CustomOrdersService {
     );
 
     const updated = await this.prisma.$transaction(async (tx) => {
-      const current = await this.lockBuyerOrderForIssue(tx, userId, customOrderId);
-      if (!disputeEligibleStates.has(current.status)) throw new BadRequestException('CUSTOM_ORDER_DISPUTE_WINDOW_CLOSED');
+      const current = await this.lockBuyerOrderForIssue(
+        tx,
+        userId,
+        customOrderId,
+      );
+      if (!disputeEligibleStates.has(current.status))
+        throw new BadRequestException('CUSTOM_ORDER_DISPUTE_WINDOW_CLOSED');
       const now = new Date();
 
       await tx.customOrderIssue.create({
@@ -2333,11 +2398,9 @@ export class CustomOrdersService {
 
     // Sticky admin attention + admin fan-out so the dashboard flag lights up
     // immediately (not only after the next ops cron cycle).
-    await this.flagOrderForAdminAttention(
-      customOrderId,
-      'ISSUE_REPORTED',
-      { issueType: dto.issueType },
-    );
+    await this.flagOrderForAdminAttention(customOrderId, 'ISSUE_REPORTED', {
+      issueType: dto.issueType,
+    });
 
     return {
       statusCode: 200,
@@ -2360,12 +2423,21 @@ export class CustomOrdersService {
    * `autoCompleteExpiredAcceptanceWindows` already exclude orders carrying an
    * open dispute, so raising one stops the money by itself.
    */
-  private assertDelayDisputeEligibility(order: {
-    status: CustomOrderStatus; promisedProductionAt?: Date | null; promisedDeliveryAt?: Date | null;
-    currentProgressStage?: string | null; disputes?: Array<{ status: string; resolvedAt?: Date | null }>;
-  }, now: Date) {
+  private assertDelayDisputeEligibility(
+    order: {
+      status: CustomOrderStatus;
+      promisedProductionAt?: Date | null;
+      promisedDeliveryAt?: Date | null;
+      currentProgressStage?: string | null;
+      disputes?: Array<{ status: string; resolvedAt?: Date | null }>;
+    },
+    now: Date,
+  ) {
     const existingDisputes = Array.isArray((order as any).disputes)
-      ? ((order as any).disputes as Array<{ status: string; resolvedAt?: Date | null }>)
+      ? ((order as any).disputes as Array<{
+          status: string;
+          resolvedAt?: Date | null;
+        }>)
       : [];
     const hasOpenDispute = existingDisputes.some((entry) =>
       (OPEN_DISPUTE_STATUSES as readonly string[]).includes(entry.status),
@@ -2425,7 +2497,11 @@ export class CustomOrdersService {
 
     const statement = dto.description.trim();
     const updated = await this.prisma.$transaction(async (tx) => {
-      const order = await this.lockBuyerOrderForIssue(tx, userId, customOrderId);
+      const order = await this.lockBuyerOrderForIssue(
+        tx,
+        userId,
+        customOrderId,
+      );
       const now = new Date();
       eligibility = this.assertDelayDisputeEligibility(order, now);
 
@@ -2434,7 +2510,11 @@ export class CustomOrdersService {
           customOrderId: order.id,
           issueType: dto.issueType,
           description: statement,
-          evidenceJson: { photos: [], files: [], basis: eligibility.basis } as Prisma.InputJsonValue,
+          evidenceJson: {
+            photos: [],
+            files: [],
+            basis: eligibility.basis,
+          } as Prisma.InputJsonValue,
           openedById: userId,
         },
       });
@@ -2473,7 +2553,9 @@ export class CustomOrdersService {
           brandAdminNoticeAt: now,
           adminInterventionAt: now,
           adminInterventionReason:
-            eligibility.basis === 'DELIVERY' ? 'DELIVERY_OVERDUE' : 'PRODUCTION_OVERDUE',
+            eligibility.basis === 'DELIVERY'
+              ? 'DELIVERY_OVERDUE'
+              : 'PRODUCTION_OVERDUE',
           adminInterventionResolvedAt: null,
           adminInterventionResolvedById: null,
           /*
@@ -2544,7 +2626,10 @@ export class CustomOrdersService {
     );
     await this.flagOrderForAdminAttention(order.id, 'DISPUTE_OPENED', {
       reasonType: dto.issueType,
-      source: eligibility.basis === 'DELIVERY' ? 'DELIVERY_OVERDUE' : 'PRODUCTION_OVERDUE',
+      source:
+        eligibility.basis === 'DELIVERY'
+          ? 'DELIVERY_OVERDUE'
+          : 'PRODUCTION_OVERDUE',
     });
 
     return {
@@ -2644,7 +2729,9 @@ export class CustomOrdersService {
       },
       userId,
     );
-    await clearAdminAttention(this.prisma, customOrderId, userId).catch(() => undefined);
+    await clearAdminAttention(this.prisma, customOrderId, userId).catch(
+      () => undefined,
+    );
 
     return {
       statusCode: 200,
@@ -2710,10 +2797,80 @@ export class CustomOrdersService {
       assertExtensionGrantAllowed({ order, days: grantedDays });
     }
 
-    const resolvedAt = new Date();
+    let resolvedAt = new Date();
     const updated = await this.prisma.$transaction(async (tx) => {
+      const current = await this.lockBuyerOrderForIssue(
+        tx,
+        userId,
+        customOrderId,
+      );
+      resolvedAt = new Date();
+      const currentRequest = current.extensionRequests.find(
+        (entry) => entry.id === requestId,
+      );
+      if (
+        !currentRequest ||
+        currentRequest.buyerResponseStatus !==
+          CustomOrderExtensionResponseStatus.OPEN
+      ) {
+        throw new BadRequestException('Extension request is no longer open');
+      }
+      if (
+        currentRequest.respondByAt &&
+        currentRequest.respondByAt <= resolvedAt
+      ) {
+        throw new BadRequestException(
+          'Extension request response window has expired',
+        );
+      }
+      if (
+        current.anonymizedAt ||
+        !this.isExtensionRequestAllowed(
+          current.status,
+          currentRequest.targetType,
+        )
+      ) {
+        throw new BadRequestException(
+          'CUSTOM_ORDER_EXTENSION_NOT_ALLOWED_FOR_STATE',
+        );
+      }
+      if (
+        currentRequest.requestedExtraDays !==
+          extensionRequest.requestedExtraDays ||
+        currentRequest.targetType !== extensionRequest.targetType
+      ) {
+        throw new ConflictException(
+          'Extension request changed. Refresh and retry.',
+        );
+      }
+      if (response === CustomOrderExtensionResponseStatus.COUNTERED) {
+        if (
+          current.extensionRequests.some(
+            (entry) =>
+              entry.id !== requestId &&
+              (entry.buyerCounterDays != null ||
+                entry.buyerResponseStatus ===
+                  CustomOrderExtensionResponseStatus.COUNTERED),
+          )
+        ) {
+          throw new BadRequestException(
+            'Only one extension counter is allowed per order',
+          );
+        }
+        assertExtensionGrantAllowed({
+          order: current,
+          days: counterDays as number,
+        });
+      }
+      if (response === CustomOrderExtensionResponseStatus.ACCEPTED) {
+        assertExtensionGrantAllowed({ order: current, days: grantedDays });
+      }
       await tx.customOrderExtensionRequest.update({
-        where: { id: requestId },
+        where: {
+          id: requestId,
+          customOrderId,
+          buyerResponseStatus: CustomOrderExtensionResponseStatus.OPEN,
+        },
         data: {
           buyerResponseStatus: response,
           buyerCounterDays:
@@ -2797,63 +2954,75 @@ export class CustomOrdersService {
         include: this.detailIncludes,
       });
 
+      // Every party hears about it. Before this, a buyer's answer notified nobody:
+      // the brand found out by noticing its own dates had moved, or did not.
+      if (response === CustomOrderExtensionResponseStatus.ACCEPTED) {
+        await this.queueBrandNotification(
+          order.brandId,
+          'CUSTOM_ORDER_EXTENSION_RESOLVED' as NotificationType,
+          customOrderId,
+          {
+            requestId,
+            response,
+            grantedDays,
+            newDeadlineAt: next.promisedDeliveryAt?.toISOString(),
+          },
+          userId,
+          tx,
+        );
+      }
+
+      if (response === CustomOrderExtensionResponseStatus.COUNTERED) {
+        await this.queueBrandNotification(
+          order.brandId,
+          'CUSTOM_ORDER_BUYER_COUNTERED' as NotificationType,
+          customOrderId,
+          { requestId, counterDays, buyerNote: buyerNote ?? '' },
+          userId,
+          tx,
+        );
+      }
+
+      if (response === CustomOrderExtensionResponseStatus.REJECTED) {
+        await this.queueBrandNotification(
+          order.brandId,
+          'CUSTOM_ORDER_BUYER_REJECTED_EXTENSION' as NotificationType,
+          customOrderId,
+          { requestId, buyerNote: buyerNote ?? '' },
+          userId,
+          tx,
+        );
+        // The shopper gets written confirmation of what declining actually did —
+        // the single most common misreading is that it cancels the order.
+        await this.queueBuyerNotification(
+          order.buyerId,
+          'CUSTOM_ORDER_EXTENSION_RESOLVED' as NotificationType,
+          customOrderId,
+          {
+            requestId,
+            response,
+            message:
+              'You declined the extra time. Your order is not cancelled — WIEZ is now reviewing it with the maker and will be in touch.',
+          },
+          null,
+          tx,
+        );
+        await this.runAdminAttentionFanOut(
+          customOrderId,
+          'DISPUTE_OPENED',
+          {
+            reasonType: CustomOrderIssueType.UNREASONABLE_DELAY,
+            source: 'EXTENSION_REJECTED',
+          },
+          tx,
+        );
+      }
+
       return next;
     });
 
-    // Every party hears about it. Before this, a buyer's answer notified nobody:
-    // the brand found out by noticing its own dates had moved, or did not.
-    if (response === CustomOrderExtensionResponseStatus.ACCEPTED) {
-      await this.queueBrandNotification(
-        order.brandId,
-        'CUSTOM_ORDER_EXTENSION_RESOLVED' as NotificationType,
-        customOrderId,
-        {
-          requestId,
-          response,
-          grantedDays,
-          newDeadlineAt: updated.promisedDeliveryAt?.toISOString(),
-        },
-        userId,
-      );
-    }
-
-    if (response === CustomOrderExtensionResponseStatus.COUNTERED) {
-      await this.queueBrandNotification(
-        order.brandId,
-        'CUSTOM_ORDER_BUYER_COUNTERED' as NotificationType,
-        customOrderId,
-        { requestId, counterDays, buyerNote: buyerNote ?? '' },
-        userId,
-      );
-    }
-
-    if (response === CustomOrderExtensionResponseStatus.REJECTED) {
-      await this.queueBrandNotification(
-        order.brandId,
-        'CUSTOM_ORDER_BUYER_REJECTED_EXTENSION' as NotificationType,
-        customOrderId,
-        { requestId, buyerNote: buyerNote ?? '' },
-        userId,
-      );
-      // The shopper gets written confirmation of what declining actually did —
-      // the single most common misreading is that it cancels the order.
-      await this.queueBuyerNotification(
-        order.buyerId,
-        'CUSTOM_ORDER_EXTENSION_RESOLVED' as NotificationType,
-        customOrderId,
-        {
-          requestId,
-          response,
-          message:
-            'You declined the extra time. Your order is not cancelled — WIEZ is now reviewing it with the maker and will be in touch.',
-        },
-        userId,
-      );
-      await this.flagOrderForAdminAttention(customOrderId, 'DISPUTE_OPENED', {
-        reasonType: CustomOrderIssueType.UNREASONABLE_DELAY,
-        source: 'EXTENSION_REJECTED',
-      });
-    }
+    if (response === CustomOrderExtensionResponseStatus.REJECTED)
+      this.emitBuyerOrderUpdated(updated.buyerId, customOrderId);
 
     return {
       statusCode: 200,
@@ -2869,7 +3038,11 @@ export class CustomOrdersService {
     requestId: string,
     dto: BrandRespondToCustomOrderExtensionCounterDto,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId, brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
+      ownerUserId,
+      customOrderId,
+      brandId,
+    );
     const resolvedBrandId =
       await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
@@ -2918,8 +3091,55 @@ export class CustomOrdersService {
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      const current = await this.lockBrandOrderForExtension(
+        tx,
+        resolvedBrandId,
+        customOrderId,
+      );
+      const currentRequest = current.extensionRequests.find(
+        (entry) => entry.id === requestId,
+      );
+      if (
+        !currentRequest ||
+        currentRequest.buyerResponseStatus !==
+          CustomOrderExtensionResponseStatus.COUNTERED
+      ) {
+        throw new BadRequestException(
+          'Extension request is not awaiting brand response',
+        );
+      }
+      if (
+        current.anonymizedAt ||
+        !this.isExtensionRequestAllowed(
+          current.status,
+          currentRequest.targetType,
+        )
+      ) {
+        throw new BadRequestException(
+          'CUSTOM_ORDER_EXTENSION_NOT_ALLOWED_FOR_STATE',
+        );
+      }
+      if (
+        !currentRequest.buyerCounterDays ||
+        currentRequest.buyerCounterDays !== extensionRequest.buyerCounterDays ||
+        currentRequest.targetType !== extensionRequest.targetType
+      ) {
+        throw new ConflictException(
+          'Extension request changed. Refresh and retry.',
+        );
+      }
+      if (dto.response === CustomOrderExtensionResponseStatus.ACCEPTED) {
+        assertExtensionGrantAllowed({
+          order: current,
+          days: currentRequest.buyerCounterDays,
+        });
+      }
       await tx.customOrderExtensionRequest.update({
-        where: { id: requestId },
+        where: {
+          id: requestId,
+          customOrderId,
+          buyerResponseStatus: CustomOrderExtensionResponseStatus.COUNTERED,
+        },
         data: {
           buyerResponseStatus: dto.response,
           brandNote: dto.note?.trim() ? dto.note.trim() : null,
@@ -2940,7 +3160,7 @@ export class CustomOrdersService {
         );
       }
 
-      return tx.customOrder.update({
+      const next = await tx.customOrder.update({
         where: { id: customOrderId },
         data: {
           timelineEvents: {
@@ -2959,23 +3179,27 @@ export class CustomOrdersService {
         },
         include: this.detailIncludes,
       });
+      await this.queueBuyerNotification(
+        order.buyerId,
+        'CUSTOM_ORDER_EXTENSION_RESOLVED' as NotificationType,
+        customOrderId,
+        {
+          requestId,
+          response: dto.response,
+          grantedDays:
+            dto.response === CustomOrderExtensionResponseStatus.ACCEPTED
+              ? extensionRequest.buyerCounterDays
+              : undefined,
+          newDeadlineAt: next.promisedDeliveryAt?.toISOString(),
+        },
+        ownerUserId,
+        tx,
+      );
+
+      return next;
     });
 
-    await this.queueBuyerNotification(
-      order.buyerId,
-      'CUSTOM_ORDER_EXTENSION_RESOLVED' as NotificationType,
-      customOrderId,
-      {
-        requestId,
-        response: dto.response,
-        grantedDays:
-          dto.response === CustomOrderExtensionResponseStatus.ACCEPTED
-            ? extensionRequest.buyerCounterDays
-            : undefined,
-        newDeadlineAt: updated.promisedDeliveryAt?.toISOString(),
-      },
-      ownerUserId,
-    );
+    this.emitBuyerOrderUpdated(updated.buyerId, customOrderId);
 
     return {
       statusCode: 200,
@@ -3084,7 +3308,11 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: CreateExceptionReviewRequestDto,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId, brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
+      ownerUserId,
+      customOrderId,
+      brandId,
+    );
     const resolvedBrandId =
       await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
@@ -3177,7 +3405,11 @@ export class CustomOrdersService {
     brandId: string,
     customOrderId: string,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandRead(ownerUserId, customOrderId, brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandRead(
+      ownerUserId,
+      customOrderId,
+      brandId,
+    );
     const resolvedBrandId =
       await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
@@ -3197,7 +3429,12 @@ export class CustomOrdersService {
     return {
       statusCode: 200,
       message: 'Custom order retrieved',
-      data: { ...this.mapDetail(hydratedOrder, { sourceMediaUrls }), queue: this.queue ? (await this.queue.present([customOrderId]))[customOrderId] : undefined },
+      data: {
+        ...this.mapDetail(hydratedOrder, { sourceMediaUrls }),
+        queue: this.queue
+          ? (await this.queue.present([customOrderId]))[customOrderId]
+          : undefined,
+      },
     };
   }
 
@@ -3324,7 +3561,11 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: AcceptCustomOrderDto,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId, brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
+      ownerUserId,
+      customOrderId,
+      brandId,
+    );
     const resolvedBrandId =
       await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
@@ -3458,7 +3699,11 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: UpdateCustomOrderProgressStageDto,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId, brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
+      ownerUserId,
+      customOrderId,
+      brandId,
+    );
     const resolvedBrandId =
       await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
@@ -3554,7 +3799,11 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: CreateCustomOrderExtensionRequestDto,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId, brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
+      ownerUserId,
+      customOrderId,
+      brandId,
+    );
     const resolvedBrandId =
       await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
@@ -3572,74 +3821,102 @@ export class CustomOrdersService {
     }
     // Rush fee, outstanding request, extension count and day budget — one place,
     // shared with the acceptance path so the two cannot drift.
-    const { sequence } = assertExtensionRequestAllowed({
+    let { sequence } = assertExtensionRequestAllowed({
       order,
       requests: order.extensionRequests,
       requestedExtraDays: dto.requestedExtraDays,
     });
 
     const now = new Date();
-    const respondByAt = resolveRespondByAt({
+    let respondByAt = resolveRespondByAt({
       now,
       dueAt: resolveExtensionTargetDate(order, dto.targetType),
     });
 
-    const updated = await this.prisma.customOrder.update({
-      where: { id: customOrderId },
-      data: {
-        extensionRequests: {
-          create: {
-            requestedByBrandId: resolvedBrandId,
-            targetType: dto.targetType,
-            requestedExtraDays: dto.requestedExtraDays,
-            reason: dto.reason.trim(),
-            respondByAt,
-            sequence,
-          },
-        },
-        timelineEvents: {
-          create: {
-            actorType: CustomOrderActorType.BRAND,
-            actorId: ownerUserId,
-            eventType: 'EXTENSION_REQUESTED',
-            payloadJson: {
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const current = await this.lockBrandOrderForExtension(
+        tx,
+        resolvedBrandId,
+        customOrderId,
+      );
+      if (
+        current.anonymizedAt ||
+        !this.isExtensionRequestAllowed(current.status, dto.targetType)
+      ) {
+        throw new BadRequestException(
+          'CUSTOM_ORDER_EXTENSION_NOT_ALLOWED_FOR_STATE',
+        );
+      }
+      sequence = assertExtensionRequestAllowed({
+        order: current,
+        requests: current.extensionRequests,
+        requestedExtraDays: dto.requestedExtraDays,
+      }).sequence;
+      respondByAt = resolveRespondByAt({
+        now: new Date(),
+        dueAt: resolveExtensionTargetDate(current, dto.targetType),
+      });
+      const next = await tx.customOrder.update({
+        where: { id: customOrderId },
+        data: {
+          extensionRequests: {
+            create: {
+              requestedByBrandId: resolvedBrandId,
               targetType: dto.targetType,
               requestedExtraDays: dto.requestedExtraDays,
-              reason: dto.reason,
+              reason: dto.reason.trim(),
+              respondByAt,
               sequence,
-              respondByAt: respondByAt.toISOString(),
+            },
+          },
+          timelineEvents: {
+            create: {
+              actorType: CustomOrderActorType.BRAND,
+              actorId: ownerUserId,
+              eventType: 'EXTENSION_REQUESTED',
+              payloadJson: {
+                targetType: dto.targetType,
+                requestedExtraDays: dto.requestedExtraDays,
+                reason: dto.reason,
+                sequence,
+                respondByAt: respondByAt.toISOString(),
+              },
             },
           },
         },
-      },
-      include: this.detailIncludes,
+        include: this.detailIncludes,
+      });
+      const createdRequest = next.extensionRequests.find(
+        (entry) =>
+          entry.buyerResponseStatus === CustomOrderExtensionResponseStatus.OPEN,
+      );
+
+      await this.queueBuyerNotification(
+        order.buyerId,
+        'CUSTOM_ORDER_EXTENSION_REQUESTED' as NotificationType,
+        customOrderId,
+        {
+          requestId: createdRequest?.id,
+          requestedExtraDays: dto.requestedExtraDays,
+          targetType: dto.targetType,
+          sequence,
+          respondByAt: respondByAt.toISOString(),
+          // The deep link carries the request, so a tap lands ON the decision
+          // instead of on an order screen the shopper then has to search.
+          ...(createdRequest
+            ? {
+                targetUrl: `/custom-orders/${customOrderId}/extensions/${createdRequest.id}`,
+              }
+            : {}),
+        },
+        ownerUserId,
+        tx,
+      );
+
+      return next;
     });
 
-    const createdRequest = updated.extensionRequests.find(
-      (entry) =>
-        entry.buyerResponseStatus === CustomOrderExtensionResponseStatus.OPEN,
-    );
-
-    await this.queueBuyerNotification(
-      order.buyerId,
-      'CUSTOM_ORDER_EXTENSION_REQUESTED' as NotificationType,
-      customOrderId,
-      {
-        requestId: createdRequest?.id,
-        requestedExtraDays: dto.requestedExtraDays,
-        targetType: dto.targetType,
-        sequence,
-        respondByAt: respondByAt.toISOString(),
-        // The deep link carries the request, so a tap lands ON the decision
-        // instead of on an order screen the shopper then has to search.
-        ...(createdRequest
-          ? {
-              targetUrl: `/custom-orders/${customOrderId}/extensions/${createdRequest.id}`,
-            }
-          : {}),
-      },
-      ownerUserId,
-    );
+    this.emitBuyerOrderUpdated(updated.buyerId, customOrderId);
 
     return {
       statusCode: 201,
@@ -3654,7 +3931,11 @@ export class CustomOrdersService {
     customOrderId: string,
     dto: UpdateCustomOrderLifecycleStatusDto,
   ) {
-    await this.customOrderAccessService.assertCustomOrderBrandUpdate(ownerUserId, customOrderId, brandId);
+    await this.customOrderAccessService.assertCustomOrderBrandUpdate(
+      ownerUserId,
+      customOrderId,
+      brandId,
+    );
     const resolvedBrandId =
       await this.customOrderAccessService.resolveBrandId(brandId);
     const order = await this.prisma.customOrder.findFirst({
@@ -3680,51 +3961,74 @@ export class CustomOrdersService {
       throw new BadRequestException('CUSTOM_ORDER_INVALID_STATE_TRANSITION');
     }
 
-    const updated = await this.prisma.$transaction(async tx => {
-      const now = this.queue ? await this.queue.lockBrand(tx, resolvedBrandId) : new Date();
-      const current = await tx.customOrder.findUniqueOrThrow({ where: { id: customOrderId } });
-      if (!this.isLifecycleTransitionAllowed(current.status, dto.status)) throw new BadRequestException('CUSTOM_ORDER_INVALID_STATE_TRANSITION');
-      const dispatching = (dto.status === CustomOrderStatus.IN_TRANSIT || dto.status === CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION) && current.lane !== 'IN_DELIVERY';
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const now = this.queue
+        ? await this.queue.lockBrand(tx, resolvedBrandId)
+        : new Date();
+      const current = await tx.customOrder.findUniqueOrThrow({
+        where: { id: customOrderId },
+      });
+      if (!this.isLifecycleTransitionAllowed(current.status, dto.status))
+        throw new BadRequestException('CUSTOM_ORDER_INVALID_STATE_TRANSITION');
+      const dispatching =
+        (dto.status === CustomOrderStatus.IN_TRANSIT ||
+          dto.status ===
+            CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION) &&
+        current.lane !== 'IN_DELIVERY';
       if (this.queue && dispatching) {
         const cap = await this.queue.capacity(tx, resolvedBrandId, now);
-        if (!cap.safetyAllowed) throw new BadRequestException('CUSTOM_ORDER_SAFETY_HOLD');
-        const delivering = await tx.customOrder.count({ where: { brandId: resolvedBrandId, lane: 'IN_DELIVERY' } });
-        if (cap.inDelivery !== null && delivering >= cap.inDelivery) throw new BadRequestException('CUSTOM_ORDER_DELIVERY_CAP_REACHED');
+        if (!cap.safetyAllowed)
+          throw new BadRequestException('CUSTOM_ORDER_SAFETY_HOLD');
+        const delivering = await tx.customOrder.count({
+          where: { brandId: resolvedBrandId, lane: 'IN_DELIVERY' },
+        });
+        if (cap.inDelivery !== null && delivering >= cap.inDelivery)
+          throw new BadRequestException('CUSTOM_ORDER_DELIVERY_CAP_REACHED');
       }
       const next = await tx.customOrder.update({
-      where: { id: customOrderId },
-      data: {
-        status: dto.status,
-        lane: dto.status === CustomOrderStatus.CLOSED ? 'TERMINAL' : dto.status === CustomOrderStatus.IN_TRANSIT || dto.status === CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION ? 'IN_DELIVERY' : current.lane,
-        orderRevision: { increment: 1 },
-        lastBrandProgressUpdateAt: now,
-        deliveredAt:
-          dto.status === CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION
-            ? now
-            : order.deliveredAt,
-        buyerAcceptanceWindowEndsAt:
-          dto.status === CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION
-            ? new Date(
-                now.getTime() + BUYER_ACCEPTANCE_WINDOW_HOURS * 60 * 60 * 1000,
-              )
-            : order.buyerAcceptanceWindowEndsAt,
-        timelineEvents: {
-          create: {
-            actorType: CustomOrderActorType.BRAND,
-            actorId: ownerUserId,
-            eventType:
-              dto.status ===
-              CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION
-                ? 'DELIVERED'
-                : 'PROGRESS_STAGE_CHANGED',
-            payloadJson: {
-              status: dto.status,
-              note: dto.note ?? null,
+        where: { id: customOrderId },
+        data: {
+          status: dto.status,
+          lane:
+            dto.status === CustomOrderStatus.CLOSED
+              ? 'TERMINAL'
+              : dto.status === CustomOrderStatus.IN_TRANSIT ||
+                  dto.status ===
+                    CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION
+                ? 'IN_DELIVERY'
+                : current.lane,
+          orderRevision: { increment: 1 },
+          lastBrandProgressUpdateAt: now,
+          deliveredAt:
+            dto.status ===
+            CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION
+              ? now
+              : order.deliveredAt,
+          buyerAcceptanceWindowEndsAt:
+            dto.status ===
+            CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION
+              ? new Date(
+                  now.getTime() +
+                    BUYER_ACCEPTANCE_WINDOW_HOURS * 60 * 60 * 1000,
+                )
+              : order.buyerAcceptanceWindowEndsAt,
+          timelineEvents: {
+            create: {
+              actorType: CustomOrderActorType.BRAND,
+              actorId: ownerUserId,
+              eventType:
+                dto.status ===
+                CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION
+                  ? 'DELIVERED'
+                  : 'PROGRESS_STAGE_CHANGED',
+              payloadJson: {
+                status: dto.status,
+                note: dto.note ?? null,
+              },
             },
           },
         },
-      },
-      include: this.detailIncludes,
+        include: this.detailIncludes,
       });
       if (this.queue) await this.queue.drain(tx, resolvedBrandId, now);
       return next;
@@ -3905,8 +4209,9 @@ export class CustomOrdersService {
     customOrderId: string,
     payload: Record<string, unknown> = {},
     actorId?: string | null,
+    tx?: Prisma.TransactionClient,
   ) {
-    await this.sideEffects.enqueueNotification({
+    const params = {
       customOrderId,
       recipientIds: [recipientId],
       notificationType,
@@ -3917,15 +4222,27 @@ export class CustomOrdersService {
         ...payload,
       },
       dedupeMs: 5 * 60 * 1000,
-    });
+    };
+    if (tx) await this.sideEffects.enqueueNotification(params, tx);
+    else await this.sideEffects.enqueueNotification(params);
 
+    if (!tx) this.emitBuyerOrderUpdated(recipientId, customOrderId);
+  }
+
+  private emitBuyerOrderUpdated(recipientId: string, customOrderId: string) {
     // Immediate realtime sync, emitted directly from the API process (NOT via
     // the BullMQ notification worker), so the buyer's Orders tab re-fetches the
     // moment the custom order changes — even if the worker is lagging or down.
-    void this.notifications?.emitOrderUpdated([recipientId], {
-      kind: 'CUSTOM',
-      orderId: customOrderId,
-    });
+    void Promise.resolve(
+      this.notifications?.emitOrderUpdated([recipientId], {
+        kind: 'CUSTOM',
+        orderId: customOrderId,
+      }),
+    ).catch((error) =>
+      this.logger.warn(
+        `Order update realtime failed customOrderId=${customOrderId}: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
   }
 
   private async queueBrandNotification(
@@ -3934,8 +4251,9 @@ export class CustomOrdersService {
     customOrderId: string,
     payload: Record<string, unknown> = {},
     actorId?: string | null,
+    tx?: Prisma.TransactionClient,
   ) {
-    const brand = await this.prisma.brand.findUnique({
+    const brand = await (tx ?? this.prisma).brand.findUnique({
       where: { id: brandId },
       select: { ownerId: true },
     });
@@ -3943,7 +4261,7 @@ export class CustomOrdersService {
       return;
     }
 
-    await this.sideEffects.enqueueNotification({
+    const params = {
       customOrderId,
       recipientIds: [brand.ownerId],
       notificationType,
@@ -3954,7 +4272,9 @@ export class CustomOrdersService {
         ...payload,
       },
       dedupeMs: 5 * 60 * 1000,
-    });
+    };
+    if (tx) await this.sideEffects.enqueueNotification(params, tx);
+    else await this.sideEffects.enqueueNotification(params);
   }
 
   /**
@@ -3973,22 +4293,25 @@ export class CustomOrdersService {
     customOrderId: string,
     reason: AdminAttentionReason,
     payload: Record<string, unknown> = {},
+    tx?: Prisma.TransactionClient,
   ) {
     try {
-      await markAdminAttention(this.prisma, customOrderId, reason, {
+      await markAdminAttention(tx ?? this.prisma, customOrderId, reason, {
+        throwOnError: Boolean(tx),
         onError: (message) => this.logger.warn(message),
       });
 
-      const adminIds = await getCachedActiveAdminIds(this.prisma);
+      const adminIds = tx
+        ? await loadActiveAdminIds(tx)
+        : await getCachedActiveAdminIds(this.prisma);
       if (adminIds.length === 0) {
         return;
       }
 
-      await this.sideEffects.enqueueNotification({
+      const params = {
         customOrderId,
         recipientIds: adminIds,
-        notificationType:
-          NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
+        notificationType: NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
         target: {
           type: 'SYSTEM' as const,
           id: `admin-custom-order:${customOrderId}`,
@@ -4001,8 +4324,11 @@ export class CustomOrdersService {
           ...payload,
         },
         dedupeMs: 5 * 60 * 1000,
-      });
+      };
+      if (tx) await this.sideEffects.enqueueNotification(params, tx);
+      else await this.sideEffects.enqueueNotification(params);
     } catch (error) {
+      if (tx) throw error;
       this.logger.warn(
         `Failed to notify admins for attention on ${customOrderId}: ${
           error instanceof Error ? error.message : String(error)
@@ -4047,7 +4373,11 @@ export class CustomOrdersService {
     const finalWhere: Prisma.CustomOrderWhereInput = {
       ...where,
       ...(query.queueLane ? { lane: query.queueLane } : {}),
-      ...(query.cancelled === true ? { cancelledAt: { not: null } } : query.cancelled === false ? { cancelledAt: null } : {}),
+      ...(query.cancelled === true
+        ? { cancelledAt: { not: null } }
+        : query.cancelled === false
+          ? { cancelledAt: null }
+          : {}),
       ...(query.status ? { status: query.status } : {}),
       ...(query.stage ? { currentProgressStage: query.stage } : {}),
       ...(searchQuery
@@ -4073,20 +4403,49 @@ export class CustomOrdersService {
 
     let orderedIds: string[] | null = null;
     if (query.sort === 'queue') {
-      const scope = typeof where.buyerId === 'string' ? Prisma.sql`o."buyerId" = ${where.buyerId}::uuid` : typeof where.brandId === 'string' ? Prisma.sql`o."brandId" = ${where.brandId}::uuid` : null;
-      if (!scope) throw new BadRequestException('Custom-order list requires an account scope');
+      const scope =
+        typeof where.buyerId === 'string'
+          ? Prisma.sql`o."buyerId" = ${where.buyerId}::uuid`
+          : typeof where.brandId === 'string'
+            ? Prisma.sql`o."brandId" = ${where.brandId}::uuid`
+            : null;
+      if (!scope)
+        throw new BadRequestException(
+          'Custom-order list requires an account scope',
+        );
       const filters = [scope];
-      if (query.queueLane) filters.push(Prisma.sql`o."lane" = ${query.queueLane}::"CustomOrderLane"`);
-      if (query.status) filters.push(Prisma.sql`o."status" = ${query.status}::"CustomOrderStatus"`);
-      if (query.stage) filters.push(Prisma.sql`o."currentProgressStage" = ${query.stage}::"CustomOrderProgressStage"`);
-      if (query.cancelled !== undefined) filters.push(query.cancelled ? Prisma.sql`o."cancelledAt" IS NOT NULL` : Prisma.sql`o."cancelledAt" IS NULL`);
-      if (searchQuery) filters.push(Prisma.sql`(o."id"::text = ${searchQuery} OR position(lower(${searchQuery}) in lower(o."sourceTitleSnapshot")) > 0 OR position(lower(${searchQuery}) in lower(o."sourceBrandNameSnapshot")) > 0)`);
-      const rows = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`SELECT o."id" FROM "CustomOrder" o WHERE ${Prisma.join(filters, ' AND ')} ORDER BY CASE o."lane" WHEN 'UP_NEXT' THEN 0 WHEN 'PENDING' THEN 1 WHEN 'ACTIVE' THEN 2 WHEN 'IN_DELIVERY' THEN 3 WHEN 'TERMINAL' THEN 4 ELSE 5 END, o."queuePriority" DESC, o."queuePosition" ASC NULLS LAST, o."createdAt" ASC, o."id" ASC LIMIT ${take} OFFSET ${(page - 1) * take}`);
-      orderedIds = rows.map(row => row.id);
+      if (query.queueLane)
+        filters.push(
+          Prisma.sql`o."lane" = ${query.queueLane}::"CustomOrderLane"`,
+        );
+      if (query.status)
+        filters.push(
+          Prisma.sql`o."status" = ${query.status}::"CustomOrderStatus"`,
+        );
+      if (query.stage)
+        filters.push(
+          Prisma.sql`o."currentProgressStage" = ${query.stage}::"CustomOrderProgressStage"`,
+        );
+      if (query.cancelled !== undefined)
+        filters.push(
+          query.cancelled
+            ? Prisma.sql`o."cancelledAt" IS NOT NULL`
+            : Prisma.sql`o."cancelledAt" IS NULL`,
+        );
+      if (searchQuery)
+        filters.push(
+          Prisma.sql`(o."id"::text = ${searchQuery} OR position(lower(${searchQuery}) in lower(o."sourceTitleSnapshot")) > 0 OR position(lower(${searchQuery}) in lower(o."sourceBrandNameSnapshot")) > 0)`,
+        );
+      const rows = await this.prisma.$queryRaw<Array<{ id: string }>>(
+        Prisma.sql`SELECT o."id" FROM "CustomOrder" o WHERE ${Prisma.join(filters, ' AND ')} ORDER BY CASE o."lane" WHEN 'UP_NEXT' THEN 0 WHEN 'PENDING' THEN 1 WHEN 'ACTIVE' THEN 2 WHEN 'IN_DELIVERY' THEN 3 WHEN 'TERMINAL' THEN 4 ELSE 5 END, o."queuePriority" DESC, o."queuePosition" ASC NULLS LAST, o."createdAt" ASC, o."id" ASC LIMIT ${take} OFFSET ${(page - 1) * take}`,
+      );
+      orderedIds = rows.map((row) => row.id);
     }
     const [items, total] = await this.prisma.$transaction([
       this.prisma.customOrder.findMany({
-        where: orderedIds ? { AND: [finalWhere, { id: { in: orderedIds } }] } : finalWhere,
+        where: orderedIds
+          ? { AND: [finalWhere, { id: { in: orderedIds } }] }
+          : finalWhere,
         orderBy: { createdAt: query.sort === 'oldest' ? 'asc' : 'desc' },
         ...(orderedIds ? {} : { skip: (page - 1) * take }),
         take,
@@ -4094,16 +4453,25 @@ export class CustomOrdersService {
       this.prisma.customOrder.count({ where: finalWhere }),
     ]);
 
-    const orderedItems = orderedIds ? items.sort((a, b) => orderedIds!.indexOf(a.id) - orderedIds!.indexOf(b.id)) : items;
+    const orderedItems = orderedIds
+      ? items.sort(
+          (a, b) => orderedIds!.indexOf(a.id) - orderedIds!.indexOf(b.id),
+        )
+      : items;
     const hydratedItems = await this.hydrateListOrderSnapshots(orderedItems);
     const visibleItems = this.collapseVisibleDuplicateOrders(hydratedItems);
-    const queuePresentations = this.queue ? await this.queue.present(visibleItems.map(item => item.id)) : {};
+    const queuePresentations = this.queue
+      ? await this.queue.present(visibleItems.map((item) => item.id))
+      : {};
 
     return {
       statusCode: 200,
       message: 'Custom orders retrieved',
       data: {
-        items: visibleItems.map((item) => ({ ...this.mapListItem(item), queue: queuePresentations[item.id] })),
+        items: visibleItems.map((item) => ({
+          ...this.mapListItem(item),
+          queue: queuePresentations[item.id],
+        })),
         page,
         limit: take,
         total,
@@ -4389,10 +4757,29 @@ export class CustomOrdersService {
     return order;
   }
 
-  private async lockBuyerOrderForIssue(tx: Prisma.TransactionClient, userId: string, customOrderId: string) {
+  private async lockBuyerOrderForIssue(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    customOrderId: string,
+  ) {
     await tx.$queryRaw`SELECT "id" FROM "CustomOrder" WHERE "id" = ${customOrderId}::uuid AND "buyerId" = ${userId}::uuid FOR UPDATE`;
     const current = await tx.customOrder.findFirst({
-      where: { id: customOrderId, buyerId: userId }, include: this.detailIncludes,
+      where: { id: customOrderId, buyerId: userId },
+      include: this.detailIncludes,
+    });
+    if (!current) throw new NotFoundException('Custom order not found');
+    return current;
+  }
+
+  private async lockBrandOrderForExtension(
+    tx: Prisma.TransactionClient,
+    brandId: string,
+    customOrderId: string,
+  ) {
+    await tx.$queryRaw`SELECT "id" FROM "CustomOrder" WHERE "id" = ${customOrderId}::uuid AND "brandId" = ${brandId}::uuid FOR UPDATE`;
+    const current = await tx.customOrder.findFirst({
+      where: { id: customOrderId, brandId },
+      include: this.detailIncludes,
     });
     if (!current) throw new NotFoundException('Custom order not found');
     return current;
@@ -4556,9 +4943,24 @@ export class CustomOrdersService {
       : {};
   }
 
-  private async assertOrderPredecessor(buyerId: string, id: string, source: { brandId: string; sourceId: string; sourceType: string }) {
-    const previous = await this.prisma.customOrder.findFirst({ where: { id, buyerId, brandId: source.brandId, sourceId: source.sourceId, sourceType: source.sourceType as CustomOrderSourceType, cancelledAt: { not: null } }, select: { id: true } });
-    if (!previous) throw new NotFoundException('Cancelled source order not found');
+  private async assertOrderPredecessor(
+    buyerId: string,
+    id: string,
+    source: { brandId: string; sourceId: string; sourceType: string },
+  ) {
+    const previous = await this.prisma.customOrder.findFirst({
+      where: {
+        id,
+        buyerId,
+        brandId: source.brandId,
+        sourceId: source.sourceId,
+        sourceType: source.sourceType as CustomOrderSourceType,
+        cancelledAt: { not: null },
+      },
+      select: { id: true },
+    });
+    if (!previous)
+      throw new NotFoundException('Cancelled source order not found');
   }
 
   private extractCheckoutIntentSubmissionMeta(
@@ -4573,7 +4975,10 @@ export class CustomOrdersService {
         : null;
 
     return {
-      previousOrderId: typeof value.previousOrderId === 'string' ? value.previousOrderId : null,
+      previousOrderId:
+        typeof value.previousOrderId === 'string'
+          ? value.previousOrderId
+          : null,
       contactInfo,
       customerName:
         typeof value.customerName === 'string' ? value.customerName : null,
@@ -4711,16 +5116,47 @@ export class CustomOrdersService {
   }
 
   private async loadCheckoutBagSourceSnapshots(
-    configurations: Array<{ sourceType: CustomOrderSourceType; sourceId: string }>,
-  ): Promise<Map<string, { title: string; primaryMediaUrl: string | null; brandName: string | null }>> {
-    const sources = [...new Map(configurations.map((entry) => [`${entry.sourceType}:${entry.sourceId}`, entry])).values()];
-    const snapshots = new Map<string, { title: string; primaryMediaUrl: string | null; brandName: string | null }>();
+    configurations: Array<{
+      sourceType: CustomOrderSourceType;
+      sourceId: string;
+    }>,
+  ): Promise<
+    Map<
+      string,
+      {
+        title: string;
+        primaryMediaUrl: string | null;
+        brandName: string | null;
+      }
+    >
+  > {
+    const sources = [
+      ...new Map(
+        configurations.map((entry) => [
+          `${entry.sourceType}:${entry.sourceId}`,
+          entry,
+        ]),
+      ).values(),
+    ];
+    const snapshots = new Map<
+      string,
+      {
+        title: string;
+        primaryMediaUrl: string | null;
+        brandName: string | null;
+      }
+    >();
     for (let offset = 0; offset < sources.length; offset += 500) {
       const batch = sources.slice(offset, offset + 500);
-      const rows = await this.prisma.$queryRaw<Array<{
-        sourceType: string; sourceId: string; title: string | null;
-        mediaCandidates: Array<string | null>; brandName: string | null;
-      }>>(Prisma.sql`
+      const rows = await this.prisma.$queryRaw<
+        Array<{
+          sourceType: string;
+          sourceId: string;
+          title: string | null;
+          mediaCandidates: Array<string | null>;
+          brandName: string | null;
+        }>
+      >(Prisma.sql`
         SELECT source.type AS "sourceType", source.id AS "sourceId",
           CASE WHEN source.type = 'PRODUCT' THEN product.name ELSE COALESCE(design.title, 'Untitled design') END AS title,
           CASE WHEN source.type = 'PRODUCT' THEN ARRAY[product.thumbnail] || product.images
@@ -4744,9 +5180,12 @@ export class CustomOrdersService {
         ) angles ON TRUE
         WHERE product."_id" IS NOT NULL OR design."_id" IS NOT NULL
       `);
-      for (const row of rows) snapshots.set(`${row.sourceType}:${row.sourceId}`, {
-        title: row.title || '', primaryMediaUrl: pickFirstRenderableMediaUrl(row.mediaCandidates), brandName: row.brandName,
-      });
+      for (const row of rows)
+        snapshots.set(`${row.sourceType}:${row.sourceId}`, {
+          title: row.title || '',
+          primaryMediaUrl: pickFirstRenderableMediaUrl(row.mediaCandidates),
+          brandName: row.brandName,
+        });
     }
     return snapshots;
   }
@@ -4783,7 +5222,14 @@ export class CustomOrdersService {
         title: string;
       }
     >,
-    sourceSnapshots?: Map<string, { title: string; primaryMediaUrl: string | null; brandName: string | null }>,
+    sourceSnapshots?: Map<
+      string,
+      {
+        title: string;
+        primaryMediaUrl: string | null;
+        brandName: string | null;
+      }
+    >,
   ): Promise<CheckoutBagLine | null> {
     const configuration = configurationById.get(
       session.checkoutIntent.configurationId,
@@ -4797,8 +5243,13 @@ export class CustomOrdersService {
     let sourceBrandName: string | null = null;
     try {
       const sourceSnapshot = sourceSnapshots
-        ? sourceSnapshots.get(`${configuration.sourceType}:${configuration.sourceId}`)
-        : await this.resolveSourceSnapshot(configuration.sourceType, configuration.sourceId);
+        ? sourceSnapshots.get(
+            `${configuration.sourceType}:${configuration.sourceId}`,
+          )
+        : await this.resolveSourceSnapshot(
+            configuration.sourceType,
+            configuration.sourceId,
+          );
       if (sourceSnapshot) {
         sourceTitle = sourceSnapshot.title || sourceTitle;
         sourcePrimaryMediaUrl = sourceSnapshot.primaryMediaUrl;
@@ -5839,24 +6290,7 @@ export class CustomOrdersService {
     status: CustomOrderStatus,
     targetType: string,
   ) {
-    const productionEligible = new Set<CustomOrderStatus>([
-      CustomOrderStatus.ACCEPTED,
-      CustomOrderStatus.IN_PRODUCTION,
-    ]);
-    const deliveryEligible = new Set<CustomOrderStatus>([
-      CustomOrderStatus.ACCEPTED,
-      CustomOrderStatus.IN_PRODUCTION,
-      CustomOrderStatus.READY_FOR_DISPATCH,
-      CustomOrderStatus.IN_TRANSIT,
-    ]);
-
-    if (targetType === 'PRODUCTION') {
-      return productionEligible.has(status);
-    }
-    if (targetType === 'DELIVERY') {
-      return deliveryEligible.has(status);
-    }
-    return productionEligible.has(status);
+    return isExtensionTargetPending(status, targetType);
   }
 
   private isLifecycleTransitionAllowed(
@@ -5915,7 +6349,8 @@ export class CustomOrdersService {
     const dayMs = grantedExtraDays * 24 * 60 * 60 * 1000;
     const shift = (value: Date | null) =>
       value ? new Date(value.getTime() + dayMs) : null;
-    const movesProduction = targetType === 'PRODUCTION' || targetType === 'BOTH';
+    const movesProduction =
+      targetType === 'PRODUCTION' || targetType === 'BOTH';
     const isFirstExtension = order.originalPromisedDeliveryAt == null;
 
     await tx.customOrder.update({
@@ -5940,8 +6375,7 @@ export class CustomOrdersService {
         // Keep the downstream clocks in step with the promise they came from.
         buyerAcceptanceWindowEndsAt: shift(order.buyerAcceptanceWindowEndsAt),
         measurementRetentionUntil: shift(order.measurementRetentionUntil),
-        totalExtensionDaysGranted:
-          { increment: grantedExtraDays },
+        totalExtensionDaysGranted: { increment: grantedExtraDays },
         approvedExtensionCount: { increment: 1 },
       },
     });
@@ -6200,7 +6634,9 @@ export class CustomOrdersService {
         currentProgressStage: order.currentProgressStage ?? null,
         hasOpenDispute: Array.isArray(order.disputes)
           ? order.disputes.some((entry: { status: string }) =>
-              (OPEN_DISPUTE_STATUSES as readonly string[]).includes(entry.status),
+              (OPEN_DISPUTE_STATUSES as readonly string[]).includes(
+                entry.status,
+              ),
             )
           : false,
       }),
@@ -6257,9 +6693,12 @@ export class CustomOrdersService {
         });
       }
 
-      const currentMeasurements = (profile.measurements && typeof profile.measurements === 'object' && !Array.isArray(profile.measurements))
-        ? (profile.measurements as Record<string, any>)
-        : {};
+      const currentMeasurements =
+        profile.measurements &&
+        typeof profile.measurements === 'object' &&
+        !Array.isArray(profile.measurements)
+          ? (profile.measurements as Record<string, any>)
+          : {};
 
       const updatedMeasurements = { ...currentMeasurements };
       let changed = false;
@@ -6271,13 +6710,21 @@ export class CustomOrdersService {
 
         if (typeof existing === 'number') {
           existingVal = existing;
-        } else if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+        } else if (
+          existing &&
+          typeof existing === 'object' &&
+          !Array.isArray(existing)
+        ) {
           existingVal = Number(existing.value);
           existingUnit = String(existing.unit || 'CM');
         }
 
         if (existingVal !== val) {
-          if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+          if (
+            existing &&
+            typeof existing === 'object' &&
+            !Array.isArray(existing)
+          ) {
             updatedMeasurements[key] = { value: val, unit: existingUnit };
           } else {
             updatedMeasurements[key] = { value: val, unit: 'CM' };
@@ -6288,7 +6735,10 @@ export class CustomOrdersService {
 
       if (changed) {
         const now = new Date();
-        const nextReminderAt = new Date(now.getTime() + (profile.requireUpdateEveryDays || 14) * 24 * 60 * 60 * 1000);
+        const nextReminderAt = new Date(
+          now.getTime() +
+            (profile.requireUpdateEveryDays || 14) * 24 * 60 * 60 * 1000,
+        );
 
         await db.userSizeFitProfile.update({
           where: { id: profile.id },
@@ -6308,9 +6758,15 @@ export class CustomOrdersService {
         const nextVersion = (latestRevision?.version ?? 0) + 1;
 
         const changedKeys: string[] = [];
-        const allKeys = new Set([...Object.keys(currentMeasurements), ...Object.keys(updatedMeasurements)]);
+        const allKeys = new Set([
+          ...Object.keys(currentMeasurements),
+          ...Object.keys(updatedMeasurements),
+        ]);
         for (const k of allKeys) {
-          if (JSON.stringify(currentMeasurements[k]) !== JSON.stringify(updatedMeasurements[k])) {
+          if (
+            JSON.stringify(currentMeasurements[k]) !==
+            JSON.stringify(updatedMeasurements[k])
+          ) {
             changedKeys.push(k);
           }
         }
@@ -6328,7 +6784,9 @@ export class CustomOrdersService {
         });
       }
     } catch (err) {
-      this.logger.warn(`Failed to sync measurements to profile for user ${userId}: ${err.message}`);
+      this.logger.warn(
+        `Failed to sync measurements to profile for user ${userId}: ${err.message}`,
+      );
     }
   }
 }

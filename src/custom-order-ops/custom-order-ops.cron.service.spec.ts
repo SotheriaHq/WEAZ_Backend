@@ -30,6 +30,7 @@ describe('CustomOrderOpsCronService', () => {
     prisma = {
       brand: {
         findUnique: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
       },
       payout: {
         create: jest.fn(),
@@ -124,7 +125,7 @@ describe('CustomOrderOpsCronService', () => {
         createdAt: new Date('2026-03-11T10:00:00.000Z'),
       },
     ]);
-    prisma.brand.findUnique.mockResolvedValue({ ownerId: 'owner_1' });
+    prisma.brand.findMany.mockResolvedValue([{ id: 'brand_1', ownerId: 'owner_1' }]);
 
     await service.processAcceptanceSlaRisk();
 
@@ -145,6 +146,90 @@ describe('CustomOrderOpsCronService', () => {
         notificationType: NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED,
       }),
     );
+  });
+
+  it('loads distinct brand recipients once for repeated orders and skips a missing brand without losing buyers', async () => {
+    prisma.customOrder.findMany.mockResolvedValue(['brand_1', 'brand_1', 'missing'].map((brandId, index) => ({
+      id: `co_${index}`, buyerId: `buyer_${index}`, brandId, createdAt: new Date('2026-03-11T10:00:00.000Z'),
+    })));
+    prisma.brand.findMany.mockResolvedValue([{ id: 'brand_1', ownerId: 'owner_1' }]);
+    await service.processAcceptanceSlaRisk();
+    expect(prisma.brand.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.brand.findMany).toHaveBeenCalledWith({ where: { id: { in: ['brand_1', 'missing'] } }, select: { id: true, ownerId: true } });
+    expect(prisma.brand.findUnique).not.toHaveBeenCalled();
+    expect(sideEffects.enqueueNotification).toHaveBeenCalledTimes(5);
+    expect(sideEffects.enqueueNotification.mock.calls.map(([event]) => event.recipientIds[0])).toEqual(['buyer_0', 'owner_1', 'buyer_1', 'owner_1', 'buyer_2']);
+    expect(sideEffects.enqueueNotification.mock.calls[3][0]).toMatchObject({ customOrderId: 'co_1', payload: { hoursWaiting: 26 }, target: { id: 'custom-order:co_1' } });
+  });
+
+  it('does no brand lookup when the acceptance scan is empty', async () => {
+    prisma.customOrder.findMany.mockResolvedValue([]);
+    await service.processAcceptanceSlaRisk();
+    expect(prisma.brand.findMany).not.toHaveBeenCalled();
+    expect(sideEffects.enqueueNotification).not.toHaveBeenCalled();
+  });
+
+  it('shares brand identity for production reminders while retaining deadline exclusions and fresh owner reads per invocation', async () => {
+    prisma.customOrder.findMany.mockResolvedValue(['a', 'b', 'inflight', 'already'].map(id => ({
+      id, brandId: 'brand_1', promisedProductionAt: new Date(fixedNow.getTime() + 11 * 3600000),
+      approvedExtensionCount: 0, totalExtensionDaysGranted: 0,
+      extensionRequests: id === 'inflight' ? [{ id: 'request' }] : [],
+      timelineEvents: id === 'already' ? [{ payloadJson: { thresholdHours: 12 } }] : [],
+    })));
+    prisma.brand.findMany.mockResolvedValueOnce([{ id: 'brand_1', ownerId: 'owner_1' }]).mockResolvedValueOnce([{ id: 'brand_1', ownerId: 'owner_2' }]);
+    await service.remindBrandBeforeProductionDeadline();
+    expect(prisma.brand.findUnique).not.toHaveBeenCalled();
+    expect(prisma.brand.findMany).toHaveBeenCalledTimes(1);
+    expect(sideEffects.enqueueNotification).toHaveBeenCalledTimes(2);
+    expect(sideEffects.enqueueNotification.mock.calls.map(([event]) => event.recipientIds)).toEqual([['owner_1'], ['owner_1']]);
+    await service.remindBrandBeforeProductionDeadline();
+    expect(prisma.brand.findMany).toHaveBeenCalledTimes(2);
+    expect(sideEffects.enqueueNotification.mock.calls.slice(2).map(([event]) => event.recipientIds)).toEqual([['owner_2'], ['owner_2']]);
+  });
+
+  it('joins current expiry recipients after the order lock and writes shopper/studio effects in the same transaction', async () => {
+    prisma.customOrderExtensionRequest = { findMany: jest.fn().mockResolvedValue(['a', 'b', 'private'].map(id => ({
+      id: `request-${id}`, customOrderId: id, requestedExtraDays: 2,
+      customOrder: { id, brandId: 'brand_1', buyerId: `buyer-${id}`, anonymizedAt: id === 'private' ? fixedNow : null },
+    }))) };
+    prisma.brand.findMany.mockResolvedValue([{ id: 'brand_1', ownerId: 'owner_1' }]);
+    const tx = {
+      $queryRaw: jest.fn(async query => {
+        if (!query.sql?.includes('FROM "CustomOrderExtensionRequest"')) return [];
+        const id=String(query.values[0]).replace('request-','');
+        return [{ id:`request-${id}`, targetType:'PRODUCTION', requestedExtraDays:2, respondByAt:new Date(+fixedNow-1000), buyerResponseStatus:'OPEN', buyerId:`buyer-${id}`, ownerId:'owner_1', status:CustomOrderStatus.IN_PRODUCTION, anonymizedAt:null }];
+      }),
+      customOrderExtensionRequest: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      customOrder: { update: jest.fn(), updateMany:jest.fn().mockResolvedValue({count:1}) }, customOrderTimelineEvent: { create: jest.fn() },
+    };
+    prisma.$transaction.mockImplementation(async run => run(tx));
+    jest.spyOn(service as any, 'markAdminAttention').mockResolvedValue(undefined);
+    jest.spyOn(service as any, 'getActiveAdminIds').mockResolvedValue([]);
+    await service.expireOpenExtensionRequests();
+    expect(prisma.brand.findMany).not.toHaveBeenCalled();
+    expect(prisma.brand.findUnique).not.toHaveBeenCalled();
+    expect(sideEffects.enqueueNotification).toHaveBeenCalledTimes(4);
+    expect(sideEffects.enqueueNotification.mock.calls.every(([,client])=>client===tx)).toBe(true);
+    expect(sideEffects.enqueueNotification.mock.calls.map(([event]) => event)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ customOrderId: 'a', recipientIds: ['owner_1'], target: expect.objectContaining({ preview: '/studio/custom-orders/a' }) }),
+      expect.objectContaining({ customOrderId: 'b', recipientIds: ['buyer-b'], target: expect.objectContaining({ preview: '/custom-orders/b' }) }),
+    ]));
+  });
+
+  it('does not send expiry notices or flag attention when its conditional claim loses', async () => {
+    prisma.customOrderExtensionRequest={findMany:jest.fn().mockResolvedValue([{id:'request-a',customOrderId:'a',customOrder:{anonymizedAt:null}}])};
+    const tx={
+      $queryRaw:jest.fn(async query=>query.sql?.includes('FROM "CustomOrderExtensionRequest"')?[{id:'request-a',targetType:'PRODUCTION',requestedExtraDays:2,respondByAt:new Date(+fixedNow-1000),buyerResponseStatus:'OPEN',buyerId:'buyer',ownerId:'owner',status:CustomOrderStatus.IN_PRODUCTION,anonymizedAt:null}]:[]),
+      customOrderExtensionRequest:{updateMany:jest.fn().mockResolvedValue({count:0})},
+      customOrder:{update:jest.fn(),updateMany:jest.fn()},customOrderTimelineEvent:{create:jest.fn()},
+    };
+    prisma.$transaction.mockImplementation(async run=>run(tx));
+    jest.spyOn(service as any,'getActiveAdminIds').mockResolvedValue([]);
+    await service.expireOpenExtensionRequests();
+    expect(sideEffects.enqueueNotification).not.toHaveBeenCalled();
+    expect(tx.customOrder.update).not.toHaveBeenCalled();
+    expect(tx.customOrder.updateMany).not.toHaveBeenCalled();
+    expect(tx.customOrderTimelineEvent.create).not.toHaveBeenCalled();
   });
 
   it('reconciles stale pending custom-order payment attempts', async () => {
@@ -226,7 +311,7 @@ describe('CustomOrderOpsCronService', () => {
         brandId: 'brand_1',
       },
     ]);
-    prisma.brand.findUnique.mockResolvedValue({ ownerId: 'owner_1' });
+    prisma.brand.findMany.mockResolvedValue([{ id: 'brand_1', ownerId: 'owner_1' }]);
 
     const tx = {
       $queryRaw: jest.fn().mockResolvedValue([]),

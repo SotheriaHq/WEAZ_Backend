@@ -1,0 +1,5 @@
+simulation: wiez-fx-provider
+routing: path
+mocks:
+  - routeKey: frankfurter
+    path: ../mocks/frankfurter/default.js

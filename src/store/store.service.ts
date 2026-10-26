@@ -1,6 +1,19 @@
+import {
+  BulkImportCheckpoint,
+  BulkProductTaxonomy,
+  loadBulkProductTaxonomy,
+  loadBulkProductSlug,
+  loadBulkImportProduct,
+  lockBulkImportCheckpoint,
+} from '../collections/bulk-import-query';
 import { appendProductMemberships } from '../collections/collection-membership-query';
 import { refreshCollectionPriceRanges } from './collection-price-range.util';
 import { withCartTransaction } from '../bagging/cart-transaction.util';
+import type { NotificationEvent } from '../notifications/notification-batch-query';
+import { loadStockLifecycleProducts } from './product-lifecycle-query';
+import { loadProductRemovalContext, loadProductRemovalEffects, loadProductActiveOrders } from './product-removal-query';
+import { loadProductPublications, loadProductPatchers, ProductPublication } from './product-publication-query';
+import { productPublicationNamespace, recipientNotificationId } from '../queue/notification-identity';
 import {
   Injectable,
   NotFoundException,
@@ -464,10 +477,39 @@ export class StoreService {
     tx: Prisma.TransactionClient,
     categoryId: string | null | undefined,
     categoryTypeId: string | null | undefined,
+    snapshot?: BulkProductTaxonomy,
   ) {
     const normalizedCategoryId = (categoryId || '').trim() || null;
     const normalizedCategoryTypeId = (categoryTypeId || '').trim() || null;
 
+    if (snapshot) {
+      if (
+        snapshot.requestedCategoryId !== normalizedCategoryId ||
+        snapshot.requestedCategoryTypeId !== normalizedCategoryTypeId
+      ) {
+        throw new Error(
+          'Product taxonomy snapshot does not match this mutation',
+        );
+      }
+      if (normalizedCategoryId && !snapshot.categoryId)
+        throw new NotFoundException('Category not found');
+      if (normalizedCategoryId && !snapshot.categoryActive)
+        throw new BadRequestException('Category is not active');
+      if (normalizedCategoryTypeId && !snapshot.categoryTypeId)
+        throw new NotFoundException('Sub-category not found');
+      if (normalizedCategoryTypeId && !snapshot.categoryTypeActive)
+        throw new BadRequestException('Sub-category is not active');
+      if (
+        normalizedCategoryId &&
+        normalizedCategoryTypeId &&
+        snapshot.categoryTypeParentId !== normalizedCategoryId
+      ) {
+        throw new BadRequestException(
+          'Sub-category does not belong to the selected category',
+        );
+      }
+      return;
+    }
     await this.assertActiveProductCategory(tx, normalizedCategoryId);
 
     if (!normalizedCategoryTypeId) {
@@ -523,6 +565,7 @@ export class StoreService {
       trackInventory?: boolean | null;
       customOrderEnabled?: boolean | null;
     },
+    taxonomySnapshot?: BulkProductTaxonomy,
   ) {
     const name = String(input.name || '').trim();
     if (!name) {
@@ -546,7 +589,12 @@ export class StoreService {
       throw new BadRequestException('Choose a garment type.');
     }
 
-    await this.assertProductTaxonomy(tx, categoryId, categoryTypeId);
+    await this.assertProductTaxonomy(
+      tx,
+      categoryId,
+      categoryTypeId,
+      taxonomySnapshot,
+    );
     this.assertProductAudienceForPublish(input.gender);
 
     const tags = this.buildTagSet(input.tags || []);
@@ -843,9 +891,13 @@ export class StoreService {
     };
   }
 
-  private async recalculateCollectionPriceRanges(collectionIds: readonly string[]) {
+  private async recalculateCollectionPriceRanges(
+    collectionIds: readonly string[],
+  ) {
     if (!collectionIds.length) return;
-    await this.prisma.$transaction((tx) => refreshCollectionPriceRanges(tx, collectionIds));
+    await this.prisma.$transaction((tx) =>
+      refreshCollectionPriceRanges(tx, collectionIds),
+    );
   }
 
   async getProductCategories() {
@@ -1199,7 +1251,7 @@ export class StoreService {
     }
 
     if (upload.userId === brandOwnerId) {
-      await this.uploadService.deleteFile(mediaId, brandOwnerId);
+      await this.uploadService.deleteFileIfUnused(mediaId, brandOwnerId);
     }
 
     return { success: true };
@@ -1501,26 +1553,43 @@ export class StoreService {
       return;
     }
 
+    const event = this.outOfStockCustomOrderEvent(ownerId, product, message);
+    await this.notifications.create(event.recipientId, event.type, event.opts);
+  }
+
+  private outOfStockCustomOrderEvent(
+    ownerId: string,
+    product: {
+      id: string;
+      name?: string | null;
+      customOrderOutOfStockDiscontinueAt?: Date | null;
+    },
+    message?: string,
+  ): NotificationEvent {
     const resolvedMessage =
       typeof message === 'string' && message.trim().length > 0
         ? message.trim()
         : this.buildOutOfStockCustomOrderReminderMessage(product);
 
-    await this.notifications.create(ownerId, NotificationType.ADMIN_ACTION, {
-      payload: {
-        action: 'PRODUCT_OUT_OF_STOCK_CUSTOM_ORDER',
-        productId: product.id,
-        productName: product.name,
-        targetUrl: `/studio/products/${product.id}`,
-        message: resolvedMessage,
+    return {
+      recipientId: ownerId,
+      type: NotificationType.ADMIN_ACTION,
+      opts: {
+        payload: {
+          action: 'PRODUCT_OUT_OF_STOCK_CUSTOM_ORDER',
+          productId: product.id,
+          productName: product.name,
+          targetUrl: `/studio/products/${product.id}`,
+          message: resolvedMessage,
+        },
+        target: {
+          type: 'PRODUCT',
+          id: product.id,
+          preview: product.name ?? undefined,
+        },
+        dedupeMs: 6 * 60 * 60 * 1000,
       },
-      target: {
-        type: 'PRODUCT',
-        id: product.id,
-        preview: product.name ?? undefined,
-      },
-      dedupeMs: 6 * 60 * 60 * 1000,
-    });
+    };
   }
 
   private async triggerOutOfStockCustomOrderLifecycle(args: {
@@ -1902,101 +1971,110 @@ export class StoreService {
     brandOwnerId: string,
     product: { id: string; name: string },
   ) {
-    if (!this.notifications) return;
+    if (!this.notifications && !this.notificationsQueue) return;
+    const publications = await loadProductPublications(
+      this.prisma,
+      new Date(),
+      [product.id],
+    );
+    await this.dispatchProductPublications(
+      publications.filter((row) => row.ownerId === brandOwnerId),
+    );
+  }
 
-    const [patchers, owner] = await Promise.all([
-      this.prisma.patchConnection.findMany({
-        where: {
-          targetId: brandOwnerId,
-          status: PatchStatus.ACCEPTED,
-          mode: PatchMode.USER_TO_BRAND,
-        },
-        select: { requesterId: true },
-      }),
-      this.prisma.user.findUnique({
-        where: { id: brandOwnerId },
-        select: { username: true, brand: { select: { name: true } } },
-      }),
-    ]);
-
-    if (patchers.length === 0) return;
-
-    const brandName = owner?.brand?.name || owner?.username || 'A brand';
-    const message = `${brandName} added a new product: ${product.name}`;
-
-    const recipientIds = patchers
-      .map((p) => p.requesterId)
-      .filter((id) => id && id !== brandOwnerId);
-
-    if (recipientIds.length === 0) return;
-
-    if (this.notificationsQueue) {
-      try {
-        await this.notificationsQueue.enqueueFanout({
-          recipientIds,
-          notificationType: NotificationType.PRODUCT_UPLOAD,
-          actorId: brandOwnerId,
-          payload: {
-            productId: product.id,
-            productName: product.name,
-            targetUrl: `/products/${product.id}`,
-            message,
-          },
-          target: { type: 'PRODUCT', id: product.id, preview: product.name },
-        });
-        return;
-      } catch (e) {
-        console.warn('Failed to enqueue product notification fanout', e);
+  private async dispatchProductPublications(products: ProductPublication[]) {
+    if (!products.length || (!this.notifications && !this.notificationsQueue))
+      return;
+    const ownerIds = [...new Set(products.map((product) => product.ownerId))];
+    const failed = new Set<string>();
+    let after: string | undefined;
+    for (;;) {
+      const patchers = await loadProductPatchers(this.prisma, ownerIds, after);
+      const byOwner = new Map<string, string[]>();
+      for (const patcher of patchers) {
+        const recipients = byOwner.get(patcher.ownerId) ?? [];
+        recipients.push(patcher.recipientId);
+        byOwner.set(patcher.ownerId, recipients);
       }
-    }
-
-    if (!this.notifications) return;
-
-    const chunkSize = 25;
-    for (let i = 0; i < recipientIds.length; i += chunkSize) {
-      const chunk = recipientIds.slice(i, i + chunkSize);
-      await Promise.all(
-        chunk.map(async (recipientId) => {
-          try {
-            await this.notifications.create(
-              recipientId,
-              NotificationType.PRODUCT_UPLOAD,
-              {
-                actorId: brandOwnerId,
-                payload: {
-                  productId: product.id,
-                  productName: product.name,
-                  targetUrl: `/products/${product.id}`,
-                  message,
-                },
-                target: {
-                  type: 'PRODUCT',
-                  id: product.id,
-                  preview: product.name,
-                },
-              },
-            );
-          } catch (e) {
-            console.warn('Failed to notify patcher of product', e);
+      for (const product of products) {
+        const recipientIds = byOwner.get(product.ownerId);
+        if (!recipientIds?.length) continue;
+        const namespace = productPublicationNamespace(product.id);
+        const payload = {
+          productId: product.id,
+          productName: product.name,
+          targetUrl: `/products/${product.id}`,
+          message: `${product.brandName} added a new product: ${product.name}`,
+        };
+        const target = {
+          type: 'PRODUCT' as const,
+          id: product.id,
+          preview: product.name,
+        };
+        try {
+          if (this.notificationsQueue) {
+            try {
+              await this.notificationsQueue.enqueueFanout({
+                recipientIds,
+                notificationType: NotificationType.PRODUCT_UPLOAD,
+                actorId: product.ownerId,
+                payload,
+                target,
+                notificationNamespace: namespace,
+              });
+              continue;
+            } catch (error) {
+              if (!this.notifications) throw error;
+              this.logger.warn(
+                `Product publication queue unavailable: ${product.id}`,
+              );
+            }
           }
-        }),
-      );
+          const results = await this.notifications!.createEvents(
+            recipientIds.map((recipientId) => ({
+              recipientId,
+              type: NotificationType.PRODUCT_UPLOAD,
+              opts: {
+                actorId: product.ownerId,
+                payload,
+                target,
+                notificationId: recipientNotificationId(namespace, recipientId),
+              },
+            })),
+          );
+          if (results.some((result) => result.status === 'rejected'))
+            failed.add(product.id);
+        } catch (error) {
+          failed.add(product.id);
+          this.logger.warn(
+            `Product publication handoff failed: ${product.id}`,
+            error,
+          );
+        }
+      }
+      if (patchers.length < 500) break;
+      after = patchers[patchers.length - 1].id;
     }
-
-    try {
-      await this.prisma.product.update({
-        where: { id: product.id },
+    const handled = products
+      .filter((product) => !failed.has(product.id))
+      .map((product) => product.id);
+    if (handled.length)
+      await this.prisma.product.updateMany({
+        where: { id: { in: handled }, publishNotifiedAt: null },
         data: { publishNotifiedAt: new Date() },
       });
-    } catch (e) {
-      console.warn('Failed to mark product publish notification', e);
-    }
   }
 
   // ==================== PRODUCTS ====================
 
   private expiredProductDraftWhere(): Prisma.ProductWhereInput {
-    return { isActive: false, publicationStatus: CollectionStatus.DRAFT, archivedAt: null, deletedAt: null, createdAt: { lt: new Date(Date.now() - 90 * 86400000) } };
+    return {
+      isActive: false,
+      publicationStatus: CollectionStatus.DRAFT,
+      archivedAt: null,
+      deletedAt: null,
+      createdAt: { lt: new Date(Date.now() - 90 * 86400000) },
+    };
   }
 
   @Cron(CronExpression.EVERY_5_MINUTES)
@@ -2006,9 +2084,13 @@ export class StoreService {
     const drafts = await this.prisma.product.findMany({
       where: expired,
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-      select: { id: true }, take: 500,
+      select: { id: true },
+      take: 500,
     });
-    if (drafts.length) await this.prisma.product.deleteMany({ where: { AND: [expired, { id: { in: drafts.map(row => row.id) } }] } });
+    if (drafts.length)
+      await this.prisma.product.deleteMany({
+        where: { AND: [expired, { id: { in: drafts.map((row) => row.id) } }] },
+      });
   }
 
   @Cron(CronExpression.EVERY_5_MINUTES)
@@ -2025,44 +2107,9 @@ export class StoreService {
       data: { isActive: true },
     });
 
-    if (!this.notifications) return;
-
-    const candidates = await this.prisma.product.findMany({
-      where: {
-        isActive: true,
-        publicationStatus: CollectionStatus.PUBLISHED,
-        deletedAt: null,
-        archivedAt: null,
-        publishAt: { lte: now },
-        publishNotifiedAt: null,
-      },
-      select: {
-        id: true,
-        name: true,
-        brand: { select: { ownerId: true } },
-      },
-      orderBy: { publishAt: 'asc' },
-      take: 200,
-    });
-
-    if (candidates.length === 0) return;
-
-    this.logger.log(
-      `Notifying patchers of ${candidates.length} scheduled product publishes`,
-    );
-
-    for (const product of candidates) {
-      const ownerId = product.brand?.ownerId;
-      if (!ownerId) continue;
-      try {
-        await this.notifyPatchersOfProduct(ownerId, product);
-      } catch (e) {
-        this.logger.warn(
-          `Failed scheduled product notification for ${product.id}`,
-          e as any,
-        );
-      }
-    }
+    if (!this.notifications && !this.notificationsQueue) return;
+    const candidates = await loadProductPublications(this.prisma, now);
+    await this.dispatchProductPublications(candidates);
   }
 
   @Cron(CronExpression.EVERY_6_HOURS)
@@ -2072,25 +2119,14 @@ export class StoreService {
       now.getTime() - CUSTOM_ORDER_OUT_OF_STOCK_REMINDER_INTERVAL_MS,
     );
 
-    const productsToDiscontinue = await this.prisma.product.findMany({
-      where: {
-        deletedAt: null,
-        archivedAt: null,
-        isActive: true,
-        customOrderEnabled: true,
-        totalStock: { lte: 0 },
-        customOrderOutOfStockTriggeredAt: { not: null },
-        customOrderOutOfStockDiscontinueAt: { lte: now },
-      },
-      select: {
-        id: true,
-        name: true,
-        brand: { select: { ownerId: true } },
-      },
-      take: 200,
-      orderBy: { customOrderOutOfStockDiscontinueAt: 'asc' },
-    });
+    const productsToDiscontinue = await loadStockLifecycleProducts(
+      this.prisma,
+      now,
+      'DISCONTINUE',
+      reminderCutoff,
+    );
 
+    const discontinuedEvents: NotificationEvent[] = [];
     for (const product of productsToDiscontinue) {
       const updated = await this.prisma.product.updateMany({
         where: {
@@ -2106,62 +2142,142 @@ export class StoreService {
         data: { isActive: false },
       });
 
-      if (updated.count === 0 || !product.brand?.ownerId) {
+      if (updated.count === 0 || !product.ownerId) {
         continue;
       }
 
-      await this.notifyBrandOfOutOfStockCustomOrder(
-        product.brand.ownerId,
-        { id: product.id, name: product.name },
-        `${product.name} stayed out of stock for 7 days while custom orders were still allowed, so it has been discontinued from the market.`,
+      discontinuedEvents.push(
+        this.outOfStockCustomOrderEvent(
+          product.ownerId!,
+          { id: product.id, name: product.name },
+          `${product.name} stayed out of stock for 7 days while custom orders were still allowed, so it has been discontinued from the market.`,
+        ),
       );
     }
+    await this.sendProductLifecycleEvents(discontinuedEvents);
 
-    const productsNeedingReminder = await this.prisma.product.findMany({
-      where: {
-        deletedAt: null,
-        archivedAt: null,
-        isActive: true,
-        customOrderEnabled: true,
-        totalStock: { lte: 0 },
-        customOrderOutOfStockTriggeredAt: { not: null },
-        customOrderOutOfStockDiscontinueAt: { gt: now },
-        OR: [
-          { customOrderOutOfStockReminderSentAt: null },
-          { customOrderOutOfStockReminderSentAt: { lte: reminderCutoff } },
-        ],
-      },
-      select: {
-        id: true,
-        name: true,
-        customOrderOutOfStockDiscontinueAt: true,
-        brand: { select: { ownerId: true } },
-      },
-      take: 200,
-      orderBy: { customOrderOutOfStockReminderSentAt: 'asc' },
-    });
+    const productsNeedingReminder = await loadStockLifecycleProducts(
+      this.prisma,
+      now,
+      'REMIND',
+      reminderCutoff,
+    );
 
-    for (const product of productsNeedingReminder) {
-      if (!product.brand?.ownerId) {
-        continue;
-      }
-
-      await this.notifyBrandOfOutOfStockCustomOrder(product.brand.ownerId, {
-        id: product.id,
-        name: product.name,
-        customOrderOutOfStockDiscontinueAt:
-          product.customOrderOutOfStockDiscontinueAt,
-      });
-
-      await this.prisma.product.update({
-        where: { id: product.id },
+    const reminderEvents = productsNeedingReminder
+      .filter((product) => product.ownerId)
+      .map((product) =>
+        this.outOfStockCustomOrderEvent(product.ownerId!, {
+          id: product.id,
+          name: product.name,
+          customOrderOutOfStockDiscontinueAt:
+            product.customOrderOutOfStockDiscontinueAt,
+        }),
+      );
+    const reminderOutcomes =
+      await this.sendProductLifecycleEvents(reminderEvents);
+    const notifiedProductIds = reminderEvents
+      .filter((_, index) => reminderOutcomes[index]?.status === 'fulfilled')
+      .map((event) => event.opts!.payload!.productId as string);
+    if (notifiedProductIds.length) {
+      await this.prisma.product.updateMany({
+        where: {
+          id: { in: notifiedProductIds },
+          deletedAt: null,
+          archivedAt: null,
+          isActive: true,
+          customOrderEnabled: true,
+          totalStock: { lte: 0 },
+          customOrderOutOfStockTriggeredAt: { not: null },
+          customOrderOutOfStockDiscontinueAt: { gt: now },
+        },
         data: { customOrderOutOfStockReminderSentAt: now },
       });
     }
   }
 
+  private async sendProductLifecycleEvents(events: NotificationEvent[]) {
+    if (!this.notifications || !events.length) return [];
+    const outcomes = await this.notifications.createEvents(events);
+    outcomes.forEach((outcome, index) => {
+      if (outcome.status === 'rejected')
+        this.logger.warn(
+          `Product lifecycle notification failed for ${events[index].recipientId}: ${String(outcome.reason)}`,
+        );
+    });
+    return outcomes;
+  }
+
   async createProduct(brandOwnerId: string, dto: CreateProductDto) {
     const brand = await this.resolveCatalogBrandForActor(brandOwnerId);
+    return this.createProductWithContext(brandOwnerId, dto, brand);
+  }
+
+  /** Operation-local context; never supplied by HTTP and reauthorized for each worker page. */
+  async prepareBulkProductCreation(actorUserId: string, collectionId: string) {
+    const [brand] = await this.prisma.$queryRaw<
+      Array<{ id: string; ownerId: string; currency: string | null }>
+    >(Prisma.sql`
+      SELECT b."_id" AS id, b."ownerId", b.currency FROM "StoreCollection" c
+      JOIN "Brand" b ON b."ownerId" = c."ownerId"
+      WHERE c."_id" = ${collectionId}::uuid AND c."deletedAt" IS NULL
+    `);
+    if (!brand)
+      throw new NotFoundException('Store collection not found or deleted');
+    if (this.brandAccessService) {
+      await this.brandAccessService.assertCanManageCatalog(
+        actorUserId,
+        brand.id,
+        BRAND_PERMISSIONS.CATALOG_WRITE,
+      );
+    } else if (brand.ownerId !== actorUserId) {
+      throw new ForbiddenException('You cannot manage this brand catalog');
+    }
+    const reviewEvents: NotificationEvent[] = [];
+    const publicationIds: string[] = [];
+    const createProduct = async (
+      dto: CreateProductDto,
+      checkpoint: BulkImportCheckpoint,
+    ) => {
+      if (dto.collectionId !== collectionId)
+        throw new BadRequestException('Import collection changed');
+      return this.createProductWithContext(
+        actorUserId,
+        dto,
+        brand,
+        checkpoint,
+        reviewEvents,
+        publicationIds,
+      );
+    };
+    return Object.assign(createProduct, {
+      flushNotifications: async () => {
+        if (
+          publicationIds.length &&
+          (this.notifications || this.notificationsQueue)
+        ) {
+          const publications = await loadProductPublications(
+            this.prisma,
+            new Date(),
+            publicationIds,
+          );
+          await this.dispatchProductPublications(publications);
+          publicationIds.length = 0;
+        }
+        await this.contentIntegrity?.flushContentSubmittedNotifications(
+          reviewEvents,
+        );
+      },
+    });
+  }
+
+  private async createProductWithContext(
+    brandOwnerId: string,
+    dto: CreateProductDto,
+    brand: { id: string; ownerId: string; currency: string | null },
+    checkpoint?: BulkImportCheckpoint,
+    reviewEvents?: NotificationEvent[],
+    publicationIds?: string[],
+  ) {
     const brandOwnerUserId = brand.ownerId;
 
     if ((dto as any).sizingModeDeprecatedAliasUsed) {
@@ -2180,7 +2296,7 @@ export class StoreService {
 
     // Product boundary: collectionId is only StoreCollection membership. Product
     // creation owns inventory/price/media, then links to a grouping container.
-    if (requestedCollectionId) {
+    if (requestedCollectionId && !checkpoint) {
       const collection = await this.prisma.storeCollection.findFirst({
         where: { id: requestedCollectionId, ownerId: brandOwnerUserId },
         select: { id: true, deletedAt: true },
@@ -2315,216 +2431,298 @@ export class StoreService {
       : null;
     let contentSubmissionId: string | null = null;
 
-    const product = await this.prisma.$transaction(async (tx) => {
-      let slug = await this.ensureUniqueProductSlug(tx, resolvedName);
-      let collectionId = requestedCollectionId;
+    const product = await this.prisma.$transaction(
+      async (tx) => {
+        if (checkpoint) {
+          const saved = await lockBulkImportCheckpoint(tx, checkpoint);
+          if (
+            saved.collectionId !== requestedCollectionId ||
+            saved.ownerId !== brandOwnerId
+          )
+            throw new ForbiddenException(
+              'Import checkpoint does not match this actor and collection',
+            );
+          if (saved.productCreatedAt && !saved.createdProductId)
+            throw new ConflictException(
+              'Imported product was removed; it will not be recreated',
+            );
+          if (saved.createdProductId) {
+            const existing = await loadBulkImportProduct(
+              tx,
+              saved.createdProductId,
+            );
+            if (
+              !existing ||
+              existing.brandId !== brand.id ||
+              existing.deletedAt ||
+              existing.archivedAt
+            )
+              throw new ConflictException(
+                'Imported product is unavailable; it will not be recreated',
+              );
+            contentSubmissionId = existing.latestSubmissionId;
+            return existing;
+          }
+        }
+        let slug = checkpoint
+          ? await loadBulkProductSlug(tx, this.normalizeSlugBase(resolvedName))
+          : await this.ensureUniqueProductSlug(tx, resolvedName);
+        let collectionId = requestedCollectionId;
 
-      if (!collectionId) {
-        // Product drafts still need a primary StoreCollection link under the
-        // current schema. This is compatibility storage, not collection-owned
-        // product behavior.
-        collectionId = await this.ensureDefaultStoreCollection(
+        if (!collectionId) {
+          // Product drafts still need a primary StoreCollection link under the
+          // current schema. This is compatibility storage, not collection-owned
+          // product behavior.
+          collectionId = await this.ensureDefaultStoreCollection(
+            tx,
+            brandOwnerUserId,
+          );
+        }
+
+        let bulkTaxonomy: BulkProductTaxonomy | undefined;
+        if (checkpoint) {
+          await this.lockCollectionForUpdate(tx, collectionId);
+          bulkTaxonomy = await loadBulkProductTaxonomy(
+            tx,
+            collectionId,
+            requestedCategoryId,
+            requestedCategoryTypeId,
+          );
+          if (
+            !bulkTaxonomy.collectionId ||
+            bulkTaxonomy.deletedAt ||
+            bulkTaxonomy.ownerId !== brandOwnerUserId
+          ) {
+            throw new ConflictException(
+              'Store collection changed or was deleted during import',
+            );
+          }
+        } else {
+          await this.assertCategoryTypeForCollection(
+            tx,
+            collectionId,
+            requestedCategoryTypeId,
+          );
+        }
+        await this.assertProductTaxonomy(
           tx,
-          brandOwnerUserId,
+          requestedCategoryId,
+          requestedCategoryTypeId,
+          bulkTaxonomy,
         );
-      }
-
-      await this.assertCategoryTypeForCollection(
-        tx,
-        collectionId,
-        requestedCategoryTypeId,
-      );
-      await this.assertProductTaxonomy(
-        tx,
-        requestedCategoryId,
-        requestedCategoryTypeId,
-      );
-      if (nextIsActive) {
-        await this.assertProductPublishReady(tx, {
-          name: resolvedName,
-          description: dto.description,
-          categoryId: requestedCategoryId,
-          categoryTypeId: requestedCategoryTypeId,
-          gender: dto.gender || 'EVERYBODY',
-          tags: resolvedTags,
-          price: resolvedPrice,
-          images: normalizedImages,
-          thumbnail: resolvedThumbnail,
-          variants: derivedFromVariants?.variants ?? [],
-          totalStock: derivedFromVariants?.totalStock ?? (dto.totalStock || 0),
-          trackInventory: dto.trackInventory ?? true,
-          customOrderEnabled: nextCustomOrderEnabled,
-        });
-      }
-
-      await this.lockCollectionForUpdate(tx, collectionId);
-      if (nextIsActive) {
-        await this.assertCollectionCapacity(tx, collectionId);
-      }
-      const orderIndex = await tx.storeCollectionProduct.count({
-        where: { collectionId },
-      });
-
-      let created = null as Awaited<
-        ReturnType<typeof tx.product.create>
-      > | null;
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        try {
-          created = await tx.product.create({
-            data: {
-              id: uuidv4(),
-              collectionId,
+        if (nextIsActive) {
+          await this.assertProductPublishReady(
+            tx,
+            {
+              name: resolvedName,
+              description: dto.description,
               categoryId: requestedCategoryId,
               categoryTypeId: requestedCategoryTypeId,
-              brandId: brand.id,
-              name: resolvedName,
-              slug,
-              description: dto.description,
-              currency,
-              standardCheckoutEnabled: dto.standardCheckoutEnabled !== false,
-              customOrderEnabled: nextCustomOrderEnabled,
-              price: new Prisma.Decimal(resolvedPrice),
-              salePrice: dto.salePrice
-                ? new Prisma.Decimal(dto.salePrice)
-                : null,
-              saleStartAt: dto.saleStartAt ? new Date(dto.saleStartAt) : null,
-              saleEndAt: dto.saleEndAt ? new Date(dto.saleEndAt) : null,
-              // Product details
-              sku: dto.sku || null,
-              weight: dto.weight ? new Prisma.Decimal(dto.weight) : null,
-              weightUnit: dto.weightUnit || 'kg',
-              materials: dto.materials || null,
-              careInstructions: dto.careInstructions || null,
-              costPerItem: dto.costPerItem
-                ? new Prisma.Decimal(dto.costPerItem)
-                : null,
-              // Variants (legacy + derived)
-              sizes: derivedFromVariants?.sizes ?? dto.sizes ?? [],
-              sizeStock:
-                derivedFromVariants?.sizeStock ?? dto.sizeStock ?? null,
-              sizingMode: this.normalizeSizingMode(dto.sizingMode),
-              rtwSizeSystem: dto.rtwSizeSystem || null,
-              rtwSizeType: dto.rtwSizeType || null,
-              rtwLinkedToInventory: dto.rtwLinkedToInventory ?? false,
-              customGender: dto.customGender || null,
-              customMeasurementKeys: this.normalizeRequiredMeasurementKeys(
-                dto.customMeasurementKeys,
-              ),
-              customFreeformPointIds: this.normalizeRequiredMeasurementKeys(
-                dto.customFreeformPointIds,
-              ),
-              fitPreference: dto.fitPreference || null,
-              targetAgeGroup: dto.targetAgeGroup || 'ADULT',
-              colors: derivedFromVariants?.colors ?? dto.colors ?? [],
-              colorImages: dto.colorImages || null,
-              colorHexCodes:
-                derivedFromVariants?.colorHexCodes ?? dto.colorHexCodes ?? null,
-              // Media
+              gender: dto.gender || 'EVERYBODY',
+              tags: resolvedTags,
+              price: resolvedPrice,
               images: normalizedImages,
               thumbnail: resolvedThumbnail,
-              // Inventory
-              totalStock: initialTotalStock,
-              lowStockThreshold: dto.lowStockThreshold || 5,
+              variants: derivedFromVariants?.variants ?? [],
+              totalStock:
+                derivedFromVariants?.totalStock ?? (dto.totalStock || 0),
               trackInventory: dto.trackInventory ?? true,
-              allowBackorders: dto.allowBackorders ?? false,
-              customOrderOutOfStockTriggeredAt: initialOutOfStockTriggeredAt,
-              customOrderOutOfStockReminderSentAt: null,
-              customOrderOutOfStockDiscontinueAt:
-                initialOutOfStockDiscontinueAt,
-              // Metadata
-              tags: resolvedTags,
-              gender: dto.gender || 'EVERYBODY',
-              isActive: createIsActive,
-              publicationStatus: publicationDecision.publicationStatus,
-              isPhysicalProduct: dto.isPhysicalProduct ?? true,
-              customsRegion: dto.customsRegion || null,
-              // Policies
-              returnsEligible: dto.returnsEligible ?? true,
-              // SEO
-              metaTitle: dto.metaTitle || null,
-              metaDescription: dto.metaDescription || null,
-              // Scheduling
-              publishAt: dto.publishAt ? new Date(dto.publishAt) : null,
+              customOrderEnabled: nextCustomOrderEnabled,
+            },
+            bulkTaxonomy,
+          );
+        }
+
+        if (!checkpoint) await this.lockCollectionForUpdate(tx, collectionId);
+        if (nextIsActive) {
+          await this.assertCollectionCapacity(tx, collectionId);
+        }
+        const orderIndex = await tx.storeCollectionProduct.count({
+          where: { collectionId },
+        });
+
+        let created = null as Awaited<
+          ReturnType<typeof tx.product.create>
+        > | null;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            created = await tx.product.create({
+              data: {
+                id: uuidv4(),
+                collectionId,
+                categoryId: requestedCategoryId,
+                categoryTypeId: requestedCategoryTypeId,
+                brandId: brand.id,
+                name: resolvedName,
+                slug,
+                description: dto.description,
+                currency,
+                standardCheckoutEnabled: dto.standardCheckoutEnabled !== false,
+                customOrderEnabled: nextCustomOrderEnabled,
+                price: new Prisma.Decimal(resolvedPrice),
+                salePrice: dto.salePrice
+                  ? new Prisma.Decimal(dto.salePrice)
+                  : null,
+                saleStartAt: dto.saleStartAt ? new Date(dto.saleStartAt) : null,
+                saleEndAt: dto.saleEndAt ? new Date(dto.saleEndAt) : null,
+                // Product details
+                sku: dto.sku || null,
+                weight: dto.weight ? new Prisma.Decimal(dto.weight) : null,
+                weightUnit: dto.weightUnit || 'kg',
+                materials: dto.materials || null,
+                careInstructions: dto.careInstructions || null,
+                costPerItem: dto.costPerItem
+                  ? new Prisma.Decimal(dto.costPerItem)
+                  : null,
+                // Variants (legacy + derived)
+                sizes: derivedFromVariants?.sizes ?? dto.sizes ?? [],
+                sizeStock:
+                  derivedFromVariants?.sizeStock ?? dto.sizeStock ?? null,
+                sizingMode: this.normalizeSizingMode(dto.sizingMode),
+                rtwSizeSystem: dto.rtwSizeSystem || null,
+                rtwSizeType: dto.rtwSizeType || null,
+                rtwLinkedToInventory: dto.rtwLinkedToInventory ?? false,
+                customGender: dto.customGender || null,
+                customMeasurementKeys: this.normalizeRequiredMeasurementKeys(
+                  dto.customMeasurementKeys,
+                ),
+                customFreeformPointIds: this.normalizeRequiredMeasurementKeys(
+                  dto.customFreeformPointIds,
+                ),
+                fitPreference: dto.fitPreference || null,
+                targetAgeGroup: dto.targetAgeGroup || 'ADULT',
+                colors: derivedFromVariants?.colors ?? dto.colors ?? [],
+                colorImages: dto.colorImages || null,
+                colorHexCodes:
+                  derivedFromVariants?.colorHexCodes ??
+                  dto.colorHexCodes ??
+                  null,
+                // Media
+                images: normalizedImages,
+                thumbnail: resolvedThumbnail,
+                // Inventory
+                totalStock: initialTotalStock,
+                lowStockThreshold: dto.lowStockThreshold || 5,
+                trackInventory: dto.trackInventory ?? true,
+                allowBackorders: dto.allowBackorders ?? false,
+                customOrderOutOfStockTriggeredAt: initialOutOfStockTriggeredAt,
+                customOrderOutOfStockReminderSentAt: null,
+                customOrderOutOfStockDiscontinueAt:
+                  initialOutOfStockDiscontinueAt,
+                // Metadata
+                tags: resolvedTags,
+                gender: dto.gender || 'EVERYBODY',
+                isActive: createIsActive,
+                publicationStatus: publicationDecision.publicationStatus,
+                isPhysicalProduct: dto.isPhysicalProduct ?? true,
+                customsRegion: dto.customsRegion || null,
+                // Policies
+                returnsEligible: dto.returnsEligible ?? true,
+                // SEO
+                metaTitle: dto.metaTitle || null,
+                metaDescription: dto.metaDescription || null,
+                // Scheduling
+                publishAt: dto.publishAt ? new Date(dto.publishAt) : null,
+              },
+            });
+            break;
+          } catch (error) {
+            if (
+              error instanceof Prisma.PrismaClientKnownRequestError &&
+              error.code === 'P2002' &&
+              attempt < 2
+            ) {
+              slug = this.generateSlug(resolvedName);
+              continue;
+            }
+            throw error;
+          }
+        }
+
+        if (!created) {
+          throw new InternalServerErrorException('Unable to create product');
+        }
+
+        if (this.contentIntegrity && structuredProductMedia.length > 0) {
+          await this.contentIntegrity.replaceProductMedia(tx, {
+            productId: created.id,
+            brandId: brand.id,
+            actorUserId: brandOwnerId,
+            media: structuredProductMedia,
+          });
+        }
+
+        await tx.storeCollectionProduct.create({
+          data: {
+            id: uuidv4(),
+            collectionId,
+            productId: created.id,
+            orderIndex,
+            isPrimary: true,
+          },
+        });
+
+        if (derivedFromVariants && derivedFromVariants.variants.length > 0) {
+          await tx.productVariant.createMany({
+            data: derivedFromVariants.variants.map((v) => ({
+              id: uuidv4(),
+              productId: created.id,
+              size: v.size,
+              color: v.color,
+              sku: v.sku,
+              price: v.price,
+              stock: v.stock,
+              colorHex: v.colorHex,
+            })),
+          });
+        }
+
+        if (
+          nextIsActive &&
+          publicationDecision.requiresPreReview &&
+          this.contentIntegrity
+        ) {
+          const submission = await this.contentIntegrity.createSubmission(tx, {
+            entityType: ContentEntityType.PRODUCT,
+            productId: created.id,
+            brandId: brand.id,
+            submittedById: brandOwnerId,
+            previousStatus: CollectionStatus.DRAFT,
+          });
+          contentSubmissionId = submission.id;
+        }
+
+        if (checkpoint) {
+          await tx.collectionBulkUploadRow.update({
+            where: { id: checkpoint.rowId },
+            data: {
+              createdProductId: created.id,
+              productCreatedAt: created.createdAt,
+              status: 'PROCESSING',
+              errorMessage: null,
             },
           });
-          break;
-        } catch (error) {
-          if (
-            error instanceof Prisma.PrismaClientKnownRequestError &&
-            error.code === 'P2002' &&
-            attempt < 2
-          ) {
-            slug = this.generateSlug(resolvedName);
-            continue;
-          }
-          throw error;
+          // These membership/scalar values were just written in this transaction.
+          // Import callers need only an ID, so do not reload display relations.
+          return {
+            ...created,
+            collections: [{ collectionId, orderIndex }],
+          };
         }
-      }
 
-      if (!created) {
-        throw new InternalServerErrorException('Unable to create product');
-      }
-
-      if (this.contentIntegrity && structuredProductMedia.length > 0) {
-        await this.contentIntegrity.replaceProductMedia(tx, {
-          productId: created.id,
-          brandId: brand.id,
-          actorUserId: brandOwnerId,
-          media: structuredProductMedia,
-        });
-      }
-
-      await tx.storeCollectionProduct.create({
-        data: {
-          id: uuidv4(),
-          collectionId,
-          productId: created.id,
-          orderIndex,
-          isPrimary: true,
-        },
-      });
-
-      if (derivedFromVariants && derivedFromVariants.variants.length > 0) {
-        await tx.productVariant.createMany({
-          data: derivedFromVariants.variants.map((v) => ({
-            id: uuidv4(),
-            productId: created.id,
-            size: v.size,
-            color: v.color,
-            sku: v.sku,
-            price: v.price,
-            stock: v.stock,
-            colorHex: v.colorHex,
-          })),
-        });
-      }
-
-      if (
-        nextIsActive &&
-        publicationDecision.requiresPreReview &&
-        this.contentIntegrity
-      ) {
-        const submission = await this.contentIntegrity.createSubmission(tx, {
-          entityType: ContentEntityType.PRODUCT,
-          productId: created.id,
-          brandId: brand.id,
-          submittedById: brandOwnerId,
-          previousStatus: CollectionStatus.DRAFT,
-        });
-        contentSubmissionId = submission.id;
-      }
-
-      return tx.product.findUnique({
-        where: { id: created.id },
-        include: {
-          collections: { select: { collectionId: true, orderIndex: true } },
-          brand: {
-            select: { id: true, name: true, logo: true, currency: true },
+        return tx.product.findUnique({
+          where: { id: created.id },
+          include: {
+            collections: { select: { collectionId: true, orderIndex: true } },
+            brand: {
+              select: { id: true, name: true, logo: true, currency: true },
+            },
+            variants: true,
           },
-          variants: true,
-        },
-      });
-    });
+        });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
 
     if (!product) {
       throw new NotFoundException('Product not found');
@@ -2541,7 +2739,11 @@ export class StoreService {
       );
     }
 
-    const indexedTags = this.getIndexedProductTags(product, resolvedTags);
+    // A checkpoint retry resumes persisted state, including edits since the CSV.
+    const indexedTags = this.getIndexedProductTags(
+      product,
+      checkpoint ? product.tags : resolvedTags,
+    );
     if (this.systemTags && indexedTags.length > 0) {
       await this.systemTags.upsertTags(indexedTags);
       this.systemTagsCache = null;
@@ -2562,18 +2764,25 @@ export class StoreService {
     await this.recalculateCollectionPriceRanges(collectionIds);
 
     if (this.isProductPublished(product)) {
-      await this.notifyPatchersOfProduct(brandOwnerUserId, product);
+      if (publicationIds) publicationIds.push(product.id);
+      else await this.notifyPatchersOfProduct(brandOwnerUserId, product);
     }
 
     if (contentSubmissionId && this.contentIntegrity) {
-      await this.contentIntegrity.notifyContentSubmitted(brandOwnerUserId, {
-        submissionId: contentSubmissionId,
-        entityType: ContentEntityType.PRODUCT,
-        productId: product.id,
-        message: 'Your product was submitted for review.',
-      });
+      await this.contentIntegrity.notifyContentSubmitted(
+        brandOwnerUserId,
+        {
+          submissionId: contentSubmissionId,
+          entityType: ContentEntityType.PRODUCT,
+          productId: product.id,
+          productName: product.name,
+          message: 'Your product was submitted for review.',
+        },
+        reviewEvents,
+      );
     }
 
+    if (checkpoint) return { id: product.id };
     const response = await this.attachProductMedia(product, {
       includeOwnerFinancials: true,
     });
@@ -2744,8 +2953,11 @@ export class StoreService {
   }
 
   private async updateProductWithContext(
-    brandOwnerId: string, product: ProductUpdateContext, dto: UpdateProductDto,
+    brandOwnerId: string,
+    product: ProductUpdateContext,
+    dto: UpdateProductDto,
     requireUnarchived = false,
+    includeResponseMedia = true,
   ) {
     const productId = product.id;
     if ((dto as any).sizingModeDeprecatedAliasUsed) {
@@ -3192,6 +3404,9 @@ export class StoreService {
         tx,
         finalCategoryId,
         finalCategoryTypeId,
+        !includeResponseMedia && (finalCategoryId || finalCategoryTypeId)
+          ? await loadBulkProductTaxonomy(tx, null, finalCategoryId, finalCategoryTypeId)
+          : undefined,
       );
       if (structuredUpdateMedia && this.contentIntegrity) {
         await this.contentIntegrity.replaceProductMedia(tx, {
@@ -3286,13 +3501,22 @@ export class StoreService {
         (updateData as any).publicationStatus = nextPublicationStatus;
       }
 
-      await tx.product.update({
-        where: { id: productId, deletedAt: null, ...(requireUnarchived ? { archivedAt: null } : {}) },
-        data: updateData,
-      }).catch((error) => {
-        if (error?.code === 'P2025') throw new ConflictException('Product changed while updating. Refresh and retry.');
-        throw error;
-      });
+      const savedProduct = await tx.product
+        .update({
+          where: {
+            id: productId,
+            deletedAt: null,
+            ...(requireUnarchived ? { archivedAt: null } : {}),
+          },
+          data: updateData,
+        })
+        .catch((error) => {
+          if (error?.code === 'P2025')
+            throw new ConflictException(
+              'Product changed while updating. Refresh and retry.',
+            );
+          throw error;
+        });
 
       if (dto.customOrderEnabled === false) {
         await tx.customOrderConfiguration.updateMany({
@@ -3342,6 +3566,12 @@ export class StoreService {
         updateSubmissionId = submission.id;
       }
 
+      if (!includeResponseMedia) {
+        const collections = await tx.storeCollectionProduct.findMany({
+          where: { productId }, select: { collectionId: true, orderIndex: true },
+        });
+        return { ...savedProduct, collections };
+      }
       return tx.product.findUnique({
         where: { id: productId },
         include: {
@@ -3439,6 +3669,7 @@ export class StoreService {
       );
     }
 
+    if (!includeResponseMedia) return updated;
     const response = await this.attachProductMedia(updated, {
       includeOwnerFinancials: true,
     });
@@ -3670,12 +3901,20 @@ export class StoreService {
 
       const membershipIds = sourceCollections.map((link) => link.collectionId);
       if (!membershipIds.length) {
-        membershipIds.push(await this.ensureDefaultStoreCollection(tx, product.brand.ownerId));
+        membershipIds.push(
+          await this.ensureDefaultStoreCollection(tx, product.brand.ownerId),
+        );
         await tx.product.update({
-          where: { id: created.id }, data: { collectionId: membershipIds[0] },
+          where: { id: created.id },
+          data: { collectionId: membershipIds[0] },
         });
       }
-      await appendProductMemberships(tx, created.id, membershipIds, membershipIds[0]);
+      await appendProductMemberships(
+        tx,
+        created.id,
+        membershipIds,
+        membershipIds[0],
+      );
 
       if (derivedFromVariants && derivedFromVariants.variants.length > 0) {
         await tx.productVariant.createMany({
@@ -3810,10 +4049,11 @@ export class StoreService {
   // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   async archiveProduct(brandOwnerId: string, productId: string) {
-    const product = await this.prisma.product.findFirst({
-      where: { id: productId, deletedAt: null },
-      include: { brand: true },
-    });
+    return this.archiveProductCommand(brandOwnerId, productId, true);
+  }
+
+  private async archiveProductCommand(brandOwnerId: string, productId: string, includeResponseMedia: boolean) {
+    const product = await loadProductRemovalContext(this.prisma, productId);
 
     if (!product) {
       throw new NotFoundException('Product not found');
@@ -3840,24 +4080,22 @@ export class StoreService {
     );
 
     const archived = await this.prisma.product.update({
-      where: { id: productId },
+      where: { id: productId, deletedAt: null, archivedAt: null },
       data: {
         archivedAt: now,
         archiveExpiresAt: expiresAt,
         archiveLastReminder: null,
         isActive: false,
       },
-      include: {
+      ...(includeResponseMedia ? { include: {
         collections: { select: { collectionId: true, orderIndex: true } },
         brand: { select: { id: true, name: true, logo: true, currency: true } },
         variants: true,
-      },
+      } } : {}),
     });
 
-    const archivedCollectionIds = Array.isArray(archived.collections)
-      ? archived.collections.map((c) => c.collectionId)
-      : [];
-    await this.recalculateCollectionPriceRanges(archivedCollectionIds);
+    const effects = await loadProductRemovalEffects(this.prisma, productId);
+    await this.recalculateCollectionPriceRanges(effects.collectionIds);
 
     if (previousIndexedTags.length > 0 && this.systemTags) {
       await this.systemTags.syncTags(previousIndexedTags, []);
@@ -3876,31 +4114,25 @@ export class StoreService {
     // Notify wishlisted users that the product is unavailable
     if (this.notifications) {
       try {
-        const wishlistItems = await this.prisma.wishlistItem.findMany({
-          where: { productId },
-          select: { userId: true },
-        });
-        for (const wi of wishlistItems) {
-          await this.notifications.create(
-            wi.userId,
-            'WISHLIST_PRODUCT_UNAVAILABLE',
-            {
-              actorId: brandOwnerId,
-              payload: {
-                productId,
-                productName: product.name,
-                brandName: product.brand.name,
-              },
+        await this.notifications.createForRecipients(
+          effects.wishlistUserIds,
+          'WISHLIST_PRODUCT_UNAVAILABLE',
+          {
+            actorId: brandOwnerId,
+            payload: {
+              productId,
+              productName: product.name,
+              brandName: product.brand.name,
             },
-          );
-        }
+          },
+        );
       } catch (err) {
         // Non-critical — don't fail the archive operation
         console.warn('Failed to send wishlist unavailable notifications:', err);
       }
     }
 
-    return this.attachProductMedia(archived, { includeOwnerFinancials: true });
+    return includeResponseMedia ? this.attachProductMedia(archived, { includeOwnerFinancials: true }) : archived;
   }
 
   // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -3987,20 +4219,18 @@ export class StoreService {
           where: { productId },
           select: { userId: true },
         });
-        for (const wi of wishlistItems) {
-          await this.notifications.create(
-            wi.userId,
-            'WISHLIST_PRODUCT_AVAILABLE',
-            {
-              actorId: brandOwnerId,
-              payload: {
-                productId,
-                productName: product.name,
-                brandName: product.brand.name,
-              },
+        await this.notifications.createForRecipients(
+          wishlistItems.map((item) => item.userId),
+          'WISHLIST_PRODUCT_AVAILABLE',
+          {
+            actorId: brandOwnerId,
+            payload: {
+              productId,
+              productName: product.name,
+              brandName: product.brand.name,
             },
-          );
-        }
+          },
+        );
       } catch (err) {
         console.warn('Failed to send wishlist available notifications:', err);
       }
@@ -4017,17 +4247,7 @@ export class StoreService {
     productId: string,
     cancelPendingOrders = false,
   ) {
-    const product = await this.prisma.product.findFirst({
-      where: { id: productId },
-      include: {
-        brand: true,
-        collections: {
-          include: {
-            collection: { select: { id: true, title: true } },
-          },
-        },
-      },
-    });
+    const product = await loadProductRemovalContext(this.prisma, productId, true);
 
     if (!product) {
       throw new NotFoundException('Product not found');
@@ -4046,25 +4266,8 @@ export class StoreService {
       product.tags ?? [],
     );
 
-    const activeOrders = await this.prisma.order.findMany({
-      where: {
-        brandId: product.brandId,
-        status: { in: ['PENDING', 'PROCESSING', 'SHIPPED'] },
-      },
-      select: {
-        items: true,
-        orderItems: {
-          select: { productId: true },
-        },
-      },
-    });
-
-    let activeOrdersCount = 0;
-    for (const order of activeOrders) {
-      if (this.orderContainsProduct(order, productId)) {
-        activeOrdersCount++;
-      }
-    }
+    const activeOrders = await loadProductActiveOrders(this.prisma, product.brandId, productId);
+    const activeOrdersCount = activeOrders.length;
 
     if (activeOrdersCount > 0 && !cancelPendingOrders) {
       throw new BadRequestException(
@@ -4072,43 +4275,23 @@ export class StoreService {
       );
     }
 
-    const memberships = await this.prisma.storeCollectionProduct.findMany({
-      where: { productId },
-      select: { collectionId: true },
-    });
+    const effects = await loadProductRemovalEffects(this.prisma, productId, false);
 
     // Get affected collection titles for notification
-    const affectedCollections = (product.collections || [])
-      .map((c) => c.collection?.title || 'Untitled')
-      .filter(Boolean);
+    const affectedCollections = effects.collectionTitles;
 
     const cancelledOrders: { id: string; buyerId?: string | null }[] = [];
 
     await this.prisma.$transaction(async (tx) => {
       if (activeOrdersCount > 0 && cancelPendingOrders) {
-        const orders = await tx.order.findMany({
-          where: {
-            brandId: product.brandId,
-            status: { in: ['PENDING', 'PROCESSING', 'SHIPPED'] as any },
-          },
-          select: {
-            id: true,
-            buyerId: true,
-            items: true,
-            orderItems: {
-              select: { productId: true },
-            },
-          },
-        });
+        const orders = await loadProductActiveOrders(tx, product.brandId, productId);
 
         for (const order of orders) {
-          if (this.orderContainsProduct(order, productId)) {
-            await tx.order.update({
+          await tx.order.update({
               where: { id: order.id },
               data: { status: 'CANCELLED', paymentStatus: 'REFUNDED' },
             });
-            cancelledOrders.push({ id: order.id, buyerId: order.buyerId });
-          }
+          cancelledOrders.push({ id: order.id, buyerId: order.buyerId });
         }
       }
 
@@ -4148,7 +4331,9 @@ export class StoreService {
       });
     }
 
-    await this.recalculateCollectionPriceRanges(memberships.map((link) => link.collectionId));
+    await this.recalculateCollectionPriceRanges(
+      effects.collectionIds,
+    );
 
     if (previousIndexedTags.length > 0 && this.systemTags) {
       await this.systemTags.syncTags(previousIndexedTags, []);
@@ -4167,7 +4352,6 @@ export class StoreService {
     // Send notification if product was in collections
     if (affectedCollections.length > 0) {
       try {
-        await this.prisma.$queryRaw`SELECT 1`; // Verify DB connection
         // Note: Notification service would be injected in production
         // For now, log the notification that should be sent
         console.log('[ProductDeletion] Notification would be sent:', {
@@ -4241,7 +4425,7 @@ export class StoreService {
 
     for (const productId of productIds) {
       try {
-        await this.archiveProduct(brandOwnerId, productId);
+        await this.archiveProductCommand(brandOwnerId, productId, false);
         successIds.push(productId);
       } catch (error: any) {
         const message =
@@ -4279,19 +4463,29 @@ export class StoreService {
     const failures: Array<{ productId: string; message: string }> = [];
 
     const products = await this.prisma.product.findMany({
-      where: { id: { in: productIds }, deletedAt: null }, include: PRODUCT_UPDATE_INCLUDE,
+      where: { id: { in: productIds }, deletedAt: null },
+      include: PRODUCT_UPDATE_INCLUDE,
     });
-    if (!this.brandPermissionService) throw new InternalServerErrorException('Brand permission service is unavailable');
-    const allowedBrands = await this.brandPermissionService.getPermittedBrandIds(
-      brandOwnerId, products.map((product) => product.brandId), BRAND_PERMISSIONS.CATALOG_WRITE,
-    );
+    if (!this.brandPermissionService)
+      throw new InternalServerErrorException(
+        'Brand permission service is unavailable',
+      );
+    const allowedBrands =
+      await this.brandPermissionService.getPermittedBrandIds(
+        brandOwnerId,
+        products.map((product) => product.brandId),
+        BRAND_PERMISSIONS.CATALOG_WRITE,
+      );
     const byId = new Map(products.map((product) => [product.id, product]));
 
     for (const productId of productIds) {
       try {
         const product = byId.get(productId);
         if (!product) throw new NotFoundException('Product not found');
-        if (!allowedBrands.has(product.brandId)) throw new ForbiddenException('You can only unpublish your own products');
+        if (!allowedBrands.has(product.brandId))
+          throw new ForbiddenException(
+            'You can only unpublish your own products',
+          );
         if (product.archivedAt) {
           throw new BadRequestException(
             'Product is archived. Unarchive it first before unpublishing.',
@@ -4299,10 +4493,16 @@ export class StoreService {
         }
 
         if (product.isActive) {
-          await this.updateProductWithContext(brandOwnerId, product, {
-            isActive: false,
-            publishAt: null,
-          }, true);
+          await this.updateProductWithContext(
+            brandOwnerId,
+            product,
+            {
+              isActive: false,
+              publishAt: null,
+            },
+            true,
+            false,
+          );
         }
         successIds.push(productId);
       } catch (error: any) {
@@ -5222,7 +5422,6 @@ export class StoreService {
       throw new NotFoundException('Store is closed');
     }
 
-
     // Build where clause - owners see all products, public sees only active/published
     const where: Prisma.ProductWhereInput = {
       brandId: brand.id,
@@ -6091,6 +6290,7 @@ export class StoreService {
       byUser.set(item.userId, bucket);
     }
 
+    const events: NotificationEvent[] = [];
     for (const [userId, items] of byUser) {
       const sorted = [...items].sort(
         (a, b) => a.updatedAt.getTime() - b.updatedAt.getTime(),
@@ -6105,8 +6305,10 @@ export class StoreService {
           ? `${topItemTitle} and ${itemCount - 1} more item${itemCount - 1 === 1 ? '' : 's'} are still in your bag. Check out soon before sizes sell out or prices change.`
           : `${topItemTitle} is still in your bag. Check out soon before it sells out or the price changes.`;
 
-      try {
-        await this.notifications.create(userId, NT_BAG_CHECKOUT_REMINDER, {
+      events.push({
+        recipientId: userId,
+        type: NT_BAG_CHECKOUT_REMINDER,
+        opts: {
           payload: {
             action: 'BAG_CHECKOUT_REMINDER',
             itemCount,
@@ -6121,13 +6323,17 @@ export class StoreService {
             preview: 'Bag',
           },
           dedupeMs: BAG_CHECKOUT_REMINDER_INTERVAL_MS,
-        });
-      } catch (error) {
+        },
+      });
+    }
+    const outcomes = await this.notifications.createEvents(events);
+    outcomes.forEach((outcome, index) => {
+      if (outcome.status === 'rejected') {
         this.logger.warn(
-          `Failed to create bag checkout reminder for user=${userId}: ${String(error)}`,
+          `Failed to create bag checkout reminder for user=${events[index].recipientId}: ${String(outcome.reason)}`,
         );
       }
-    }
+    });
   }
 
   /**
@@ -6344,95 +6550,99 @@ export class StoreService {
       }
     }
 
-    const resultingQuantity = await withCartTransaction(this.prisma, userId, async (tx) => {
-    const existingItem = await tx.cartItem.findFirst({
-      where: {
-        userId,
-        productId: dto.productId,
-        selectedSize: resolvedSelectedSize,
-        selectedColor: dto.selectedColor || null,
-      },
-    });
-
-    const quantityToAdd = dto.quantity || 1;
-    const resultingQuantity = existingItem
-      ? existingItem.quantity + quantityToAdd
-      : quantityToAdd;
-    const selectedVariant =
-      variants.length > 0
-        ? variants.find(
-            (v) =>
-              (v.size || null) === resolvedSelectedSize &&
-              (v.color || null) === (dto.selectedColor || null),
-          )
-        : null;
-
-    if (resultingQuantity > 99) {
-      throw new BadRequestException(
-        'Cart quantity limit exceeded for this item (max 99)',
-      );
-    }
-
-    if (variants.length > 0 && !selectedVariant) {
-      throw new BadRequestException('Selected variant is not available');
-    }
-
-    // Check stock (variant-aware)
-    if (product.trackInventory && !product.allowBackorders) {
-      if (selectedVariant) {
-        const available = Number(selectedVariant.stock || 0);
-        if (available < resultingQuantity) {
-          throw new BadRequestException(
-            `Only ${available} items available for the selected variant`,
-          );
-        }
-      } else if (resolvedSelectedSize && product.sizeStock) {
-        const sizeStock = product.sizeStock as Record<string, number>;
-        const available = sizeStock[resolvedSelectedSize] || 0;
-        if (available < resultingQuantity) {
-          throw new BadRequestException(
-            `Only ${available} items available in size ${resolvedSelectedSize}`,
-          );
-        }
-      } else if (product.totalStock < resultingQuantity) {
-        throw new BadRequestException(
-          `Only ${product.totalStock} items available`,
-        );
-      }
-    }
-
-      if (dto.sizeFitData) {
-        await this.syncMeasurementsToProfile(userId, dto.sizeFitData, tx);
-      }
-      if (existingItem) {
-        await tx.cartItem.update({
-          where: { id: existingItem.id },
-          data: {
-            quantity: resultingQuantity,
-            sizingMode: sizingPayload.sizingMode,
-            requiredMeasurementKeys: sizingPayload.requiredMeasurementKeys,
-            sizeFitData: sizingPayload.sizeFitData,
-            sizeRecommendationSnapshot: recommendationSnapshot,
-          },
-        });
-      } else {
-        await tx.cartItem.create({
-          data: {
-            id: uuidv4(),
+    const resultingQuantity = await withCartTransaction(
+      this.prisma,
+      userId,
+      async (tx) => {
+        const existingItem = await tx.cartItem.findFirst({
+          where: {
             userId,
             productId: dto.productId,
-            quantity: quantityToAdd,
             selectedSize: resolvedSelectedSize,
             selectedColor: dto.selectedColor || null,
-            sizingMode: sizingPayload.sizingMode,
-            requiredMeasurementKeys: sizingPayload.requiredMeasurementKeys,
-            sizeFitData: sizingPayload.sizeFitData,
-            sizeRecommendationSnapshot: recommendationSnapshot,
           },
         });
-      }
-      return resultingQuantity;
-    });
+
+        const quantityToAdd = dto.quantity || 1;
+        const resultingQuantity = existingItem
+          ? existingItem.quantity + quantityToAdd
+          : quantityToAdd;
+        const selectedVariant =
+          variants.length > 0
+            ? variants.find(
+                (v) =>
+                  (v.size || null) === resolvedSelectedSize &&
+                  (v.color || null) === (dto.selectedColor || null),
+              )
+            : null;
+
+        if (resultingQuantity > 99) {
+          throw new BadRequestException(
+            'Cart quantity limit exceeded for this item (max 99)',
+          );
+        }
+
+        if (variants.length > 0 && !selectedVariant) {
+          throw new BadRequestException('Selected variant is not available');
+        }
+
+        // Check stock (variant-aware)
+        if (product.trackInventory && !product.allowBackorders) {
+          if (selectedVariant) {
+            const available = Number(selectedVariant.stock || 0);
+            if (available < resultingQuantity) {
+              throw new BadRequestException(
+                `Only ${available} items available for the selected variant`,
+              );
+            }
+          } else if (resolvedSelectedSize && product.sizeStock) {
+            const sizeStock = product.sizeStock as Record<string, number>;
+            const available = sizeStock[resolvedSelectedSize] || 0;
+            if (available < resultingQuantity) {
+              throw new BadRequestException(
+                `Only ${available} items available in size ${resolvedSelectedSize}`,
+              );
+            }
+          } else if (product.totalStock < resultingQuantity) {
+            throw new BadRequestException(
+              `Only ${product.totalStock} items available`,
+            );
+          }
+        }
+
+        if (dto.sizeFitData) {
+          await this.syncMeasurementsToProfile(userId, dto.sizeFitData, tx);
+        }
+        if (existingItem) {
+          await tx.cartItem.update({
+            where: { id: existingItem.id },
+            data: {
+              quantity: resultingQuantity,
+              sizingMode: sizingPayload.sizingMode,
+              requiredMeasurementKeys: sizingPayload.requiredMeasurementKeys,
+              sizeFitData: sizingPayload.sizeFitData,
+              sizeRecommendationSnapshot: recommendationSnapshot,
+            },
+          });
+        } else {
+          await tx.cartItem.create({
+            data: {
+              id: uuidv4(),
+              userId,
+              productId: dto.productId,
+              quantity: quantityToAdd,
+              selectedSize: resolvedSelectedSize,
+              selectedColor: dto.selectedColor || null,
+              sizingMode: sizingPayload.sizingMode,
+              requiredMeasurementKeys: sizingPayload.requiredMeasurementKeys,
+              sizeFitData: sizingPayload.sizeFitData,
+              sizeRecommendationSnapshot: recommendationSnapshot,
+            },
+          });
+        }
+        return resultingQuantity;
+      },
+    );
 
     await this.notifyBuyerBagItemAdded({
       userId,
@@ -6633,52 +6843,51 @@ export class StoreService {
     dto: UpdateCartItemDto,
   ) {
     await withCartTransaction(this.prisma, userId, async (tx) => {
-    const item = await tx.cartItem.findFirst({
-      where: { id: cartItemId, userId },
-      include: { product: { include: { variants: true } } },
-    });
+      const item = await tx.cartItem.findFirst({
+        where: { id: cartItemId, userId },
+        include: { product: { include: { variants: true } } },
+      });
 
-    if (!item) {
-      throw new NotFoundException('Cart item not found');
-    }
-
-    // Check stock (variant-aware)
-    if (item.product.trackInventory && !item.product.allowBackorders) {
-      const variants = Array.isArray((item.product as any).variants)
-        ? ((item.product as any).variants as any[])
-        : [];
-
-      if (variants.length > 0) {
-        const match = variants.find(
-          (v) =>
-            (v.size || null) === (item.selectedSize || null) &&
-            (v.color || null) === (item.selectedColor || null),
-        );
-        if (!match) {
-          throw new BadRequestException('Selected variant is not available');
-        }
-        const available = Number(match.stock || 0);
-        if (available < dto.quantity) {
-          throw new BadRequestException(`Only ${available} items available`);
-        }
-      } else if (item.selectedSize && item.product.sizeStock) {
-        const sizeStock = item.product.sizeStock as Record<string, number>;
-        const available = sizeStock[item.selectedSize] || 0;
-        if (available < dto.quantity) {
-          throw new BadRequestException(`Only ${available} items available`);
-        }
-      } else if (item.product.totalStock < dto.quantity) {
-        throw new BadRequestException(
-          `Only ${item.product.totalStock} items available`,
-        );
+      if (!item) {
+        throw new NotFoundException('Cart item not found');
       }
-    }
 
-    await tx.cartItem.update({
-      where: { id: cartItemId },
-      data: { quantity: dto.quantity },
-    });
+      // Check stock (variant-aware)
+      if (item.product.trackInventory && !item.product.allowBackorders) {
+        const variants = Array.isArray((item.product as any).variants)
+          ? ((item.product as any).variants as any[])
+          : [];
 
+        if (variants.length > 0) {
+          const match = variants.find(
+            (v) =>
+              (v.size || null) === (item.selectedSize || null) &&
+              (v.color || null) === (item.selectedColor || null),
+          );
+          if (!match) {
+            throw new BadRequestException('Selected variant is not available');
+          }
+          const available = Number(match.stock || 0);
+          if (available < dto.quantity) {
+            throw new BadRequestException(`Only ${available} items available`);
+          }
+        } else if (item.selectedSize && item.product.sizeStock) {
+          const sizeStock = item.product.sizeStock as Record<string, number>;
+          const available = sizeStock[item.selectedSize] || 0;
+          if (available < dto.quantity) {
+            throw new BadRequestException(`Only ${available} items available`);
+          }
+        } else if (item.product.totalStock < dto.quantity) {
+          throw new BadRequestException(
+            `Only ${item.product.totalStock} items available`,
+          );
+        }
+      }
+
+      await tx.cartItem.update({
+        where: { id: cartItemId },
+        data: { quantity: dto.quantity },
+      });
     });
 
     return this.getCart(userId);
@@ -6686,22 +6895,24 @@ export class StoreService {
 
   async removeFromCart(userId: string, cartItemId: string) {
     await withCartTransaction(this.prisma, userId, async (tx) => {
-    const item = await tx.cartItem.findFirst({
-      where: { id: cartItemId, userId },
-    });
+      const item = await tx.cartItem.findFirst({
+        where: { id: cartItemId, userId },
+      });
 
-    if (!item) {
-      throw new NotFoundException('Cart item not found');
-    }
+      if (!item) {
+        throw new NotFoundException('Cart item not found');
+      }
 
-    await tx.cartItem.delete({ where: { id: cartItemId } });
+      await tx.cartItem.delete({ where: { id: cartItemId } });
     });
 
     return this.getCart(userId);
   }
 
   async clearCart(userId: string) {
-    await withCartTransaction(this.prisma, userId, (tx) => tx.cartItem.deleteMany({ where: { userId } }));
+    await withCartTransaction(this.prisma, userId, (tx) =>
+      tx.cartItem.deleteMany({ where: { userId } }),
+    );
     return { success: true, message: 'Cart cleared' };
   }
 

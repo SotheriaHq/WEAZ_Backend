@@ -55,6 +55,9 @@ async function main() {
         TS_NODE_TRANSPILE_ONLY: 'true',
         SYSTEM_ADMIN_EMAIL: 'schema-regression-admin@example.invalid', SYSTEM_ADMIN_PASSWORD: randomBytes(32).toString('base64url') };
       const seedCodes = [];
+      const reference = new Client({ connectionString: testUrl.toString() });
+      await reference.connect();
+      try {
       for (let attempt = 0; attempt < 2; attempt++) {
         seedCodes.push(await new Promise((resolve, reject) => {
           const child = spawn(process.execPath, ['-r', 'ts-node/register', '-r', 'tsconfig-paths/register', 'prisma/seed.ts'], {
@@ -63,7 +66,16 @@ async function main() {
           child.once('error', reject); child.once('close', resolve);
         }));
         if (seedCodes[attempt] !== 0) break;
+        if (attempt === 0) {
+          evidence.openingSubscriptionCatalog = (await reference.query(`SELECT "key"::text AS key,
+            "monthlyPriceNgn", "maxActive", "maxInDelivery", "maxUpNext", "queueJumpAllowed"
+            FROM "SubscriptionTier" ORDER BY "key"`)).rows;
+          // Reseeding must preserve a deliberate admin catalog edit. This
+          // change exists only inside this process's disposable database.
+          await reference.query(`UPDATE "SubscriptionTier" SET "monthlyPriceNgn"=12345 WHERE "key"='THREAD'`);
+        }
       }
+      } finally { await reference.end(); }
       evidence.seedExitCodes = seedCodes;
       const verify = new Client({ connectionString: testUrl.toString() });
       await verify.connect();
@@ -80,10 +92,24 @@ async function main() {
           (SELECT count(*)::int FROM system_config) AS settings,
           (SELECT count(*)::int FROM settlement_policy) AS settlement_policies`)).rows[0];
         evidence.seedCounts = counts;
+        const expectedCatalog = [
+          { key:'THREAD', monthlyPriceNgn:10000, maxActive:2, maxInDelivery:2, maxUpNext:1, queueJumpAllowed:false },
+          { key:'ASO_OKE', monthlyPriceNgn:15000, maxActive:3, maxInDelivery:4, maxUpNext:1, queueJumpAllowed:false },
+          { key:'ARU', monthlyPriceNgn:30000, maxActive:4, maxInDelivery:5, maxUpNext:1, queueJumpAllowed:true },
+          { key:'IGWE', monthlyPriceNgn:50000, maxActive:6, maxInDelivery:5, maxUpNext:1, queueJumpAllowed:true },
+        ];
+        const byKey = (rows) => [...rows].sort((left, right) => left.key.localeCompare(right.key));
+        evidence.subscriptionCatalogMatchesApprovedPolicy = JSON.stringify(byKey(evidence.openingSubscriptionCatalog ?? [])) === JSON.stringify(byKey(expectedCatalog));
+        evidence.reseedPreservesEditedTierPrice = (await verify.query(`SELECT "monthlyPriceNgn" FROM "SubscriptionTier" WHERE "key"='THREAD'`)).rows[0]?.monthlyPriceNgn === 12345;
+        evidence.defaultCustomerMinimumOrders = (await verify.query(`SELECT column_default FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='Brand' AND column_name='customerMinimumOrders'`)).rows[0]?.column_default;
+        evidence.seededSubscriptionAgreements = (await verify.query(`SELECT count(*)::int AS count FROM "BrandSubscription"`)).rows[0].count;
         evidence.passed = seedCodes.length === 2 && seedCodes.every((code) => code === 0) &&
           counts.users === 1 && counts.admins === 1 && counts.uploads === 0 && counts.content === 0 &&
           counts.measurements > 0 && counts.charts > 0 && counts.tags > 0 && counts.categories > 0 &&
-          counts.settings > 0 && counts.settlement_policies === 2;
+          counts.settings > 0 && counts.settlement_policies === 2 &&
+          evidence.subscriptionCatalogMatchesApprovedPolicy && evidence.reseedPreservesEditedTierPrice &&
+          evidence.defaultCustomerMinimumOrders === '3' && evidence.seededSubscriptionAgreements === 0;
       } finally { await verify.end(); }
     }
   } finally {

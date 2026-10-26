@@ -16,7 +16,12 @@
  * must acknowledge it in words before accepting new custom work — see
  * `assertCustomOrderAcceptanceAllowed`.
  */
-import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
 import {
   BrandBalanceAdjustmentStatus,
   BrandBalanceAdjustmentType,
@@ -25,6 +30,7 @@ import {
 } from '@prisma/client';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { loadBrandDebtContext } from './brand-debt-query';
 
 /** Statuses that still take money out of what a brand can withdraw. */
 const ACTIVE_DEBT_STATUSES: BrandBalanceAdjustmentStatus[] = [
@@ -43,7 +49,8 @@ export type BrandDebtSnapshot = {
   inDebt: boolean;
 };
 
-const round = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+const round = (value: number) =>
+  Math.round((value + Number.EPSILON) * 100) / 100;
 
 @Injectable()
 export class BrandBalanceService {
@@ -59,34 +66,7 @@ export class BrandBalanceService {
 
   /** What this brand owes right now. Cheap enough to call on an accept screen. */
   async getDebtSnapshot(brandId: string): Promise<BrandDebtSnapshot> {
-    const rows = await this.prisma.brandBalanceAdjustment.findMany({
-      where: { brandId, status: { in: ACTIVE_DEBT_STATUSES } },
-      select: {
-        amount: true,
-        recoveredAmount: true,
-        currency: true,
-        createdAt: true,
-        type: true,
-      },
-      orderBy: { createdAt: 'asc' },
-    });
-
-    let outstanding = 0;
-    for (const row of rows) {
-      const remaining = Number(row.amount) - Number(row.recoveredAmount);
-      // A credit adjustment reduces the pile rather than adding to it.
-      outstanding +=
-        row.type === BrandBalanceAdjustmentType.MANUAL_CREDIT ? -remaining : remaining;
-    }
-    outstanding = round(Math.max(0, outstanding));
-
-    return {
-      outstanding,
-      currency: rows[0]?.currency ?? 'NGN',
-      count: rows.length,
-      oldestAt: rows[0]?.createdAt ?? null,
-      inDebt: outstanding > 0,
-    };
+    return (await loadBrandDebtContext(this.prisma, brandId)).snapshot;
   }
 
   /**
@@ -111,14 +91,18 @@ export class BrandBalanceService {
   ) {
     const amount = round(params.amount);
     if (!Number.isFinite(amount) || amount <= 0) {
-      throw new BadRequestException('A balance adjustment must be a positive amount');
+      throw new BadRequestException(
+        'A balance adjustment must be a positive amount',
+      );
     }
 
     const duplicate = await tx.brandBalanceAdjustment.findFirst({
       where: {
         brandId: params.brandId,
         type: params.type,
-        ...(params.customOrderId ? { customOrderId: params.customOrderId } : {}),
+        ...(params.customOrderId
+          ? { customOrderId: params.customOrderId }
+          : {}),
         ...(params.orderId ? { orderId: params.orderId } : {}),
       },
       select: { id: true },
@@ -173,17 +157,14 @@ export class BrandBalanceService {
   }): Promise<void> {
     if (!this.notifications) return;
     try {
-      const [brand, snapshot] = await Promise.all([
-        this.prisma.brand.findUnique({
-          where: { id: params.brandId },
-          select: { ownerId: true },
-        }),
-        this.getDebtSnapshot(params.brandId),
-      ]);
-      if (!brand?.ownerId) return;
+      const { ownerId, snapshot } = await loadBrandDebtContext(
+        this.prisma,
+        params.brandId,
+      );
+      if (!ownerId) return;
 
       await this.notifications.create(
-        brand.ownerId,
+        ownerId,
         NotificationType.BRAND_BALANCE_ADJUSTED,
         {
           payload: {
@@ -242,7 +223,9 @@ export class BrandBalanceService {
     let recovered = 0;
     for (const debt of debts) {
       if (available <= 0) break;
-      const remaining = round(Number(debt.amount) - Number(debt.recoveredAmount));
+      const remaining = round(
+        Number(debt.amount) - Number(debt.recoveredAmount),
+      );
       if (remaining <= 0) continue;
 
       const payment = round(Math.min(remaining, available));

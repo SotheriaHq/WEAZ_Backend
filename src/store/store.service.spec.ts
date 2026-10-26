@@ -753,7 +753,7 @@ describe('StoreService', () => {
       },
     } as any;
     const uploadService = {
-      deleteFile: jest.fn().mockResolvedValue(undefined),
+      deleteFileIfUnused: jest.fn().mockResolvedValue(false),
     };
     const catalogService = new StoreService(
       catalogPrisma,
@@ -777,6 +777,7 @@ describe('StoreService', () => {
         'media_1',
       ),
     ).resolves.toEqual({ success: true });
+    expect(uploadService.deleteFileIfUnused).toHaveBeenCalledWith('media_1', 'catalog_manager_1');
     expect(brandAccess.assertCanManageCatalog).toHaveBeenCalledWith(
       'catalog_manager_1',
       'brand_1',

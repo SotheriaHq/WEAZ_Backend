@@ -845,6 +845,32 @@ describe('ImageService', () => {
     expect(storage).not.toHaveBeenCalled();
   });
 
+  it('reuses operation-local presign metadata without skipping canonical storage validation', async () => {
+    const presign: any = { id: 'file_1', userId: 'user_1', s3Key: 'POST_IMAGE/user_1/pending/look.jpg', originalName: 'look.jpg', fileType: 'POST_IMAGE', contentType: 'image/jpeg', status: 'READY', expiresAt: new Date(Date.now() + 60_000) };
+    const find = jest.fn().mockRejectedValue(Error('Repeated metadata read'));
+    (service as any).prisma = { presignedUpload: { findUnique: find } };
+    const metadata = { exists: true, contentLength: 1234, contentType: 'image/jpeg', etag: 'object-version' };
+    const head = jest.spyOn(service as any, 'headObjectMetadata').mockResolvedValue(metadata);
+    const committed = { id: 'file_1', userId: 'user_1' };
+    const finalize = jest.spyOn(service as any, 'finalizeStoredUpload').mockResolvedValue(committed);
+    await expect(service.createFileRecordFromPresign('file_1', 'user_1', presign.s3Key, 'image/jpeg', 1234, undefined, { presignSnapshot: presign })).resolves.toBe(committed);
+    expect(find).not.toHaveBeenCalled();
+    expect(head).toHaveBeenCalledWith(presign.s3Key);
+    expect(finalize).toHaveBeenCalledWith(presign, 'user_1', metadata, 'image/jpeg', undefined);
+  });
+
+  it('does not accept a mismatched snapshot, owner, key, or expired pending capability', async () => {
+    const presign: any = { id: 'file_1', userId: 'user_1', s3Key: 'POST_IMAGE/user_1/pending/look.jpg', status: 'PENDING', expiresAt: new Date(0) };
+    const storage = jest.fn();
+    (service as any).s3 = { send: storage };
+    (service as any).prisma = { presignedUpload: { findUnique: jest.fn() } };
+    await expect(service.createFileRecordFromPresign('other', 'user_1', presign.s3Key, 'image/jpeg', 1234, undefined, { presignSnapshot: presign })).rejects.toThrow('snapshot does not match');
+    await expect(service.createFileRecordFromPresign('file_1', 'other', presign.s3Key, 'image/jpeg', 1234, undefined, { presignSnapshot: presign })).rejects.toThrow('does not belong');
+    await expect(service.createFileRecordFromPresign('file_1', 'user_1', 'wrong-key', 'image/jpeg', 1234, undefined, { presignSnapshot: presign })).rejects.toThrow('key mismatch');
+    await expect(service.createFileRecordFromPresign('file_1', 'user_1', presign.s3Key, 'image/jpeg', 1234, undefined, { presignSnapshot: presign })).rejects.toThrow('expired');
+    expect(storage).not.toHaveBeenCalled();
+  });
+
   it('retains durable cleanup and never publishes when a source changes during copy', async () => {
     const intent = { id: 'file_1', userId: 'user_1', s3Key: 'POST_IMAGE/user_1/pending/look.jpg',
       originalName: 'look.jpg', fileType: 'POST_IMAGE', expiresAt: new Date(Date.now() + 60_000) };

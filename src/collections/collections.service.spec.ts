@@ -614,13 +614,13 @@ describe('CollectionsService brand catalog access', () => {
       const service = createService(prisma);
 
       const result = await service.getMarketFeed({
-        cursor: 'collection_0',
+        cursor: 'ec9b80d6-8d93-4abb-b8cc-aa17e731f588',
         limit: 1,
       });
 
       expect(prisma.collection.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          cursor: { id: 'collection_0' },
+          cursor: { id: 'ec9b80d6-8d93-4abb-b8cc-aa17e731f588' },
           skip: 1,
           orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
         }),

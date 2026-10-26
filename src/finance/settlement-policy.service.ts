@@ -282,13 +282,11 @@ export class SettlementPolicyService {
       Promise<SettlementPolicyResolution>
     >();
     for (let offset = 0; offset < params.length; offset += 500) {
-      const batch = params
-        .slice(offset, offset + 500)
-        .map((request) => ({
-          ...request,
-          currency: this.normalizeCurrency(request.currency),
-          at: request.at ?? new Date(),
-        }));
+      const batch = params.slice(offset, offset + 500).map((request) => ({
+        ...request,
+        currency: this.normalizeCurrency(request.currency),
+        at: request.at ?? new Date(),
+      }));
       const requests = batch.map((request, position) => ({
         position,
         orderType: request.orderType,
@@ -303,7 +301,7 @@ export class SettlementPolicyService {
           p."upfrontReleasePercent", p."settlementDelayHours", p."autoReleaseDays", p."finalReleaseTrigger", p."isDefault", p."isActive", p."effectiveFrom", p."effectiveTo"
         FROM jsonb_to_recordset(${JSON.stringify(requests)}::jsonb) AS r(position int, "orderType" text, "brandId" uuid, currency text, at timestamp)
         LEFT JOIN LATERAL (
-          SELECT p.* FROM "SettlementPolicy" p
+          SELECT p.* FROM "settlement_policy" p
           WHERE p."orderType"=r."orderType"::"SettlementOrderType" AND p."isActive"=true AND p."effectiveFrom"<=r.at AND (p."effectiveTo" IS NULL OR p."effectiveTo">=r.at)
             AND ((p.scope='BRAND' AND p."brandId"=r."brandId") OR (p.scope='PLATFORM' AND p."brandId" IS NULL))
             AND (p.currency=r.currency OR p.currency IS NULL)

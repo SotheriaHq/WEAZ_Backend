@@ -6,6 +6,7 @@ import {
   PushProvider,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { randomUUID } from 'crypto';
 import {
   DeactivateCurrentPushTokenDto,
   RegisterPushTokenDto,
@@ -50,6 +51,7 @@ export class PushDeviceTokensService {
     const provider = dto.provider ?? PushProvider.EXPO;
     const platform = dto.platform ?? PushPlatform.UNKNOWN;
     const now = new Date();
+    const registrationVersion = randomUUID();
     const metadata = this.buildMetadataData(dto);
     const createData: Prisma.PushDeviceTokenUncheckedCreateInput = {
       userId,
@@ -59,6 +61,7 @@ export class PushDeviceTokensService {
       ...metadata.create,
       isActive: true,
       lastSeenAt: now,
+      registrationVersion,
       disabledReason: null,
     };
     const updateData: Prisma.PushDeviceTokenUncheckedUpdateInput = {
@@ -68,6 +71,7 @@ export class PushDeviceTokensService {
       ...metadata.update,
       isActive: true,
       lastSeenAt: now,
+      registrationVersion,
       disabledReason: null,
     };
 

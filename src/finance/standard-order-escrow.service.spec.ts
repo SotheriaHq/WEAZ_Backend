@@ -335,6 +335,28 @@ function buildHarness(mode: 'HOLD' | 'SPLIT' = 'HOLD') {
 
   const prisma: any = {
     ...tx,
+    $queryRaw: jest.fn(async () =>
+      holds
+        .filter((hold) => {
+          const order = orders.get(hold.orderId ?? '');
+          return (
+            ['HELD', 'PARTIALLY_RELEASED'].includes(hold.status) &&
+            !hold.secondReleaseEligibleAt &&
+            !hold.refundedAt &&
+            order?.status === 'DELIVERED' &&
+            order.deliveredAt &&
+            !order.buyerConfirmedDeliveryAt
+          );
+        })
+        .map((hold) => ({
+          orderId: hold.orderId,
+          deliveredAt: orders.get(hold.orderId!)!.deliveredAt,
+          autoReleaseDays:
+            snapshots.get(hold.orderId!)?.autoReleaseDays ?? null,
+          settlementDelayHours:
+            snapshots.get(hold.orderId!)?.settlementDelayHours ?? null,
+        })),
+    ),
     $transaction: jest.fn(async (callback: (client: any) => Promise<unknown>) =>
       callback(tx),
     ),
@@ -379,6 +401,13 @@ function buildHarness(mode: 'HOLD' | 'SPLIT' = 'HOLD') {
   };
 
   const snapshotService = {
+    createFromCalculations: jest.fn(async (calculations: any[]) =>
+      Promise.all(
+        calculations.map((calculation) =>
+          snapshotService.createFromCalculation(calculation),
+        ),
+      ),
+    ),
     createFromCalculation: jest.fn(async (calculation: any) => {
       const existing = snapshots.get(calculation.orderId);
       if (existing) {
@@ -420,6 +449,7 @@ function buildHarness(mode: 'HOLD' | 'SPLIT' = 'HOLD') {
     ledgerTransactions,
     calculatorService,
     snapshotService,
+    systemConfigService,
   };
 }
 
@@ -428,6 +458,81 @@ function roundMoney(value: number) {
 }
 
 describe('StandardOrderEscrowService', () => {
+  it('uses original per-order delivery terms without a snapshot reload or global fallback', async () => {
+    const {
+      service,
+      tx,
+      orders,
+      snapshots,
+      holds,
+      snapshotService,
+      systemConfigService,
+    } = buildHarness('HOLD');
+    await service.ensureHoldsForPaidOrders(tx, [makeOrder()], 1000, 'NGN');
+    const saved = snapshots.get('order_1')!;
+    saved.autoReleaseDays = 1;
+    saved.settlementDelayHours = 2;
+    orders.set('order_1', {
+      status: 'DELIVERED',
+      deliveredAt: new Date(Date.now() - 2 * 86400000),
+      buyerConfirmedDeliveryAt: null,
+    });
+    const started = Date.now();
+    expect(await service.autoConfirmDeliveredOrders()).toBe(1);
+    expect(holds[0].secondReleaseEligibleAt!.getTime()).toBeGreaterThanOrEqual(
+      started + 2 * 3600000,
+    );
+    expect(systemConfigService.getNumber).not.toHaveBeenCalled();
+    expect(snapshotService.getByOrderId).not.toHaveBeenCalled();
+  });
+
+  it('shares existing missing-snapshot fallback values across the page and does nothing for an empty page', async () => {
+    const { service, tx, orders, snapshots, systemConfigService } =
+      buildHarness('HOLD');
+    expect(await service.autoConfirmDeliveredOrders()).toBe(0);
+    expect(systemConfigService.getNumber).not.toHaveBeenCalled();
+    await service.ensureHoldsForPaidOrders(
+      tx,
+      [makeOrder(), makeOrder({ id: 'order_2' })],
+      2000,
+      'NGN',
+    );
+    snapshots.clear();
+    for (const id of ['order_1', 'order_2'])
+      orders.set(id, {
+        status: 'DELIVERED',
+        deliveredAt: new Date(Date.now() - 8 * 86400000),
+        buyerConfirmedDeliveryAt: null,
+      });
+    expect(await service.autoConfirmDeliveredOrders()).toBe(2);
+    expect(systemConfigService.getNumber).toHaveBeenCalledTimes(2);
+    expect(await service.autoConfirmDeliveredOrders()).toBe(0);
+    expect(systemConfigService.getNumber).toHaveBeenCalledTimes(2);
+  });
+  it('shares snapshot creation and reuses written split holds without per-order reloads', async () => {
+    const { service, tx, holds, ledgerService, snapshotService } =
+      buildHarness('SPLIT');
+    const orders = Array.from({ length: 26 }, (_, index) =>
+      makeOrder({ id: `order_${index}` }),
+    );
+    await service.ensureHoldsForPaidOrders(tx, orders, 26000, 'NGN');
+    expect(snapshotService.createFromCalculations).toHaveBeenCalledTimes(1);
+    expect(snapshotService.getByOrderId).not.toHaveBeenCalled();
+    expect(tx.escrowHold.findUnique).not.toHaveBeenCalled();
+    expect(
+      ledgerService.postStandardOrderPaymentReceived,
+    ).toHaveBeenCalledTimes(26);
+    expect(
+      ledgerService.postStandardOrderShipmentRelease,
+    ).toHaveBeenCalledTimes(26);
+    expect(
+      holds.every(
+        (hold) =>
+          hold.firstReleasedAt &&
+          hold.status === EscrowHoldStatus.PARTIALLY_RELEASED,
+      ),
+    ).toBe(true);
+  });
   it('creates a default standard-order hold after paid sync without brand wallet credit', async () => {
     const { service, tx, holds, ledgerService } = buildHarness('HOLD');
 
