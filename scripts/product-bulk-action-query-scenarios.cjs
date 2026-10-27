@@ -13,11 +13,16 @@ module.exports = async function verifyProductBulkActions({ prisma, queries, noti
   const permissions=new BrandPermissionService(prisma);
   const tags=new TagIndexService(prisma);
   const store=Object.assign(Object.create(StoreService.prototype),{prisma,logger,brandPermissionService:permissions,brandAccessService:new BrandAccessService(prisma,permissions),tagIndex:tags,notifications,attachProductMedia:async()=>{throw Error('Bulk must not hydrate/sign media');}});
+  const createMemberProducts = (data) => prisma.$transaction(async tx => {
+    await tx.product.createMany({ data });
+    await tx.storeCollectionProduct.createMany({ data: data.map((product,index) => ({
+      id: randomUUID(), productId: product.id, collectionId, orderIndex: index, isPrimary: true,
+    })) });
+  });
   const shopperId=randomUUID();
   await prisma.user.create({data:{id:shopperId,username:shopperId,email:`${shopperId}@example.invalid`}});
   const ids=Array.from({length:26},()=>randomUUID());
-  await prisma.product.createMany({data:ids.map(id=>({id,brandId,collectionId,name:'Archive query fixture',price:100,isActive:true,publicationStatus:'PUBLISHED',tags:['casual']}))});
-  await prisma.storeCollectionProduct.createMany({data:ids.map((productId,index)=>({id:randomUUID(),productId,collectionId,orderIndex:index}))});
+  await createMemberProducts(ids.map(id=>({id,brandId,collectionId,name:'Archive query fixture',price:100,isActive:true,publicationStatus:'PUBLISHED',tags:['casual']})));
   await prisma.wishlistItem.createMany({data:ids.map(productId=>({id:randomUUID(),productId,userId:shopperId}))});
   await tags.syncEntitiesTags(ids.map(entityId=>({entityType:'PRODUCT',entityId,previousTags:[],nextTags:['casual'],options:{maxCount:30}})));
   queries.length=0;
@@ -57,8 +62,7 @@ module.exports = async function verifyProductBulkActions({ prisma, queries, noti
   const categoryId=randomUUID(), categoryTypeId=randomUUID(), unpublishIds=Array.from({length:26},()=>randomUUID());
   await prisma.collectionCategory.create({data:{id:categoryId,name:'Bulk casual',slug:`bulk-${categoryId}`}});
   await prisma.collectionCategoryType.create({data:{id:categoryTypeId,categoryId,name:'Bulk subtype',slug:`sub-${categoryTypeId}`}});
-  await prisma.product.createMany({data:unpublishIds.map(id=>({id,brandId,collectionId,categoryId,categoryTypeId,name:'Unpublish query fixture',price:'12345678.91',isActive:true,publicationStatus:'PUBLISHED',tags:['casual']}))});
-  await prisma.storeCollectionProduct.createMany({data:unpublishIds.map((productId,index)=>({id:randomUUID(),productId,collectionId,orderIndex:index}))});
+  await createMemberProducts(unpublishIds.map(id=>({id,brandId,collectionId,categoryId,categoryTypeId,name:'Unpublish query fixture',price:'12345678.91',isActive:true,publicationStatus:'PUBLISHED',tags:['casual']})));
   await prisma.productVariant.createMany({data:unpublishIds.map(productId=>({id:randomUUID(),productId,size:'M',color:'Blue',price:'12345678.91',stock:2}))});
   await tags.syncEntitiesTags(unpublishIds.map(entityId=>({entityType:'PRODUCT',entityId,previousTags:[],nextTags:['casual']})));
   const foreignBrandId=randomUUID(), foreignProductId=randomUUID();
@@ -81,8 +85,7 @@ module.exports = async function verifyProductBulkActions({ prisma, queries, noti
   assert.equal((await store.bulkUnpublishProducts(ownerId,{productIds:unpublishIds})).unpublishedCount,26);
   cases.push('actual26 categorized bulk unpublishes use one initial product/variant page,26 fresh taxonomy JOINs and written native scalar rows/current memberships instead of per-product detail reloads; exact12345678.91 prices, tag removal, collection refresh, duplicate/missing/foreign/archived mixed outcomes and draft replay retained without response signing');
   const deleteIds=Array.from({length:26},()=>randomUUID());
-  await prisma.product.createMany({data:deleteIds.map(id=>({id,brandId,collectionId,name:'Delete query fixture',price:5,isActive:true,tags:['casual']}))});
-  await prisma.storeCollectionProduct.createMany({data:deleteIds.map((productId,index)=>({id:randomUUID(),productId,collectionId,orderIndex:index}))});
+  await createMemberProducts(deleteIds.map(id=>({id,brandId,collectionId,name:'Delete query fixture',price:5,isActive:true,tags:['casual']})));
   await prisma.cartItem.createMany({data:deleteIds.map(productId=>({id:randomUUID(),productId,userId:shopperId,quantity:1}))});
   await tags.syncEntitiesTags(deleteIds.map(entityId=>({entityType:'PRODUCT',entityId,previousTags:[],nextTags:['casual']})));
   queries.length=0;

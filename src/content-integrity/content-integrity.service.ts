@@ -2816,28 +2816,37 @@ export class ContentIntegrityService {
 
   /** Import pages retain individual notices while sharing current recipient policy reads. */
   async flushContentSubmittedNotifications(events: NotificationEvent[]) {
+    if (!events.length) return;
+    if (!this.notifications)
+      throw new Error('Content review notification service unavailable');
     const pending = events.splice(0);
-    if (!pending.length || !this.notifications) return;
+    let results: Awaited<ReturnType<NotificationsService['createEvents']>>;
     try {
-      const results = await this.notifications.createEvents(pending);
-      results.forEach((result, index) => {
-        if (result.status === 'rejected')
-          this.emitIntegrityAlert('content_review_notification_failed', {
-            ownerId: pending[index].recipientId,
-            notificationType: pending[index].type,
-            submissionId: pending[index].opts?.payload?.submissionId,
-          });
-      });
-    } catch {
+      results = await this.notifications.createEvents(pending);
+    } catch (error) {
+      events.push(...pending);
       for (const event of pending)
         this.emitIntegrityAlert('content_review_notification_failed', {
           ownerId: event.recipientId,
           notificationType: event.type,
           submissionId: event.opts?.payload?.submissionId,
         });
+      throw error;
     }
+    const failed = pending.filter(
+      (_, index) => results[index]?.status !== 'fulfilled',
+    );
+    if (!failed.length) return;
+    events.push(...failed);
+    for (const event of failed)
+      this.emitIntegrityAlert('content_review_notification_failed', {
+        ownerId: event.recipientId,
+        notificationType: event.type,
+        submissionId: event.opts?.payload?.submissionId,
+      });
+    // Keep import checkpoints retryable until inbox + channel intents are durable.
+    throw new Error('Content review notification handoff incomplete');
   }
-
   private async notifyContentReviewOutcome(
     ownerId: string,
     payload: {
