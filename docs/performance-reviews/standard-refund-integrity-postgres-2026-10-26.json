@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-10-26T20:42:07.508Z",
+  "checkedAt": "2026-10-27T18:52:50.722Z",
   "passed": true,
   "cleanupPassed": true,
   "cases": [
@@ -10,18 +10,28 @@
     "a lost answer with the provider lookup unavailable stops at NEEDS_ATTENTION with an open alert and is never resent; the admin reconcile route rejects another capture's refund and an unknown id, links the verified one and the settlement resolves the alert",
     "an interrupted submission (stale lease) is never resubmitted: it links the refund the provider holds, or waits for a person when there is none",
     "a definitive provider rejection fails with backoff and is retried; the provider holds exactly one refund afterwards",
-    "a provider answer that arrives after the lease was lost keeps the refund id it created, goes to a person, and reconciles to one settlement",
+    "a late submission response records the provider id as durable evidence without changing a replacement claim; expired-owner lookup links that same refund, settles once and clears the alert without resubmission",
     "mock-mode captures never reach a provider: without explicit test simulation they wait for a person, with it they settle through the same ledger path",
     "a refund after the brand was paid out leaves a 27.00 debt; the next two releases (13.50 each) pay it down oldest-first with one statement line per order, and payout availability is capped by the position",
     "one system adjustment per source key under concurrency, conflicting amounts and rolled-back adjustments refused; a recovery can never change currency; owner notices are sent once per committed row, after commit",
     "ledger accounts are (code, currency): NGN and USD postings never share a balance; entries cannot be edited or posted across currencies, and a transaction left unbalanced by an insert or a delete is refused at commit; every journal written by this run balances",
     "tag bindings reference real typed targets: a store collection cannot be tagged as a design or the reverse, a missing target is refused, and deleting a product or store collection removes its bindings",
     "Product.collectionId always equals the single primary membership at commit: pointer-only or flag-only changes are refused, and a move written in any statement order commits",
-    "product deletion cancels unshipped paid orders through the canonical refund (pending wording, one refund on replay), refuses shipped orders and a checkout committed while it waited, and a checkout that waited on a deletion sees the product as unsellable"
+    "product deletion cancels unshipped paid orders through the canonical refund (pending wording, one refund on replay), refuses shipped orders and a checkout committed while it waited, and a checkout that waited on a deletion sees the product as unsellable",
+    "a late error refund lookup cannot change or clear its replacement owner's claim, attention state or money; the current owner completes the pending lookup",
+    "a late pending refund lookup cannot change or clear its replacement owner's claim, attention state or money; the current owner completes the pending lookup",
+    "a late attention refund lookup cannot change or clear its replacement owner's claim, attention state or money; the current owner completes the pending lookup",
+    "a late processed refund lookup cannot change or clear its replacement owner's claim, attention state or money; the current owner completes the pending lookup",
+    "a late mismatch refund lookup cannot change or clear its replacement owner's claim, attention state or money; the current owner completes the pending lookup",
+    "a processed response waiting on a real order lock loses ownership to a newer pending lookup and cannot settle escrow or ledger after the lock is released",
+    "32 competing refund sweeps submit one provider refund and record one completed submission attempt",
+    "a real locked refund at the queue head is skipped while a later due refund submits; the locked head processes after release",
+    "an application clock two hours ahead cannot poll a refund before its database due time",
+    "an application clock two hours behind still recovers an expired submission by lookup and schedules its next poll from database time without resubmitting"
   ],
   "paystackSimulator": {
-    "refundSubmissions": 9,
-    "providerRefunds": 9,
+    "refundSubmissions": 19,
+    "providerRefunds": 19,
     "unauthorizedRequests": 0
   }
 }

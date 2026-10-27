@@ -13,6 +13,18 @@ import {
   StandardOrderRefund,
 } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
+import { v5 as uuidv5 } from 'uuid';
+import {
+  claimStandardRefundSubmission,
+  claimStandardRefundPoll,
+  claimStandardRefundResolution,
+  lockStandardRefundLease,
+  ownsStandardRefundLease,
+  loadStaleStandardRefunds,
+  loadDueStandardRefunds,
+  linkStandardRefundProvider,
+  scheduleStandardRefundRetry,
+} from './standard-refund-lease-query';
 import { StandardOrderEscrowService } from './standard-order-escrow.service';
 import { StandardOrderFinanceSyncService } from './standard-order-finance-sync.service';
 import {
@@ -34,7 +46,6 @@ export type StandardRefundTrigger =
   | 'PRODUCT_REMOVAL'
   | 'ADMIN';
 
-const LEASE_MS = 10 * 60_000;
 const POLL_MS = 5 * 60_000;
 const MAX_ATTEMPTS = 5;
 const BATCH = 20;
@@ -126,7 +137,9 @@ export class StandardOrderRefundsService {
       hold = await this.escrow.lockHoldByOrderId(tx, order.id);
     }
     if (!hold) throw new ConflictException('ORDER_SETTLEMENT_REQUIRES_REVIEW');
-    const chargedCurrency = (capture.settlementCurrency || capture.currency).toUpperCase();
+    const chargedCurrency = (
+      capture.settlementCurrency || capture.currency
+    ).toUpperCase();
     if (hold.currency !== chargedCurrency)
       throw new ConflictException('ORDER_REFUND_CURRENCY_REQUIRES_REVIEW');
 
@@ -161,7 +174,8 @@ export class StandardOrderRefundsService {
         breakdownJson: {
           captureReference: capture.reference,
           releasedGross: reserved?.split.releasedGross.toFixed(2) ?? '0.00',
-          releasedCommission: reserved?.split.releasedCommission.toFixed(2) ?? '0.00',
+          releasedCommission:
+            reserved?.split.releasedCommission.toFixed(2) ?? '0.00',
           releasedNet: reserved?.split.releasedNet.toFixed(2) ?? '0.00',
           unreleasedGross: reserved?.split.unreleasedGross.toFixed(2) ?? '0.00',
         },
@@ -203,38 +217,31 @@ export class StandardOrderRefundsService {
   }
 
   async processPending(limit = BATCH) {
-    const now = Date.now();
-    const stale = await this.prisma.standardOrderRefund.findMany({
-      where: { status: 'SUBMITTING', lockedAt: { lt: new Date(now - LEASE_MS) } },
-      select: { id: true, leaseToken: true },
-      take: BATCH,
-      orderBy: { lockedAt: 'asc' },
-    });
+    const stale = await loadStaleStandardRefunds(this.prisma, BATCH);
     for (const row of stale) {
-      await this.resolveUncertain(row.id, row.leaseToken, 'GATEWAY_SUBMISSION_OUTCOME_UNKNOWN');
+      await this.resolveUncertain(
+        row.id,
+        row.leaseToken,
+        'GATEWAY_SUBMISSION_OUTCOME_UNKNOWN',
+      );
     }
-    const due = await this.prisma.standardOrderRefund.findMany({
-      where: {
-        nextAttemptAt: { lte: new Date(now) },
-        OR: [
-          { status: { in: ['REQUESTED', 'FAILED'] }, providerRefundId: null, attempts: { lt: MAX_ATTEMPTS } },
-          {
-            status: 'PROCESSING',
-            OR: [{ lockedAt: null }, { lockedAt: { lt: new Date(now - LEASE_MS) } }],
-          },
-        ],
-      },
-      select: { id: true, status: true },
-      take: Math.max(1, Math.min(limit, BATCH)),
-      orderBy: [{ nextAttemptAt: 'asc' }, { id: 'asc' }],
-    });
+    const take = Number.isFinite(limit)
+      ? Math.max(1, Math.min(Math.trunc(limit), BATCH))
+      : BATCH;
+    const due = await loadDueStandardRefunds(this.prisma, take, MAX_ATTEMPTS);
     let processed = 0;
     for (const row of due) {
       try {
-        if (row.status === 'PROCESSING' ? await this.poll(row.id) : await this.submit(row.id))
+        if (
+          row.status === 'PROCESSING'
+            ? await this.poll(row.id)
+            : await this.submit(row.id)
+        )
           processed += 1;
       } catch {
-        this.logger.error(`Standard refund ${row.id} not advanced; durable state retained`);
+        this.logger.error(
+          `Standard refund ${row.id} not advanced; durable state retained`,
+        );
       }
     }
     return { processed, stale: stale.length };
@@ -243,23 +250,13 @@ export class StandardOrderRefundsService {
   /** Claim with a fresh lease token; only the token holder may record the outcome. */
   private async submit(id: string): Promise<boolean> {
     const leaseToken = randomUUID();
-    const claimed = await this.prisma.standardOrderRefund.updateMany({
-      where: {
-        id,
-        status: { in: ['REQUESTED', 'FAILED'] },
-        providerRefundId: null,
-        attempts: { lt: MAX_ATTEMPTS },
-        nextAttemptAt: { lte: new Date() },
-      },
-      data: {
-        status: 'SUBMITTING',
-        leaseToken,
-        lockedAt: new Date(),
-        attempts: { increment: 1 },
-        lastError: null,
-      },
-    });
-    if (!claimed.count) return false;
+    const claimed = await claimStandardRefundSubmission(
+      this.prisma,
+      id,
+      leaseToken,
+      MAX_ATTEMPTS,
+    );
+    if (!claimed) return false;
     const row = await this.load(id);
     if (row.capture.providerMode.toLowerCase() === 'mock') {
       return this.simulate(row, leaseToken);
@@ -267,44 +264,63 @@ export class StandardOrderRefundsService {
     const target = this.target(row);
     try {
       await this.provider.verifyCapture(row.capture);
-      const refund = await this.provider.submit(row.capture, target, this.note(row));
+      const refund = await this.provider.submit(
+        row.capture,
+        target,
+        this.note(row),
+      );
       if (!this.provider.matches(row.capture, target, refund))
-        throw new RefundProviderError('REFUND_GATEWAY_RESPONSE_MISMATCH', false);
-      const linked = await this.prisma.standardOrderRefund.updateMany({
-        where: { id, status: 'SUBMITTING', leaseToken },
-        data: {
-          status: 'PROCESSING',
-          providerRefundId: refund.id,
-          leaseToken: null,
-          lockedAt: null,
-          nextAttemptAt: new Date(Date.now() + POLL_MS),
+        throw new RefundProviderError(
+          'REFUND_GATEWAY_RESPONSE_MISMATCH',
+          false,
+        );
+      const linked = await this.withOwnedLease(
+        id,
+        leaseToken,
+        ['SUBMITTING'],
+        async (tx) => {
+          await linkStandardRefundProvider(tx, id, refund.id, POLL_MS);
+          return true;
         },
-      });
-      if (!linked.count) {
-        // The lease expired while the provider answered: record what was created.
-        await this.attention(id, 'REFUND_SUBMISSION_LEASE_LOST', ['SUBMITTING', 'NEEDS_ATTENTION'], refund.id);
+      );
+      if (!linked) {
+        await this.recordLateProviderResult(id, refund.id);
         return false;
       }
-      await this.apply({ ...row, providerRefundId: refund.id, status: 'PROCESSING' }, refund);
-      return true;
+      return this.apply(
+        { ...row, providerRefundId: refund.id, status: 'PROCESSING' },
+        refund,
+        leaseToken,
+      );
     } catch (error) {
       const failure =
         error instanceof RefundProviderError
           ? error
           : new RefundProviderError('REFUND_GATEWAY_OUTCOME_UNKNOWN', false);
       if (failure.definitelyNotSubmitted && row.attempts < MAX_ATTEMPTS) {
-        await this.prisma.standardOrderRefund.updateMany({
-          where: { id, status: 'SUBMITTING', leaseToken },
-          data: {
-            status: 'FAILED',
-            leaseToken: null,
-            lockedAt: null,
-            lastError: failure.code,
-            nextAttemptAt: new Date(Date.now() + Math.min(24 * 3_600_000, 60_000 * 2 ** row.attempts)),
+        await this.withOwnedLease(
+          id,
+          leaseToken,
+          ['SUBMITTING'],
+          async (tx) => {
+            await scheduleStandardRefundRetry(
+              tx,
+              id,
+              'FAILED',
+              failure.code,
+              Math.min(24 * 3_600_000, 60_000 * 2 ** row.attempts),
+            );
+            return true;
           },
-        });
+        );
       } else if (failure.definitelyNotSubmitted) {
-        await this.attention(id, failure.code, ['SUBMITTING'], null, leaseToken);
+        await this.attention(
+          id,
+          failure.code,
+          ['SUBMITTING'],
+          null,
+          leaseToken,
+        );
       } else {
         await this.resolveUncertain(id, leaseToken, failure.code);
       }
@@ -316,7 +332,16 @@ export class StandardOrderRefundsService {
    * The provider may have created a refund. Look for it by the note we sent;
    * link it when exactly one matching refund exists, otherwise ask a person.
    */
-  private async resolveUncertain(id: string, leaseToken: string | null, code: string) {
+  private async resolveUncertain(
+    id: string,
+    leaseToken: string | null,
+    code: string,
+  ) {
+    const owner = randomUUID();
+    if (
+      !(await claimStandardRefundResolution(this.prisma, id, leaseToken, owner))
+    )
+      return;
     const row = await this.load(id);
     let found: ProviderRefund[] | null = null;
     try {
@@ -329,65 +354,80 @@ export class StandardOrderRefundsService {
       this.provider.matches(row.capture, target, refund),
     );
     if (matching.length === 1) {
-      const linked = await this.prisma.standardOrderRefund.updateMany({
-        where: { id, status: 'SUBMITTING', ...(leaseToken ? { leaseToken } : {}) },
-        data: {
-          status: 'PROCESSING',
-          providerRefundId: matching[0].id,
-          leaseToken: null,
-          lockedAt: null,
-          lastError: null,
-          nextAttemptAt: new Date(Date.now() + POLL_MS),
+      const linked = await this.withOwnedLease(
+        id,
+        owner,
+        ['SUBMITTING'],
+        async (tx) => {
+          await linkStandardRefundProvider(tx, id, matching[0].id, POLL_MS);
+          return true;
         },
-      });
-      if (linked.count) {
-        await this.apply({ ...row, providerRefundId: matching[0].id, status: 'PROCESSING' }, matching[0]);
+      );
+      if (linked) {
+        await this.apply(
+          { ...row, providerRefundId: matching[0].id, status: 'PROCESSING' },
+          matching[0],
+          owner,
+        );
         return;
       }
     }
-    await this.attention(id, code, ['SUBMITTING'], null, leaseToken ?? undefined);
+    await this.attention(id, code, ['SUBMITTING'], null, owner);
   }
 
   private async poll(id: string): Promise<boolean> {
-    const claimed = await this.prisma.standardOrderRefund.updateMany({
-      where: {
-        id,
-        status: 'PROCESSING',
-        OR: [{ lockedAt: null }, { lockedAt: { lt: new Date(Date.now() - LEASE_MS) } }],
-      },
-      data: { lockedAt: new Date(), nextAttemptAt: new Date(Date.now() + POLL_MS) },
-    });
-    if (!claimed.count) return false;
+    const owner = randomUUID();
+    if (!(await claimStandardRefundPoll(this.prisma, id, owner, POLL_MS)))
+      return false;
     const row = await this.load(id);
     try {
-      const refund = await this.provider.fetch(row.capture, row.providerRefundId!);
-      if (!this.provider.matches(row.capture, this.target(row), refund) || refund.id !== row.providerRefundId) {
-        await this.attention(id, 'REFUND_STATUS_RESPONSE_MISMATCH', ['PROCESSING']);
+      const refund = await this.provider.fetch(
+        row.capture,
+        row.providerRefundId!,
+      );
+      if (
+        !this.provider.matches(row.capture, this.target(row), refund) ||
+        refund.id !== row.providerRefundId
+      ) {
+        await this.attention(
+          id,
+          'REFUND_STATUS_RESPONSE_MISMATCH',
+          ['PROCESSING'],
+          null,
+          owner,
+        );
         return false;
       }
-      await this.apply(row, refund);
-      return true;
+      return this.apply(row, refund, owner);
     } catch {
       // Repeating a status lookup is safe. Repeating a refund creation is not.
-      await this.prisma.standardOrderRefund.updateMany({
-        where: { id, status: 'PROCESSING' },
-        data: {
-          lockedAt: null,
-          lastError: 'REFUND_STATUS_LOOKUP_UNAVAILABLE',
-          nextAttemptAt: new Date(Date.now() + POLL_MS),
-        },
+      await this.withOwnedLease(id, owner, ['PROCESSING'], async (tx) => {
+        await scheduleStandardRefundRetry(
+          tx,
+          id,
+          'PROCESSING',
+          'REFUND_STATUS_LOOKUP_UNAVAILABLE',
+          POLL_MS,
+        );
+        return true;
       });
       return false;
     }
   }
 
   /** Caller has verified the signature. Returns true when the event was ours. */
-  async handleWebhook(gateway: RefundGateway, payload: unknown): Promise<boolean> {
+  async handleWebhook(
+    gateway: RefundGateway,
+    payload: unknown,
+  ): Promise<boolean> {
     const identity = this.provider.webhookIdentity(gateway, payload);
     if (!identity) return false;
     const rows = identity.providerRefundId
       ? await this.prisma.standardOrderRefund.findMany({
-          where: { provider: gateway, providerRefundId: identity.providerRefundId },
+          where: {
+            provider: gateway,
+            providerRefundId: identity.providerRefundId,
+          },
           select: { id: true },
         })
       : identity.transactionReference
@@ -412,58 +452,89 @@ export class StandardOrderRefundsService {
       throw new ConflictException('REFUND_PROVIDER_ID_INVALID');
     const row = await this.load(refundId);
     if (row.status === 'SETTLED')
-      return { id: row.id, status: row.status, providerRefundId: row.providerRefundId };
+      return {
+        id: row.id,
+        status: row.status,
+        providerRefundId: row.providerRefundId,
+      };
     if (!['NEEDS_ATTENTION', 'FAILED'].includes(row.status))
       throw new ConflictException('REFUND_NOT_AWAITING_RECONCILIATION');
     const refund = await this.provider
       .fetch(row.capture, providerRefundId)
       .catch(() => {
-        throw new ConflictException('REFUND_PROVIDER_RECONCILIATION_UNAVAILABLE');
+        throw new ConflictException(
+          'REFUND_PROVIDER_RECONCILIATION_UNAVAILABLE',
+        );
       });
     if (!this.provider.matches(row.capture, this.target(row), refund))
       throw new ConflictException('REFUND_PROVIDER_RECONCILIATION_MISMATCH');
+    const owner = randomUUID();
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM "StandardOrderRefund" WHERE id = ${refundId}::uuid FOR UPDATE`;
-      const current = await tx.standardOrderRefund.findUniqueOrThrow({ where: { id: refundId } });
+      const current = await tx.standardOrderRefund.findUniqueOrThrow({
+        where: { id: refundId },
+      });
       if (
         !['NEEDS_ATTENTION', 'FAILED'].includes(current.status) ||
-        (current.providerRefundId && current.providerRefundId !== providerRefundId)
+        (current.providerRefundId &&
+          current.providerRefundId !== providerRefundId)
       )
         throw new ConflictException('REFUND_RECONCILIATION_STATE_CHANGED');
-      await tx.standardOrderRefund.update({
-        where: { id: refundId },
-        data: {
-          status: 'PROCESSING',
-          providerRefundId,
-          leaseToken: null,
-          lockedAt: null,
-          lastError: null,
-          nextAttemptAt: new Date(Date.now() + POLL_MS),
-        },
-      });
+      await tx.$executeRaw(Prisma.sql`
+        WITH clock AS (SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now)
+        UPDATE "StandardOrderRefund" SET status='PROCESSING',"providerRefundId"=${providerRefundId},
+          "leaseToken"=${owner}::uuid,"lockedAt"=clock.now,"lastError"=NULL,
+          "nextAttemptAt"=clock.now+${POLL_MS}::bigint*INTERVAL '1 millisecond',"updatedAt"=clock.now
+        FROM clock WHERE id=${refundId}::uuid
+      `);
       await tx.paymentEvent.create({
         data: {
           paymentAttemptId: current.paymentAttemptId,
           type: 'STANDARD_ORDER_REFUND_RECONCILED',
           source: 'standard-order-refunds',
-          payload: { refundId, orderId: current.orderId, providerRefundId, actorId },
+          payload: {
+            refundId,
+            orderId: current.orderId,
+            providerRefundId,
+            actorId,
+          },
         },
       });
     });
-    await this.apply({ ...row, status: 'PROCESSING', providerRefundId }, refund);
+    await this.apply(
+      { ...row, status: 'PROCESSING', providerRefundId },
+      refund,
+      owner,
+    );
     return this.prisma.standardOrderRefund.findUniqueOrThrow({
       where: { id: refundId },
       select: { id: true, status: true, providerRefundId: true },
     });
   }
 
-  private async apply(row: RefundWithCapture, refund: ProviderRefund) {
-    if (refund.state === 'PROCESSED') return this.complete(row.id, refund.rawStatus, false);
+  private async apply(
+    row: RefundWithCapture,
+    refund: ProviderRefund,
+    owner: string,
+  ) {
+    if (refund.state === 'PROCESSED')
+      return this.complete(row.id, refund.rawStatus, false, owner);
     if (refund.state === 'FAILED' || refund.state === 'NEEDS_ATTENTION')
-      return this.attention(row.id, `REFUND_PROVIDER_${refund.rawStatus.toUpperCase().replace(/-/g, '_')}`, ['PROCESSING']);
-    await this.prisma.standardOrderRefund.updateMany({
-      where: { id: row.id, status: 'PROCESSING' },
-      data: { lockedAt: null, nextAttemptAt: new Date(Date.now() + POLL_MS) },
+      return this.attention(
+        row.id,
+        `REFUND_PROVIDER_${refund.rawStatus.toUpperCase().replace(/-/g, '_')}`,
+        ['PROCESSING'],
+        null,
+        owner,
+      );
+    return this.withOwnedLease(row.id, owner, ['PROCESSING'], async (tx) => {
+      await tx.$executeRaw(Prisma.sql`
+        WITH clock AS (SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now)
+        UPDATE "StandardOrderRefund" SET "lockedAt"=NULL,"leaseToken"=NULL,"lastError"=NULL,
+          "nextAttemptAt"=clock.now+${POLL_MS}::bigint*INTERVAL '1 millisecond',"updatedAt"=clock.now
+        FROM clock WHERE id=${row.id}::uuid
+      `);
+      return true;
     });
   }
 
@@ -471,8 +542,13 @@ export class StandardOrderRefundsService {
    * The provider confirmed the refund. Money, escrow and order change together.
    * Lock order: order → hold → refund row → brand → ledger.
    */
-  private async complete(id: string, providerStatus: string, simulated: boolean) {
-    await this.prisma.$transaction(async (tx) => {
+  private async complete(
+    id: string,
+    providerStatus: string,
+    simulated: boolean,
+    owner: string,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
       const head = await tx.standardOrderRefund.findUniqueOrThrow({
         where: { id },
         select: { orderId: true },
@@ -486,9 +562,8 @@ export class StandardOrderRefundsService {
           paymentAttempt: { select: { exchangeRateSnapshotId: true } },
         },
       });
-      if (current.status === 'SETTLED') return;
-      if (!['PROCESSING', 'NEEDS_ATTENTION', ...(simulated ? ['SUBMITTING'] : [])].includes(current.status))
-        return;
+      if (!(await ownsStandardRefundLease(tx, id, owner, ['PROCESSING'])))
+        return false;
       await this.escrow.settleRefund(tx, {
         orderId: current.orderId,
         refundId: current.id,
@@ -508,7 +583,10 @@ export class StandardOrderRefundsService {
       });
       // A full refund: the order leaves paid-customer counts exactly here, once.
       await tx.order.updateMany({
-        where: { id: current.orderId, paymentStatus: { not: PaymentStatus.REFUNDED } },
+        where: {
+          id: current.orderId,
+          paymentStatus: { not: PaymentStatus.REFUNDED },
+        },
         data: { paymentStatus: PaymentStatus.REFUNDED },
       });
       await tx.paymentEvent.create({
@@ -530,6 +608,7 @@ export class StandardOrderRefundsService {
         where: { dedupeKey: `standard-refund:${id}:attention`, status: 'OPEN' },
         data: { status: 'RESOLVED', resolvedAt: new Date() },
       });
+      return true;
     });
   }
 
@@ -537,12 +616,12 @@ export class StandardOrderRefundsService {
     id: string,
     code: string,
     statuses: string[],
-    providerRefundId: string | null = null,
-    leaseToken?: string,
+    providerRefundId: string | null,
+    leaseToken: string,
   ) {
-    return this.prisma.$transaction(async (tx) => {
-      const claimed = await tx.standardOrderRefund.updateMany({
-        where: { id, status: { in: statuses }, ...(leaseToken ? { leaseToken } : {}) },
+    return this.withOwnedLease(id, leaseToken, statuses, async (tx) => {
+      await tx.standardOrderRefund.update({
+        where: { id },
         data: {
           status: 'NEEDS_ATTENTION',
           lastError: code,
@@ -551,7 +630,6 @@ export class StandardOrderRefundsService {
           ...(providerRefundId ? { providerRefundId } : {}),
         },
       });
-      if (!claimed.count) return false;
       const row = await tx.standardOrderRefund.findUniqueOrThrow({
         where: { id },
         select: { orderId: true, paymentAttemptId: true },
@@ -565,7 +643,8 @@ export class StandardOrderRefundsService {
           entityType: 'StandardOrderRefund',
           entityId: id,
           dedupeKey: `standard-refund:${id}:attention`,
-          message: 'A standard-order refund needs reconciliation before any further provider submission.',
+          message:
+            'A standard-order refund needs reconciliation before any further provider submission.',
           metadata: { orderId: row.orderId, code },
         },
         update: {
@@ -592,16 +671,119 @@ export class StandardOrderRefundsService {
       !['development', 'test'].includes(process.env.NODE_ENV ?? '') ||
       process.env.STANDARD_ORDER_REFUND_SIMULATION_ENABLED !== 'true'
     ) {
-      await this.attention(row.id, 'REFUND_SIMULATION_NOT_EXPLICITLY_ENABLED', ['SUBMITTING'], null, leaseToken);
+      await this.attention(
+        row.id,
+        'REFUND_SIMULATION_NOT_EXPLICITLY_ENABLED',
+        ['SUBMITTING'],
+        null,
+        leaseToken,
+      );
       return false;
     }
-    const linked = await this.prisma.standardOrderRefund.updateMany({
-      where: { id: row.id, status: 'SUBMITTING', leaseToken },
-      data: { providerRefundId: `simulated:${row.id}`, status: 'PROCESSING', leaseToken: null, lockedAt: null },
-    });
-    if (!linked.count) return false;
-    await this.complete(row.id, 'SIMULATED_PROCESSED', true);
-    return true;
+    const linked = await this.withOwnedLease(
+      row.id,
+      leaseToken,
+      ['SUBMITTING'],
+      async (tx) => {
+        await tx.standardOrderRefund.update({
+          where: { id: row.id },
+          data: {
+            providerRefundId: `simulated:${row.id}`,
+            status: 'PROCESSING',
+          },
+        });
+        return true;
+      },
+    );
+    if (!linked) return false;
+    return this.complete(row.id, 'SIMULATED_PROCESSED', true, leaseToken);
+  }
+
+  /** Check ownership with a new database-clock statement after a real row-lock wait. */
+  private async withOwnedLease(
+    id: string,
+    owner: string,
+    statuses: string[],
+    work: (tx: Tx) => Promise<boolean>,
+  ): Promise<boolean> {
+    return this.prisma.$transaction(
+      async (tx) => {
+        if (!(await lockStandardRefundLease(tx, id, owner, statuses)))
+          return false;
+        return work(tx);
+      },
+      { timeout: 15000 },
+    );
+  }
+
+  /** A late provider result is evidence, never permission to clear another claim. */
+  private async recordLateProviderResult(id: string, providerRefundId: string) {
+    await this.prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw(
+          Prisma.sql`SELECT id FROM "StandardOrderRefund" WHERE id=${id}::uuid FOR UPDATE`,
+        );
+        const current = await tx.standardOrderRefund.findUniqueOrThrow({
+          where: { id },
+          select: {
+            paymentAttemptId: true,
+            orderId: true,
+            status: true,
+            providerRefundId: true,
+          },
+        });
+        const metadata = {
+          refundId: id,
+          orderId: current.orderId,
+          providerRefundId,
+          code: 'REFUND_SUBMISSION_LEASE_LOST',
+        };
+        await tx.paymentEvent.upsert({
+          where: {
+            id: uuidv5(
+              `standard-refund-late:${id}:${providerRefundId}`,
+              uuidv5.URL,
+            ),
+          },
+          create: {
+            id: uuidv5(
+              `standard-refund-late:${id}:${providerRefundId}`,
+              uuidv5.URL,
+            ),
+            paymentAttemptId: current.paymentAttemptId,
+            type: 'STANDARD_ORDER_REFUND_LATE_PROVIDER_RESULT',
+            source: 'standard-order-refunds',
+            payload: metadata,
+          },
+          update: {},
+        });
+        if (
+          current.providerRefundId === providerRefundId &&
+          ['PROCESSING', 'SETTLED'].includes(current.status)
+        )
+          return;
+        await tx.operationalAlert.upsert({
+          where: { dedupeKey: `standard-refund:${id}:attention` },
+          create: {
+            category: 'STANDARD_ORDER_REFUND',
+            severity: 'ERROR',
+            event: 'STANDARD_REFUND_LATE_PROVIDER_RESULT',
+            entityType: 'StandardOrderRefund',
+            entityId: id,
+            dedupeKey: `standard-refund:${id}:attention`,
+            message:
+              'A late provider refund result was recorded without changing the current worker claim. Reconcile the recorded provider id if automatic recovery cannot link it.',
+            metadata,
+          },
+          update: {
+            occurrenceCount: { increment: 1 },
+            lastSeenAt: new Date(),
+            metadata,
+          },
+        });
+      },
+      { timeout: 15000 },
+    );
   }
 
   /** Tell shoppers about committed settlements, after commit, once per refund. */
@@ -612,7 +794,10 @@ export class StandardOrderRefundsService {
       orderBy: { settledAt: 'asc' },
       take: BATCH,
       select: {
-        id: true, orderId: true, settlementAmount: true, settlementCurrency: true,
+        id: true,
+        orderId: true,
+        settlementAmount: true,
+        settlementCurrency: true,
         order: { select: { buyerId: true, status: true } },
       },
     });
@@ -620,16 +805,20 @@ export class StandardOrderRefundsService {
     for (const row of rows) {
       try {
         if (row.order.buyerId) {
-          await this.notifications.create(row.order.buyerId, NotificationType.ORDER_STATUS_UPDATED, {
-            notificationId: row.id,
-            payload: {
-              orderId: row.orderId,
-              status: row.order.status,
-              refundStatus: 'PROCESSED',
-              targetUrl: `/orders/${row.orderId}`,
-              message: `Your refund of ${row.settlementCurrency} ${row.settlementAmount.toFixed(2)} has been processed by the payment provider. Your bank may take up to 10 business days to show it.`,
+          await this.notifications.create(
+            row.order.buyerId,
+            NotificationType.ORDER_STATUS_UPDATED,
+            {
+              notificationId: row.id,
+              payload: {
+                orderId: row.orderId,
+                status: row.order.status,
+                refundStatus: 'PROCESSED',
+                targetUrl: `/orders/${row.orderId}`,
+                message: `Your refund of ${row.settlementCurrency} ${row.settlementAmount.toFixed(2)} has been processed by the payment provider. Your bank may take up to 10 business days to show it.`,
+              },
             },
-          });
+          );
         }
         await this.prisma.standardOrderRefund.updateMany({
           where: { id: row.id, buyerNotifiedAt: null },
@@ -662,8 +851,14 @@ export class StandardOrderRefundsService {
       include: {
         paymentAttempt: {
           select: {
-            reference: true, provider: true, providerMode: true, providerTransactionId: true,
-            amount: true, currency: true, settlementAmount: true, settlementCurrency: true,
+            reference: true,
+            provider: true,
+            providerMode: true,
+            providerTransactionId: true,
+            amount: true,
+            currency: true,
+            settlementAmount: true,
+            settlementCurrency: true,
           },
         },
         order: { select: { buyerId: true } },

@@ -501,17 +501,25 @@ async function main() {
     await only([refundB6]);
     const slowRun = refunds.processPending();
     const lateRefund = await gate.arrived.promise;
-    await prisma.standardOrderRefund.update({ where: { id: refundB6 }, data: { leaseToken: randomUUID() } });
+    const replacementLease = randomUUID();
+    await prisma.standardOrderRefund.update({ where: { id: refundB6 }, data: { leaseToken: replacementLease } });
     gate.release.resolve();
     await slowRun;
     const lostB6 = await refundRow(refundB6);
-    assert.equal(lostB6.status, 'NEEDS_ATTENTION');
-    assert.equal(lostB6.lastError, 'REFUND_SUBMISSION_LEASE_LOST');
-    assert.equal(lostB6.providerRefundId, String(lateRefund.id));
+    assert.equal(lostB6.status, 'SUBMITTING');
+    assert.equal(lostB6.leaseToken, replacementLease);
+    assert.equal(lostB6.providerRefundId, null);
+    assert.equal(await prisma.paymentEvent.count({where: {paymentAttemptId: b6.capture.id, type: 'STANDARD_ORDER_REFUND_LATE_PROVIDER_RESULT'}}), 1);
+    const lateAlert = await prisma.operationalAlert.findUniqueOrThrow({where: {dedupeKey: `standard-refund:${refundB6}:attention`}});
+    assert.equal(lateAlert.metadata.providerRefundId, String(lateRefund.id));
     lateRefund.status = 'processed';
-    assert.equal((await controller.reconcileRefund(refundB6, { providerRefundId: String(lateRefund.id) }, actor)).status, 'SETTLED');
+    await prisma.$executeRaw`UPDATE "StandardOrderRefund" SET "lockedAt"=clock_timestamp() AT TIME ZONE 'UTC'-INTERVAL '11 minutes' WHERE id=${refundB6}::uuid`;
+    await only([refundB6]); await refunds.processPending();
+    assert.equal((await refundRow(refundB6)).status, 'SETTLED');
+    assert.equal(await settledJournals(refundB6), 1);
+    assert.equal((await prisma.operationalAlert.findUniqueOrThrow({where: {dedupeKey: `standard-refund:${refundB6}:attention`}})).status, 'RESOLVED');
     assert.equal(posts(b6.reference), 1);
-    evidence.cases.push('a provider answer that arrives after the lease was lost keeps the refund id it created, goes to a person, and reconciles to one settlement');
+    evidence.cases.push('a late submission response records the provider id as durable evidence without changing a replacement claim; expired-owner lookup links that same refund, settles once and clears the alert without resubmission');
 
     const mockRun = await paid({ brandId: brand1, mode: 'mock' });
     const refundMock = (await request(mockRun.order.id)).id;
@@ -786,6 +794,8 @@ async function main() {
     assert.equal(await lateCheckout, false);
     evidence.cases.push('product deletion cancels unshipped paid orders through the canonical refund (pending wording, one refund on replay), refuses shipped orders and a checkout committed while it waited, and a checkout that waited on a deletion sees the product as unsellable');
 
+    const leaseProof = await require('./standard-refund-lease-concurrency-scenarios.cjs')({prisma,refunds,provider,paid,request,only,refundRow,posts,settledJournals,brandId:brand1});
+    evidence.cases.push(...leaseProof.cases);
     evidence.paystackSimulator = {
       refundSubmissions: [...simulator.state.posts.values()].reduce((sum, count) => sum + count, 0),
       providerRefunds: simulator.state.refunds.size,
