@@ -150,7 +150,10 @@ export class StandardOrderFinanceSyncService {
         },
       }),
       tx.order.findMany({
-        where: { paymentReference: reference, paymentStatus: PaymentStatus.PAID },
+        where: {
+          paymentReference: reference,
+          paymentStatus: PaymentStatus.PAID,
+        },
         select: {
           id: true,
           brandId: true,

@@ -1570,10 +1570,12 @@ describe('PaymentService', () => {
         update: jest.fn().mockResolvedValue(undefined),
       },
       product: {
-        findMany: jest.fn().mockResolvedValue([{
-          id: 'product-1',
-          sizeStock: { M: 3 },
-        }]),
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'product-1',
+            sizeStock: { M: 3 },
+          },
+        ]),
         update: jest.fn().mockResolvedValue(undefined),
       },
       productVariant: {

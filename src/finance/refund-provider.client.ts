@@ -103,16 +103,29 @@ export class RefundProviderClient {
       throw new RefundProviderError('REFUND_UNKNOWN_PROVIDER_MODE', true);
     const secret =
       process.env[
-        gateway === 'PAYSTACK' ? 'PAYSTACK_SECRET_KEY' : 'FLUTTERWAVE_SECRET_KEY'
+        gateway === 'PAYSTACK'
+          ? 'PAYSTACK_SECRET_KEY'
+          : 'FLUTTERWAVE_SECRET_KEY'
       ];
     if (!secret)
-      throw new RefundProviderError('REFUND_PROVIDER_CREDENTIALS_UNAVAILABLE', true);
+      throw new RefundProviderError(
+        'REFUND_PROVIDER_CREDENTIALS_UNAVAILABLE',
+        true,
+      );
     const isTestKey =
-      gateway === 'PAYSTACK' ? secret.startsWith('sk_test_') : secret.includes('_TEST');
+      gateway === 'PAYSTACK'
+        ? secret.startsWith('sk_test_')
+        : secret.includes('_TEST');
     if (normalized === 'test' && !isTestKey)
-      throw new RefundProviderError('REFUND_PROVIDER_MODE_CREDENTIAL_MISMATCH', true);
+      throw new RefundProviderError(
+        'REFUND_PROVIDER_MODE_CREDENTIAL_MISMATCH',
+        true,
+      );
     if (normalized === 'live' && isTestKey)
-      throw new RefundProviderError('REFUND_PROVIDER_MODE_CREDENTIAL_MISMATCH', true);
+      throw new RefundProviderError(
+        'REFUND_PROVIDER_MODE_CREDENTIAL_MISMATCH',
+        true,
+      );
     return secret;
   }
 
@@ -133,10 +146,16 @@ export class RefundProviderClient {
         ? `${this.baseUrls.PAYSTACK}/transaction/verify/${encodeURIComponent(capture.reference)}`
         : `${this.baseUrls.FLUTTERWAVE}/v3/transactions/${encodeURIComponent(this.flutterwaveTransaction(capture))}/verify`;
     const { ok, payload } = await this.request(url, secret).catch(() => {
-      throw new RefundProviderError('REFUND_CAPTURE_VERIFICATION_UNAVAILABLE', true);
+      throw new RefundProviderError(
+        'REFUND_CAPTURE_VERIFICATION_UNAVAILABLE',
+        true,
+      );
     });
     if (!ok)
-      throw new RefundProviderError('REFUND_CAPTURE_VERIFICATION_UNAVAILABLE', true);
+      throw new RefundProviderError(
+        'REFUND_CAPTURE_VERIFICATION_UNAVAILABLE',
+        true,
+      );
     const data = object(payload.data);
     const charged = this.chargedAmount(capture);
     const amount = this.money(data.amount, gateway === 'PAYSTACK');
@@ -150,7 +169,10 @@ export class RefundProviderClient {
       !amount ||
       !amount.equals(charged.amount)
     )
-      throw new RefundProviderError('REFUND_ORIGINAL_CAPTURE_VERIFICATION_MISMATCH', true);
+      throw new RefundProviderError(
+        'REFUND_ORIGINAL_CAPTURE_VERIFICATION_MISMATCH',
+        true,
+      );
   }
 
   /**
@@ -189,16 +211,26 @@ export class RefundProviderClient {
         `REFUND_GATEWAY_HTTP_${response.status}`,
         [400, 401, 403, 404, 422].includes(response.status),
       );
-    if (response.payload.status !== true && response.payload.status !== 'success')
+    if (
+      response.payload.status !== true &&
+      response.payload.status !== 'success'
+    )
       throw new RefundProviderError('REFUND_GATEWAY_RESPONSE_UNCERTAIN', false);
-    const refund = await this.normalize(gateway, capture, object(response.payload.data));
+    const refund = await this.normalize(
+      gateway,
+      capture,
+      object(response.payload.data),
+    );
     if (!refund.id)
       throw new RefundProviderError('REFUND_GATEWAY_RESPONSE_MISMATCH', false);
     return refund;
   }
 
   /** Current provider state of one refund. Safe to repeat. */
-  async fetch(capture: RefundCapture, providerRefundId: string): Promise<ProviderRefund> {
+  async fetch(
+    capture: RefundCapture,
+    providerRefundId: string,
+  ): Promise<ProviderRefund> {
     const gateway = this.gateway(capture.provider);
     const secret = this.secret(gateway, capture.providerMode);
     const url =
@@ -208,7 +240,10 @@ export class RefundProviderClient {
     const { ok, payload } = await this.request(url, secret);
     if (!ok || (payload.status !== true && payload.status !== 'success'))
       throw new RefundProviderError('REFUND_STATUS_LOOKUP_UNAVAILABLE', false);
-    return this.normalize(gateway, capture, { ...object(payload.data), id: providerRefundId });
+    return this.normalize(gateway, capture, {
+      ...object(payload.data),
+      id: providerRefundId,
+    });
   }
 
   /**
@@ -218,13 +253,17 @@ export class RefundProviderClient {
    * The provider's reference filter only narrows the page; the note marker and
    * `matches()` decide. A refund not found here goes to a person, never resent.
    */
-  async findByNote(capture: RefundCapture, marker: string): Promise<ProviderRefund[] | null> {
+  async findByNote(
+    capture: RefundCapture,
+    marker: string,
+  ): Promise<ProviderRefund[] | null> {
     const gateway = this.gateway(capture.provider);
     if (gateway !== 'PAYSTACK') return null;
     const secret = this.secret(gateway, capture.providerMode);
     const url = `${this.baseUrls.PAYSTACK}/refund?reference=${encodeURIComponent(capture.reference)}&perPage=100`;
     const { ok, payload } = await this.request(url, secret);
-    if (!ok || payload.status !== true || !Array.isArray(payload.data)) return null;
+    if (!ok || payload.status !== true || !Array.isArray(payload.data))
+      return null;
     const matches: ProviderRefund[] = [];
     for (const item of payload.data) {
       const refund = await this.normalize(gateway, capture, object(item));
@@ -234,10 +273,17 @@ export class RefundProviderClient {
   }
 
   /** Refund belongs to this capture and moves exactly `target`. */
-  matches(capture: RefundCapture, target: RefundTarget, refund: ProviderRefund): boolean {
+  matches(
+    capture: RefundCapture,
+    target: RefundTarget,
+    refund: ProviderRefund,
+  ): boolean {
     const sameTransaction =
       refund.transactionReference === capture.reference ||
-      Boolean(capture.providerTransactionId && refund.transactionId === capture.providerTransactionId);
+      Boolean(
+        capture.providerTransactionId &&
+          refund.transactionId === capture.providerTransactionId,
+      );
     return (
       sameTransaction &&
       refund.currency === target.currency &&
@@ -250,13 +296,17 @@ export class RefundProviderClient {
     const envelope = object(payload);
     const event = text(envelope.event ?? envelope['event.type']).toLowerCase();
     const raw =
-      gateway === 'FLUTTERWAVE' && envelope.TransactionId != null && envelope.AmountRefunded != null;
+      gateway === 'FLUTTERWAVE' &&
+      envelope.TransactionId != null &&
+      envelope.AmountRefunded != null;
     if (!event.includes('refund') && !raw) return null;
     const data = raw ? envelope : object(envelope.data);
     return {
       providerRefundId: text(data.id ?? data.refund_id) || null,
-      transactionReference: text(data.transaction_reference ?? data.tx_ref) || null,
-      transactionId: text(data.tx_id ?? data.TransactionId ?? data.transaction_id) || null,
+      transactionReference:
+        text(data.transaction_reference ?? data.tx_ref) || null,
+      transactionId:
+        text(data.tx_id ?? data.TransactionId ?? data.transaction_id) || null,
     };
   }
 
@@ -296,27 +346,41 @@ export class RefundProviderClient {
     if (gateway === 'FLUTTERWAVE' && !currency) {
       // Flutterwave refund objects omit currency; read it from the verified transaction.
       if (!transactionId || transactionId !== capture.providerTransactionId)
-        throw new RefundProviderError('REFUND_PROVIDER_TRANSACTION_MISMATCH', false);
+        throw new RefundProviderError(
+          'REFUND_PROVIDER_TRANSACTION_MISMATCH',
+          false,
+        );
       const secret = this.secret(gateway, capture.providerMode);
       const { ok, payload } = await this.request(
         `${this.baseUrls.FLUTTERWAVE}/v3/transactions/${encodeURIComponent(transactionId)}/verify`,
         secret,
       );
       const verified = object(payload.data);
-      if (!ok || payload.status !== 'success' || text(verified.id) !== transactionId)
-        throw new RefundProviderError('REFUND_TRANSACTION_VERIFICATION_UNAVAILABLE', false);
+      if (
+        !ok ||
+        payload.status !== 'success' ||
+        text(verified.id) !== transactionId
+      )
+        throw new RefundProviderError(
+          'REFUND_TRANSACTION_VERIFICATION_UNAVAILABLE',
+          false,
+        );
       currency = text(verified.currency).toUpperCase();
       transactionReference = text(verified.tx_ref);
     }
     let state: ProviderRefundState = 'PENDING';
-    if (gateway === 'FLUTTERWAVE' && text(meta.disburse_status).toLowerCase() === 'failed')
+    if (
+      gateway === 'FLUTTERWAVE' &&
+      text(meta.disburse_status).toLowerCase() === 'failed'
+    )
       state = 'FAILED';
     else if (
       (gateway === 'PAYSTACK' && rawStatus === 'processed') ||
       (gateway === 'FLUTTERWAVE' && FLUTTERWAVE_SETTLED.includes(rawStatus))
     )
       state = 'PROCESSED';
-    else if (rawStatus === 'failed' || rawStatus === 'cancelled') state = 'FAILED';
+    else if (rawStatus === 'failed' || rawStatus === 'cancelled')
+      state = 'FAILED';
     else if (rawStatus === 'needs-attention') state = 'NEEDS_ATTENTION';
     return {
       id: text(data.id),
@@ -333,7 +397,10 @@ export class RefundProviderClient {
   private flutterwaveTransaction(capture: RefundCapture): string {
     const id = capture.providerTransactionId;
     if (!id || !/^\d+$/.test(id))
-      throw new RefundProviderError('REFUND_PROVIDER_TRANSACTION_ID_MISSING', true);
+      throw new RefundProviderError(
+        'REFUND_PROVIDER_TRANSACTION_ID_MISSING',
+        true,
+      );
     return id;
   }
 

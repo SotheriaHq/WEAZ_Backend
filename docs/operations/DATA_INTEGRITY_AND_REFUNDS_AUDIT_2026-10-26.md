@@ -228,3 +228,35 @@ events and customer aggregates.
 Custom-order NGN settlement conversion (item 6); removal of compatibility
 fallbacks (item 7); client UI beyond refund-status wording; production
 capacity; live provider or device delivery.
+
+## Implementation status (27 October 2026)
+
+| Finding | Status | Where |
+|---|---|---|
+| C1 order reads | Fixed: only PENDING/FAILED orders are repairable; refund-stage captures never move an order; conditional writes | `common/payments/order-payment-reconciliation.util.ts` |
+| C2 standard refunds | Fixed: durable `StandardOrderRefund`, own share only, no provider call inside a transaction, lookup-by-note for uncertain outcomes | `finance/standard-order-refunds.service.ts`, `finance/refund-provider.client.ts` |
+| C3 legacy custom branch | Fixed: an already refunded order is a no-op; the legacy HTTP branch is removed | `custom-orders/custom-order-refund.service.ts` |
+| C4 product deletion | Fixed as designed above | `store/store.service.ts`, `payment/checkout-inventory-query.ts` |
+| C5 ledger currency | Fixed: `(code, currency)` identity, Decimal amounts, entry and balance triggers | migration `20261026160000`, `finance/ledger.service.ts` |
+| H1 escrow locks | Fixed: every transition locks the hold; `REFUND_PENDING` blocks release | `finance/standard-order-escrow.service.ts` |
+| H2 debt model | Fixed: one NGN position, source keys, FIFO recovery under the brand lock, post-commit notices | `finance/brand-balance.service.ts`, `finance/brand-position-query.ts`, migration `20261026160100` |
+| H3 payout currency | Fixed: NGN position only; other currencies reported separately until item 6 | `payout/payout.service.ts`, `custom-order-admin/custom-order-admin.service.ts` |
+| H4 refund webhooks | Fixed: both engines consulted; every stored refund is re-read from the provider | `payment/payment.service.ts` |
+| H5 FX share | Fixed: each order's share at the original snapshot rate | `finance/standard-order-finance-sync.service.ts` |
+| H6 checkout sellability | Fixed: every standard line's product is locked and re-checked | `payment/payment.service.ts` |
+| H7 reference seeds | Fixed: insert-only; bounded tag rename | `prisma/seed*.ts`, `categories/categories.service.ts` |
+| M1 tag targets | Fixed: `STORE_COLLECTION`, generated typed foreign keys, per-entity reindex | migrations `20261026160300`/`160500`, `tags/tag-index.service.ts` |
+| M2 primary membership | Fixed: deferred projection trigger; deleted collections are never primary | migration `20261026160600`, `collections/*` |
+| M3 order transitions | Fixed: conditional transition (`ORDER_STATUS_CHANGED` on a lost race) | `order/order.service.ts` |
+| M4 constraints | Fixed: foreign keys, currency and amount checks | migrations `20261026160100`/`160400` |
+
+Operations: [STANDARD_ORDER_REFUND_RUNBOOK.md](STANDARD_ORDER_REFUND_RUNBOOK.md).
+Evidence and open gates:
+[RELEASE_GATES_2026-10-23.md](../performance-reviews/RELEASE_GATES_2026-10-23.md).
+
+Still open:
+- The order screens (web and native) do not yet show refund status from the
+  order record.
+- The custom-order refund engine still has its own provider code.
+- The admin-payouts lock order has not been reviewed.
+- The seven migrations are not yet applied on SIT.

@@ -195,11 +195,19 @@ export class BrandBalanceService {
     tx: Prisma.TransactionClient,
     brandId: string,
     currency: string = BRAND_SETTLEMENT_CURRENCY,
-    source: { orderId?: string | null; customOrderId?: string | null; note?: string } = {},
+    source: {
+      orderId?: string | null;
+      customOrderId?: string | null;
+      note?: string;
+    } = {},
   ): Promise<{ recovered: Prisma.Decimal; outstanding: Prisma.Decimal }> {
     await this.lockBrand(tx, brandId);
     const debts = await tx.$queryRaw<
-      Array<{ id: string; amount: Prisma.Decimal; recoveredAmount: Prisma.Decimal }>
+      Array<{
+        id: string;
+        amount: Prisma.Decimal;
+        recoveredAmount: Prisma.Decimal;
+      }>
     >(Prisma.sql`
       SELECT id, amount, "recoveredAmount" FROM "BrandBalanceAdjustment"
       WHERE "brandId" = ${brandId}::uuid AND currency = ${currency}
@@ -208,13 +216,17 @@ export class BrandBalanceService {
       ORDER BY "createdAt", id FOR UPDATE
     `);
     const { position } = await loadBrandPosition(tx, brandId, currency);
-    const owed = position.isNegative() ? position.negated() : new Prisma.Decimal(0);
+    const owed = position.isNegative()
+      ? position.negated()
+      : new Prisma.Decimal(0);
     const recorded = debts.reduce(
       (sum, debt) => sum.plus(debt.amount.minus(debt.recoveredAmount)),
       new Prisma.Decimal(0),
     );
     let toRecover = recorded.minus(owed);
-    const recovered = toRecover.greaterThan(0) ? toRecover : new Prisma.Decimal(0);
+    const recovered = toRecover.greaterThan(0)
+      ? toRecover
+      : new Prisma.Decimal(0);
     const now = new Date();
     for (const debt of debts) {
       if (!toRecover.greaterThan(0)) break;
@@ -283,8 +295,14 @@ export class BrandBalanceService {
           orderBy: { createdAt: 'asc' },
           take: ANNOUNCE_BATCH,
           select: {
-            id: true, brandId: true, type: true, amount: true, currency: true,
-            reason: true, orderId: true, customOrderId: true,
+            id: true,
+            brandId: true,
+            type: true,
+            amount: true,
+            currency: true,
+            reason: true,
+            orderId: true,
+            customOrderId: true,
           },
         }),
         this.prisma.brandBalanceRecovery.findMany({
@@ -292,7 +310,11 @@ export class BrandBalanceService {
           orderBy: { createdAt: 'asc' },
           take: ANNOUNCE_BATCH,
           select: {
-            id: true, amount: true, currency: true, orderId: true, customOrderId: true,
+            id: true,
+            amount: true,
+            currency: true,
+            orderId: true,
+            customOrderId: true,
             adjustment: { select: { brandId: true } },
           },
         }),
@@ -300,16 +322,29 @@ export class BrandBalanceService {
       let sent = 0;
       const events = [
         ...debts.map((row) => ({
-          table: 'adjustment' as const, id: row.id, brandId: row.brandId,
-          direction: row.type === BrandBalanceAdjustmentType.MANUAL_CREDIT ? 'CREDIT' : 'DEBIT',
-          amount: row.amount, currency: row.currency, reason: row.reason,
-          orderId: row.orderId, customOrderId: row.customOrderId,
+          table: 'adjustment' as const,
+          id: row.id,
+          brandId: row.brandId,
+          direction:
+            row.type === BrandBalanceAdjustmentType.MANUAL_CREDIT
+              ? 'CREDIT'
+              : 'DEBIT',
+          amount: row.amount,
+          currency: row.currency,
+          reason: row.reason,
+          orderId: row.orderId,
+          customOrderId: row.customOrderId,
         })),
         ...recoveries.map((row) => ({
-          table: 'recovery' as const, id: row.id, brandId: row.adjustment.brandId,
-          direction: 'RECOVERY', amount: row.amount, currency: row.currency,
+          table: 'recovery' as const,
+          id: row.id,
+          brandId: row.adjustment.brandId,
+          direction: 'RECOVERY',
+          amount: row.amount,
+          currency: row.currency,
           reason: undefined as string | undefined,
-          orderId: row.orderId, customOrderId: row.customOrderId,
+          orderId: row.orderId,
+          customOrderId: row.customOrderId,
         })),
       ];
       for (const event of events) {
@@ -337,8 +372,12 @@ export class BrandBalanceService {
               },
             );
           }
-          const mark = { where: { id: event.id, announcedAt: null }, data: { announcedAt: new Date() } };
-          if (event.table === 'adjustment') await this.prisma.brandBalanceAdjustment.updateMany(mark);
+          const mark = {
+            where: { id: event.id, announcedAt: null },
+            data: { announcedAt: new Date() },
+          };
+          if (event.table === 'adjustment')
+            await this.prisma.brandBalanceAdjustment.updateMany(mark);
           else await this.prisma.brandBalanceRecovery.updateMany(mark);
           sent += 1;
         } catch (error) {

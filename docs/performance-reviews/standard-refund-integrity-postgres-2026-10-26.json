@@ -1,0 +1,27 @@
+{
+  "checkedAt": "2026-10-26T20:42:07.508Z",
+  "passed": true,
+  "cleanupPassed": true,
+  "cases": [
+    "eight concurrent refund requests for one paid order (return, SLA, admin, product removal) converge on one refund, one escrow reservation, one reserve journal and one clawback keyed to the refund",
+    "a final release committed first is clawed back in full by the waiting refund (90.00); a refund committed first stops the waiting release and the release sweep, posting no release journal; released-but-unwithdrawn money returns without leaving a debt",
+    "four refunds submit once each to the simulator; a reference-only webhook, a refund-id webhook and a status poll each settle money, escrow and order exactly once; replays post nothing; a provider-failed refund keeps its reservation and goes to a person; shoppers get one processed notice per settled refund",
+    "a submission whose answer is lost is found by its note at the provider and linked; the refund is never sent a second time",
+    "a lost answer with the provider lookup unavailable stops at NEEDS_ATTENTION with an open alert and is never resent; the admin reconcile route rejects another capture's refund and an unknown id, links the verified one and the settlement resolves the alert",
+    "an interrupted submission (stale lease) is never resubmitted: it links the refund the provider holds, or waits for a person when there is none",
+    "a definitive provider rejection fails with backoff and is retried; the provider holds exactly one refund afterwards",
+    "a provider answer that arrives after the lease was lost keeps the refund id it created, goes to a person, and reconciles to one settlement",
+    "mock-mode captures never reach a provider: without explicit test simulation they wait for a person, with it they settle through the same ledger path",
+    "a refund after the brand was paid out leaves a 27.00 debt; the next two releases (13.50 each) pay it down oldest-first with one statement line per order, and payout availability is capped by the position",
+    "one system adjustment per source key under concurrency, conflicting amounts and rolled-back adjustments refused; a recovery can never change currency; owner notices are sent once per committed row, after commit",
+    "ledger accounts are (code, currency): NGN and USD postings never share a balance; entries cannot be edited or posted across currencies, and a transaction left unbalanced by an insert or a delete is refused at commit; every journal written by this run balances",
+    "tag bindings reference real typed targets: a store collection cannot be tagged as a design or the reverse, a missing target is refused, and deleting a product or store collection removes its bindings",
+    "Product.collectionId always equals the single primary membership at commit: pointer-only or flag-only changes are refused, and a move written in any statement order commits",
+    "product deletion cancels unshipped paid orders through the canonical refund (pending wording, one refund on replay), refuses shipped orders and a checkout committed while it waited, and a checkout that waited on a deletion sees the product as unsellable"
+  ],
+  "paystackSimulator": {
+    "refundSubmissions": 9,
+    "providerRefunds": 9,
+    "unauthorizedRequests": 0
+  }
+}

@@ -70,13 +70,23 @@ export async function seedPlatformTags(prisma: PrismaClient): Promise<number> {
         AND NOT EXISTS (SELECT 1 FROM "Tag" other WHERE other."normalizedName" = ${tag.name})`;
     renamed += result;
   }
-  if (renamed > 0) console.log(`Renamed ${renamed} legacy platform tags to their canonical names`);
+  if (renamed > 0)
+    console.log(
+      `Renamed ${renamed} legacy platform tags to their canonical names`,
+    );
 
   await prisma.tag.createMany({
     data: canonical.map(({ tagName, name }) => ({
-      id: randomUUID(), normalizedName: name,
-      displayName: tagName.replace(/-/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()),
-      status: 'APPROVED' as const, isBanned: false, usageCount: 0, createdById: null, aliasOfTagId: null,
+      id: randomUUID(),
+      normalizedName: name,
+      displayName: tagName
+        .replace(/-/g, ' ')
+        .replace(/\b\w/g, (letter) => letter.toUpperCase()),
+      status: 'APPROVED' as const,
+      isBanned: false,
+      usageCount: 0,
+      createdById: null,
+      aliasOfTagId: null,
     })),
     skipDuplicates: true,
   });
@@ -87,10 +97,22 @@ export async function seedPlatformTags(prisma: PrismaClient): Promise<number> {
 if (require.main === module) {
   const datasourceUrl = process.env.DATABASE_URL;
   if (!datasourceUrl) throw new Error('DATABASE_URL must be set to seed tags.');
-  const pool = new Pool({ connectionString: withUtcDatabaseUrl(datasourceUrl) });
+  const pool = new Pool({
+    connectionString: withUtcDatabaseUrl(datasourceUrl),
+  });
   const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
   seedPlatformTags(prisma)
-    .then((count) => console.log(`Seeded ${count} platform tags; existing moderation settings preserved.`))
-    .catch(() => { console.error('Tag seed failed.'); process.exitCode = 1; })
-    .finally(async () => { await prisma.$disconnect(); await pool.end(); });
+    .then((count) =>
+      console.log(
+        `Seeded ${count} platform tags; existing moderation settings preserved.`,
+      ),
+    )
+    .catch(() => {
+      console.error('Tag seed failed.');
+      process.exitCode = 1;
+    })
+    .finally(async () => {
+      await prisma.$disconnect();
+      await pool.end();
+    });
 }

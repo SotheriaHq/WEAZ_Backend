@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-10-26T11:57:05.165Z",
+  "checkedAt": "2026-10-27T07:13:27.032Z",
   "passed": true,
   "cleanupPassed": true,
   "cases": [
@@ -34,7 +34,6 @@
     "a worker crash on the eighth attempt becomes an explicit exhausted failure after lease expiry instead of remaining PROCESSING forever",
     "failed queue handoff backs off instead of retrying in a hot loop; due retry retains the same notification/job identity and acknowledges only its own claim",
     "SKIP LOCKED lets a later due custom-outbox event progress while another transaction holds the FIFO head, then processes that head after release",
-    "actual isolated Redis/BullMQ queue and real notification processor recover a lost enqueue acknowledgement; after the first job is auto-removed, retry still persists one inbox notification using its stable UUID",
     "26 competing custom-order callbacks create one conversation/link/placement message and exactly two recipient outbox rows; replay repairs dispatch without re-emitting",
     "26 different custom orders on the same buyer/brand pair share one conversation, retain all distinct messages and have strictly distinct ordered timestamps",
     "cold standard-payment and custom-order callbacks use the same pair lock and share one conversation with two messages/four recipient records",
@@ -140,7 +139,7 @@
   "messageOutboxStandaloneSelects": 0,
   "customLeaseProof": {
     "claimFencingVerified": true,
-    "redisVerified": true
+    "redisVerified": false
   },
   "customThreadProof": {
     "cases": 7

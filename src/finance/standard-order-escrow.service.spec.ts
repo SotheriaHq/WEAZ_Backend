@@ -698,7 +698,9 @@ describe('StandardOrderEscrowService', () => {
     expect(holds[0].status).toBe(EscrowHoldStatus.REFUND_PENDING);
     expect(reserved!.split.unreleasedGross.toFixed(2)).toBe('1000.00');
     expect(reserved!.split.releasedNet.toFixed(2)).toBe('0.00');
-    expect(ledgerService.postStandardOrderRefundReserved).toHaveBeenCalledTimes(1);
+    expect(ledgerService.postStandardOrderRefundReserved).toHaveBeenCalledTimes(
+      1,
+    );
     expect(brandBalanceService.raiseAdjustment).not.toHaveBeenCalled();
 
     // A pending refund freezes release.
@@ -713,18 +715,28 @@ describe('StandardOrderEscrowService', () => {
     });
     expect(holds[0].status).toBe(EscrowHoldStatus.REFUNDED);
     expect(holds[0].refundedAt).toBeInstanceOf(Date);
-    expect(ledgerService.postStandardOrderRefundSettled).toHaveBeenCalledTimes(1);
+    expect(ledgerService.postStandardOrderRefundSettled).toHaveBeenCalledTimes(
+      1,
+    );
 
     // Replays change nothing.
-    await service.reserveRefund(tx, { orderId: 'order_1', refundId: 'refund_1', reason: 'again' });
+    await service.reserveRefund(tx, {
+      orderId: 'order_1',
+      refundId: 'refund_1',
+      reason: 'again',
+    });
     await service.settleRefund(tx, {
       orderId: 'order_1',
       refundId: 'refund_1',
       captureCurrency: 'NGN',
       captureAmount: decimal(1000),
     });
-    expect(ledgerService.postStandardOrderRefundReserved).toHaveBeenCalledTimes(1);
-    expect(ledgerService.postStandardOrderRefundSettled).toHaveBeenCalledTimes(1);
+    expect(ledgerService.postStandardOrderRefundReserved).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(ledgerService.postStandardOrderRefundSettled).toHaveBeenCalledTimes(
+      1,
+    );
   });
 
   it('refund after upfront release claws back the released net exactly once', async () => {
@@ -752,9 +764,12 @@ describe('StandardOrderEscrowService', () => {
         sourceKey: 'standard-order-refund:refund_2',
       }),
     );
-    const call = (brandBalanceService.raiseAdjustment as jest.Mock).mock.calls[0][1];
+    const call = (brandBalanceService.raiseAdjustment as jest.Mock).mock
+      .calls[0][1];
     expect(call.amount.toFixed(2)).toBe('270.00');
-    expect(ledgerService.postStandardOrderRefundReserved).toHaveBeenCalledTimes(1);
+    expect(ledgerService.postStandardOrderRefundReserved).toHaveBeenCalledTimes(
+      1,
+    );
   });
 
   it('settling a refund that was never reserved is refused', async () => {

@@ -906,17 +906,18 @@ export class CategoriesService {
       ...(entityType === 'DESIGN' ? { designId: entityId } : {}),
     }));
 
-    await retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(180216, hashtext(${entityType + ':' + entityId}))`;
-    await tx.entityFilter.deleteMany({
-      where: { entityType, entityId },
-    });
+    await retryDatabaseTransaction(() =>
+      this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(180216, hashtext(${entityType + ':' + entityId}))`;
+        await tx.entityFilter.deleteMany({
+          where: { entityType, entityId },
+        });
 
-    if (records.length > 0) {
-      await tx.entityFilter.createMany({ data: records });
-    }
-
-    }));
+        if (records.length > 0) {
+          await tx.entityFilter.createMany({ data: records });
+        }
+      }),
+    );
 
     return records.map((r) => r.filterValueId);
   }

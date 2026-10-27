@@ -88,8 +88,8 @@ export class StandardOrderEscrowService {
       return;
     }
 
-    const orderGrossAmounts = orders.map((order) =>
-      new Prisma.Decimal(String(order.totalAmount ?? 0)),
+    const orderGrossAmounts = orders.map(
+      (order) => new Prisma.Decimal(String(order.totalAmount ?? 0)),
     );
     const totalGross = orderGrossAmounts.reduce(
       (sum, amount) => sum.plus(amount),
@@ -137,7 +137,9 @@ export class StandardOrderEscrowService {
         tx,
       );
     // Brands before ledger accounts, in a stable order, as every money path does.
-    for (const brandId of [...new Set(orders.map((order) => order.brandId))].sort()) {
+    for (const brandId of [
+      ...new Set(orders.map((order) => order.brandId)),
+    ].sort()) {
       await this.brandBalance.lockBrand(tx, brandId);
     }
     for (const [index, order] of orders.entries()) {
@@ -227,9 +229,14 @@ export class StandardOrderEscrowService {
 
     await this.brandBalance.lockBrand(tx, updated.brandId);
     await this.ledgerService.postStandardOrderShipmentRelease(tx, updated);
-    await this.brandBalance.reconcileRecoveries(tx, updated.brandId, updated.currency, {
-      orderId: updated.orderId,
-    });
+    await this.brandBalance.reconcileRecoveries(
+      tx,
+      updated.brandId,
+      updated.currency,
+      {
+        orderId: updated.orderId,
+      },
+    );
     return updated;
   }
 
@@ -295,7 +302,11 @@ export class StandardOrderEscrowService {
           data: { buyerConfirmedDeliveryAt: new Date() },
         });
         const hold = await this.lockHoldByOrderId(tx, candidate.orderId!);
-        if (hold && !hold.secondReleasedAt && RELEASABLE.includes(hold.status)) {
+        if (
+          hold &&
+          !hold.secondReleasedAt &&
+          RELEASABLE.includes(hold.status)
+        ) {
           await this.markDeliveryEligibility(
             tx,
             hold,
@@ -505,7 +516,9 @@ export class StandardOrderEscrowService {
 
   /** Released, unrefunded brand money from standard orders, exactly. */
   async getReleasedBalance(brandId: string, currency = 'NGN') {
-    const [row] = await this.prisma.$queryRaw<Array<{ released: Prisma.Decimal }>>`
+    const [row] = await this.prisma.$queryRaw<
+      Array<{ released: Prisma.Decimal }>
+    >`
       SELECT COALESCE(SUM(
         CASE WHEN "firstReleasedAt" IS NOT NULL THEN "firstReleaseNetAmount" ELSE 0 END +
         CASE WHEN "secondReleasedAt" IS NOT NULL THEN "secondReleaseNetAmount" ELSE 0 END), 0) AS released
@@ -566,9 +579,14 @@ export class StandardOrderEscrowService {
     if (updated.secondReleaseAmount.greaterThan(0)) {
       await this.ledgerService.postStandardOrderFinalRelease(tx, updated);
     }
-    await this.brandBalance.reconcileRecoveries(tx, updated.brandId, updated.currency, {
-      orderId: updated.orderId,
-    });
+    await this.brandBalance.reconcileRecoveries(
+      tx,
+      updated.brandId,
+      updated.currency,
+      {
+        orderId: updated.orderId,
+      },
+    );
 
     return updated;
   }

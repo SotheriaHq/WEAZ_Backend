@@ -4,7 +4,7 @@
 
 The owner now authorizes committing, pushing, branch integration and SIT deployment of verified work, while remaining item-1 follow-up work stays held. This supersedes the earlier deployment pause recorded below. Only SIT and local are in use. Actual database resets and reference/admin seeding completed earlier; do not repeat them for this release.
 
-The N+1 inventory is locally reviewed, while the wider race audit remains incomplete. Current notification/conversation/extension handoff checks pass 78 combined PostgreSQL/Redis cases (including 12 channel cases), 96 focused unit tests, types and affected-source lint. These results do not close financial/debt, product/order, indexing or semantic-deduplication risks. Normalization and canonical refunds remain open work. A successful SIT deployment is not production-readiness approval or proof of provider/device delivery.
+The N+1 inventory is locally reviewed, while the wider race audit remains incomplete. Current notification/conversation/extension handoff checks pass 78 combined PostgreSQL/Redis cases (including 12 channel cases), 96 focused unit tests, types and affected-source lint. These results do not close financial/debt, product/order, indexing or semantic-deduplication risks. Normalization and canonical refunds were implemented on 26–27 October (items 4/5, below). A successful SIT deployment is not production-readiness approval or proof of provider/device delivery.
 
 GitHub web history checked on 26 October shows subscription/client PR7 already merged into SIT on 25 October, followed by additional design merges. Preserve that existing history; further item-1 work remains held. Historical statuses below must not be used to undo other contributors' merges or infer current deployment state.
 
@@ -14,8 +14,41 @@ Release validation and actual deployed revisions must be recorded after the inte
 | --- | --- | --- |
 | Subscription database cutover | Actual SIT/local reset, migrations, reference/admin seeding and backend/native cutover verified earlier. Four current tiers and customer aggregation retained. Web PR7 subsequently merged externally on25October. | Further item-1 follow-up remains on hold; accepted temporary Runway/Market rendering budget5seconds. Preserve existing remote history. |
 | N+1 queries | LOCAL COMPLETE:178frozen candidates individually reviewed,105FIXED_AFTER_CAPTURE; no unreviewed policy/stateful entries.98tests/7suites and full backend types PASS; actual PostgreSQL ledger35/issue25/bulk18cases PASS with cleanup, including local provider HTTP. | Final release CI/telemetry still required; a static inventory cannot certify universal runtime query absence or production capacity. Broader races/currency/provider correctness remain independent gates. |
-| Race conditions | Ordered collection/tag locks, post-lock price/count reads, conditional expiry claims and conflict-safe custom-order creation tested. Current paid admission still runs inside capture finalization. | Tag reindex against concurrent writes, stale source/index update ordering, product lifecycle/order-cancellation synchronization and remaining financial/outbox/worker entry points require closure. Product deletion currently writes REFUNDED directly; it must be reconciled with the canonical refund/escrow flow before release. |
-| Normalization/integrity | Read-only audit covers 190 models and selected relational invariants. Added guarded one-primary-membership unique index and an appended migration repairing verified physical-verification schema drift. | Existing data inconsistencies, polymorphic tag targets/design-store distinction, primary-membership projection discipline and JSON-versus-relational order read/write sources need closure and post-reset verification. |
+| Race conditions | Ordered collection/tag locks, post-lock price/count reads, conditional expiry claims and conflict-safe custom-order creation tested. Current paid admission still runs inside capture finalization. | Tag reindex against concurrent writes, stale source/index update ordering, product lifecycle/order-cancellation synchronization and remaining financial/outbox/worker entry points require closure. Product deletion now cancels unshipped paid orders through the canonical refund and escrow flow, and blocks shipped orders and in-flight checkouts (items 4/5). |
+| Normalization/integrity | Read-only audit covers 190 models and selected relational invariants. Added guarded one-primary-membership unique index and an appended migration repairing verified physical-verification schema drift. 26 October (items 4/5): ledger accounts are (code, currency) with entry/balance triggers; debt rows have source keys, foreign keys and currency guards; tag bindings have a STORE_COLLECTION type and generated typed foreign keys; the primary-membership projection is enforced at commit; reference seeds insert only. | Apply the seven new migrations on SIT through the normal release. JSON-versus-relational order sources retire in item 7. Custom-order NGN settlement conversion is item 6. |
+
+### Items 4 and 5 — 26–27 October
+
+Standard-order refunds are now canonical: one durable refund per order, reserved
+inside the business transaction without network calls. Provider submission,
+polling and webhooks run outside locks, and uncertain outcomes are never resent.
+Returns, SLA timeout, admin cancellation and product deletion all use this path.
+Operator procedures:
+[../operations/STANDARD_ORDER_REFUND_RUNBOOK.md](../operations/STANDARD_ORDER_REFUND_RUNBOOK.md).
+Audit and decisions:
+[../operations/DATA_INTEGRITY_AND_REFUNDS_AUDIT_2026-10-26.md](../operations/DATA_INTEGRITY_AND_REFUNDS_AUDIT_2026-10-26.md).
+
+Evidence on the isolated item 4/5 commit (only its own files; disposable
+PostgreSQL 17; loopback provider simulator):
+- `verify-standard-refund-integrity` passes 15 cases; ledger passes 26,
+  complaint/debt 33, tag sync 7, file deletion 14 and checkout/media 77, all
+  with cleanup.
+- Fresh schema passes: 155 migrations and both seed runs.
+- Backend types are clean. Module cycles are unchanged. API and worker
+  dependency graphs resolve (preview mode, with a negative control).
+- The refund/debt/integrity and upload unit steps pass.
+
+Failures found that predate items 4/5 (identical on base `67bf6b8`):
+- `paid-capture-admission.spec.ts`: 6 cases.
+- `verify-bulk-import-postgres.cjs` line 623: content-review notices, 0 of 26.
+
+`verify-reset-bootstrap` could not run from the agent session, because Prisma
+refuses `migrate reset` without the owner's explicit consent; CI runs it. The
+PostgreSQL 15 (SIT version) run is pending.
+
+Remaining product work: refund status on the order screens (web and native), the
+custom-order refund engine moving onto the shared provider client, and an
+admin-payouts lock-order review.
 
 ## Historical pre-reset database findings —23October
 

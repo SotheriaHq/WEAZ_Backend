@@ -173,63 +173,140 @@ export class TagIndexService {
     nextTags: Array<string | null | undefined>,
     options?: SyncEntityTagsOptions,
   ): Promise<void> {
-    await this.syncEntitiesTags([{ entityType, entityId, previousTags, nextTags, options }]);
+    await this.syncEntitiesTags([
+      { entityType, entityId, previousTags, nextTags, options },
+    ]);
   }
 
-  async syncEntitiesTags(entries: Array<{
-    entityType: TagEntityTypeValue; entityId: string;
-    previousTags: Array<string | null | undefined>; nextTags: Array<string | null | undefined>;
-    options?: SyncEntityTagsOptions;
-  }>): Promise<void> {
+  async syncEntitiesTags(
+    entries: Array<{
+      entityType: TagEntityTypeValue;
+      entityId: string;
+      previousTags: Array<string | null | undefined>;
+      nextTags: Array<string | null | undefined>;
+      options?: SyncEntityTagsOptions;
+    }>,
+  ): Promise<void> {
     const keys = new Set<string>();
-    const changes = entries.map((entry) => {
-      const key = entry.entityType + ':' + entry.entityId;
-      if (keys.has(key)) throw new BadRequestException('Duplicate entity in tag synchronization batch');
-      keys.add(key);
-      const prev = new Set(this.normalizeTagList(entry.previousTags, entry.options?.maxCount ?? 30));
-      const next = new Set(this.normalizeTagList(entry.nextTags, entry.options?.maxCount ?? 30));
-      return { ...entry, added: [...next].filter((name) => !prev.has(name)), removed: [...prev].filter((name) => !next.has(name)) };
-    }).filter((entry) => entry.added.length || entry.removed.length);
+    const changes = entries
+      .map((entry) => {
+        const key = entry.entityType + ':' + entry.entityId;
+        if (keys.has(key))
+          throw new BadRequestException(
+            'Duplicate entity in tag synchronization batch',
+          );
+        keys.add(key);
+        const prev = new Set(
+          this.normalizeTagList(
+            entry.previousTags,
+            entry.options?.maxCount ?? 30,
+          ),
+        );
+        const next = new Set(
+          this.normalizeTagList(entry.nextTags, entry.options?.maxCount ?? 30),
+        );
+        return {
+          ...entry,
+          added: [...next].filter((name) => !prev.has(name)),
+          removed: [...prev].filter((name) => !next.has(name)),
+        };
+      })
+      .filter((entry) => entry.added.length || entry.removed.length);
     for (let offset = 0; offset < changes.length; offset += 500) {
       const batch = changes.slice(offset, offset + 500);
       const now = new Date();
-      const addedNames = [...new Set(batch.flatMap((entry) => entry.added))].sort();
-      const affected = [...new Set(batch.flatMap((entry) => [...entry.added, ...entry.removed]))].sort();
+      const addedNames = [
+        ...new Set(batch.flatMap((entry) => entry.added)),
+      ].sort();
+      const affected = [
+        ...new Set(
+          batch.flatMap((entry) => [...entry.added, ...entry.removed]),
+        ),
+      ].sort();
       const creatorByTag = new Map<string, string | null>();
-      for (const entry of batch) for (const name of entry.added) {
-        if (!creatorByTag.has(name)) creatorByTag.set(name, entry.options?.actorId ?? null);
-      }
+      for (const entry of batch)
+        for (const name of entry.added) {
+          if (!creatorByTag.has(name))
+            creatorByTag.set(name, entry.options?.actorId ?? null);
+        }
       await this.prisma.$transaction(async (tx) => {
         for (let start = 0; start < addedNames.length; start += 500) {
           await tx.tag.createMany({
             data: addedNames.slice(start, start + 500).map((name) => ({
-              id: uuidv4(), normalizedName: name, displayName: name, status: TagStatus.PENDING,
+              id: uuidv4(),
+              normalizedName: name,
+              displayName: name,
+              status: TagStatus.PENDING,
               createdById: creatorByTag.get(name) ?? null,
-              usageCount: 0, lastUsedAt: now, isBanned: false,
-            })), skipDuplicates: true,
+              usageCount: 0,
+              lastUsedAt: now,
+              isBanned: false,
+            })),
+            skipDuplicates: true,
           });
         }
         const existing: Array<{ id: string; normalizedName: string }> = [];
         for (let start = 0; start < affected.length; start += 500) {
-          existing.push(...await tx.tag.findMany({
-            where: { normalizedName: { in: affected.slice(start, start + 500) } }, select: { id: true, normalizedName: true },
-          }));
+          existing.push(
+            ...(await tx.tag.findMany({
+              where: {
+                normalizedName: { in: affected.slice(start, start + 500) },
+              },
+              select: { id: true, normalizedName: true },
+            })),
+          );
         }
-        const locked = await lockTagRows(tx, existing.map((row) => row.id));
+        const locked = await lockTagRows(
+          tx,
+          existing.map((row) => row.id),
+        );
         const addedSet = new Set(addedNames);
-        const blocked = locked.filter((row) => addedSet.has(row.normalizedName) && (row.isBanned || row.status === TagStatus.REJECTED));
-        if (blocked.length) throw new BadRequestException(`One or more tags are blocked: ${blocked.map((row) => '#' + row.normalizedName).join(', ')}`);
-        const byName = new Map(locked.map((row) => [row.normalizedName, row.id]));
-        const added = batch.flatMap((entry) => entry.added.flatMap((name) => {
-          const tagId = byName.get(name);
-          return tagId ? [{ id: uuidv4(), tagId, entityType: entry.entityType, entityId: entry.entityId }] : [];
-        }));
-        const removed = batch.flatMap((entry) => entry.removed.flatMap((name) => {
-          const tagId = byName.get(name);
-          return tagId ? [{ tagId, entityType: entry.entityType, entityId: entry.entityId }] : [];
-        }));
+        const blocked = locked.filter(
+          (row) =>
+            addedSet.has(row.normalizedName) &&
+            (row.isBanned || row.status === TagStatus.REJECTED),
+        );
+        if (blocked.length)
+          throw new BadRequestException(
+            `One or more tags are blocked: ${blocked.map((row) => '#' + row.normalizedName).join(', ')}`,
+          );
+        const byName = new Map(
+          locked.map((row) => [row.normalizedName, row.id]),
+        );
+        const added = batch.flatMap((entry) =>
+          entry.added.flatMap((name) => {
+            const tagId = byName.get(name);
+            return tagId
+              ? [
+                  {
+                    id: uuidv4(),
+                    tagId,
+                    entityType: entry.entityType,
+                    entityId: entry.entityId,
+                  },
+                ]
+              : [];
+          }),
+        );
+        const removed = batch.flatMap((entry) =>
+          entry.removed.flatMap((name) => {
+            const tagId = byName.get(name);
+            return tagId
+              ? [
+                  {
+                    tagId,
+                    entityType: entry.entityType,
+                    entityId: entry.entityId,
+                  },
+                ]
+              : [];
+          }),
+        );
         for (let start = 0; start < added.length; start += 500) {
-          await tx.tagBinding.createMany({ data: added.slice(start, start + 500), skipDuplicates: true });
+          await tx.tagBinding.createMany({
+            data: added.slice(start, start + 500),
+            skipDuplicates: true,
+          });
         }
         for (let start = 0; start < removed.length; start += 500) {
           const removals = removed.slice(start, start + 500);
@@ -242,7 +319,11 @@ export class TagIndexService {
             WHERE binding."tagId" = removed."tagId" AND binding."entityType" = removed.type AND binding."entityId" = removed."entityId"
           `);
         }
-        await refreshTagUsageCounts(tx, locked.map((row) => row.id), now);
+        await refreshTagUsageCounts(
+          tx,
+          locked.map((row) => row.id),
+          now,
+        );
       });
     }
   }
@@ -634,20 +715,29 @@ export class TagIndexService {
    */
   private async removeIneligibleBindings(batchSize = 500) {
     for (;;) {
-      const stale = await this.prisma.$queryRaw<Array<{ id: string; tagId: string }>>(Prisma.sql`
+      const stale = await this.prisma.$queryRaw<
+        Array<{ id: string; tagId: string }>
+      >(Prisma.sql`
         SELECT b."_id" AS id, b."tagId" FROM "TagBinding" b
         WHERE ${this.ineligibleBindingCondition()}
         ORDER BY b."_id" LIMIT ${batchSize}
       `);
       if (!stale.length) return;
       await this.prisma.$transaction(async (tx) => {
-        const locked = await lockTagRows(tx, stale.map((row) => row.tagId));
+        const locked = await lockTagRows(
+          tx,
+          stale.map((row) => row.tagId),
+        );
         await tx.$executeRaw(Prisma.sql`
           DELETE FROM "TagBinding" b
           WHERE b."_id" = ANY(${stale.map((row) => row.id)}::uuid[])
             AND ${this.ineligibleBindingCondition()}
         `);
-        await refreshTagUsageCounts(tx, locked.map((row) => row.id), new Date());
+        await refreshTagUsageCounts(
+          tx,
+          locked.map((row) => row.id),
+          new Date(),
+        );
       });
       if (stale.length < batchSize) return;
     }

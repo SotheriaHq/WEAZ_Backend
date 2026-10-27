@@ -179,37 +179,92 @@ integration('paid queue PostgreSQL transaction integration', () => {
 
   it('keeps saved customer criteria while paid access expires at the exact recorded boundary', async () => {
     let reads = 0;
-    const commerce = new BrandCommerceAccessService({ $queryRaw: (query: Prisma.Sql) => { reads++; return prisma.$queryRaw(query); } } as any);
-    const agreement = await prisma.brandSubscription.findFirstOrThrow({ where: { brandId } });
+    const commerce = new BrandCommerceAccessService({
+      $queryRaw: (query: Prisma.Sql) => {
+        reads++;
+        return prisma.$queryRaw(query);
+      },
+    } as any);
+    const agreement = await prisma.brandSubscription.findFirstOrThrow({
+      where: { brandId },
+    });
     const before = await commerce.get(brandId);
     expect(reads).toBe(1);
-    expect(before).toMatchObject({ tierKey: 'ARU', canConfigureCustomers: true, customerMinimumOrders: 3, effectiveMinimumOrders: 3 });
-    expect(before.entitlementExpiresAt).toBe(agreement.currentPeriodEnd.toISOString());
-    await prisma.brand.update({ where: { id: brandId }, data: { customerMinimumOrders: 4 } });
+    expect(before).toMatchObject({
+      tierKey: 'ARU',
+      canConfigureCustomers: true,
+      customerMinimumOrders: 3,
+      effectiveMinimumOrders: 3,
+    });
+    expect(before.entitlementExpiresAt).toBe(
+      agreement.currentPeriodEnd.toISOString(),
+    );
+    await prisma.brand.update({
+      where: { id: brandId },
+      data: { customerMinimumOrders: 4 },
+    });
     try {
-      expect(await commerce.get(brandId)).toMatchObject({ effectiveMinimumOrders: 4 });
-      expect(await commerce.get(brandId, agreement.currentPeriodEnd)).toMatchObject({
-        tierKey: 'FREE', canConfigureCustomers: false, customerMinimumOrders: 4, effectiveMinimumOrders: 1, entitlementExpiresAt: null,
+      expect(await commerce.get(brandId)).toMatchObject({
+        effectiveMinimumOrders: 4,
+      });
+      expect(
+        await commerce.get(brandId, agreement.currentPeriodEnd),
+      ).toMatchObject({
+        tierKey: 'FREE',
+        canConfigureCustomers: false,
+        customerMinimumOrders: 4,
+        effectiveMinimumOrders: 1,
+        entitlementExpiresAt: null,
       });
     } finally {
-      await prisma.brand.update({ where: { id: brandId }, data: { customerMinimumOrders: 3 } });
+      await prisma.brand.update({
+        where: { id: brandId },
+        data: { customerMinimumOrders: 3 },
+      });
     }
   });
 
   it('refuses a paid customer-setting write when the agreement expires after preflight', async () => {
     const preflight = { get: async () => ({ canConfigureCustomers: true }) };
-    const customers = new BrandCustomersService(prisma as any, { assertBrandOwnerAndResolve: async () => ({ brandId }) } as any, {} as any, preflight as any);
-    const agreement = await prisma.brandSubscription.findFirstOrThrow({ where: { brandId } });
-    await prisma.brand.update({ where: { id: brandId }, data: { customerMinimumOrders: 3 } });
+    const customers = new BrandCustomersService(
+      prisma as any,
+      { assertBrandOwnerAndResolve: async () => ({ brandId }) } as any,
+      {} as any,
+      preflight as any,
+    );
+    const agreement = await prisma.brandSubscription.findFirstOrThrow({
+      where: { brandId },
+    });
+    await prisma.brand.update({
+      where: { id: brandId },
+      data: { customerMinimumOrders: 3 },
+    });
     try {
       await customers.updateSettings(ownerId, brandId, 4);
-      expect((await prisma.brand.findUniqueOrThrow({ where: { id: brandId } })).customerMinimumOrders).toBe(4);
-      await prisma.brandSubscription.update({ where: { id: agreement.id }, data: { currentPeriodEnd: new Date(Date.now() - 1000) } });
-      await expect(customers.updateSettings(ownerId, brandId, 5)).rejects.toThrow('Paid owner access expired or changed');
-      expect((await prisma.brand.findUniqueOrThrow({ where: { id: brandId } })).customerMinimumOrders).toBe(4);
+      expect(
+        (await prisma.brand.findUniqueOrThrow({ where: { id: brandId } }))
+          .customerMinimumOrders,
+      ).toBe(4);
+      await prisma.brandSubscription.update({
+        where: { id: agreement.id },
+        data: { currentPeriodEnd: new Date(Date.now() - 1000) },
+      });
+      await expect(
+        customers.updateSettings(ownerId, brandId, 5),
+      ).rejects.toThrow('Paid owner access expired or changed');
+      expect(
+        (await prisma.brand.findUniqueOrThrow({ where: { id: brandId } }))
+          .customerMinimumOrders,
+      ).toBe(4);
     } finally {
-      await prisma.brandSubscription.update({ where: { id: agreement.id }, data: { currentPeriodEnd: agreement.currentPeriodEnd } });
-      await prisma.brand.update({ where: { id: brandId }, data: { customerMinimumOrders: 3 } });
+      await prisma.brandSubscription.update({
+        where: { id: agreement.id },
+        data: { currentPeriodEnd: agreement.currentPeriodEnd },
+      });
+      await prisma.brand.update({
+        where: { id: brandId },
+        data: { customerMinimumOrders: 3 },
+      });
     }
   });
 
@@ -606,10 +661,15 @@ integration('paid queue PostgreSQL transaction integration', () => {
         })
       ).status,
     ).toBe('PAID');
-    const debt = await prisma.brandBalanceAdjustment.findFirstOrThrow({
+    // One immutable clawback per refund; together they equal the released money refunded.
+    const debts = await prisma.brandBalanceAdjustment.findMany({
       where: { customOrderId: order.id, type: 'REFUND_CLAWBACK' },
+      orderBy: { createdAt: 'asc' },
     });
-    expect(Number(debt.amount)).toBe(567);
+    expect(debts.map((debt) => debt.sourceKey)).toEqual(
+      records.map((refund) => `custom-order-refund:${refund.id}`),
+    );
+    expect(debts.reduce((sum, debt) => sum + Number(debt.amount), 0)).toBe(567);
     global.fetch = jest.fn(async (url) => ({
       ok: true,
       json: async () => ({

@@ -95,10 +95,12 @@ describe('CustomOrderAdminService', () => {
       // No debt: the whole release is payable.
       payableFromRelease: jest
         .fn()
-        .mockImplementation(async (_tx: unknown, params: { amount: string }) => ({
-          payable: new Prisma.Decimal(params.amount),
-          withheld: new Prisma.Decimal(0),
-        })),
+        .mockImplementation(
+          async (_tx: unknown, params: { amount: string }) => ({
+            payable: new Prisma.Decimal(params.amount),
+            withheld: new Prisma.Decimal(0),
+          }),
+        ),
       reconcileRecoveries: jest.fn().mockResolvedValue({
         recovered: new Prisma.Decimal(0),
         outstanding: new Prisma.Decimal(0),
@@ -718,7 +720,11 @@ describe('CustomOrderAdminService', () => {
     // The payout is capped by the brand's position before anything is written.
     expect(brandBalance.payableFromRelease).toHaveBeenCalledWith(
       tx,
-      expect.objectContaining({ brandId: 'brand_1', amount: '900.00', currency: 'NGN' }),
+      expect.objectContaining({
+        brandId: 'brand_1',
+        amount: '900.00',
+        currency: 'NGN',
+      }),
     );
     expect(brandBalance.reconcileRecoveries).toHaveBeenCalledWith(
       tx,
@@ -782,7 +788,8 @@ describe('CustomOrderAdminService', () => {
       },
     };
     prisma.$transaction.mockImplementation(
-      async (callback: (innerTx: typeof tx) => Promise<unknown>) => callback(tx),
+      async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
+        callback(tx),
     );
 
     const result = await service.releaseEligibleLedgerAllocations(
@@ -881,7 +888,10 @@ describe('CustomOrderAdminService', () => {
     // Narrow select + no interactive transaction for pure reads.
     expect(prisma.customOrder.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        select: expect.objectContaining({ id: true, buyerPriceSummaryJson: true }),
+        select: expect.objectContaining({
+          id: true,
+          buyerPriceSummaryJson: true,
+        }),
       }),
     );
   });

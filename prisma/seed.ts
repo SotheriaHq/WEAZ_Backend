@@ -186,9 +186,14 @@ async function main() {
 
   const seededTagCount = await seedPlatformTags(prisma);
 
-  const systemConfig = new SystemConfigService(prisma as unknown as PrismaService);
+  const systemConfig = new SystemConfigService(
+    prisma as unknown as PrismaService,
+  );
   await systemConfig.seedDefaults();
-  await new SettlementPolicyService(prisma as unknown as PrismaService, systemConfig).seedDefaults();
+  await new SettlementPolicyService(
+    prisma as unknown as PrismaService,
+    systemConfig,
+  ).seedDefaults();
 
   // Log final counts
   const [totalTags, approvedTags, pendingTags, rejectedTags] =

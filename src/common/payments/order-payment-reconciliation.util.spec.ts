@@ -59,13 +59,33 @@ describe('reconcileStandardOrderPaymentStatuses', () => {
 
   it('never moves a refunded or paid order, whatever the shared capture says', async () => {
     const prisma = prismaWith([
-      { reference: 'ref_parent', status: 'PAID', confirmedAt: new Date(), providerMode: 'live' },
-      { reference: 'ref_refunding', status: 'REFUND_IN_PROGRESS', confirmedAt: new Date(), providerMode: 'live' },
+      {
+        reference: 'ref_parent',
+        status: 'PAID',
+        confirmedAt: new Date(),
+        providerMode: 'live',
+      },
+      {
+        reference: 'ref_refunding',
+        status: 'REFUND_IN_PROGRESS',
+        confirmedAt: new Date(),
+        providerMode: 'live',
+      },
     ]);
 
     const resolved = await reconcileStandardOrderPaymentStatuses(prisma, [
-      { id: 'refunded', paymentReference: 'ref_parent', paymentStatus: PaymentStatus.REFUNDED, paidAt: new Date() },
-      { id: 'paid', paymentReference: 'ref_refunding', paymentStatus: PaymentStatus.PAID, paidAt: new Date() },
+      {
+        id: 'refunded',
+        paymentReference: 'ref_parent',
+        paymentStatus: PaymentStatus.REFUNDED,
+        paidAt: new Date(),
+      },
+      {
+        id: 'paid',
+        paymentReference: 'ref_refunding',
+        paymentStatus: PaymentStatus.PAID,
+        paidAt: new Date(),
+      },
     ]);
 
     expect(resolved.get('refunded')).toBe(PaymentStatus.REFUNDED);
@@ -76,11 +96,21 @@ describe('reconcileStandardOrderPaymentStatuses', () => {
 
   it('ignores refund-stage capture statuses for an unpaid order', async () => {
     const prisma = prismaWith([
-      { reference: 'ref_1', status: 'REFUNDED', confirmedAt: null, providerMode: 'live' },
+      {
+        reference: 'ref_1',
+        status: 'REFUNDED',
+        confirmedAt: null,
+        providerMode: 'live',
+      },
     ]);
 
     const resolved = await reconcileStandardOrderPaymentStatuses(prisma, [
-      { id: 'order_1', paymentReference: 'ref_1', paymentStatus: PaymentStatus.PENDING, paidAt: null },
+      {
+        id: 'order_1',
+        paymentReference: 'ref_1',
+        paymentStatus: PaymentStatus.PENDING,
+        paidAt: null,
+      },
     ]);
 
     expect(resolved.get('order_1')).toBe(PaymentStatus.PENDING);
