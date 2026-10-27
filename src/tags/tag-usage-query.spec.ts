@@ -36,6 +36,7 @@ describe('joined tag usage refresh', () => {
         createMany: jest.fn(),
         findMany: jest.fn().mockResolvedValue(rows),
         update: jest.fn(),
+        updateMany: jest.fn(),
       },
       tagBinding: {
         createMany: jest.fn(),

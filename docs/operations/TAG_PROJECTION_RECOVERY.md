@@ -22,7 +22,9 @@ a unique owner and 60-second lease. Worker acknowledgements/failures require the
 same generation and current unexpired owner. Immediate projection acknowledges
 only its captured generation. Background source locking uses `NOWAIT`; busy
 sources retry after five seconds without spending the failure budget.
-Projection transactions time out after 15 seconds.
+Projection transactions time out after 15 seconds. Source locks use
+`FOR NO KEY UPDATE`: they exclude source edits/deletion while allowing a tag
+merge's typed-FK `KEY SHARE` check to finish, avoiding a source/tag lock inversion.
 
 Failed batches split into individual jobs so malformed sources cannot block
 healthy neighbours. Other failures back off from 30 seconds to at most one hour;
@@ -37,7 +39,11 @@ the same SQL snapshot. A concurrent cascade replacing that generation leaves
 its new repair instruction intact.
 
 Admin alias mutations serialize before ordered tag locks. Targets resolve to
-their canonical tag; inverse merges that would form cycles fail. Binding moves
+their canonical tag; inverse merges that would form cycles fail. Direct inbound
+aliases move to the new root under ordered locks, preventing successive merges
+from lengthening old chains. Migration `20261027170000_tag_alias_lookup` indexes
+the lookup; alias locks/updates stay in PostgreSQL rather than returning an
+unbounded list to the caller. Binding moves
 use batches of at most 500 in one transaction (30-second timeout). The guard
 applies to the application merge service; direct privileged SQL is an operator
 responsibility.
@@ -66,10 +72,11 @@ responsibility.
 applies the full migration chain, tests real services and deletes that database.
 The historical evidence filename is
 `docs/performance-reviews/tag-sync-postgres-2026-10-23.json`; `checkedAt` identifies
-the current run. Its 23 cases include real source-lock waits, 32 competing
+the current run. Its 25 cases include real source-lock waits, 32 competing
 claimants, stale leases/generations, scheduled publication without another edit,
 all five source types, FK deletion, poison isolation, final-attempt recovery,
-inverse merges and atomic outbox failure. The 2004-entity rebuild uses 74 reads
+inverse merges, a real typed-FK/source-lock inversion and atomic outbox failure.
+The 2004-entity rebuild uses 74 reads
 and nine grouped counter updates (including the final counter-repair page).
 Local verification does not certify SIT rollout, application-wide capacity,
 client layout or device delivery.
@@ -77,3 +84,5 @@ client layout or device delivery.
 PostgreSQL references: [locking clauses](https://www.postgresql.org/docs/15/sql-select.html#SQL-FOR-UPDATE-SHARE),
 [data-modifying CTE snapshots](https://www.postgresql.org/docs/15/queries-with.html#QUERIES-WITH-MODIFYING),
 and [triggers and FK actions](https://www.postgresql.org/docs/15/trigger-definition.html).
+The source lock modes follow PostgreSQL's
+[row-lock compatibility rules](https://www.postgresql.org/docs/15/explicit-locking.html#LOCKING-ROWS).

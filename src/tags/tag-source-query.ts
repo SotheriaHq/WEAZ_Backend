@@ -21,7 +21,11 @@ export async function loadCurrentTagSources(
   if (entries.length > 500)
     throw new Error('Tag source batch exceeds 500 identities');
   if (!entries.length) return [];
-  const lockMode = Prisma.raw(nowait ? 'FOR UPDATE NOWAIT' : 'FOR UPDATE');
+  // These projections never change a source key. Keep FK KEY SHARE checks
+  // compatible, including a tag merge inserting bindings for this source.
+  const lockMode = Prisma.raw(
+    nowait ? 'FOR NO KEY UPDATE NOWAIT' : 'FOR NO KEY UPDATE',
+  );
   const ids = (type: TagEntityTypeValue) =>
     [
       ...new Set(

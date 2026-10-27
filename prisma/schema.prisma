@@ -3496,6 +3496,7 @@ model Tag {
   @@index([isBanned, usageCount(sort: Desc)])
   @@index([status, usageCount(sort: Desc)])
   @@index([createdById, status])
+  @@index([aliasOfTagId])
 }
 
 model TagBinding {

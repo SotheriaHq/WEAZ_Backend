@@ -169,5 +169,38 @@ module.exports = async function verifyTagProjectionRecovery({ prisma, pool, inde
   assert.equal((await bindings(timedId))[0].tag.normalizedName, 'clock-only');
   cases.push('a scheduled product becomes tag-indexed when the database clock passes its publication time without another source edit');
 
+  const fkTag = await prisma.tag.create({data: {id: randomUUID(), normalizedName: 'fk-compatible', displayName: 'FK compatible', status: 'APPROVED'}});
+  const fkProduct = randomUUID();
+  await prisma.product.create({data: {id: fkProduct, brandId, name: 'Foreign-key lock compatibility', price: 1000, isActive: true, publicationStatus: 'PUBLISHED', tags: ['fk-compatible']}});
+  const mergeWriter = await pool.connect(); let projecting;
+  try {
+    await mergeWriter.query('BEGIN');
+    await mergeWriter.query('SELECT "_id" FROM "Tag" WHERE "_id"=$1 FOR UPDATE', [fkTag.id]);
+    await mergeWriter.query("SET LOCAL lock_timeout='1s'");
+    projecting = index.syncEntityTags('PRODUCT', fkProduct, [], ['fk-compatible']); projecting.catch(() => {});
+    const deadline = Date.now()+5000;
+    for (;;) {
+      const blocked = await pool.query(`SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%Tag%'`);
+      if (blocked.rowCount) break;
+      assert(Date.now()<deadline, 'Projector did not reach the held tag lock');
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    await mergeWriter.query('INSERT INTO "TagBinding"("_id","tagId","entityType","entityId","updatedAt") VALUES($1,$2,\'PRODUCT\',$3,clock_timestamp() AT TIME ZONE \'UTC\')', [randomUUID(), fkTag.id, fkProduct]);
+    await mergeWriter.query('COMMIT');
+  } finally {await mergeWriter.query('ROLLBACK'); mergeWriter.release();}
+  await projecting;
+  assert.equal(await prisma.tagBinding.count({where: {entityId: fkProduct, tagId: fkTag.id}}), 1);
+  assert.equal((await prisma.tag.findUniqueOrThrow({where: {id: fkTag.id}})).usageCount, 1);
+  cases.push('a real typed-FK binding insert completes while its source projector waits for a held tag; NO KEY UPDATE avoids the source/tag lock inversion and the projector retains one binding');
+  for (let n=0; n<20; n++) await tags.mergeTags(`bounded-alias-${n}`, `bounded-alias-${n+1}`);
+  const finalRoot = await prisma.tag.findUniqueOrThrow({where: {normalizedName: 'bounded-alias-20'}});
+  const previousRoots = await prisma.tag.findMany({where: {normalizedName: {in: Array.from({length:20},(_,n)=>`bounded-alias-${n}`)}}});
+  assert.equal(previousRoots.length, 20);
+  assert(previousRoots.every(row => row.aliasOfTagId === finalRoot.id));
+  await prisma.product.update({where: {id: fkProduct}, data: {tags: ['bounded-alias-0']}});
+  await index.syncEntityTags('PRODUCT', fkProduct, [], []);
+  assert.equal((await bindings(fkProduct))[0].tagId, finalRoot.id);
+  cases.push('twenty successive canonical merges keep inbound aliases pointed at the current root instead of exceeding the projection depth limit');
+
   assert.deepEqual(await readTagProjectionJobs(prisma, []), []);
 };
