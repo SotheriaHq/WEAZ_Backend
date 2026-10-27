@@ -1,3 +1,15 @@
+import { loadCurrentTagSources } from './tag-source-query';
+import {
+  acknowledgeTagProjections,
+  claimTagJobs,
+  failTagJob,
+  readTagProjectionJobs,
+  reapTagJobs,
+  tagProjectionErrorCode,
+  TagProjectionJob,
+  TagUsageJob,
+} from './tag-projection-query';
+import { retryDatabaseTransaction } from '../common/transaction-retry.util';
 import { lockTagRows, refreshTagUsageCounts } from './tag-usage-query';
 import {
   BadRequestException,
@@ -24,6 +36,7 @@ type SyncEntityTagsOptions = {
   actorId?: string | null;
   entityTitle?: string;
   notifyMentions?: boolean;
+  skipModerated?: boolean;
 };
 
 @Injectable()
@@ -186,146 +199,374 @@ export class TagIndexService {
       nextTags: Array<string | null | undefined>;
       options?: SyncEntityTagsOptions;
     }>,
-  ): Promise<void> {
+    claims?: readonly TagProjectionJob[],
+  ): Promise<number> {
     const keys = new Set<string>();
-    const changes = entries
-      .map((entry) => {
-        const key = entry.entityType + ':' + entry.entityId;
-        if (keys.has(key))
-          throw new BadRequestException(
-            'Duplicate entity in tag synchronization batch',
-          );
-        keys.add(key);
-        const prev = new Set(
-          this.normalizeTagList(
-            entry.previousTags,
-            entry.options?.maxCount ?? 30,
-          ),
+    const requests = entries.map((entry) => {
+      const normalized = { ...entry, entityId: entry.entityId.toLowerCase() };
+      const key = normalized.entityType + ':' + normalized.entityId;
+      if (keys.has(key))
+        throw new BadRequestException(
+          'Duplicate entity in tag synchronization batch',
         );
-        const next = new Set(
-          this.normalizeTagList(entry.nextTags, entry.options?.maxCount ?? 30),
-        );
-        return {
-          ...entry,
-          added: [...next].filter((name) => !prev.has(name)),
-          removed: [...prev].filter((name) => !next.has(name)),
-        };
-      })
-      .filter((entry) => entry.added.length || entry.removed.length);
-    for (let offset = 0; offset < changes.length; offset += 500) {
-      const batch = changes.slice(offset, offset + 500);
-      const now = new Date();
-      const addedNames = [
-        ...new Set(batch.flatMap((entry) => entry.added)),
-      ].sort();
-      const affected = [
-        ...new Set(
-          batch.flatMap((entry) => [...entry.added, ...entry.removed]),
+      keys.add(key);
+      return normalized;
+    });
+    let bindingCount = 0;
+    for (let offset = 0; offset < requests.length; offset += 500) {
+      const requestedBatch = requests.slice(offset, offset + 500);
+      bindingCount += await retryDatabaseTransaction(() =>
+        this.prisma.$transaction(
+          async (tx) => {
+            const sources = await loadCurrentTagSources(
+              tx,
+              requestedBatch,
+              !!claims,
+            );
+            const jobs = await readTagProjectionJobs(tx, requestedBatch);
+            const captured = new Map(
+              jobs.map((job) => [job.entityType + ':' + job.entityId, job]),
+            );
+            const expectedClaims = new Map(
+              claims?.map((job) => [job.entityType + ':' + job.entityId, job]),
+            );
+            const batch = requestedBatch.filter((entry) => {
+              if (!claims) return true;
+              const key = entry.entityType + ':' + entry.entityId;
+              const expected = expectedClaims.get(key),
+                current = captured.get(key);
+              return (
+                expected &&
+                current &&
+                current.status === 'PROCESSING' &&
+                current.leaseValid &&
+                current.generation === expected.generation &&
+                current.lockOwner === expected.lockOwner
+              );
+            });
+            if (!batch.length) return 0;
+            const sourceMap = new Map(
+              sources.map((source) => [
+                source.entityType + ':' + source.entityId,
+                source,
+              ]),
+            );
+            const scope = {
+              OR: batch.map(({ entityType, entityId }) => ({
+                entityType,
+                entityId,
+              })),
+            };
+            const bindingSelect = {
+              id: true,
+              tagId: true,
+              entityType: true,
+              entityId: true,
+            } as const;
+            const before = await tx.tagBinding.findMany({
+              where: scope,
+              select: bindingSelect,
+            });
+            const desired = batch.map((entry) => {
+              const source = sourceMap.get(
+                entry.entityType + ':' + entry.entityId,
+              );
+              const sourceLimit =
+                entry.entityType === TAG_ENTITY_TYPE.USER_BRAND ? 10 : 30;
+              return {
+                ...entry,
+                names: source?.indexable
+                  ? this.normalizeTagList(
+                      source.tags,
+                      Math.min(
+                        entry.options?.maxCount ?? sourceLimit,
+                        sourceLimit,
+                      ),
+                    )
+                  : [],
+              };
+            });
+            const names = [
+              ...new Set(desired.flatMap((entry) => entry.names)),
+            ].sort();
+            const creatorByName = new Map<string, string | null>();
+            for (const entry of desired)
+              for (const name of entry.names) {
+                if (!creatorByName.has(name))
+                  creatorByName.set(name, entry.options?.actorId ?? null);
+              }
+            const now = new Date();
+            for (let start = 0; start < names.length; start += 500) {
+              await tx.tag.createMany({
+                data: names.slice(start, start + 500).map((name) => ({
+                  id: uuidv4(),
+                  normalizedName: name,
+                  displayName: name,
+                  status: TagStatus.PENDING,
+                  createdById: creatorByName.get(name) ?? null,
+                  usageCount: 0,
+                  lastUsedAt: now,
+                  isBanned: false,
+                })),
+                skipDuplicates: true,
+              });
+            }
+            type TagRow = {
+              id: string;
+              normalizedName: string;
+              aliasOfTagId: string | null;
+            };
+            const known = new Map<string, TagRow>();
+            const remember = (rows: TagRow[]) =>
+              rows.forEach((row) => known.set(row.id, row));
+            for (let start = 0; start < names.length; start += 500)
+              remember(
+                await tx.tag.findMany({
+                  where: {
+                    normalizedName: { in: names.slice(start, start + 500) },
+                  },
+                  select: {
+                    id: true,
+                    normalizedName: true,
+                    aliasOfTagId: true,
+                  },
+                }),
+              );
+            let pending = [...new Set(before.map((row) => row.tagId))].filter(
+              (id) => !known.has(id),
+            );
+            for (let depth = 0; ; depth++) {
+              pending = [
+                ...new Set([
+                  ...pending,
+                  ...[...known.values()].flatMap((row) =>
+                    row.aliasOfTagId && !known.has(row.aliasOfTagId)
+                      ? [row.aliasOfTagId]
+                      : [],
+                  ),
+                ]),
+              ];
+              if (!pending.length) break;
+              if (depth >= 16)
+                throw new Error('Tag alias graph exceeds the supported depth');
+              for (let start = 0; start < pending.length; start += 500)
+                remember(
+                  await tx.tag.findMany({
+                    where: { id: { in: pending.slice(start, start + 500) } },
+                    select: {
+                      id: true,
+                      normalizedName: true,
+                      aliasOfTagId: true,
+                    },
+                  }),
+                );
+              if (pending.some((id) => !known.has(id)))
+                throw Object.assign(
+                  new Error('Tag source changed during reconciliation'),
+                  { code: 'P2034' },
+                );
+              pending = [];
+            }
+            const locked = await lockTagRows(tx, [...known.keys()]);
+            const byId = new Map(locked.map((tag) => [tag.id, tag]));
+            const byName = new Map(
+              locked.map((tag) => [tag.normalizedName, tag.id]),
+            );
+            const current = await tx.tagBinding.findMany({
+              where: scope,
+              select: bindingSelect,
+            });
+            if (current.some((binding) => !byId.has(binding.tagId)))
+              throw Object.assign(
+                new Error('Tag bindings changed during reconciliation'),
+                { code: 'P2034' },
+              );
+            const expected = new Set<string>();
+            const additions: Prisma.TagBindingCreateManyInput[] = [];
+            for (const entry of desired)
+              for (const name of entry.names) {
+                let tag = byId.get(byName.get(name) ?? '');
+                const visited = new Set<string>();
+                while (tag) {
+                  if (visited.has(tag.id))
+                    throw new Error('Tag alias cycle detected');
+                  visited.add(tag.id);
+                  if (tag.isBanned || tag.status === TagStatus.REJECTED) {
+                    if (!entry.options?.skipModerated)
+                      throw new BadRequestException(
+                        `One or more tags are blocked: #${name}`,
+                      );
+                    tag = undefined;
+                    break;
+                  }
+                  if (!tag.aliasOfTagId) break;
+                  if (!byId.has(tag.aliasOfTagId))
+                    throw Object.assign(
+                      new Error('Tag alias changed during reconciliation'),
+                      { code: 'P2034' },
+                    );
+                  tag = byId.get(tag.aliasOfTagId);
+                }
+                if (!tag) continue;
+                const key =
+                  entry.entityType + ':' + entry.entityId + ':' + tag.id;
+                if (expected.has(key)) continue;
+                expected.add(key);
+                additions.push({
+                  id: uuidv4(),
+                  tagId: tag.id,
+                  entityType: entry.entityType,
+                  entityId: entry.entityId,
+                });
+              }
+            const removals = current.filter(
+              (row) =>
+                !expected.has(
+                  row.entityType + ':' + row.entityId + ':' + row.tagId,
+                ),
+            );
+            for (let start = 0; start < removals.length; start += 500)
+              await tx.tagBinding.deleteMany({
+                where: {
+                  id: {
+                    in: removals.slice(start, start + 500).map((row) => row.id),
+                  },
+                },
+              });
+            for (let start = 0; start < additions.length; start += 500)
+              await tx.tagBinding.createMany({
+                data: additions.slice(start, start + 500),
+                skipDuplicates: true,
+              });
+            await refreshTagUsageCounts(
+              tx,
+              locked.map((tag) => tag.id),
+              now,
+            );
+            await acknowledgeTagProjections(
+              tx,
+              batch.flatMap((entry) => {
+                const key = entry.entityType + ':' + entry.entityId;
+                const job = captured.get(key);
+                return job
+                  ? [
+                      {
+                        ...job,
+                        nextRefreshAt: sourceMap.get(key)?.nextRefreshAt,
+                      },
+                    ]
+                  : [];
+              }),
+              !!claims,
+            );
+            return expected.size;
+          },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+            timeout: 15000,
+          },
         ),
-      ].sort();
-      const creatorByTag = new Map<string, string | null>();
-      for (const entry of batch)
-        for (const name of entry.added) {
-          if (!creatorByTag.has(name))
-            creatorByTag.set(name, entry.options?.actorId ?? null);
-        }
-      await this.prisma.$transaction(async (tx) => {
-        for (let start = 0; start < addedNames.length; start += 500) {
-          await tx.tag.createMany({
-            data: addedNames.slice(start, start + 500).map((name) => ({
-              id: uuidv4(),
-              normalizedName: name,
-              displayName: name,
-              status: TagStatus.PENDING,
-              createdById: creatorByTag.get(name) ?? null,
-              usageCount: 0,
-              lastUsedAt: now,
-              isBanned: false,
-            })),
-            skipDuplicates: true,
-          });
-        }
-        const existing: Array<{ id: string; normalizedName: string }> = [];
-        for (let start = 0; start < affected.length; start += 500) {
-          existing.push(
-            ...(await tx.tag.findMany({
-              where: {
-                normalizedName: { in: affected.slice(start, start + 500) },
-              },
-              select: { id: true, normalizedName: true },
-            })),
-          );
-        }
-        const locked = await lockTagRows(
-          tx,
-          existing.map((row) => row.id),
-        );
-        const addedSet = new Set(addedNames);
-        const blocked = locked.filter(
-          (row) =>
-            addedSet.has(row.normalizedName) &&
-            (row.isBanned || row.status === TagStatus.REJECTED),
-        );
-        if (blocked.length)
-          throw new BadRequestException(
-            `One or more tags are blocked: ${blocked.map((row) => '#' + row.normalizedName).join(', ')}`,
-          );
-        const byName = new Map(
-          locked.map((row) => [row.normalizedName, row.id]),
-        );
-        const added = batch.flatMap((entry) =>
-          entry.added.flatMap((name) => {
-            const tagId = byName.get(name);
-            return tagId
-              ? [
-                  {
-                    id: uuidv4(),
-                    tagId,
-                    entityType: entry.entityType,
-                    entityId: entry.entityId,
-                  },
-                ]
-              : [];
-          }),
-        );
-        const removed = batch.flatMap((entry) =>
-          entry.removed.flatMap((name) => {
-            const tagId = byName.get(name);
-            return tagId
-              ? [
-                  {
-                    tagId,
-                    entityType: entry.entityType,
-                    entityId: entry.entityId,
-                  },
-                ]
-              : [];
-          }),
-        );
-        for (let start = 0; start < added.length; start += 500) {
-          await tx.tagBinding.createMany({
-            data: added.slice(start, start + 500),
-            skipDuplicates: true,
-          });
-        }
-        for (let start = 0; start < removed.length; start += 500) {
-          const removals = removed.slice(start, start + 500);
-          await tx.$executeRaw(Prisma.sql`
-            DELETE FROM "TagBinding" binding USING unnest(
-              ${removals.map((row) => row.tagId)}::uuid[],
-              ${removals.map((row) => row.entityType)}::"TagEntityType"[],
-              ${removals.map((row) => row.entityId)}::uuid[]
-            ) removed("tagId", type, "entityId")
-            WHERE binding."tagId" = removed."tagId" AND binding."entityType" = removed.type AND binding."entityId" = removed."entityId"
-          `);
-        }
-        await refreshTagUsageCounts(
-          tx,
-          locked.map((row) => row.id),
-          now,
-        );
-      });
+      );
     }
+    return bindingCount;
+  }
+
+  /** Durable retries are bounded; requests still take the immediate path. */
+  @Cron(CronExpression.EVERY_10_SECONDS, { waitForCompletion: true })
+  async recoverTagProjections(): Promise<void> {
+    for (const kind of ['source', 'usage'] as const) {
+      const exhausted = await reapTagJobs(this.prisma, kind);
+      if (exhausted)
+        this.logger.error({
+          event: 'tag_projection_exhausted',
+          kind,
+          count: exhausted,
+        });
+    }
+    const sources = await claimTagJobs(this.prisma, 'source', 25);
+    const project = (jobs: TagProjectionJob[]) =>
+      this.syncEntitiesTags(
+        jobs.map((job) => ({
+          ...job,
+          previousTags: [],
+          nextTags: [],
+          options: { skipModerated: true, notifyMentions: false },
+        })),
+        jobs,
+      );
+    if (sources.length) {
+      try {
+        await project(sources);
+      } catch {
+        // A malformed source cannot keep healthy neighbours behind it.
+        for (const job of sources) {
+          try {
+            await project([job]);
+          } catch (error) {
+            await this.recordProjectionFailure('source', job, error);
+          }
+        }
+      }
+    }
+    const usages = await claimTagJobs(this.prisma, 'usage', 100);
+    if (usages.length) {
+      try {
+        await this.projectUsageJobs(usages);
+      } catch {
+        for (const job of usages) {
+          try {
+            await this.projectUsageJobs([job]);
+          } catch (error) {
+            await this.recordProjectionFailure('usage', job, error);
+          }
+        }
+      }
+    }
+  }
+
+  private async projectUsageJobs(jobs: TagUsageJob[]) {
+    await this.prisma.$transaction(
+      async (tx) => {
+        await lockTagRows(
+          tx,
+          jobs.map((job) => job.tagId),
+        );
+        // Read ownership after tag-lock waits. The count/ack statement has its own
+        // generation fence so a concurrent FK cascade cannot lose its repair job.
+        const current = await tx.$queryRaw<Array<{ tagId: string }>>(Prisma.sql`
+        SELECT q."tagId" FROM "TagUsageOutbox" q JOIN (VALUES ${Prisma.join(jobs.map((job) => Prisma.sql`(${job.tagId}::uuid,${job.generation}::uuid,${job.lockOwner}::uuid)`))}) claimed(id,generation,owner)
+        ON q."tagId"=claimed.id AND q.generation=claimed.generation AND q."lockOwner"=claimed.owner
+        WHERE q.status='PROCESSING' AND q."lockExpiresAt">clock_timestamp() AT TIME ZONE 'UTC'
+      `);
+        if (current.length)
+          await refreshTagUsageCounts(
+            tx,
+            current.map((row) => row.tagId),
+            new Date(),
+            jobs,
+          );
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+        timeout: 15000,
+      },
+    );
+  }
+
+  private async recordProjectionFailure(
+    kind: 'source' | 'usage',
+    job: TagProjectionJob | TagUsageJob,
+    error: unknown,
+  ) {
+    const updated = await failTagJob(this.prisma, kind, job, error);
+    if (updated)
+      this.logger.warn({
+        event: 'tag_projection_retry',
+        kind,
+        code: tagProjectionErrorCode(error),
+        attempt: job.attempts,
+        exhausted: job.attempts >= 8 && tagProjectionErrorCode(error) !== '55P03',
+      });
   }
 
   private async resolveMentionContext(
@@ -662,48 +903,49 @@ export class TagIndexService {
           ...row,
           tags: this.normalizeTagList(row.tags ?? [], source.maxCount),
         }));
-        const bound = new Map<string, string[]>();
-        const current = await this.prisma.tagBinding.findMany({
-          where: {
-            entityType: source.entityType,
-            entityId: { in: normalized.map((row) => row.entityId) },
-          },
-          select: { entityId: true, tag: { select: { normalizedName: true } } },
-        });
-        for (const binding of current) {
-          const list = bound.get(binding.entityId) ?? [];
-          list.push(binding.tag.normalizedName);
-          bound.set(binding.entityId, list);
-        }
-        const names = [...new Set(normalized.flatMap((row) => row.tags))];
-        const blocked = new Set<string>();
-        for (let offset = 0; offset < names.length; offset += pageSize) {
-          const tags = await this.prisma.tag.findMany({
-            where: {
-              normalizedName: { in: names.slice(offset, offset + pageSize) },
-              OR: [{ isBanned: true }, { status: TagStatus.REJECTED }],
-            },
-            select: { normalizedName: true },
-          });
-          for (const tag of tags) blocked.add(tag.normalizedName);
-        }
         const entries = normalized.map((row) => ({
           entityType: source.entityType,
           entityId: row.entityId,
-          previousTags: bound.get(row.entityId) ?? [],
-          nextTags: row.tags.filter((tag) => !blocked.has(tag)),
-          options: { maxCount: 1000, notifyMentions: false },
+          previousTags: [] as string[],
+          nextTags: row.tags,
+          options: {
+            maxCount: source.maxCount,
+            notifyMentions: false,
+            skipModerated: true,
+          },
         }));
-        await this.syncEntitiesTags(entries);
-        bindingsCreated += entries.reduce(
-          (sum, entry) => sum + entry.nextTags.length,
-          0,
-        );
+        bindingsCreated += await this.syncEntitiesTags(entries);
         afterId = rows[rows.length - 1].id;
       }
     }
 
     await this.removeIneligibleBindings();
+    // Repair pre-outbox counters too, including tags with no remaining binding.
+    let afterTag: string | undefined;
+    for (;;) {
+      const page = await this.prisma.tag.findMany({
+        where: afterTag ? { id: { gt: afterTag } } : {},
+        select: { id: true },
+        orderBy: { id: 'asc' },
+        take: pageSize,
+      });
+      if (!page.length) break;
+      await this.prisma.$transaction(
+        async (tx) => {
+          await lockTagRows(
+            tx,
+            page.map((tag) => tag.id),
+          );
+          await refreshTagUsageCounts(
+            tx,
+            page.map((tag) => tag.id),
+            new Date(),
+          );
+        },
+        { timeout: 15000 },
+      );
+      afterTag = page[page.length - 1].id;
+    }
     const tagsIndexed = await prismaClient.tag.count();
     return { tagsIndexed, bindingsCreated };
   }

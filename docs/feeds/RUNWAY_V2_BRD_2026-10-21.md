@@ -42,3 +42,19 @@ African Casual is a content lane, not a viewer ethnicity filter. Classification 
 5. Commit and push all application changes before the GitHub APK build. Build the exact pushed mobile commit and identify it in the download. Do not label a local query benchmark as production capacity or a passing suite as proof of zero bugs.
 
 [Implementation, exact weights and primary research](RUNWAY_V2_FASHION_AND_SCALE_2026-10-21.md) · [Measured query evidence](../performance/runway-local-benchmark.json)
+
+## 27 October: tag projection consistency
+
+Saved source tags are authoritative. Delayed requests and concurrent edits must
+not restore stale tag bindings. Source/lifecycle changes now leave a coalesced,
+transactional retry instruction, including deletions and future publication.
+Recovery runs in bounded batches every ten seconds, fences stale owners and
+generations, isolates malformed sources and quarantines repeated failures.
+Typed-FK cascade deletion also schedules usage-counter repair. Admin merges
+resolve canonical aliases and refuse cycles. Reindex remains paginated and
+keeps the existing searchable index available throughout repair.
+
+These are consistency guarantees, not new ranking weights or a measured
+production-capacity claim. Public feed/search eligibility gates still apply.
+See the [tag recovery runbook](../operations/TAG_PROJECTION_RECOVERY.md) for
+deployment order, recovery limits and reproducible PostgreSQL scenarios.
