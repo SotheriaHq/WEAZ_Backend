@@ -19,7 +19,9 @@ export const SETTLEMENT_CURRENCY = 'NGN';
 export const CHARGE_CURRENCIES: readonly string[] = ['NGN'];
 
 export const normalizeCurrencyCode = (value: unknown): string =>
-  String(value ?? '').trim().toUpperCase();
+  String(value ?? '')
+    .trim()
+    .toUpperCase();
 
 export const isChargeableCurrency = (value: unknown): boolean =>
   CHARGE_CURRENCIES.includes(normalizeCurrencyCode(value));
@@ -30,7 +32,8 @@ export function assertCatalogueCurrency(value: unknown): string {
   if (!isChargeableCurrency(code)) {
     throw new BadRequestException({
       code: 'CURRENCY_NOT_SUPPORTED_FOR_PRICES',
-      message: 'Set prices in Naira (NGN). Shoppers see an estimate in their own currency automatically.',
+      message:
+        'Set prices in Naira (NGN). Shoppers see an estimate in their own currency automatically.',
     });
   }
   return code;
@@ -42,7 +45,8 @@ export function assertChargeCurrency(value: unknown): string {
   if (!isChargeableCurrency(code)) {
     throw new BadRequestException({
       code: 'CHECKOUT_CURRENCY_NOT_CHARGEABLE',
-      message: 'Some items in your bag cannot be paid for right now. Remove them and try again.',
+      message:
+        'Some items in your bag cannot be paid for right now. Remove them and try again.',
     });
   }
   return code;

@@ -17,7 +17,9 @@ describe('currency policy', () => {
     expect(assertCatalogueCurrency('ngn')).toBe('NGN');
     expect(() => assertCatalogueCurrency('USD')).toThrow(
       expect.objectContaining({
-        response: expect.objectContaining({ code: 'CURRENCY_NOT_SUPPORTED_FOR_PRICES' }),
+        response: expect.objectContaining({
+          code: 'CURRENCY_NOT_SUPPORTED_FOR_PRICES',
+        }),
       }),
     );
   });
@@ -26,7 +28,9 @@ describe('currency policy', () => {
     expect(assertChargeCurrency('NGN')).toBe('NGN');
     expect(() => assertChargeCurrency('GBP')).toThrow(
       expect.objectContaining({
-        response: expect.objectContaining({ code: 'CHECKOUT_CURRENCY_NOT_CHARGEABLE' }),
+        response: expect.objectContaining({
+          code: 'CHECKOUT_CURRENCY_NOT_CHARGEABLE',
+        }),
       }),
     );
     expect(() => assertChargeCurrency(undefined)).toThrow();
