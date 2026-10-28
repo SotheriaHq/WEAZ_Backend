@@ -1,0 +1,3 @@
+# False positive: the generic-api-key rule matched the Prisma filter
+# `where: { s3Key: foreign.s3Key }` in a test script (a field name, not a key).
+92924e72e61e7b8377d41f3e5d22feaf5e36e577:scripts/verify-file-deletion-postgres.cjs:generic-api-key:283

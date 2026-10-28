@@ -8,13 +8,14 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { v4 as uuidv4 } from 'uuid';
 import { FxMarketRates } from './fx-market-rates';
 import { COUNTRY_CURRENCIES } from './country-currencies';
+import { CHARGE_CURRENCIES, SETTLEMENT_CURRENCY } from './currency-policy';
 
 const DEFAULT_FX_QUOTE_SUPPORTED_CURRENCIES = [...new Set(Object.values(COUNTRY_CURRENCIES).flatMap(country => country.currencies))];
 const DEFAULT_FX_QUOTE_MAX_AMOUNT = 10_000_000;
 
 @Injectable()
 export class FxRateService {
-  private readonly baseCurrency = 'NGN';
+  private readonly baseCurrency = SETTLEMENT_CURRENCY;
   private readonly marketRates = new FxMarketRates();
 
   constructor(private readonly prisma: PrismaService) {}
@@ -42,7 +43,8 @@ export class FxRateService {
     }]));
     rates.NGN = { rate: 1, asOf: table.rates.NGN.date };
     return {
-      baseCurrency: this.baseCurrency, displayCurrency, countryCode,
+      // Shoppers are charged in this currency whatever they choose to read.
+      baseCurrency: this.baseCurrency, chargeCurrency: CHARGE_CURRENCIES[0], displayCurrency, countryCode,
       selectionSource: override ? 'EXPLICIT' : localCurrencies.length === 1 ? 'COUNTRY' : 'BASE_FALLBACK',
       countryCurrencies: localCurrencies, needsCurrencyChoice: !override && localCurrencies.length > 1,
       isEstimate: true, isStale: table.isStale, provider: 'FRANKFURTER_V2',

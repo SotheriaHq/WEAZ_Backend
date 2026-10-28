@@ -55,6 +55,7 @@ import {
 } from 'src/brand-verification/verification-truth.util';
 import { v4 as uuidv4 } from 'uuid';
 import { FxRateService } from './fx-rate.service';
+import { SETTLEMENT_CURRENCY, assertChargeCurrency } from './currency-policy';
 import { lockPaymentAttempt } from './payment-attempt-query';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-sync.service';
@@ -622,9 +623,8 @@ export class PaymentService implements OnModuleInit {
           ...customLineDrafts.map((line) => line.currency),
         ];
         this.ensureSingleCurrency(currencies);
-        const currency = String(currencies[0] ?? 'NGN')
-          .trim()
-          .toUpperCase();
+        // Refused before any rate snapshot or stock reservation is made.
+        const currency = assertChargeCurrency(currencies[0] ?? SETTLEMENT_CURRENCY);
 
         const standardSubtotal = this.roundMoney(
           standardLineDrafts.reduce((sum, line) => sum + line.lineTotal, 0),

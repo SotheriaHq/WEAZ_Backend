@@ -45,7 +45,7 @@ function paystackSimulator() {
     refunds: new Map(),
     posts: new Map(),
     modes: new Map(),
-    listDown: new Set(),
+    listDown: false,
     gates: new Map(),
     sequence: 7000,
     unauthorized: 0,
@@ -100,9 +100,20 @@ function paystackSimulator() {
           currency: body.currency,
           note: body.merchant_note,
           status: 'pending',
+          createdAt: Date.now(),
         };
         state.refunds.set(String(refund.id), refund);
-        if (mode === 'drop') {
+        if (mode === 'drop-buried') {
+          // Other merchants' refunds made since push this one past the first page.
+          for (let index = 0; index < 150; index++) {
+            const id = ++state.sequence;
+            state.refunds.set(String(id), {
+              id, reference: `noise-${id}`, transactionId: id, amount: 100, currency: 'NGN',
+              note: 'another refund', status: 'pending', createdAt: Date.now(),
+            });
+          }
+        }
+        if (mode === 'drop' || mode === 'drop-buried') {
           // The refund exists at the provider, but the answer never arrives.
           req.socket.destroy();
           return;
@@ -115,9 +126,16 @@ function paystackSimulator() {
         return send(200, { status: true, message: 'Refund has been queued for processing', data: view(refund, true) });
       }
       if (req.method === 'GET' && url.pathname === '/refund') {
-        const reference = url.searchParams.get('reference');
-        if (reference && state.listDown.has(reference)) return send(503, { status: false });
-        const rows = [...state.refunds.values()].filter((refund) => !reference || refund.reference === reference);
+        // Documented List Refunds: page, perPage, from, to. There is no
+        // transaction filter, so anything else in the query is ignored.
+        if (state.listDown) return send(503, { status: false });
+        const perPage = Math.min(Number(url.searchParams.get('perPage') ?? 50), 100);
+        const page = Math.max(Number(url.searchParams.get('page') ?? 1), 1);
+        const from = url.searchParams.get('from') ? Date.parse(url.searchParams.get('from')) : null;
+        const rows = [...state.refunds.values()]
+          .filter((refund) => from === null || (refund.createdAt ?? Date.now()) >= from)
+          .sort((a, b) => b.id - a.id)
+          .slice((page - 1) * perPage, page * perPage);
         return send(200, { status: true, data: rows.map((refund) => view(refund, false)) });
       }
       if (req.method === 'GET' && url.pathname.startsWith('/refund/')) {
@@ -420,12 +438,24 @@ async function main() {
     assert.equal(posts(b1.reference), 1);
     evidence.cases.push('a submission whose answer is lost is found by its note at the provider and linked; the refund is never sent a second time');
 
+    const b1b = await paid({ brandId: brand1 });
+    const refundB1b = (await request(b1b.order.id)).id;
+    simulator.state.modes.set(b1b.reference, 'drop-buried');
+    await only([refundB1b]);
+    await refunds.processPending();
+    const linkedB1b = await refundRow(refundB1b);
+    assert.equal(linkedB1b.status, 'PROCESSING');
+    assert.equal(providerRefund(linkedB1b.providerRefundId).reference, b1b.reference);
+    assert.equal(posts(b1b.reference), 1);
+    evidence.cases.push('the lookup uses only documented List Refunds parameters (page, perPage, from) and pages past 150 newer refunds to find the lost one; still never resent');
+
     const b2 = await paid({ brandId: brand1 });
     const refundB2 = (await request(b2.order.id)).id;
     simulator.state.modes.set(b2.reference, 'drop');
-    simulator.state.listDown.add(b2.reference);
+    simulator.state.listDown = true;
     await only([refundB2]);
     await refunds.processPending();
+    simulator.state.listDown = false;
     const attentionB2 = await refundRow(refundB2);
     assert.equal(attentionB2.status, 'NEEDS_ATTENTION');
     assert.equal(attentionB2.lastError, 'REFUND_GATEWAY_OUTCOME_UNKNOWN');

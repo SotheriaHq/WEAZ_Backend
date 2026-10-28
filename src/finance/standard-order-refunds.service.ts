@@ -320,7 +320,8 @@ export class StandardOrderRefundsService {
     const row = await this.load(id);
     let found: ProviderRefund[] | null = null;
     try {
-      found = await this.provider.findByNote(row.capture, this.note(row));
+      // No provider refund for this row can predate the row itself.
+      found = await this.provider.findByNote(row.capture, this.note(row), row.createdAt);
     } catch {
       found = null;
     }
@@ -612,7 +613,7 @@ export class StandardOrderRefundsService {
       orderBy: { settledAt: 'asc' },
       take: BATCH,
       select: {
-        id: true, orderId: true, settlementAmount: true, settlementCurrency: true,
+        id: true, orderId: true, amount: true, currency: true,
         order: { select: { buyerId: true, status: true } },
       },
     });
@@ -627,7 +628,7 @@ export class StandardOrderRefundsService {
               status: row.order.status,
               refundStatus: 'PROCESSED',
               targetUrl: `/orders/${row.orderId}`,
-              message: `Your refund of ${row.settlementCurrency} ${row.settlementAmount.toFixed(2)} has been processed by the payment provider. Your bank may take up to 10 business days to show it.`,
+              message: `Your refund of ${row.currency} ${row.amount.toFixed(2)} has been processed by the payment provider. Your bank may take up to 10 business days to show it.`,
             },
           });
         }
@@ -648,8 +649,9 @@ export class StandardOrderRefundsService {
     return `Your refund of ${currency} ${amount.toFixed(2)} has been requested and is being processed with the payment provider. We will tell you when it completes.`;
   }
 
+  /** The provider returns what was charged; NGN settlement reverses separately. */
   private target(row: RefundWithCapture): RefundTarget {
-    return { amount: row.settlementAmount, currency: row.settlementCurrency };
+    return { amount: row.amount, currency: row.currency };
   }
 
   private note(row: { id: string }) {
