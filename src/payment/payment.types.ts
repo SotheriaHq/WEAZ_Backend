@@ -110,6 +110,18 @@ export class CheckoutContactInfoDto {
   channel?: string;
 }
 
+export class FxDisplayQueryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  country?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(3)
+  currency?: string;
+}
+
 export class FxQuoteQueryDto {
   @IsString()
   @MaxLength(3)

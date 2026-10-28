@@ -20,6 +20,11 @@ import { EmailService } from 'src/email/email.service';
 import * as emailTemplates from 'src/email/email.templates';
 import { CommissionService } from 'src/finance/commission.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
+import {
+  BRAND_SETTLEMENT_CURRENCY,
+  loadBrandPosition,
+  loadOtherCurrencyEarnings,
+} from 'src/finance/brand-position-query';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 import { BrandBalanceService } from 'src/finance/brand-balance.service';
 import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-sync.service';
@@ -273,8 +278,10 @@ export class PayoutService {
     amount: number,
     actorUserId?: string | null,
   ) {
-    await tx.$queryRaw`SELECT "id" FROM "Brand" WHERE "id" = ${brandId}::uuid FOR UPDATE`;
-    const refreshedBalance = await this.calculateAvailableBalance(brandId);
+    // Brand rows are keyed by "_id"; this lock serializes every payout and
+    // debt-recovery command for the brand.
+    await tx.$queryRaw`SELECT "_id" FROM "Brand" WHERE "_id" = ${brandId}::uuid FOR UPDATE`;
+    const refreshedBalance = await this.calculateAvailableBalance(brandId, tx);
     if (amount > refreshedBalance) {
       throw new BadRequestException(
         `Insufficient balance. Available: ${refreshedBalance}`,
@@ -512,6 +519,7 @@ export class PayoutService {
       debt,
       queuedCaptures,
       pendingRefunds,
+      otherCurrencyEarnings,
     ] = await Promise.all([
       this.prisma.order.aggregate({
         where: { brandId, paymentStatus: 'PAID' },
@@ -538,10 +546,20 @@ export class PayoutService {
       this.brandBalanceService.getDebtSnapshot(brandId),
       this.prisma.customOrderLedgerAllocation.aggregate({ where: { customOrder: { brandId, lane: { in: ['PENDING', 'UP_NEXT'] } }, allocationType: 'PLACEMENT_CAPTURE', status: 'HELD' }, _sum: { amount: true }, _count: true }),
       this.prisma.customOrderQueueRefund.aggregate({ where: { customOrder: { brandId }, status: { not: 'SETTLED' } }, _sum: { amount: true } }),
+      loadOtherCurrencyEarnings(this.prisma, brandId, BRAND_SETTLEMENT_CURRENCY),
     ]);
 
     return {
-      currency: 'NGN',
+      currency: BRAND_SETTLEMENT_CURRENCY,
+      /*
+        Earnings recorded in another currency are not added to the NGN figures
+        above at face value; they become withdrawable once settled in NGN at
+        the original payment rate.
+      */
+      otherCurrencyEarnings: otherCurrencyEarnings.map((row) => ({
+        currency: row.currency,
+        amount: new Prisma.Decimal(row.amount).toNumber(),
+      })),
       availableBalance,
       releasedBalance,
       reservedPayoutBalance,
@@ -1182,85 +1200,49 @@ export class PayoutService {
     };
   }
 
-  private async calculateAvailableBalance(brandId: string): Promise<number> {
-    const snapshot = await this.calculateBalanceSnapshot(brandId);
+  private async calculateAvailableBalance(
+    brandId: string,
+    client: Pick<Prisma.TransactionClient, '$queryRaw' | 'order'> = this.prisma,
+  ): Promise<number> {
+    const snapshot = await this.calculateBalanceSnapshot(brandId, client);
     return snapshot.availableBalance;
   }
 
-  private async calculateBalanceSnapshot(brandId: string) {
-    const [
-      standardReleasedBalance,
-      customReleasedBalance,
-      legacyFallbackBalance,
-      payoutTotals,
-    ] = await Promise.all([
-      this.standardOrderEscrowService.getReleasedBalance(brandId),
-      this.getCustomOrderReleasedBalance(brandId),
-      this.getLegacyFallbackBalance(brandId),
-      this.prisma.payout.groupBy({
-        by: ['status'],
-        where: { brandId },
-        _sum: { amount: true },
-      }),
+  /**
+   * What the brand may withdraw, in its settlement currency only. The same
+   * position decides debt and debt recovery, so a refund, payout or manual
+   * adjustment is counted exactly once. Earnings held in other currencies are
+   * reported separately and never added to NGN at face value.
+   */
+  private async calculateBalanceSnapshot(
+    brandId: string,
+    client: Pick<Prisma.TransactionClient, '$queryRaw' | 'order'> = this.prisma,
+  ) {
+    const [position, legacyFallbackBalance] = await Promise.all([
+      loadBrandPosition(client, brandId, BRAND_SETTLEMENT_CURRENCY),
+      this.getLegacyFallbackBalance(brandId, client),
     ]);
-
-    const reservedStatuses = this.getReservedPayoutStatuses();
-
-    const reservedPayoutBalance = payoutTotals.reduce((sum, row) => {
-      if (!reservedStatuses.has(row.status)) {
-        return sum;
-      }
-      return sum + Number(row._sum.amount ?? 0);
-    }, 0);
-
-    const paidOutBalance = payoutTotals.reduce((sum, row) => {
-      if (row.status !== PayoutStatus.PAID) {
-        return sum;
-      }
-      return sum + Number(row._sum.amount ?? 0);
-    }, 0);
-
-    const releasedBalance = this.roundMoney(
-      standardReleasedBalance + customReleasedBalance + legacyFallbackBalance,
-    );
-    const availableBalance = this.roundMoney(
-      releasedBalance - reservedPayoutBalance - paidOutBalance,
-    );
+    const released = position.released.plus(legacyFallbackBalance.toFixed(2));
+    const available = position.position.plus(legacyFallbackBalance.toFixed(2));
 
     return {
-      availableBalance,
-      releasedBalance,
-      reservedPayoutBalance: this.roundMoney(reservedPayoutBalance),
-      paidOutBalance: this.roundMoney(paidOutBalance),
+      availableBalance: available.toNumber(),
+      releasedBalance: released.toNumber(),
+      reservedPayoutBalance: position.reserved.toNumber(),
+      paidOutBalance: position.paidOut.toNumber(),
     };
   }
 
-  private async getCustomOrderReleasedBalance(
+  /** Paid orders that predate escrow holds. Settlement currency only. */
+  private async getLegacyFallbackBalance(
     brandId: string,
+    client: Pick<Prisma.TransactionClient, 'order'> = this.prisma,
   ): Promise<number> {
-    const released = await this.prisma.customOrderLedgerAllocation.aggregate({
-      where: {
-        customOrder: { brandId },
-        status: {
-          in: [
-            CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE,
-            CustomOrderLedgerAllocationStatus.PAID_OUT,
-          ],
-        },
-      },
-      _sum: {
-        netBrandAmount: true,
-      },
-    });
-
-    return this.roundMoney(Number(released._sum.netBrandAmount ?? 0));
-  }
-
-  private async getLegacyFallbackBalance(brandId: string): Promise<number> {
-    const paidOrders = await this.prisma.order.findMany({
+    const paidOrders = await client.order.findMany({
       where: {
         brandId,
         paymentStatus: 'PAID',
+        currency: BRAND_SETTLEMENT_CURRENCY,
         escrowHold: { is: null },
       },
       select: {

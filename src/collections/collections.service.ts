@@ -1,4 +1,10 @@
+import { BULK_IMPORT_BATCH_SIZE, claimBulkImport, renewBulkImport, lockBulkImportCheckpoint, finishBulkImport } from './bulk-import-query';
+import { loadPendingCategoryCollections } from './category-moderation-query';
+import type { NotificationEvent } from '../notifications/notification-batch-query';
+import { plainToInstance } from 'class-transformer';
+import { validateSync } from 'class-validator';
 import { refreshCollectionPriceRanges } from '../store/collection-price-range.util';
+import { attachFinalizedMedia } from './finalized-media-query';
 import { lockMembershipProducts, readProductMemberships, synchronizePrimaryMemberships } from './collection-membership-query';
 import { privateCollectionCountsForOwners } from './collection-counts.util';
 import { retryDatabaseTransaction } from 'src/common/transaction-retry.util';
@@ -895,7 +901,8 @@ export class CollectionsService {
       typeof file.height === 'number' && Number.isFinite(file.height)
         ? file.height
         : null;
-    const aspectRatio = width && height && width > 0 && height > 0 ? width / height : null;
+    const aspectRatio =
+      width && height && width > 0 && height > 0 ? width / height : null;
 
     return {
       id: String(args.id ?? file.id),
@@ -959,7 +966,12 @@ export class CollectionsService {
       fileId &&
       typeof this.uploadService.getBatchVariantDisplayUrls === 'function'
     ) {
-      const avatarUrls = prefetchedAvatars ?? await this.uploadService.getBatchVariantDisplayUrls([fileId], 'AVATAR');
+      const avatarUrls =
+        prefetchedAvatars ??
+        (await this.uploadService.getBatchVariantDisplayUrls(
+          [fileId],
+          'AVATAR',
+        ));
       const avatarUrl = avatarUrls.get(fileId);
       if (avatarUrl) {
         return { ...asset, displayUrl: avatarUrl };
@@ -1191,9 +1203,20 @@ export class CollectionsService {
   private parseBulkCsv(file: Express.Multer.File) {
     const csvText = file.buffer.toString('utf-8');
     return parse(csvText, {
-      columns: true,
+      columns: (headers: string[]) => {
+        if (
+          new Set(headers).size !== headers.length ||
+          headers.some((header) => !header)
+        )
+          throw new BadRequestException(
+            'CSV headers must be nonempty and unique',
+          );
+        return headers;
+      },
       skip_empty_lines: true,
       trim: true,
+      bom: true,
+      to: 1001,
     }) as Array<Record<string, string>>;
   }
 
@@ -1202,13 +1225,19 @@ export class CollectionsService {
     const normalized = value.trim().toLowerCase();
     if (['true', '1', 'yes', 'y'].includes(normalized)) return true;
     if (['false', '0', 'no', 'n'].includes(normalized)) return false;
-    return undefined;
+    throw new BadRequestException(
+      'Boolean CSV values must be true/false, yes/no or 1/0',
+    );
   }
 
   private normalizeCsvNumber(value?: string) {
     if (!value) return undefined;
     const num = Number(value);
-    return Number.isFinite(num) ? num : undefined;
+    if (!Number.isFinite(num))
+      throw new BadRequestException(
+        'CSV numeric values must be finite numbers',
+      );
+    return num;
   }
 
   private buildBulkProductDto(
@@ -1320,7 +1349,9 @@ export class CollectionsService {
   }
 
   private async recalculateCollectionPriceRange(collectionId: string) {
-    await this.prisma.$transaction((tx) => refreshCollectionPriceRanges(tx, [collectionId]));
+    await this.prisma.$transaction((tx) =>
+      refreshCollectionPriceRanges(tx, [collectionId]),
+    );
   }
 
   // ===================== Access Management =====================
@@ -2175,7 +2206,10 @@ export class CollectionsService {
     }
 
     const ownerIds = Array.from(groupedByBrand.keys());
-    const privateCollectionCounts = await privateCollectionCountsForOwners(this.prisma, ownerIds);
+    const privateCollectionCounts = await privateCollectionCountsForOwners(
+      this.prisma,
+      ownerIds,
+    );
 
     const aggregated = Array.from(groupedByBrand.entries())
       .map(([ownerId, groupRows]) => {
@@ -2289,7 +2323,10 @@ export class CollectionsService {
     }
 
     const ownerIds = Array.from(groupedByBrand.keys());
-    const privateCollectionCounts = await privateCollectionCountsForOwners(this.prisma, ownerIds);
+    const privateCollectionCounts = await privateCollectionCountsForOwners(
+      this.prisma,
+      ownerIds,
+    );
 
     const aggregated = Array.from(groupedByBrand.entries())
       .map(([ownerId, groupRows]) => {
@@ -2914,10 +2951,23 @@ export class CollectionsService {
   }) {
     const { cursor, limit = 20, tag, category, requesterId } = options ?? {};
     const requestedLane = options?.feedKey ?? tag;
-    const lane = requestedLane && ([...RUNWAY_KEYS, 'african-style'] as string[]).includes(requestedLane) ? requestedLane : undefined;
-    if (cursor && (cursor.length > 256 || (!cursor.startsWith('rw_') && !parseMixCursor(cursor) && !isUuid(cursor)))) throw new BadRequestException('Invalid Runway cursor');
+    const lane =
+      requestedLane &&
+      ([...RUNWAY_KEYS, 'african-style'] as string[]).includes(requestedLane)
+        ? requestedLane
+        : undefined;
+    if (
+      cursor &&
+      (cursor.length > 256 ||
+        (!cursor.startsWith('rw_') &&
+          !parseMixCursor(cursor) &&
+          !isUuid(cursor)))
+    )
+      throw new BadRequestException('Invalid Runway cursor');
     const taxonomyTag = lane === tag ? undefined : tag;
-    const take = Number.isFinite(limit) ? Math.min(Math.max(Math.floor(limit), 1), 40) : 20;
+    const take = Number.isFinite(limit)
+      ? Math.min(Math.max(Math.floor(limit), 1), 40)
+      : 20;
     this.logger.debug(
       `[feed] market query start cursor=${cursor ?? 'none'} limit=${take} tag=${tag ?? 'all'} category=${category ?? 'all'}`,
     );
@@ -2955,18 +3005,36 @@ export class CollectionsService {
     } as Prisma.CollectionWhereInput;
 
     if (this.runwayFeed && (!cursor || cursor.startsWith('rw_'))) {
-      const page = await this.runwayFeed.page(where, requesterId, lane, cursor, take);
-      const rows = page.ids.length ? await this.prisma.collection.findMany({
-        where: { AND: [where, { id: { in: page.ids } }] },
-        include: this.marketFeedInclude(),
-      }) : [];
-      const byId = new Map(rows.map(row => [row.id, row]));
-      const ordered = page.ids.map(id => byId.get(id)).filter(Boolean);
+      const page = await this.runwayFeed.page(
+        where,
+        requesterId,
+        lane,
+        cursor,
+        take,
+      );
+      const rows = page.ids.length
+        ? await this.prisma.collection.findMany({
+            where: { AND: [where, { id: { in: page.ids } }] },
+            include: this.marketFeedInclude(),
+          })
+        : [];
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      const ordered = page.ids.map((id) => byId.get(id)).filter(Boolean);
       return {
-        items: await this.buildMarketFeedItems(ordered, requesterId, options?.countsPolicy),
+        items: await this.buildMarketFeedItems(
+          ordered,
+          requesterId,
+          options?.countsPolicy,
+        ),
         hasNextPage: page.hasNextPage,
         nextCursor: page.nextCursor,
-        metadata: { ranking: 'runway-v2', categoryKey: lane ?? 'discover', personalization: requesterId ? 'interaction-affinity' : 'guest-discovery' },
+        metadata: {
+          ranking: 'runway-v2',
+          categoryKey: lane ?? 'discover',
+          personalization: requesterId
+            ? 'interaction-affinity'
+            : 'guest-discovery',
+        },
       };
     }
 
@@ -3287,12 +3355,23 @@ export class CollectionsService {
       })
       .filter((row): row is { collection: any; media: any } => Boolean(row));
 
-    const avatarIds = [...new Set(feedRows.map((row) =>
-      row.collection.owner?.userProfile?.profileImageFile?.id,
-    ).filter((id): id is string => typeof id === 'string' && id.length > 0))];
-    const avatarUrls = avatarIds.length && typeof this.uploadService.getBatchVariantDisplayUrls === 'function'
-      ? await this.uploadService.getBatchVariantDisplayUrls(avatarIds, 'AVATAR')
-      : new Map<string, string>();
+    const avatarIds = [
+      ...new Set(
+        feedRows
+          .map((row) => row.collection.owner?.userProfile?.profileImageFile?.id)
+          .filter(
+            (id): id is string => typeof id === 'string' && id.length > 0,
+          ),
+      ),
+    ];
+    const avatarUrls =
+      avatarIds.length &&
+      typeof this.uploadService.getBatchVariantDisplayUrls === 'function'
+        ? await this.uploadService.getBatchVariantDisplayUrls(
+            avatarIds,
+            'AVATAR',
+          )
+        : new Map<string, string>();
 
     // Hydrate isThreaded for requester when available
     let isThreadedMap: Record<string, boolean> = {};
@@ -3391,7 +3470,10 @@ export class CollectionsService {
             return null;
           }
 
-          const avatar = await this.buildFeedBrandAvatar(collection.owner, avatarUrls);
+          const avatar = await this.buildFeedBrandAvatar(
+            collection.owner,
+            avatarUrls,
+          );
           const logoFileId =
             avatar?.fileId ??
             owner.profileImageId ??
@@ -3733,9 +3815,7 @@ export class CollectionsService {
     return Buffer.from(payload, 'utf8').toString('base64url');
   }
 
-  private decodeRunwayCursor(
-    cursor: string,
-  ): { u: string; i: string } | null {
+  private decodeRunwayCursor(cursor: string): { u: string; i: string } | null {
     try {
       const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
       const parsed = JSON.parse(decoded) as { u?: unknown; i?: unknown };
@@ -3771,6 +3851,11 @@ export class CollectionsService {
       Array.isArray(dto.completions) && dto.completions.length > 0;
     if (expectedDomain === 'STORE') {
       return this.finalizeStoreCollection(collectionId, userId, dto);
+    }
+    if ((dto.completions?.length ?? 0) > DESIGN_MAX_MEDIA_COUNT) {
+      throw new BadRequestException(
+        `Maximum ${DESIGN_MAX_MEDIA_COUNT} files per design`,
+      );
     }
 
     await this.assertOwner(collectionId, userId, expectedDomain ?? 'DESIGN');
@@ -4300,33 +4385,36 @@ export class CollectionsService {
       completionIds.add(c.fileId);
     }
 
+    const presigns = await this.prisma.presignedUpload.findMany({
+      where: { id: { in: [...completionIds] } },
+    });
+    const presignsById = new Map(
+      presigns.map((presign) => [presign.id, presign]),
+    );
+    // Validate the whole request before starting any per-object finalization.
+    for (const completion of dto.completions ?? []) {
+      const presign = presignsById.get(completion.fileId);
+      if (!presign) throw new BadRequestException('Presign record not found');
+      if (presign.userId !== userId)
+        throw new ForbiddenException('Presign record does not belong to user');
+      if (presign.collectionId && presign.collectionId !== collectionId)
+        throw new BadRequestException(
+          'Presign record not linked to collection',
+        );
+      if (presign.s3Key !== completion.s3Key)
+        throw new BadRequestException('S3 key mismatch for presign record');
+    }
     const verifiedFiles = await Promise.all(
       (dto.completions ?? []).map(async (completion) => {
-        const presign = await this.prisma.presignedUpload.findUnique({
-          where: { id: completion.fileId },
-        });
-        if (!presign) {
-          throw new BadRequestException('Presign record not found');
-        }
-        if (presign.userId !== userId) {
-          throw new ForbiddenException(
-            'Presign record does not belong to user',
-          );
-        }
-        if (presign.collectionId && presign.collectionId !== collectionId) {
-          throw new BadRequestException(
-            'Presign record not linked to collection',
-          );
-        }
-        if (presign.s3Key !== completion.s3Key) {
-          throw new BadRequestException('S3 key mismatch for presign record');
-        }
+        const presign = presignsById.get(completion.fileId)!;
         const fileUpload = await this.uploadService.createFileRecordFromPresign(
           completion.fileId,
           userId,
           completion.s3Key,
           completion.actualMimeType,
           completion.actualSize,
+          undefined,
+          { presignSnapshot: presign },
         );
 
         return {
@@ -4338,42 +4426,17 @@ export class CollectionsService {
       }),
     );
 
-    await this.prisma.$transaction(async (tx) => {
-      for (const [index, entry] of verifiedFiles.entries()) {
-        const file = entry.file;
-        const orderIndex =
-          typeof entry.orderIndex === 'number' ? entry.orderIndex : index;
-        const viewSlot = this.contentIntegrity?.normalizeViewSlot(
-          entry.viewSlot,
-          orderIndex,
-        );
-        const existingMedia = await tx.collectionMedia.findFirst({
-          where: { collectionId: collection.id, fileUploadId: file.id },
-        });
-        if (existingMedia) continue;
-        await tx.collectionMedia.create({
-          data: {
-            id: uuidv4(),
-            collectionId: collection.id,
-            fileUploadId: file.id,
-            orderIndex,
-            mediaType: file.fileType,
-            viewSlot,
-            mediaPurpose: viewSlot
-              ? this.contentIntegrity?.mediaPurposeForSlot(viewSlot)
-              : undefined,
-            reviewStatus: 'APPROVED',
-            createdById: userId,
-            brandId: (
-              await tx.brand.findUnique({
-                where: { ownerId: collection.ownerId },
-                select: { id: true },
-              })
-            )?.id,
-          },
-        });
-      }
-    });
+    await this.prisma.$transaction(
+      (tx) =>
+        attachFinalizedMedia(
+          tx,
+          collection,
+          userId,
+          verifiedFiles,
+          this.contentIntegrity,
+        ),
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
 
     let coverMediaId: string | null = dto.coverMediaId ?? null;
     if (coverMediaId) {
@@ -4690,26 +4753,19 @@ export class CollectionsService {
           console.warn('Failed to enqueue collection publish fanout', e);
         }
       } else if (recipientIds.length > 0) {
-        // Fan-out notifications (fallback)
-        for (const recipientId of recipientIds) {
-          try {
-            await this.notifications.create(
-              recipientId,
-              NotificationType.COLLECTION_UPLOAD,
-              {
-                actorId: userId,
-                payload: {
-                  collectionId: publishedCollection.id,
-                  collectionTitle: publishedCollection.title,
-                  targetUrl: `/collections/${publishedCollection.id}`,
-                  message: `${publishedOwner?.brandFullName || publishedOwner?.username} created a new collection: ${publishedCollection.title}`,
-                },
-              },
-            );
-          } catch (e) {
-            console.warn(`Failed to notify patcher ${recipientId}`, e);
-          }
-        }
+        await this.notifications.createForRecipients(
+          recipientIds,
+          NotificationType.COLLECTION_UPLOAD,
+          {
+            actorId: userId,
+            payload: {
+              collectionId: publishedCollection.id,
+              collectionTitle: publishedCollection.title,
+              targetUrl: `/collections/${publishedCollection.id}`,
+              message: `${publishedOwner?.brandFullName || publishedOwner?.username} created a new collection: ${publishedCollection.title}`,
+            },
+          },
+        );
       }
 
       try {
@@ -5015,7 +5071,7 @@ export class CollectionsService {
     }
     if (this.tagIndex && shouldSyncCollectionTags) {
       await this.tagIndex.syncEntityTags(
-        TAG_ENTITY_TYPE.COLLECTION,
+        TAG_ENTITY_TYPE.STORE_COLLECTION,
         collectionId,
         previousIndexedTags,
         nextIndexedTags,
@@ -5058,71 +5114,77 @@ export class CollectionsService {
       );
     }
 
-    const result = await retryDatabaseTransaction(() => this.prisma.$transaction(
-      async (tx) => {
-        await this.lockMembershipCollection(tx, collectionId);
-        await lockMembershipProducts(tx, productIds);
-        const products = await tx.product.findMany({
-          where: { id: { in: productIds }, deletedAt: null },
-          select: { id: true, brand: { select: { ownerId: true } } },
-        });
+    const result = await retryDatabaseTransaction(() =>
+      this.prisma.$transaction(
+        async (tx) => {
+          await this.lockMembershipCollection(tx, collectionId);
+          await lockMembershipProducts(tx, productIds);
+          const products = await tx.product.findMany({
+            where: { id: { in: productIds }, deletedAt: null },
+            select: { id: true, brand: { select: { ownerId: true } } },
+          });
 
-        if (products.length !== productIds.length) {
-          throw new NotFoundException('One or more products not found');
-        }
-
-        for (const p of products) {
-          if (p.brand?.ownerId !== collectionOwner.ownerId) {
-            throw new ForbiddenException('Not owner of one or more products');
+          if (products.length !== productIds.length) {
+            throw new NotFoundException('One or more products not found');
           }
-        }
 
-        const existingLinks = await tx.storeCollectionProduct.findMany({
-          where: { collectionId, productId: { in: productIds } },
-          select: { productId: true },
-        });
-        const existingSet = new Set(existingLinks.map((l) => l.productId));
-
-        const membershipRange = await tx.storeCollectionProduct.aggregate({
-          where: { collectionId },
-          _count: { _all: true },
-          _max: { orderIndex: true },
-        });
-        const existingCount = membershipRange._count._all;
-        const newIds = productIds.filter((id) => !existingSet.has(id));
-        if (existingCount + newIds.length > this.maxProductsPerCollection) {
-          throw new BadRequestException(
-            `Collections can contain maximum ${this.maxProductsPerCollection} products.`,
-          );
-        }
-
-        let nextOrderIndex = (membershipRange._max.orderIndex ?? -1) + 1;
-        const membershipsByProduct = await readProductMemberships(tx, newIds);
-        const linksToCreate = newIds.map((productId) => {
-          const memberships = membershipsByProduct.get(productId) ?? [];
-          if (memberships.length >= 3) {
-            throw new ConflictException({
-              code: 'COLLECTION_MAX_MEMBERSHIP',
-              message: 'Product already belongs to maximum 3 collections.',
-              conflictingCollectionIds: memberships.map((link) => link.collectionId),
-            });
+          for (const p of products) {
+            if (p.brand?.ownerId !== collectionOwner.ownerId) {
+              throw new ForbiddenException('Not owner of one or more products');
+            }
           }
-          return {
-            id: uuidv4(), collectionId, productId,
-            orderIndex: nextOrderIndex++,
-            isPrimary: !memberships.some((link) => link.isPrimary),
-          };
-        });
-        if (linksToCreate.length) {
-          await tx.storeCollectionProduct.createMany({ data: linksToCreate });
-          await synchronizePrimaryMemberships(tx, newIds);
-        }
 
-        await this.touchDraftActivity(tx, collectionId, 'STORE');
-        return { success: true };
-      },
-      { timeout: 15000 },
-    ));
+          const existingLinks = await tx.storeCollectionProduct.findMany({
+            where: { collectionId, productId: { in: productIds } },
+            select: { productId: true },
+          });
+          const existingSet = new Set(existingLinks.map((l) => l.productId));
+
+          const membershipRange = await tx.storeCollectionProduct.aggregate({
+            where: { collectionId },
+            _count: { _all: true },
+            _max: { orderIndex: true },
+          });
+          const existingCount = membershipRange._count._all;
+          const newIds = productIds.filter((id) => !existingSet.has(id));
+          if (existingCount + newIds.length > this.maxProductsPerCollection) {
+            throw new BadRequestException(
+              `Collections can contain maximum ${this.maxProductsPerCollection} products.`,
+            );
+          }
+
+          let nextOrderIndex = (membershipRange._max.orderIndex ?? -1) + 1;
+          const membershipsByProduct = await readProductMemberships(tx, newIds);
+          const linksToCreate = newIds.map((productId) => {
+            const memberships = membershipsByProduct.get(productId) ?? [];
+            if (memberships.length >= 3) {
+              throw new ConflictException({
+                code: 'COLLECTION_MAX_MEMBERSHIP',
+                message: 'Product already belongs to maximum 3 collections.',
+                conflictingCollectionIds: memberships.map(
+                  (link) => link.collectionId,
+                ),
+              });
+            }
+            return {
+              id: uuidv4(),
+              collectionId,
+              productId,
+              orderIndex: nextOrderIndex++,
+              isPrimary: !memberships.some((link) => link.isPrimary),
+            };
+          });
+          if (linksToCreate.length) {
+            await tx.storeCollectionProduct.createMany({ data: linksToCreate });
+            await synchronizePrimaryMemberships(tx, newIds);
+          }
+
+          await this.touchDraftActivity(tx, collectionId, 'STORE');
+          return { success: true };
+        },
+        { timeout: 15000 },
+      ),
+    );
 
     // Do non-critical recompute work asynchronously to keep add-to-collection fast.
     void Promise.allSettled([
@@ -5142,28 +5204,34 @@ export class CollectionsService {
       throw new BadRequestException('productIds is required');
     }
 
-    const result = await retryDatabaseTransaction(() => this.prisma.$transaction(
-      async (tx) => {
-        await this.lockMembershipCollection(tx, collectionId);
-        const existingLinks = await tx.storeCollectionProduct.findMany({
-          where: { collectionId, productId: { in: productIds } },
-          select: { productId: true },
-        });
-        await lockMembershipProducts(tx, existingLinks.map((link) => link.productId));
+    const result = await retryDatabaseTransaction(() =>
+      this.prisma.$transaction(
+        async (tx) => {
+          await this.lockMembershipCollection(tx, collectionId);
+          const existingLinks = await tx.storeCollectionProduct.findMany({
+            where: { collectionId, productId: { in: productIds } },
+            select: { productId: true },
+          });
+          await lockMembershipProducts(
+            tx,
+            existingLinks.map((link) => link.productId),
+          );
 
-        await tx.storeCollectionProduct.deleteMany({
-          where: { collectionId, productId: { in: productIds } },
-        });
+          await tx.storeCollectionProduct.deleteMany({
+            where: { collectionId, productId: { in: productIds } },
+          });
 
-        await synchronizePrimaryMemberships(
-          tx, existingLinks.map((link) => link.productId),
-        );
+          await synchronizePrimaryMemberships(
+            tx,
+            existingLinks.map((link) => link.productId),
+          );
 
-        await this.touchDraftActivity(tx, collectionId, 'STORE');
-        return { success: true };
-      },
-      { timeout: 15000 },
-    ));
+          await this.touchDraftActivity(tx, collectionId, 'STORE');
+          return { success: true };
+        },
+        { timeout: 15000 },
+      ),
+    );
 
     // Do non-critical recompute work asynchronously to keep remove flow fast.
     void Promise.allSettled([
@@ -5398,7 +5466,7 @@ export class CollectionsService {
       }
       if (previousIndexedTags.length > 0 && this.tagIndex) {
         await this.tagIndex.syncEntityTags(
-          TAG_ENTITY_TYPE.COLLECTION,
+          TAG_ENTITY_TYPE.STORE_COLLECTION,
           collectionId,
           previousIndexedTags,
           [],
@@ -5531,7 +5599,7 @@ export class CollectionsService {
         !this.areTagsEqual(previousIndexedTags, nextIndexedTags)
       ) {
         await this.tagIndex.syncEntityTags(
-          TAG_ENTITY_TYPE.COLLECTION,
+          TAG_ENTITY_TYPE.STORE_COLLECTION,
           collectionId,
           previousIndexedTags,
           nextIndexedTags,
@@ -5840,11 +5908,15 @@ export class CollectionsService {
       }
     }
     if (this.tagIndex && nextTags !== undefined) {
-      await this.tagIndex.syncEntitiesTags(previousProducts.map((product) => ({
-        entityType: TAG_ENTITY_TYPE.PRODUCT, entityId: product.id,
-        previousTags: this.getIndexedProductTags(product, product.tags ?? []),
-        nextTags: this.getIndexedProductTags(product, nextTags), options: { maxCount: 30 },
-      })));
+      await this.tagIndex.syncEntitiesTags(
+        previousProducts.map((product) => ({
+          entityType: TAG_ENTITY_TYPE.PRODUCT,
+          entityId: product.id,
+          previousTags: this.getIndexedProductTags(product, product.tags ?? []),
+          nextTags: this.getIndexedProductTags(product, nextTags),
+          options: { maxCount: 30 },
+        })),
+      );
     }
 
     await this.recalculateCollectionPriceRange(collectionId);
@@ -6111,9 +6183,7 @@ export class CollectionsService {
             : undefined;
           return {
             ...mediaRest,
-            ...(signed
-              ? { file: { ...mediaRest.file, s3Url: signed } }
-              : {}),
+            ...(signed ? { file: { ...mediaRest.file, s3Url: signed } } : {}),
             threadsCount: mediaThreadsCount,
           };
         })
@@ -6356,7 +6426,9 @@ export class CollectionsService {
    * Resolve Brand table id → owner user id. Collection.ownerId is always a User id.
    * Public catalog routes may pass either form (runway brandId often is Brand.id).
    */
-  private async resolveCollectionOwnerUserId(userIdOrBrandId: string): Promise<string> {
+  private async resolveCollectionOwnerUserId(
+    userIdOrBrandId: string,
+  ): Promise<string> {
     const raw = String(userIdOrBrandId ?? '').trim();
     if (!raw) return raw;
     const user = await this.prisma.user.findUnique({
@@ -7188,16 +7260,25 @@ export class CollectionsService {
       const deleteExpiresAt = new Date(
         now.getTime() + this.collectionDeleteWindowMs,
       );
-      await this.prisma.storeCollection.update({
-        where: { id: collectionId },
-        data: { deletedAt: now, deleteExpiresAt },
+      // Members keep their link (the deletion can be restored), but a deleted
+      // collection is never a product's primary: move each primary to a live
+      // collection, or clear it, in the same transaction. Collection lock first,
+      // then product locks, as every membership writer does.
+      const productIds = await this.prisma.$transaction(async (tx) => {
+        await this.lockMembershipCollection(tx, collectionId);
+        await tx.storeCollection.update({
+          where: { id: collectionId },
+          data: { deletedAt: now, deleteExpiresAt },
+        });
+        const links = await tx.storeCollectionProduct.findMany({
+          where: { collectionId },
+          select: { productId: true },
+        });
+        const ids = links.map((link) => link.productId);
+        await lockMembershipProducts(tx, ids);
+        await synchronizePrimaryMemberships(tx, ids);
+        return ids;
       });
-
-      const productLinks = await this.prisma.storeCollectionProduct.findMany({
-        where: { collectionId },
-        select: { productId: true },
-      });
-      const productIds = productLinks.map((l) => l.productId);
       if (productIds.length) {
         await this.prisma.cartItem.deleteMany({
           where: { productId: { in: productIds } },
@@ -7209,7 +7290,7 @@ export class CollectionsService {
       }
       if (previousIndexedTags.length > 0 && this.tagIndex) {
         await this.tagIndex.syncEntityTags(
-          TAG_ENTITY_TYPE.COLLECTION,
+          TAG_ENTITY_TYPE.STORE_COLLECTION,
           collectionId,
           previousIndexedTags,
           [],
@@ -7355,55 +7436,60 @@ export class CollectionsService {
         ? `Copy of ${baseTitle}`
         : 'Copy of collection';
 
-      await retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
-        const productIds = sourceLinks.map((link) => link.productId);
-        await lockMembershipProducts(tx, productIds);
-        const memberships = await readProductMemberships(tx, productIds);
-        const conflicts = productIds.filter((id) => (memberships.get(id)?.length ?? 0) >= 3);
-        if (conflicts.length) {
-          throw new ConflictException({
-            code: 'COLLECTION_MAX_MEMBERSHIP',
-            message: 'One or more products already belong to maximum 3 collections.',
-            productIds: conflicts,
+      await retryDatabaseTransaction(() =>
+        this.prisma.$transaction(async (tx) => {
+          const productIds = sourceLinks.map((link) => link.productId);
+          await lockMembershipProducts(tx, productIds);
+          const memberships = await readProductMemberships(tx, productIds);
+          const conflicts = productIds.filter(
+            (id) => (memberships.get(id)?.length ?? 0) >= 3,
+          );
+          if (conflicts.length) {
+            throw new ConflictException({
+              code: 'COLLECTION_MAX_MEMBERSHIP',
+              message:
+                'One or more products already belong to maximum 3 collections.',
+              productIds: conflicts,
+            });
+          }
+          await tx.storeCollection.create({
+            data: {
+              id: duplicateId,
+              ownerId: source.ownerId,
+              title: duplicateTitle,
+              description: source.description ?? null,
+              status: 'DRAFT',
+              visibility: source.visibility,
+              type: source.type,
+              categoryId: source.categoryId ?? null,
+              categoryTypeId: source.categoryTypeId ?? null,
+              tags: copiedTags,
+              minPrice: source.minPrice ?? null,
+              maxPrice: source.maxPrice ?? null,
+              saleMinPrice: source.saleMinPrice ?? null,
+              saleMaxPrice: source.saleMaxPrice ?? null,
+              saleStartAt: source.saleStartAt ?? null,
+              saleEndAt: source.saleEndAt ?? null,
+              lastActivityAt: now,
+              draftVersion: 0,
+            },
           });
-        }
-        await tx.storeCollection.create({
-          data: {
-            id: duplicateId,
-            ownerId: source.ownerId,
-            title: duplicateTitle,
-            description: source.description ?? null,
-            status: 'DRAFT',
-            visibility: source.visibility,
-            type: source.type,
-            categoryId: source.categoryId ?? null,
-            categoryTypeId: source.categoryTypeId ?? null,
-            tags: copiedTags,
-            minPrice: source.minPrice ?? null,
-            maxPrice: source.maxPrice ?? null,
-            saleMinPrice: source.saleMinPrice ?? null,
-            saleMaxPrice: source.saleMaxPrice ?? null,
-            saleStartAt: source.saleStartAt ?? null,
-            saleEndAt: source.saleEndAt ?? null,
-            lastActivityAt: now,
-            draftVersion: 0,
-          },
-        });
 
-        if (sourceLinks.length > 0) {
-          await tx.storeCollectionProduct.createMany({
-            data: sourceLinks.map((link, index) => ({
-              id: uuidv4(),
-              collectionId: duplicateId,
-              productId: link.productId,
-              orderIndex:
-                typeof link.orderIndex === 'number' ? link.orderIndex : index,
-              isPrimary: false,
-            })),
-            skipDuplicates: true,
-          });
-        }
-      }));
+          if (sourceLinks.length > 0) {
+            await tx.storeCollectionProduct.createMany({
+              data: sourceLinks.map((link, index) => ({
+                id: uuidv4(),
+                collectionId: duplicateId,
+                productId: link.productId,
+                orderIndex:
+                  typeof link.orderIndex === 'number' ? link.orderIndex : index,
+                isPrimary: false,
+              })),
+              skipDuplicates: true,
+            });
+          }
+        }),
+      );
 
       await this.recalculateCollectionPriceRange(duplicateId);
 
@@ -7421,7 +7507,7 @@ export class CollectionsService {
       }
       if (indexedTags.length > 0 && this.tagIndex) {
         await this.tagIndex.syncEntityTags(
-          TAG_ENTITY_TYPE.COLLECTION,
+          TAG_ENTITY_TYPE.STORE_COLLECTION,
           duplicateId,
           [],
           indexedTags,
@@ -7496,7 +7582,8 @@ export class CollectionsService {
     if (sourceLinks.length) {
       throw new ConflictException({
         code: 'COLLECTION_DOMAIN_INTEGRITY',
-        message: 'A design cannot contain store product memberships. Repair its domain records before duplicating it.',
+        message:
+          'A design cannot contain store product memberships. Repair its domain records before duplicating it.',
       });
     }
 
@@ -7514,57 +7601,62 @@ export class CollectionsService {
         ? 'STORE'
         : 'DESIGN';
 
-    await retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
+    await retryDatabaseTransaction(() =>
+      this.prisma.$transaction(async (tx) => {
         const productIds = sourceLinks.map((link) => link.productId);
         await lockMembershipProducts(tx, productIds);
         const memberships = await readProductMemberships(tx, productIds);
-        const conflicts = productIds.filter((id) => (memberships.get(id)?.length ?? 0) >= 3);
+        const conflicts = productIds.filter(
+          (id) => (memberships.get(id)?.length ?? 0) >= 3,
+        );
         if (conflicts.length) {
           throw new ConflictException({
             code: 'COLLECTION_MAX_MEMBERSHIP',
-            message: 'One or more products already belong to maximum 3 collections.',
+            message:
+              'One or more products already belong to maximum 3 collections.',
             productIds: conflicts,
           });
         }
-      await tx.collection.create({
-        data: {
-          id: duplicateId,
-          ownerId: source.ownerId,
-          domain: duplicateDomain,
-          title: duplicateTitle,
-          description: source.description ?? null,
-          status: 'DRAFT',
-          visibility: source.visibility,
-          type: source.type,
-          categoryId: source.categoryId ?? null,
-          categoryTypeId: source.categoryTypeId ?? null,
-          isAvailableInStore: duplicateDomain === 'STORE',
-          tags: copiedTags,
-          minPrice: source.minPrice ?? null,
-          maxPrice: source.maxPrice ?? null,
-          saleMinPrice: source.saleMinPrice ?? null,
-          saleMaxPrice: source.saleMaxPrice ?? null,
-          saleStartAt: source.saleStartAt ?? null,
-          saleEndAt: source.saleEndAt ?? null,
-          lastActivityAt: now,
-          draftVersion: 0,
-        } as any,
-      });
-
-      if (sourceLinks.length > 0) {
-        await tx.storeCollectionProduct.createMany({
-          data: sourceLinks.map((link, index) => ({
-            id: uuidv4(),
-            collectionId: duplicateId,
-            productId: link.productId,
-            orderIndex:
-              typeof link.orderIndex === 'number' ? link.orderIndex : index,
-            isPrimary: false,
-          })),
-          skipDuplicates: true,
+        await tx.collection.create({
+          data: {
+            id: duplicateId,
+            ownerId: source.ownerId,
+            domain: duplicateDomain,
+            title: duplicateTitle,
+            description: source.description ?? null,
+            status: 'DRAFT',
+            visibility: source.visibility,
+            type: source.type,
+            categoryId: source.categoryId ?? null,
+            categoryTypeId: source.categoryTypeId ?? null,
+            isAvailableInStore: duplicateDomain === 'STORE',
+            tags: copiedTags,
+            minPrice: source.minPrice ?? null,
+            maxPrice: source.maxPrice ?? null,
+            saleMinPrice: source.saleMinPrice ?? null,
+            saleMaxPrice: source.saleMaxPrice ?? null,
+            saleStartAt: source.saleStartAt ?? null,
+            saleEndAt: source.saleEndAt ?? null,
+            lastActivityAt: now,
+            draftVersion: 0,
+          } as any,
         });
-      }
-    }));
+
+        if (sourceLinks.length > 0) {
+          await tx.storeCollectionProduct.createMany({
+            data: sourceLinks.map((link, index) => ({
+              id: uuidv4(),
+              collectionId: duplicateId,
+              productId: link.productId,
+              orderIndex:
+                typeof link.orderIndex === 'number' ? link.orderIndex : index,
+              isPrimary: false,
+            })),
+            skipDuplicates: true,
+          });
+        }
+      }),
+    );
 
     await this.recalculateCollectionPriceRange(duplicateId);
 
@@ -7667,7 +7759,7 @@ export class CollectionsService {
         !this.areTagsEqual(previousIndexedTags, nextIndexedTags)
       ) {
         await this.tagIndex.syncEntityTags(
-          TAG_ENTITY_TYPE.COLLECTION,
+          TAG_ENTITY_TYPE.STORE_COLLECTION,
           collectionId,
           previousIndexedTags,
           nextIndexedTags,
@@ -8084,38 +8176,62 @@ export class CollectionsService {
       throw new ForbiddenException('Cannot interact with private collection');
     }
 
-    const { delta, nowThreaded, updated } = await retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
-      const locked = await tx.$queryRaw<Array<{ id: string; visibility: CollectionVisibility; threadsCount: number; dislikesCount: number }>>`
+    const { delta, nowThreaded, updated } = await retryDatabaseTransaction(() =>
+      this.prisma.$transaction(async (tx) => {
+        const locked = await tx.$queryRaw<
+          Array<{
+            id: string;
+            visibility: CollectionVisibility;
+            threadsCount: number;
+            dislikesCount: number;
+          }>
+        >`
         SELECT "_id" AS id, "visibility", "threadsCount", "dislikesCount"
         FROM "Collection" WHERE "_id"=${collectionId}::uuid FOR UPDATE
       `;
-      if (!locked.length) throw new NotFoundException('Collection not found');
-      if (locked[0].visibility !== CollectionVisibility.PUBLIC) {
-        throw new ForbiddenException('Cannot interact with private collection');
-      }
-      const existing = await tx.collectionReaction.findUnique({
-        where: { collectionId_userId: { collectionId, userId } },
-      });
-      const nextType = existing?.type === type ? null : type;
-      if (!nextType) {
-        await tx.collectionReaction.delete({ where: { id: existing!.id } });
-      } else if (existing) {
-        await tx.collectionReaction.update({ where: { id: existing.id }, data: { type: nextType } });
-      } else {
-        await tx.collectionReaction.create({ data: { id: uuidv4(), collectionId, userId, type: nextType } });
-      }
-      const delta = Number(nextType === ReactionType.THREAD) - Number(existing?.type === ReactionType.THREAD);
-      const dislikeDelta = Number(nextType === ReactionType.DISLIKE) - Number(existing?.type === ReactionType.DISLIKE);
-      // The target lock makes these constant-time deltas safe across different users.
-      const updated = await tx.collection.update({
-        where: { id: collectionId },
-        data: {
-          threadsCount: Math.max(0, locked[0].threadsCount + delta),
-          dislikesCount: Math.max(0, locked[0].dislikesCount + dislikeDelta),
-        },
-      });
-      return { delta, nowThreaded: nextType === ReactionType.THREAD, updated };
-    }));
+        if (!locked.length) throw new NotFoundException('Collection not found');
+        if (locked[0].visibility !== CollectionVisibility.PUBLIC) {
+          throw new ForbiddenException(
+            'Cannot interact with private collection',
+          );
+        }
+        const existing = await tx.collectionReaction.findUnique({
+          where: { collectionId_userId: { collectionId, userId } },
+        });
+        const nextType = existing?.type === type ? null : type;
+        if (!nextType) {
+          await tx.collectionReaction.delete({ where: { id: existing!.id } });
+        } else if (existing) {
+          await tx.collectionReaction.update({
+            where: { id: existing.id },
+            data: { type: nextType },
+          });
+        } else {
+          await tx.collectionReaction.create({
+            data: { id: uuidv4(), collectionId, userId, type: nextType },
+          });
+        }
+        const delta =
+          Number(nextType === ReactionType.THREAD) -
+          Number(existing?.type === ReactionType.THREAD);
+        const dislikeDelta =
+          Number(nextType === ReactionType.DISLIKE) -
+          Number(existing?.type === ReactionType.DISLIKE);
+        // The target lock makes these constant-time deltas safe across different users.
+        const updated = await tx.collection.update({
+          where: { id: collectionId },
+          data: {
+            threadsCount: Math.max(0, locked[0].threadsCount + delta),
+            dislikesCount: Math.max(0, locked[0].dislikesCount + dislikeDelta),
+          },
+        });
+        return {
+          delta,
+          nowThreaded: nextType === ReactionType.THREAD,
+          updated,
+        };
+      }),
+    );
 
     // Update analytics daily threads if changed
     if (this.analytics && delta !== 0) {
@@ -8186,27 +8302,21 @@ export class CollectionsService {
           console.warn('Failed to enqueue thread fanout', e);
         }
       } else if (recipientIds.length > 0) {
-        for (const recipientId of recipientIds) {
-          try {
-            await this.notifications.create(
-              recipientId,
-              NotificationType.THREAD,
-              {
-                actorId: userId,
-                payload: {
-                  collectionId,
-                  targetUrl: `/collections/${collectionId}`,
-                  targetType: 'COLLECTION',
-                  contentTitle: collection.title ?? undefined,
-                  message: `threaded ${collectionLabel}`,
-                },
-                dedupeMs: 2 * 60 * 1000,
-              },
-            );
-          } catch (e) {
-            console.warn('Failed to notify patcher of thread', e);
-          }
-        }
+        await this.notifications.createForRecipients(
+          recipientIds,
+          NotificationType.THREAD,
+          {
+            actorId: userId,
+            payload: {
+              collectionId,
+              targetUrl: `/collections/${collectionId}`,
+              targetType: 'COLLECTION',
+              contentTitle: collection.title ?? undefined,
+              message: `threaded ${collectionLabel}`,
+            },
+            dedupeMs: 2 * 60 * 1000,
+          },
+        );
       }
     }
 
@@ -8758,25 +8868,45 @@ export class CollectionsService {
     const can = await this.canViewMedia(mediaId, userId);
     if (!can) throw new NotFoundException('Media not found');
 
-    const { nowThreaded, updated } = await retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
-      const locked = await tx.$queryRaw<Array<{ id: string; threadsCount: number }>>`
+    const { nowThreaded, updated } = await retryDatabaseTransaction(() =>
+      this.prisma.$transaction(async (tx) => {
+        const locked = await tx.$queryRaw<
+          Array<{ id: string; threadsCount: number }>
+        >`
         SELECT "_id" AS id, "threadsCount" FROM "CollectionMedia" WHERE "_id"=${mediaId}::uuid FOR UPDATE
       `;
-      if (!locked.length) throw new NotFoundException('Media not found');
-      const existing = await tx.collectionMediaReaction.findUnique({
-        where: { collectionMediaId_userId: { collectionMediaId: mediaId, userId } },
-      });
-      if (existing) {
-        await tx.collectionMediaReaction.delete({ where: { id: existing.id } });
-      } else {
-        await tx.collectionMediaReaction.create({ data: { id: uuidv4(), collectionMediaId: mediaId, userId, type: ReactionType.THREAD } });
-      }
-      const updated = await tx.collectionMedia.update({
-        where: { id: mediaId },
-        data: { threadsCount: Math.max(0, locked[0].threadsCount + (existing ? -1 : 1)) },
-      });
-      return { nowThreaded: !existing, updated };
-    }));
+        if (!locked.length) throw new NotFoundException('Media not found');
+        const existing = await tx.collectionMediaReaction.findUnique({
+          where: {
+            collectionMediaId_userId: { collectionMediaId: mediaId, userId },
+          },
+        });
+        if (existing) {
+          await tx.collectionMediaReaction.delete({
+            where: { id: existing.id },
+          });
+        } else {
+          await tx.collectionMediaReaction.create({
+            data: {
+              id: uuidv4(),
+              collectionMediaId: mediaId,
+              userId,
+              type: ReactionType.THREAD,
+            },
+          });
+        }
+        const updated = await tx.collectionMedia.update({
+          where: { id: mediaId },
+          data: {
+            threadsCount: Math.max(
+              0,
+              locked[0].threadsCount + (existing ? -1 : 1),
+            ),
+          },
+        });
+        return { nowThreaded: !existing, updated };
+      }),
+    );
 
     if (nowThreaded && this.notifications) {
       const media = await this.prisma.collectionMedia.findUnique({
@@ -8852,27 +8982,21 @@ export class CollectionsService {
             console.warn('Failed to enqueue media thread fanout', e);
           }
         } else if (recipientIds.length > 0) {
-          for (const recipientId of recipientIds) {
-            try {
-              await this.notifications.create(
-                recipientId,
-                NotificationType.THREAD,
-                {
-                  actorId: userId,
-                  payload: {
-                    collectionId: media.collectionId,
-                    targetUrl: `/collections/${media.collectionId}`,
-                    targetType: 'COLLECTION',
-                    contentTitle: media.collection.title ?? undefined,
-                    message: `threaded ${collectionLabel}`,
-                  },
-                  dedupeMs: 2 * 60 * 1000,
-                },
-              );
-            } catch (e) {
-              console.warn('Failed to notify patcher of media thread', e);
-            }
-          }
+          await this.notifications.createForRecipients(
+            recipientIds,
+            NotificationType.THREAD,
+            {
+              actorId: userId,
+              payload: {
+                collectionId: media.collectionId,
+                targetUrl: `/collections/${media.collectionId}`,
+                targetType: 'COLLECTION',
+                contentTitle: media.collection.title ?? undefined,
+                message: `threaded ${collectionLabel}`,
+              },
+              dedupeMs: 2 * 60 * 1000,
+            },
+          );
         }
       }
     }
@@ -8973,114 +9097,101 @@ export class CollectionsService {
       errors: [] as string[],
     };
 
-    // Find all draft collections waiting for this suggestion
-    const pendingCollections = await this.prisma.collection.findMany({
-      where: {
-        pendingCategorySuggestionId: suggestionId,
-        status: 'DRAFT',
-      },
-      include: {
-        owner: { select: { id: true, username: true, email: true } },
-        medias: { include: { file: true } },
-      },
-    });
-
-    console.log(
-      `Found ${pendingCollections.length} collections waiting for suggestion ${suggestionId}`,
-    );
-
-    // Process each collection independently
-    for (const collection of pendingCollections) {
-      try {
-        // Verify collection has uploaded media files
-        if (!collection.medias || collection.medias.length === 0) {
-          console.log(
-            `Skipping collection ${collection.id} - no media uploaded`,
-          );
-          results.skipped++;
-
-          // Notify user that upload is incomplete
-          if (this.notifications) {
-            await this.notifications.create(
-              collection.ownerId,
-              NotificationType.COLLECTION_UPLOAD,
-              {
+    let afterId: string | null = null;
+    while (true) {
+      const pendingCollections = await loadPendingCategoryCollections(
+        this.prisma,
+        suggestionId,
+        afterId,
+      );
+      if (!pendingCollections.length) break;
+      const events: NotificationEvent[] = [];
+      for (const collection of pendingCollections) {
+        try {
+          // Verify collection has uploaded media files
+          if (!collection.hasMedia) {
+            results.skipped++;
+            events.push({
+              recipientId: collection.ownerId,
+              type: NotificationType.COLLECTION_UPLOAD,
+              opts: {
                 payload: {
                   collectionId: collection.id,
                   message:
                     'Your category was approved, but your collection upload is incomplete. Please complete the upload to publish.',
                 },
               },
-            );
+            });
+            continue;
           }
-          continue;
-        }
 
-        // Update collection in a transaction
-        await this.prisma.$transaction(async (tx) => {
-          const publishedAt = new Date();
-          await tx.collection.update({
-            where: { id: collection.id },
-            data: {
-              categoryId: approvedCategoryId,
-              categoryTypeId: null,
-              pendingCategorySuggestionId: null,
-              draftReason: null,
-              status: 'PUBLISHED',
-              updatedAt: publishedAt,
-            },
+          // Update collection in a transaction
+          const published = await this.prisma.$transaction(async (tx) => {
+            const publishedAt = new Date();
+            const changed = await tx.collection.updateMany({
+              where: {
+                id: collection.id,
+                status: 'DRAFT',
+                pendingCategorySuggestionId: suggestionId,
+                deletedAt: null,
+              },
+              data: {
+                categoryId: approvedCategoryId,
+                categoryTypeId: null,
+                pendingCategorySuggestionId: null,
+                draftReason: null,
+                status: 'PUBLISHED',
+                updatedAt: publishedAt,
+              },
+            });
+            if (!changed.count) return false;
+            await this.cleanupSupersededDraftCollections(
+              tx,
+              collection.ownerId,
+              collection.id,
+              collection.title,
+              publishedAt,
+              collection.domain,
+              collection.isAvailableInStore,
+            );
+            return true;
           });
-          await this.cleanupSupersededDraftCollections(
-            tx,
-            collection.ownerId,
-            collection.id,
-            collection.title,
-            publishedAt,
-            (collection as any).domain ?? null,
-            Boolean((collection as any).isAvailableInStore),
-          );
-        });
-
-        results.published++;
-        console.log(
-          `Published collection ${collection.id} for user ${collection.owner.username}`,
-        );
-
-        // Send success notification
-        if (this.notifications) {
-          await this.notifications.create(
-            collection.ownerId,
-            NotificationType.COLLECTION_UPLOAD,
-            {
+          if (!published) {
+            results.skipped++;
+            continue;
+          }
+          results.published++;
+          events.push({
+            recipientId: collection.ownerId,
+            type: NotificationType.COLLECTION_UPLOAD,
+            opts: {
               payload: {
                 collectionId: collection.id,
                 title: collection.title,
                 message: `Great news! Your collection "${collection.title}" has been published automatically because the category you requested was approved.`,
               },
             },
-          );
-        }
-      } catch (error) {
-        results.failed++;
-        const errorMsg = `Failed to publish collection ${collection.id}: ${error.message}`;
-        results.errors.push(errorMsg);
-        console.error(errorMsg, error);
-
-        // Notify user of failure
-        if (this.notifications) {
-          await this.notifications.create(
-            collection.ownerId,
-            NotificationType.COLLECTION_UPLOAD,
-            {
+          });
+        } catch (error) {
+          results.failed++;
+          const errorMsg = `Failed to publish collection ${collection.id}: ${error.message}`;
+          results.errors.push(errorMsg);
+          this.logger.error(errorMsg, error);
+          events.push({
+            recipientId: collection.ownerId,
+            type: NotificationType.COLLECTION_UPLOAD,
+            opts: {
               payload: {
                 collectionId: collection.id,
                 message:
                   'There was an issue publishing your collection automatically. Please try publishing manually.',
               },
             },
-          );
+          });
         }
       }
+      await this.sendCategoryModerationEvents(events);
+      afterId = pendingCollections[pendingCollections.length - 1].id;
     }
 
     return results;
@@ -9096,41 +9207,37 @@ export class CollectionsService {
   ): Promise<{ updated: number; notified: number }> {
     const results = { updated: 0, notified: 0 };
 
-    // Find all collections waiting for this suggestion
-    const affectedCollections = await this.prisma.collection.findMany({
-      where: {
-        pendingCategorySuggestionId: suggestionId,
-        status: 'DRAFT',
-      },
-      include: {
-        owner: { select: { id: true, username: true, email: true } },
-      },
-    });
-
-    console.log(
-      `Found ${affectedCollections.length} collections affected by rejected suggestion ${suggestionId}`,
-    );
-
-    for (const collection of affectedCollections) {
-      try {
-        // Update collection to reflect rejection
-        await this.prisma.collection.update({
-          where: { id: collection.id },
-          data: {
-            draftReason: 'CATEGORY_REJECTED',
-            // Keep pendingCategorySuggestionId for reference
-            updatedAt: new Date(),
-          },
-        });
-
-        results.updated++;
-
-        // Notify user
-        if (this.notifications) {
-          await this.notifications.create(
-            collection.ownerId,
-            NotificationType.COLLECTION_UPLOAD,
-            {
+    let afterId: string | null = null;
+    while (true) {
+      const affectedCollections = await loadPendingCategoryCollections(
+        this.prisma,
+        suggestionId,
+        afterId,
+      );
+      if (!affectedCollections.length) break;
+      const events: NotificationEvent[] = [];
+      for (const collection of affectedCollections) {
+        try {
+          // Update collection to reflect rejection
+          const changed = await this.prisma.collection.updateMany({
+            where: {
+              id: collection.id,
+              status: 'DRAFT',
+              pendingCategorySuggestionId: suggestionId,
+              deletedAt: null,
+            },
+            data: {
+              draftReason: 'CATEGORY_REJECTED',
+              // Keep pendingCategorySuggestionId for reference
+              updatedAt: new Date(),
+            },
+          });
+          if (!changed.count) continue;
+          results.updated++;
+          events.push({
+            recipientId: collection.ownerId,
+            type: NotificationType.COLLECTION_UPLOAD,
+            opts: {
               payload: {
                 collectionId: collection.id,
                 title: collection.title,
@@ -9139,15 +9246,33 @@ export class CollectionsService {
                 message: `Your category suggestion "${collection.pendingCategoryName}" was not approved. Your collection "${collection.title}" is saved as a draft. You can select a different category to publish it.`,
               },
             },
+          });
+        } catch (error) {
+          this.logger.error(
+            `Failed to update collection ${collection.id}:`,
+            error,
           );
-          results.notified++;
         }
-      } catch (error) {
-        console.error(`Failed to update collection ${collection.id}:`, error);
       }
+      results.notified += await this.sendCategoryModerationEvents(events);
+      afterId = affectedCollections[affectedCollections.length - 1].id;
     }
 
     return results;
+  }
+
+  private async sendCategoryModerationEvents(events: NotificationEvent[]) {
+    if (!this.notifications || !events.length) return 0;
+    const outcomes = await this.notifications.createEvents(events);
+    let fulfilled = 0;
+    outcomes.forEach((outcome, index) => {
+      if (outcome.status === 'fulfilled') fulfilled++;
+      else
+        this.logger.warn(
+          `Category moderation notification failed for ${events[index].recipientId}: ${String(outcome.reason)}`,
+        );
+    });
+    return fulfilled;
   }
 
   // ===================== Invite Links (Feature-flagged) =====================
@@ -9545,7 +9670,7 @@ export class CollectionsService {
         }
         if (this.tagIndex) {
           await this.tagIndex.syncEntityTags(
-            TAG_ENTITY_TYPE.COLLECTION,
+            TAG_ENTITY_TYPE.STORE_COLLECTION,
             collectionId,
             previousIndexedTags,
             nextIndexedTags,
@@ -10108,62 +10233,68 @@ export class CollectionsService {
     mode: 'csv' | 'images' | 'mixed' = 'csv',
     file?: Express.Multer.File,
   ) {
-    await this.assertOwner(collectionId, ownerId);
-
-    if (!file || !file.buffer) {
+    await this.assertOwner(collectionId, ownerId, 'STORE');
+    if (!['csv', 'images', 'mixed'].includes(mode))
+      throw new BadRequestException('Invalid bulk upload mode');
+    if (!file?.buffer)
       throw new BadRequestException('CSV file is required for bulk upload');
-    }
     const maxFileSize = this.systemConfigService
       ? await this.systemConfigService.getMaxFileSize(
           'upload.maxSize.collectionBulk',
         )
       : 2 * 1024 * 1024;
-    if (file.size > maxFileSize) {
-      const limitMB = (maxFileSize / (1024 * 1024)).toFixed(1);
+    if (file.buffer.length > maxFileSize)
       throw new BadRequestException(
-        `Bulk upload file exceeds the ${limitMB}MB limit`,
+        `Bulk upload file exceeds the ${(maxFileSize / (1024 * 1024)).toFixed(1)}MB limit`,
+      );
+    let rows: Array<Record<string, string>>;
+    try {
+      rows = this.parseBulkCsv(file);
+    } catch {
+      throw new BadRequestException(
+        'CSV could not be parsed. Check its headers and quoted fields.',
       );
     }
-
+    if (!rows.length || rows.length > 1000)
+      throw new BadRequestException(
+        'CSV must contain between 1 and 1,000 product rows',
+      );
     const jobId = uuidv4();
-    const rows = this.parseBulkCsv(file);
-    if (!rows.length) {
-      throw new BadRequestException('CSV file contains no rows');
-    }
-
-    await this.prisma.collectionBulkUploadJob.create({
-      data: {
-        id: jobId,
-        collectionId,
-        ownerId,
-        mode,
-        status: 'PENDING',
-        totalRows: rows.length,
-      },
+    const rowRecords = rows.map((row, index) => ({
+      id: uuidv4(),
+      jobId,
+      rowIndex: index + 1,
+      rowId: row.rowId || row.id || `${jobId}:${index + 1}`,
+      status: 'PENDING' as const,
+      payload: row,
+    }));
+    if (new Set(rowRecords.map((row) => row.rowId)).size !== rowRecords.length)
+      throw new BadRequestException('Each CSV row ID must be unique');
+    await this.prisma.$transaction(async (tx) => {
+      await tx.collectionBulkUploadJob.create({
+        data: {
+          id: jobId,
+          collectionId,
+          ownerId,
+          mode,
+          totalRows: rows.length,
+        },
+      });
+      for (let offset = 0; offset < rowRecords.length; offset += 500)
+        await tx.collectionBulkUploadRow.createMany({
+          data: rowRecords.slice(offset, offset + 500),
+        });
     });
-
-    const rowRecords = rows.map((row, index) => {
-      const rowId = row.rowId || row.id || `${jobId}:${index + 1}`;
-      return {
-        id: uuidv4(),
-        jobId,
-        rowIndex: index + 1,
-        rowId,
-        status: 'PENDING' as const,
-        payload: row as any,
-      };
-    });
-
-    await this.prisma.collectionBulkUploadRow.createMany({
-      data: rowRecords as any,
-    });
-
     if (this.bulkUploadQueue) {
       try {
         await this.bulkUploadQueue.add(
           BULK_UPLOAD_PROCESS_JOB,
           { jobId },
-          { jobId: `bulk-upload:${jobId}` },
+          {
+            jobId: `bulk-upload-${jobId}`,
+            attempts: 8,
+            backoff: { type: 'exponential', delay: 5000 },
+          },
         );
       } catch (error) {
         if (process.env.NODE_ENV === 'production') {
@@ -10232,142 +10363,119 @@ export class CollectionsService {
   }
 
   async processBulkUploadJob(jobId: string) {
-    const job = await this.prisma.collectionBulkUploadJob.findFirst({
-      where: { id: jobId },
-      include: { rows: true },
-    });
-    if (!job) throw new NotFoundException('Bulk upload job not found');
-
-    const claim = await this.prisma.collectionBulkUploadJob.updateMany({
-      where: { id: jobId, status: { in: ['PENDING', 'FAILED', 'PARTIAL'] } },
-      data: {
-        status: 'PROCESSING',
-        processedRows: 0,
-        successRows: 0,
-        failedRows: 0,
-        errorSummary: null,
-        completedAt: null,
-      },
-    });
-
-    if (claim.count === 0) {
-      const existing = await this.prisma.collectionBulkUploadJob.findUnique({
-        where: { id: jobId },
-        select: {
-          status: true,
-          processedRows: true,
-          successRows: true,
-          failedRows: true,
-          errorSummary: true,
-        },
-      });
-      if (!existing) throw new NotFoundException('Bulk upload job not found');
-      this.logger.warn(
-        `Skipped bulk upload processing claim for ${jobId}; current status=${existing.status}`,
-      );
-      return {
-        jobId,
-        status: String(existing.status).toLowerCase(),
-        processedRows: existing.processedRows,
-        successRows: existing.successRows,
-        failedRows: existing.failedRows,
-        errors: Array.isArray(existing.errorSummary)
-          ? existing.errorSummary
-          : [],
-      };
-    }
-
-    let processedRows = 0;
-    let successRows = 0;
-    let failedRows = 0;
-    const errors: Array<{ row: number; field: string; message: string }> = [];
-
-    for (const rowRecord of job.rows) {
-      if (rowRecord.status === 'SUCCESS') continue;
-      processedRows += 1;
-      try {
-        await this.prisma.collectionBulkUploadRow.update({
-          where: { id: rowRecord.id },
-          data: { status: 'PROCESSING' },
-        });
-
-        const payload = rowRecord.payload as Record<string, string>;
-        const dto = this.buildBulkProductDto(payload, job.collectionId);
-        const created = await this.storeService.createProduct(job.ownerId, dto);
-
-        await this.prisma.collectionBulkUploadRow.update({
-          where: { id: rowRecord.id },
-          data: { status: 'SUCCESS', createdProductId: created.id },
-        });
-        successRows += 1;
-      } catch (error: any) {
-        failedRows += 1;
-        const message =
-          error?.response?.message || error?.message || 'Row failed';
-        errors.push({ row: rowRecord.rowIndex, field: 'row', message });
-        await this.prisma.collectionBulkUploadRow.update({
-          where: { id: rowRecord.id },
-          data: { status: 'FAILED', errorMessage: message },
-        });
-      }
-    }
-
-    const refreshedRows = await this.prisma.collectionBulkUploadRow.findMany({
-      where: { jobId },
-      select: { status: true },
-    });
-    successRows = refreshedRows.filter(
-      (row) => row.status === 'SUCCESS',
-    ).length;
-    failedRows = refreshedRows.filter((row) => row.status === 'FAILED').length;
-    processedRows = refreshedRows.length;
-    const status =
-      failedRows > 0 && successRows > 0
-        ? 'PARTIAL'
-        : failedRows > 0
-          ? 'FAILED'
-          : 'COMPLETED';
-
-    await this.prisma.collectionBulkUploadJob.update({
-      where: { id: jobId },
-      data: {
-        status,
-        processedRows,
-        successRows,
-        failedRows,
-        errorSummary: errors as any,
-        completedAt: new Date(),
-      },
-    });
-
-    return {
-      jobId,
-      status: status.toLowerCase(),
-      totalRows: job.totalRows,
-      processedRows,
-      successRows,
-      failedRows,
-      errors,
-    };
+    return this.runBulkProductImport(jobId);
   }
 
-  /**
-   * Get bulk upload job status
-   */
+  private async runBulkProductImport(
+    jobId: string,
+    expectedActorId?: string,
+    rowIndices: number[] = [],
+  ) {
+    const token = uuidv4();
+    const job = await claimBulkImport(this.prisma, jobId, token);
+    try {
+      if (expectedActorId && job.ownerId !== expectedActorId)
+        throw new ForbiddenException('Import does not belong to this account');
+      let after = 0;
+      let retriedCount = 0;
+      while (true) {
+        await renewBulkImport(this.prisma, jobId, token);
+        const rows = await this.prisma.collectionBulkUploadRow.findMany({
+          where: {
+            jobId,
+            status: { not: 'SUCCESS' },
+            rowIndex: {
+              gt: after,
+              ...(rowIndices.length ? { in: rowIndices } : {}),
+            },
+          },
+          orderBy: { rowIndex: 'asc' },
+          take: BULK_IMPORT_BATCH_SIZE,
+        });
+        if (!rows.length) break;
+        // Reauthorize current staff/brand state once per bounded page. No primary-
+        // brand lookup per product, and no permission snapshot across jobs/pages.
+        const createProduct =
+          await this.storeService.prepareBulkProductCreation(
+            job.ownerId,
+            job.collectionId,
+          );
+        const completedRows: Array<{ id: string }> = [];
+        for (const row of rows) {
+          after = row.rowIndex;
+          const checkpoint = { jobId, rowId: row.id, token };
+          try {
+            const dto = plainToInstance(
+              CreateProductDto,
+              this.buildBulkProductDto(
+                (row.payload || {}) as Record<string, string>,
+                job.collectionId,
+              ),
+            );
+            const errors = validateSync(dto);
+            if (errors.length)
+              throw new BadRequestException(
+                errors
+                  .flatMap((error) => Object.values(error.constraints || {}))
+                  .join('; ') || 'Invalid product data',
+              );
+            await createProduct(dto, checkpoint);
+            completedRows.push({ id: row.id });
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : 'Row failed';
+            // A stale worker cannot overwrite a recovered worker's result.
+            await this.prisma.$transaction(async (tx) => {
+              await lockBulkImportCheckpoint(tx, checkpoint);
+              await tx.collectionBulkUploadRow.update({
+                where: { id: row.id },
+                data: { status: 'FAILED', errorMessage: message },
+              });
+            });
+          }
+          retriedCount += 1;
+        }
+        await createProduct.flushNotifications();
+        for (const row of completedRows) {
+          await this.prisma.$transaction(async (tx) => {
+            await lockBulkImportCheckpoint(tx, { jobId, rowId: row.id, token });
+            await tx.collectionBulkUploadRow.update({
+              where: { id: row.id },
+              data: { status: 'SUCCESS', errorMessage: null },
+            });
+          });
+        }
+      }
+      return {
+        ...(await finishBulkImport(this.prisma, jobId, token)),
+        retriedCount,
+      };
+    } finally {
+      // Release on infrastructure failure; a crashed process is reclaimed after
+      // the DB lease, and token fencing protects a replacement worker.
+      await this.prisma.collectionBulkUploadJob.updateMany({
+        where: { id: jobId, processingToken: token },
+        data: {
+          processingToken: null,
+          leaseExpiresAt: null,
+          status: 'PENDING',
+        },
+      });
+    }
+  }
+
   async getBulkUploadStatus(jobId: string, ownerId: string) {
     const job = await this.prisma.collectionBulkUploadJob.findFirst({
       where: { id: jobId, ownerId },
-      include: { rows: true },
+      include: {
+        rows: {
+          where: { status: 'FAILED' },
+          select: { rowIndex: true, errorMessage: true },
+          orderBy: { rowIndex: 'asc' },
+        },
+      },
     });
     if (!job) throw new NotFoundException('Bulk upload job not found');
-
-    const failedRows = job.rows.filter((row) => row.status === 'FAILED');
-    const errors = failedRows.map((row) => ({
-      row: row.rowIndex,
-      field: 'row',
-      message: row.errorMessage || 'Row failed',
-    }));
-
     return {
       jobId,
       status: job.status.toLowerCase(),
@@ -10375,74 +10483,75 @@ export class CollectionsService {
       processedRows: job.processedRows,
       successRows: job.successRows,
       failedRows: job.failedRows,
-      errors,
+      errors: job.rows.map((row) => ({
+        row: row.rowIndex,
+        field: 'row',
+        message: row.errorMessage || 'Row failed',
+      })),
       createdAt: job.createdAt.toISOString(),
-      completedAt: job.completedAt ? job.completedAt.toISOString() : undefined,
+      completedAt: job.completedAt?.toISOString(),
     };
   }
 
-  /**
-   * Retry failed bulk upload rows
-   */
   async retryBulkUploadRows(
     jobId: string,
     ownerId: string,
     rowIndices: number[],
   ) {
+    if (
+      !Array.isArray(rowIndices) ||
+      rowIndices.length > 1000 ||
+      rowIndices.some((value) => !Number.isInteger(value) || value < 1)
+    )
+      throw new BadRequestException('Choose valid import row numbers');
     const job = await this.prisma.collectionBulkUploadJob.findFirst({
       where: { id: jobId, ownerId },
-      include: { rows: true },
+      select: { collectionId: true },
     });
     if (!job) throw new NotFoundException('Bulk upload job not found');
-
-    const targetRows =
-      Array.isArray(rowIndices) && rowIndices.length > 0
-        ? job.rows.filter((row) => rowIndices.includes(row.rowIndex))
-        : job.rows.filter((row) => row.status === 'FAILED');
-    const retriedCount = targetRows.filter(
-      (row) => row.status !== 'SUCCESS',
-    ).length;
-
-    await this.prisma.collectionBulkUploadJob.update({
-      where: { id: jobId },
-      data: { status: 'PROCESSING', completedAt: null },
+    await this.assertOwner(job.collectionId, ownerId, 'STORE');
+    const retriedCount = await this.prisma.collectionBulkUploadRow.count({
+      where: {
+        jobId,
+        status: { not: 'SUCCESS' },
+        ...(rowIndices.length ? { rowIndex: { in: rowIndices } } : {}),
+      },
     });
-
+    if (!retriedCount) return { jobId, retriedCount: 0, status: 'unchanged' };
     if (this.bulkUploadQueue) {
       try {
         await this.bulkUploadQueue.add(
           BULK_UPLOAD_RETRY_JOB,
           { jobId, ownerId, rowIndices },
-          { jobId: `bulk-upload-retry:${jobId}:${Date.now()}` },
+          {
+            jobId: `bulk-upload-retry-${jobId}-${uuidv4()}`,
+            attempts: 8,
+            backoff: { type: 'exponential', delay: 5000 },
+          },
         );
+        return { jobId, retriedCount, status: 'queued' };
       } catch (error) {
-        console.warn(
-          'Failed to enqueue bulk upload retry; running inline',
-          error,
-        );
-        void setImmediate(() => {
-          this.processBulkUploadRetry(jobId, ownerId, rowIndices).catch((err) =>
-            console.warn(
-              `Inline bulk upload retry failed for ${jobId}: ${String(err)}`,
-            ),
+        if (process.env.NODE_ENV === 'production')
+          throw new InternalServerErrorException(
+            'Bulk upload queue is unavailable. Retry when it recovers.',
           );
-        });
-      }
-    } else {
-      void setImmediate(() => {
-        this.processBulkUploadRetry(jobId, ownerId, rowIndices).catch((err) =>
-          console.warn(
-            `Inline bulk upload retry failed for ${jobId}: ${String(err)}`,
-          ),
+        this.logger.warn(
+          `Bulk import retry queue unavailable; using local fallback job=${jobId}`,
         );
-      });
+      }
+    } else if (process.env.NODE_ENV === 'production') {
+      throw new InternalServerErrorException(
+        'Bulk upload queue is not configured',
+      );
     }
-
-    return {
-      jobId,
-      retriedCount,
-      status: 'queued',
-    };
+    void setImmediate(() => {
+      this.processBulkUploadRetry(jobId, ownerId, rowIndices).catch((error) =>
+        this.logger.error(
+          `Inline bulk retry failed job=${jobId}: ${String(error)}`,
+        ),
+      );
+    });
+    return { jobId, retriedCount, status: 'queued' };
   }
 
   async processBulkUploadRetry(
@@ -10450,84 +10559,7 @@ export class CollectionsService {
     ownerId: string,
     rowIndices: number[],
   ) {
-    const job = await this.prisma.collectionBulkUploadJob.findFirst({
-      where: { id: jobId, ownerId },
-      include: { rows: true },
-    });
-    if (!job) throw new NotFoundException('Bulk upload job not found');
-
-    const targetRows =
-      Array.isArray(rowIndices) && rowIndices.length > 0
-        ? job.rows.filter((row) => rowIndices.includes(row.rowIndex))
-        : job.rows.filter((row) => row.status === 'FAILED');
-
-    let retriedCount = 0;
-    let successRows = job.successRows;
-    let failedRows = job.failedRows;
-    const errors: Array<{ row: number; field: string; message: string }> = [];
-
-    for (const row of targetRows) {
-      if (row.status === 'SUCCESS') continue;
-      retriedCount += 1;
-      try {
-        await this.prisma.collectionBulkUploadRow.update({
-          where: { id: row.id },
-          data: { status: 'PROCESSING', errorMessage: null },
-        });
-
-        const payload = (row.payload || {}) as Record<string, string>;
-        const dto = this.buildBulkProductDto(payload, job.collectionId);
-        const created = await this.storeService.createProduct(ownerId, dto);
-
-        await this.prisma.collectionBulkUploadRow.update({
-          where: { id: row.id },
-          data: { status: 'SUCCESS', createdProductId: created.id },
-        });
-        successRows += 1;
-      } catch (error: any) {
-        const message =
-          error?.response?.message || error?.message || 'Row failed';
-        errors.push({ row: row.rowIndex, field: 'row', message });
-        await this.prisma.collectionBulkUploadRow.update({
-          where: { id: row.id },
-          data: { status: 'FAILED', errorMessage: message },
-        });
-      }
-    }
-
-    const refreshedRows = await this.prisma.collectionBulkUploadRow.findMany({
-      where: { jobId },
-      select: { status: true },
-    });
-    successRows = refreshedRows.filter(
-      (row) => row.status === 'SUCCESS',
-    ).length;
-    failedRows = refreshedRows.filter((row) => row.status === 'FAILED').length;
-    const processedRows = refreshedRows.length;
-    const status =
-      failedRows > 0 && successRows > 0
-        ? 'PARTIAL'
-        : failedRows > 0
-          ? 'FAILED'
-          : 'COMPLETED';
-
-    await this.prisma.collectionBulkUploadJob.update({
-      where: { id: jobId },
-      data: {
-        status,
-        processedRows,
-        successRows,
-        failedRows,
-        errorSummary: errors as any,
-        completedAt: new Date(),
-      },
-    });
-
-    return {
-      jobId,
-      retriedCount,
-      status: status.toLowerCase(),
-    };
+    return this.runBulkProductImport(jobId, ownerId, rowIndices);
   }
 
   // ===================== Custom Fit Inquiry (Scaffold) =====================

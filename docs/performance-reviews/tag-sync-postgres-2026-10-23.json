@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-10-23T11:37:11.403Z",
+  "checkedAt": "2026-10-26T20:35:00.405Z",
   "passed": true,
   "cleanupPassed": true,
   "cases": [
@@ -7,6 +7,14 @@
     "joined removal isolates each entity and clears zero counts",
     "concurrent shared-tag additions retain both bindings",
     "moderation failure rolls back bindings",
-    "merge retains all distinct bindings and grouped counts"
-  ]
+    "a binding to a product that does not exist is refused by the typed foreign key and its usage count rolls back",
+    "merge retains all distinct bindings and grouped counts",
+    "four source types cross the 500-row cursor boundary, batch shared tags and retain all2004 bindings while excluding banned/rejected tags"
+  ],
+  "reindexSelects": 55,
+  "reindexGroupedCountWrites": 8,
+  "reindexSourceReads": 12,
+  "reindexEligibilityScans": 1,
+  "reindexEntitiesPerType": 501,
+  "reindexBindings": 2004
 }

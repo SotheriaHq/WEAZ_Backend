@@ -1,4 +1,5 @@
 import { loadActiveDisplayVariants } from './variant-display.util';
+import { deleteOwnedFile, deleteOrphanedMessageFiles } from './file-deletion-query';
 import {
   resolveStorageProviderSettings, storageObjectUrl, isRawStorageUrl,
   signPublicGatewayUrl, type StorageProviderSettings,
@@ -14,7 +15,7 @@ import {
   HttpException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { FileUpload, Prisma } from '@prisma/client';
+import { FileUpload, PresignedUpload, Prisma } from '@prisma/client';
 import {
   S3Client,
   PutObjectCommand,
@@ -87,6 +88,8 @@ export interface FileUploadResult {
 export type UploadValidationOptions = {
   maxSizeConfigKey?: string;
   hardMaxSizeBytes?: number;
+  /** Server-read, operation-local metadata; ownership and lease checks still apply. */
+  presignSnapshot?: PresignedUpload;
 };
 
 type S3ObjectMetadata = {
@@ -1303,30 +1306,28 @@ export class UploadService {
   }
 
   async deleteFile(fileId: string, userId: string): Promise<void> {
-    const file = await this.prisma.fileUpload.findFirst({
-      where: { id: fileId, userId },
+    await this.prisma.$transaction((tx) => deleteOwnedFile(tx, fileId, userId), {
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
     });
+  }
 
-    if (!file) {
-      throw new BadRequestException('File not found');
-    }
+  async cleanupOrphanedMessageFiles(
+    cutoff: Date,
+    batchSize = 100,
+  ): Promise<number> {
+    return this.prisma.$transaction(
+      (tx) => deleteOrphanedMessageFiles(tx, cutoff, batchSize),
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
+  }
 
-    try {
-      // Delete from S3
-      const command = new DeleteObjectCommand({
-        Bucket: this.bucketName,
-        Key: file.s3Key,
-      });
-      await this.s3.send(command);
-
-      // Delete from database
-      await this.prisma.fileUpload.delete({
-        where: { id: fileId },
-      });
-    } catch (error) {
-      this.logger.error('File deletion failed:', error);
-      throw new BadRequestException('File deletion failed');
-    }
+  /** Removing one content link must retain a file still used by another item. */
+  async deleteFileIfUnused(fileId: string, userId: string): Promise<boolean> {
+    const deleted = await this.prisma.$transaction(
+      (tx) => deleteOwnedFile(tx, fileId, userId, false),
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
+    return deleted > 0;
   }
 
   /**
@@ -1440,9 +1441,12 @@ export class UploadService {
     validationOptions: UploadValidationOptions = {},
   ) {
     // Look up presign record to get originalName and fileType
-    const presign = await (this.prisma as any)['presignedUpload'].findUnique({
+    if (validationOptions.presignSnapshot && validationOptions.presignSnapshot.id !== id) {
+      throw new BadRequestException('Presign snapshot does not match the requested upload');
+    }
+    const presign = validationOptions.presignSnapshot ?? await this.prisma.presignedUpload.findUnique({
       where: { id },
-    } as any);
+    });
     if (!presign) {
       throw new BadRequestException('Presign record not found');
     }

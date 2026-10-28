@@ -91,7 +91,38 @@ function harness(override: Record<string, unknown> = {}) {
     },
     customOrderTimelineEvent: { create: jest.fn(async () => ({})) },
     customOrderNotificationOutbox: { create: jest.fn(async () => ({})) },
-    $queryRaw: jest.fn(async () => [{ id: row.id }]),
+    $queryRaw: jest.fn(async (query: Prisma.Sql) => {
+      if (query.sql?.includes('SELECT r.*')) {
+        const { paymentAttempt: capture, customOrder: order, ...refund } = row;
+        return [
+          {
+            ...refund,
+            captureReference: capture.reference,
+            captureProvider: capture.provider,
+            captureMode: capture.providerMode,
+            captureTransactionId: capture.providerTransactionId,
+            captureAmount: capture.amount,
+            captureCurrency: capture.currency,
+            captureSettlementAmount: (capture as any).settlementAmount,
+            captureSettlementCurrency: (capture as any).settlementCurrency,
+            captureStatus: capture.status,
+            orderBuyerId: order.buyerId,
+            orderBrandId: (order as any).brandId,
+            orderLane: order.lane,
+            orderCancelledAt: order.cancelledAt,
+          },
+        ];
+      }
+      return query.sql?.includes('SELECT r."customOrderId"')
+        ? [
+            {
+              customOrderId: row.customOrderId,
+              paymentAttemptId: row.paymentAttemptId,
+              buyerId: row.customOrder.buyerId,
+            },
+          ]
+        : [{ id: row.id }];
+    }),
   };
   const prisma = {
     ...tx,
@@ -122,8 +153,19 @@ function harness(override: Record<string, unknown> = {}) {
     prisma as any,
     ledger as any,
   );
-  const verification = jest.spyOn(service as any, 'verifyCapture').mockResolvedValue(undefined);
-  return { row, tx, prisma, ledger, entries, service, verification, depth: () => depth };
+  const verification = jest
+    .spyOn(service as any, 'verifyCapture')
+    .mockResolvedValue(undefined);
+  return {
+    row,
+    tx,
+    prisma,
+    ledger,
+    entries,
+    service,
+    verification,
+    depth: () => depth,
+  };
 }
 
 const paystackData = (status = 'pending', extra = {}) => ({
@@ -194,36 +236,78 @@ describe('durable per-order queued refunds', () => {
     const h = harness();
     h.verification.mockRestore();
     process.env.PAYSTACK_SECRET_KEY = 'sk_test_fixture';
-    global.fetch = jest.fn(async (url) => String(url).includes('/transaction/verify/')
-      ? response({ id: 456, reference: 'mixed-capture', status: 'success', amount: 25000000, currency: 'NGN' })
-      : response(paystackData()));
+    global.fetch = jest.fn(async (url) =>
+      String(url).includes('/transaction/verify/')
+        ? response({
+            id: 456,
+            reference: 'mixed-capture',
+            status: 'success',
+            amount: 25000000,
+            currency: 'NGN',
+          })
+        : response(paystackData()),
+    );
     await (h.service as any).processOne(h.row.id);
     expect(h.row.status).toBe('PROCESSING');
-    expect((global.fetch as jest.Mock).mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1);
+    expect(
+      (global.fetch as jest.Mock).mock.calls.filter(
+        ([, options]) => options?.method === 'POST',
+      ),
+    ).toHaveLength(1);
   });
 
   it('never submits a refund when the authoritative capture differs', async () => {
     const h = harness();
     h.verification.mockRestore();
-    global.fetch = jest.fn(async () => response({ id: 456, reference: 'another-capture', status: 'success', amount: 25000000, currency: 'NGN' }));
+    global.fetch = jest.fn(async () =>
+      response({
+        id: 456,
+        reference: 'another-capture',
+        status: 'success',
+        amount: 25000000,
+        currency: 'NGN',
+      }),
+    );
     await (h.service as any).processOne(h.row.id);
-    expect(h.row.lastError).toBe('REFUND_ORIGINAL_CAPTURE_VERIFICATION_MISMATCH');
-    expect((global.fetch as jest.Mock).mock.calls.some(([, options]) => options?.method === 'POST')).toBe(false);
+    expect(h.row.lastError).toBe(
+      'REFUND_ORIGINAL_CAPTURE_VERIFICATION_MISMATCH',
+    );
+    expect(
+      (global.fetch as jest.Mock).mock.calls.some(
+        ([, options]) => options?.method === 'POST',
+      ),
+    ).toBe(false);
   });
 
   it('submits and verifies the stored provider currency while keeping the financial ledger in the original currency', async () => {
     const h = harness();
     h.row.currency = 'USD';
     h.row.paymentAttempt.currency = 'USD';
-    Object.assign(h.row.paymentAttempt, { settlementCurrency: 'NGN', settlementAmount: decimal(500000000) });
-    Object.assign(h.row.breakdownJson, { currency: 'USD', settlement: { status: 'RECORDED', currency: 'NGN', amount: 226000000, rate: '2000' } });
+    Object.assign(h.row.paymentAttempt, {
+      settlementCurrency: 'NGN',
+      settlementAmount: decimal(500000000),
+    });
+    Object.assign(h.row.breakdownJson, {
+      currency: 'USD',
+      settlement: {
+        status: 'RECORDED',
+        currency: 'NGN',
+        amount: 226000000,
+        rate: '2000',
+      },
+    });
     global.fetch = jest.fn(async (_url, options) => {
-      expect(JSON.parse(String(options?.body))).toMatchObject({ currency: 'NGN', amount: 22600000000 });
+      expect(JSON.parse(String(options?.body))).toMatchObject({
+        currency: 'NGN',
+        amount: 22600000000,
+      });
       return response(paystackData('processed', { amount: 22600000000 }));
     });
     await (h.service as any).processOne(h.row.id);
     expect(h.row.status).toBe('SETTLED');
-    expect([...h.entries.values()].every(post => post.currency === 'USD')).toBe(true);
+    expect(
+      [...h.entries.values()].every((post) => post.currency === 'USD'),
+    ).toBe(true);
   });
 
   it('quarantines a timeout after possible acceptance and never blindly retries', async () => {
@@ -355,6 +439,22 @@ describe('durable per-order queued refunds', () => {
     await (h.service as any).processOne(h.row.id);
     expect(h.row.status).toBe('NEEDS_ATTENTION');
     expect(global.fetch).not.toHaveBeenCalled();
+    expect(
+      h.tx.customOrderQueueRefund.findUniqueOrThrow,
+    ).not.toHaveBeenCalled();
+    expect(
+      h.tx.$queryRaw.mock.calls.filter(([query]) =>
+        query.sql?.includes('SELECT r.*'),
+      ),
+    ).toHaveLength(2);
+    expect(h.tx.customOrderNotificationOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          recipientId: h.row.customOrder.buyerId,
+          customOrderId: h.row.customOrderId,
+        }),
+      }),
+    );
   });
 
   it('reconciles an uncertain acceptance only after the provider verifies every identity field', async () => {
@@ -424,5 +524,20 @@ describe('durable per-order queued refunds', () => {
     expect(result.attention).toBe(1);
     expect(h.row.status).toBe('NEEDS_ATTENTION');
     expect(global.fetch).not.toHaveBeenCalled();
+    expect(
+      h.tx.customOrderQueueRefund.findUniqueOrThrow,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('reports no attention transition when another worker already won the claim', async () => {
+    const h = harness({ status: 'SUBMITTING' });
+    h.tx.customOrderQueueRefund.findMany
+      .mockResolvedValueOnce([{ id: h.row.id }] as never)
+      .mockResolvedValueOnce([]);
+    h.tx.customOrderQueueRefund.updateMany.mockResolvedValueOnce({ count: 0 });
+    const result = await h.service.processPending();
+    expect(result.attention).toBe(0);
+    expect(h.tx.$queryRaw).not.toHaveBeenCalled();
+    expect(h.tx.customOrderNotificationOutbox.create).not.toHaveBeenCalled();
   });
 });

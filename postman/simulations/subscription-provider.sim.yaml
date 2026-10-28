@@ -1,0 +1,5 @@
+simulation: wiez-subscription-provider
+routing: path
+mocks:
+  - routeKey: paystack
+    path: ../mocks/paystack/default.js

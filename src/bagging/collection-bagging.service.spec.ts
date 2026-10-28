@@ -151,7 +151,7 @@ describe('CollectionBaggingService', () => {
     });
     prisma.$transaction.mockImplementation(async (callback: any) =>
       callback({
-        $queryRaw: jest.fn().mockResolvedValue([]),
+        $executeRaw: jest.fn().mockResolvedValue(0),
         cartItem: {
           findMany: jest.fn().mockResolvedValue([]),
           create: jest.fn(async ({ data }: any) => ({

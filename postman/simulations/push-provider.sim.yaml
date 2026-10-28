@@ -1,0 +1,5 @@
+simulation: wiez-push-provider
+routing: path
+mocks:
+  - routeKey: expo
+    path: ../mocks/expo/default.js

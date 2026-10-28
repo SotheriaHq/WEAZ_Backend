@@ -13,10 +13,17 @@ import { SettlementSnapshotService } from './settlement-snapshot.service';
 import { SettlementBackfillService } from './settlement-backfill.service';
 import { CustomOrderFinanceSyncService } from './custom-order-finance-sync.service';
 import { BrandBalanceService } from './brand-balance.service';
+import { RefundProviderClient } from './refund-provider.client';
+import { StandardOrderRefundsService } from './standard-order-refunds.service';
+import { NotificationsModule } from 'src/notifications/notifications.module';
 
 @Module({
-  imports: [PrismaModule, SystemConfigModule],
+  // Notifications are needed for brand balance and refund notices; without
+  // this import the optional NotificationsService was never injected.
+  imports: [PrismaModule, SystemConfigModule, NotificationsModule],
   providers: [
+    RefundProviderClient,
+    StandardOrderRefundsService,
     StandardOrderEscrowService,
     // The brand debt ledger. It was imported into this file and injected in six
     // places across four modules, and listed as a provider by nobody — so the
@@ -36,6 +43,8 @@ import { BrandBalanceService } from './brand-balance.service';
     SettlementBackfillService,
   ],
   exports: [
+    RefundProviderClient,
+    StandardOrderRefundsService,
     StandardOrderEscrowService,
     BrandBalanceService,
     LedgerService,

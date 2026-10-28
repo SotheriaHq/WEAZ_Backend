@@ -66,28 +66,45 @@ function buildPrismaMock() {
         }
         return null;
       }),
-      create: jest.fn().mockImplementation(async ({ data }: any) => {
-        const duplicate = snapshots.find(
-          (snapshot) =>
-            (data.orderId && snapshot.orderId === data.orderId) ||
-            (data.customOrderId &&
-              snapshot.customOrderId === data.customOrderId),
-        );
+      findMany: jest
+        .fn()
+        .mockImplementation(async ({ where }: any) =>
+          snapshots.filter((snapshot) =>
+            where.OR.some(
+              (clause: any) =>
+                (clause.orderId &&
+                  clause.orderId.in.includes(snapshot.orderId)) ||
+                (clause.customOrderId &&
+                  clause.customOrderId.in.includes(snapshot.customOrderId)),
+            ),
+          ),
+        ),
+      createManyAndReturn: jest
+        .fn()
+        .mockImplementation(async ({ data: records }: any) => {
+          const result: any[] = [];
+          for (const data of records) {
+            const duplicate = snapshots.find(
+              (snapshot) =>
+                (data.orderId && snapshot.orderId === data.orderId) ||
+                (data.customOrderId &&
+                  snapshot.customOrderId === data.customOrderId),
+            );
 
-        if (duplicate) {
-          const error: any = new Error('Unique constraint failed');
-          error.code = 'P2002';
-          throw error;
-        }
+            if (duplicate) {
+              continue;
+            }
 
-        const created = {
-          id: `snapshot_${snapshots.length + 1}`,
-          ...data,
-          createdAt: new Date('2026-05-05T10:01:00.000Z'),
-        };
-        snapshots.push(created);
-        return created;
-      }),
+            const created = {
+              id: `snapshot_${snapshots.length + 1}`,
+              ...data,
+              createdAt: new Date('2026-05-05T10:01:00.000Z'),
+            };
+            snapshots.push(created);
+            result.push(created);
+          }
+          return result;
+        }),
     },
   };
 
@@ -110,14 +127,18 @@ describe('SettlementSnapshotService', () => {
     const created = await service.createFromCalculation(calculation());
 
     expect(created.id).toBe('snapshot_1');
-    expect(prisma.settlementSnapshot.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        customOrderId: 'custom_1',
-        grossAmount: new Prisma.Decimal('1000.00'),
-        commissionRate: new Prisma.Decimal('10.00'),
-        settlementPolicyId: 'policy_1',
-      }),
+    expect(prisma.settlementSnapshot.createManyAndReturn).toHaveBeenCalledWith({
+      skipDuplicates: true,
+      data: [
+        expect.objectContaining({
+          customOrderId: 'custom_1',
+          grossAmount: new Prisma.Decimal('1000.00'),
+          commissionRate: new Prisma.Decimal('10.00'),
+          settlementPolicyId: 'policy_1',
+        }),
+      ],
     });
+    expect(prisma.settlementSnapshot.findMany).not.toHaveBeenCalled();
   });
 
   it('returns an existing duplicate snapshot idempotently', async () => {
@@ -132,7 +153,10 @@ describe('SettlementSnapshotService', () => {
     );
 
     expect(second).toBe(first);
-    expect(prisma.settlementSnapshot.create).toHaveBeenCalledTimes(1);
+    expect(prisma.settlementSnapshot.createManyAndReturn).toHaveBeenCalledTimes(
+      2,
+    );
+    expect(prisma.settlementSnapshot.findMany).toHaveBeenCalledTimes(1);
   });
 
   it('reads snapshots by orderId and customOrderId', async () => {
@@ -207,6 +231,38 @@ describe('SettlementSnapshotService', () => {
         calculation({ orderId: null, customOrderId: null }),
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('batches100 rows, preserves input order and resolves duplicates to their immutable winner', async () => {
+    const inputs = Array.from({ length: 101 }, (_, index) =>
+      calculation({ customOrderId: `custom_${index}` }),
+    );
+    const saved = await service.createFromCalculations([...inputs, inputs[0]]);
+    expect(saved).toHaveLength(102);
+    expect(saved[101].id).toBe(saved[0].id);
+    expect(saved.slice(0, 101).map((row) => row.customOrderId)).toEqual(
+      inputs.map((row) => row.customOrderId),
+    );
+    expect(prisma.settlementSnapshot.createManyAndReturn).toHaveBeenCalledTimes(
+      2,
+    );
+    expect(prisma.settlementSnapshot.findMany).toHaveBeenCalledTimes(1);
+    await service.createFromCalculations([]);
+    expect(prisma.settlementSnapshot.createManyAndReturn).toHaveBeenCalledTimes(
+      2,
+    );
+  });
+
+  it('validates the entire batch before writing any snapshot', async () => {
+    await expect(
+      service.createFromCalculations([
+        calculation(),
+        calculation({ customOrderId: null }),
+      ]),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(
+      prisma.settlementSnapshot.createManyAndReturn,
+    ).not.toHaveBeenCalled();
   });
 
   it('rejects a snapshot keyed by the wrong order type id', async () => {

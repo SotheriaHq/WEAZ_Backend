@@ -2,20 +2,23 @@ import { Injectable } from '@nestjs/common';
 import {
   BrandBalanceAdjustmentType,
   EscrowHoldStatus,
+  EscrowHold,
   EscrowReleaseCondition,
   Prisma,
   SettlementOrderType,
   SettlementReleaseMode,
+  SettlementSnapshot,
 } from '@prisma/client';
 import { BrandBalanceService } from './brand-balance.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { SystemConfigService } from 'src/admin/system-config/system-config.service';
-import { LedgerService } from './ledger.service';
+import { LedgerService, StandardRefundSplit } from './ledger.service';
 import {
   SettlementCalculationInput,
   SettlementCalculatorService,
 } from './settlement-calculator.service';
 import { SettlementSnapshotService } from './settlement-snapshot.service';
+import { loadDeliverySettlementCandidates } from './standard-order-settlement-query';
 
 type OrderSettlementInput = {
   id: string;
@@ -27,6 +30,18 @@ type OrderSettlementInput = {
   discountAmount?: Prisma.Decimal | number | null;
 };
 
+/** Holds that may still pay the brand. A refund-pending hold may not. */
+const RELEASABLE: EscrowHoldStatus[] = [
+  EscrowHoldStatus.HELD,
+  EscrowHoldStatus.PARTIALLY_RELEASED,
+];
+
+/**
+ * Standard-order escrow. Every transition locks the hold row first, so a
+ * release and a refund for the same order serialize and the second sees the
+ * first's result. Lock order with the rest of finance: order → hold → refund
+ * row → brand → debt rows → ledger accounts.
+ */
 @Injectable()
 export class StandardOrderEscrowService {
   constructor(
@@ -38,29 +53,53 @@ export class StandardOrderEscrowService {
     private readonly brandBalance: BrandBalanceService,
   ) {}
 
+  /** Lock and read the current hold row for an order in one statement, or null. */
+  async lockHoldByOrderId(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+  ): Promise<EscrowHold | null> {
+    const rows = await tx.$queryRaw<EscrowHold[]>`
+      SELECT * FROM "EscrowHold" WHERE "orderId" = ${orderId}::uuid FOR UPDATE`;
+    return rows[0] ?? null;
+  }
+
+  private async lockHoldById(
+    tx: Prisma.TransactionClient,
+    holdId: string,
+  ): Promise<EscrowHold | null> {
+    const rows = await tx.$queryRaw<EscrowHold[]>`
+      SELECT * FROM "EscrowHold" WHERE id = ${holdId}::uuid FOR UPDATE`;
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Create the hold for each newly paid order. `settlementAmount` is these
+   * orders' share of the capture in `currency` (NGN at the original payment
+   * rate); existing holds keep their purchase-time terms.
+   */
   async ensureHoldsForPaidOrders(
     tx: Prisma.TransactionClient,
     orders: OrderSettlementInput[],
-    settlementAmount: number,
+    settlementAmount: Prisma.Decimal | number,
     currency: string,
   ) {
-    if (!orders.length || settlementAmount <= 0) {
+    const settlement = new Prisma.Decimal(String(settlementAmount));
+    if (!orders.length || !settlement.greaterThan(0)) {
       return;
     }
 
-    const orderGrossAmounts = orders.map((order) =>
-      this.getOrderGrossAmount(order),
+    const orderGrossAmounts = orders.map(
+      (order) => new Prisma.Decimal(String(order.totalAmount ?? 0)),
     );
     const totalGross = orderGrossAmounts.reduce(
-      (sum, amount) => sum + amount,
-      0,
+      (sum, amount) => sum.plus(amount),
+      new Prisma.Decimal(0),
     );
-    if (totalGross <= 0) {
+    if (!totalGross.greaterThan(0)) {
       return;
     }
 
-    let remainingSettlement = this.roundMoney(settlementAmount);
-
+    let remainingSettlement = settlement;
     const calculationInputs: SettlementCalculationInput[] = orders.map(
       (order, index) => {
         const effectiveAt = order.createdAt
@@ -69,18 +108,17 @@ export class StandardOrderEscrowService {
         const proportionalAmount =
           index === orders.length - 1
             ? remainingSettlement
-            : this.roundMoney(
-                (settlementAmount * orderGrossAmounts[index]) / totalGross,
-              );
-        remainingSettlement = this.roundMoney(
-          remainingSettlement - proportionalAmount,
-        );
+            : settlement
+                .times(orderGrossAmounts[index])
+                .dividedBy(totalGross)
+                .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+        remainingSettlement = remainingSettlement.minus(proportionalAmount);
 
         return {
           orderType: SettlementOrderType.STANDARD_ORDER,
           orderId: order.id,
           brandId: order.brandId,
-          grossAmount: proportionalAmount,
+          grossAmount: proportionalAmount.toNumber(),
           currency,
           effectiveAt:
             effectiveAt && !Number.isNaN(effectiveAt.getTime())
@@ -93,29 +131,22 @@ export class StandardOrderEscrowService {
       calculationInputs,
       tx,
     );
+    const snapshots =
+      await this.settlementSnapshotService.createFromCalculations(
+        calculations,
+        tx,
+      );
+    // Brands before ledger accounts, in a stable order, as every money path does.
+    for (const brandId of [
+      ...new Set(orders.map((order) => order.brandId)),
+    ].sort()) {
+      await this.brandBalance.lockBrand(tx, brandId);
+    }
     for (const [index, order] of orders.entries()) {
-      const calculation = calculations[index];
-      const snapshot =
-        await this.settlementSnapshotService.createFromCalculation(
-          calculation,
-          tx,
-        );
-      const hold = await tx.escrowHold.upsert({
-        where: { orderId: order.id },
-        update: {
-          totalAmount: snapshot.grossAmount,
-          commissionRate: snapshot.commissionRate,
-          commissionAmount: snapshot.commissionAmount,
-          netBrandAmount: snapshot.brandNetAmount,
-          currency,
-          firstReleaseAmount: snapshot.upfrontReleaseGrossAmount,
-          firstReleaseCommissionAmount: snapshot.upfrontReleaseCommissionAmount,
-          firstReleaseNetAmount: snapshot.upfrontReleaseNetBrandAmount,
-          secondReleaseAmount: snapshot.finalReleaseGrossAmount,
-          secondReleaseCommissionAmount: snapshot.finalReleaseCommissionAmount,
-          secondReleaseNetAmount: snapshot.finalReleaseNetBrandAmount,
-        },
-        create: {
+      const snapshot = snapshots[index];
+      await tx.escrowHold.createMany({
+        skipDuplicates: true,
+        data: {
           orderId: order.id,
           brandId: order.brandId,
           buyerId: order.buyerId,
@@ -133,10 +164,12 @@ export class StandardOrderEscrowService {
           status: EscrowHoldStatus.HELD,
         },
       });
+      const hold = await this.lockHoldByOrderId(tx, order.id);
+      if (!hold) continue;
 
       await this.ledgerService.postStandardOrderPaymentReceived(tx, hold);
       if (this.shouldReleaseUpfront(snapshot, hold)) {
-        await this.releaseStandardOrderUpfrontPortion(tx, order.id);
+        await this.releaseUpfrontHold(tx, hold, snapshot);
       }
     }
   }
@@ -149,13 +182,12 @@ export class StandardOrderEscrowService {
     tx: Prisma.TransactionClient,
     orderId: string,
   ) {
-    const hold = await tx.escrowHold.findUnique({ where: { orderId } });
+    const hold = await this.lockHoldByOrderId(tx, orderId);
     if (
       !hold ||
       hold.firstReleasedAt ||
-      hold.status === EscrowHoldStatus.REFUNDED ||
-      hold.status === EscrowHoldStatus.FROZEN ||
-      Number(hold.firstReleaseAmount) <= 0
+      !RELEASABLE.includes(hold.status) ||
+      hold.firstReleaseAmount.lessThanOrEqualTo(0)
     ) {
       return hold;
     }
@@ -167,6 +199,21 @@ export class StandardOrderEscrowService {
     if (!snapshot || !this.shouldReleaseUpfront(snapshot, hold)) {
       return hold;
     }
+
+    return this.releaseUpfrontHold(tx, hold, snapshot);
+  }
+
+  /** Caller holds the hold row lock. */
+  private async releaseUpfrontHold(
+    tx: Prisma.TransactionClient,
+    hold: EscrowHold,
+    snapshot: SettlementSnapshot,
+  ) {
+    if (
+      !this.shouldReleaseUpfront(snapshot, hold) ||
+      hold.firstReleaseAmount.lessThanOrEqualTo(0)
+    )
+      return hold;
 
     const nextStatus = hold.secondReleasedAt
       ? EscrowHoldStatus.RELEASED
@@ -180,7 +227,16 @@ export class StandardOrderEscrowService {
       },
     });
 
+    await this.brandBalance.lockBrand(tx, updated.brandId);
     await this.ledgerService.postStandardOrderShipmentRelease(tx, updated);
+    await this.brandBalance.reconcileRecoveries(
+      tx,
+      updated.brandId,
+      updated.currency,
+      {
+        orderId: updated.orderId,
+      },
+    );
     return updated;
   }
 
@@ -189,17 +245,22 @@ export class StandardOrderEscrowService {
     orderId: string,
     condition: EscrowReleaseCondition = EscrowReleaseCondition.BUYER_DELIVERY_CONFIRMED,
   ) {
-    const hold = await tx.escrowHold.findUnique({ where: { orderId } });
-    if (
-      !hold ||
-      hold.secondReleasedAt ||
-      hold.status === EscrowHoldStatus.REFUNDED ||
-      hold.status === EscrowHoldStatus.FROZEN
-    ) {
+    const hold = await this.lockHoldByOrderId(tx, orderId);
+    if (!hold || hold.secondReleasedAt || !RELEASABLE.includes(hold.status)) {
       return hold;
     }
 
     const settlementHours = await this.getSettlementHoursForOrder(tx, orderId);
+    return this.markDeliveryEligibility(tx, hold, settlementHours, condition);
+  }
+
+  /** Caller holds the hold row lock. */
+  private async markDeliveryEligibility(
+    tx: Prisma.TransactionClient,
+    hold: EscrowHold,
+    settlementHours: number,
+    condition: EscrowReleaseCondition,
+  ) {
     const now = new Date();
     return tx.escrowHold.update({
       where: { id: hold.id },
@@ -213,53 +274,49 @@ export class StandardOrderEscrowService {
   }
 
   async autoConfirmDeliveredOrders() {
-    const candidates = await this.prisma.escrowHold.findMany({
-      where: {
-        status: {
-          in: [EscrowHoldStatus.HELD, EscrowHoldStatus.PARTIALLY_RELEASED],
-        },
-        secondReleaseEligibleAt: null,
-        refundedAt: null,
-        order: {
-          is: {
-            deliveredAt: { not: null },
-            buyerConfirmedDeliveryAt: null,
-            status: 'DELIVERED',
-          },
-        },
-      },
-      select: { orderId: true, order: { select: { deliveredAt: true } } },
-      take: 200,
-    });
+    const candidates = await loadDeliverySettlementCandidates(this.prisma);
+    const needsFallback = candidates.some(
+      (row) =>
+        row.autoReleaseDays === null || row.settlementDelayHours === null,
+    );
+    const [fallbackDays, fallbackHours] = needsFallback
+      ? await Promise.all([
+          this.getAutoReleaseDays(),
+          this.getSettlementHours(),
+        ])
+      : [0, 0];
     let confirmedCount = 0;
 
     for (const candidate of candidates) {
-      if (!candidate.orderId || !candidate.order?.deliveredAt) {
-        continue;
-      }
-
-      const autoReleaseDays = await this.getAutoReleaseDaysForOrder(
-        candidate.orderId,
-      );
+      const autoReleaseDays = candidate.autoReleaseDays ?? fallbackDays;
       const threshold = new Date(
         Date.now() - autoReleaseDays * 24 * 60 * 60 * 1000,
       );
-      if (candidate.order.deliveredAt > threshold) {
+      if (candidate.deliveredAt > threshold) {
         continue;
       }
 
-      await this.prisma.$transaction(async (tx) => {
-        await tx.order.update({
-          where: { id: candidate.orderId! },
+      const confirmed = await this.prisma.$transaction(async (tx) => {
+        const updated = await tx.order.updateMany({
+          where: { id: candidate.orderId!, buyerConfirmedDeliveryAt: null },
           data: { buyerConfirmedDeliveryAt: new Date() },
         });
-        await this.markBuyerDeliveryConfirmed(
-          tx,
-          candidate.orderId!,
-          EscrowReleaseCondition.BUYER_TIMEOUT,
-        );
+        const hold = await this.lockHoldByOrderId(tx, candidate.orderId!);
+        if (
+          hold &&
+          !hold.secondReleasedAt &&
+          RELEASABLE.includes(hold.status)
+        ) {
+          await this.markDeliveryEligibility(
+            tx,
+            hold,
+            candidate.settlementDelayHours ?? fallbackHours,
+            EscrowReleaseCondition.BUYER_TIMEOUT,
+          );
+        }
+        return updated.count > 0;
       });
-      confirmedCount += 1;
+      if (confirmed) confirmedCount += 1;
     }
 
     return confirmedCount;
@@ -268,9 +325,7 @@ export class StandardOrderEscrowService {
   async releaseEligibleFinalPortions() {
     const candidates = await this.prisma.escrowHold.findMany({
       where: {
-        status: {
-          in: [EscrowHoldStatus.HELD, EscrowHoldStatus.PARTIALLY_RELEASED],
-        },
+        status: { in: RELEASABLE },
         refundedAt: null,
         secondReleasedAt: null,
         secondReleaseEligibleAt: { lte: new Date() },
@@ -280,13 +335,15 @@ export class StandardOrderEscrowService {
       orderBy: { secondReleaseEligibleAt: 'asc' },
     });
 
+    let released = 0;
     for (const candidate of candidates) {
-      await this.prisma.$transaction(async (tx) => {
-        await this.releaseFinalPortionByHoldId(tx, candidate.id);
-      });
+      const hold = await this.prisma.$transaction(async (tx) =>
+        this.releaseFinalPortionByHoldId(tx, candidate.id, true),
+      );
+      if (hold?.secondReleasedAt) released += 1;
     }
 
-    return candidates.length;
+    return released;
   }
 
   async releaseFinalPortionNow(
@@ -294,17 +351,16 @@ export class StandardOrderEscrowService {
     orderId: string,
     condition: EscrowReleaseCondition = EscrowReleaseCondition.MANUAL_ADMIN,
   ) {
-    const existing = await tx.escrowHold.findUnique({ where: { orderId } });
+    const existing = await this.lockHoldByOrderId(tx, orderId);
     if (
       !existing ||
       existing.secondReleasedAt ||
-      existing.status === EscrowHoldStatus.REFUNDED ||
-      existing.status === EscrowHoldStatus.FROZEN
+      !RELEASABLE.includes(existing.status)
     ) {
       return existing;
     }
 
-    const eligible = await tx.escrowHold.update({
+    await tx.escrowHold.update({
       where: { id: existing.id },
       data: {
         secondReleaseEligibleAt: new Date(),
@@ -312,7 +368,7 @@ export class StandardOrderEscrowService {
       },
     });
 
-    return this.releaseFinalPortionByHoldId(tx, eligible.id);
+    return this.releaseFinalPortionByHoldId(tx, existing.id, false);
   }
 
   async freezeHold(
@@ -321,12 +377,8 @@ export class StandardOrderEscrowService {
     frozenById: string,
     reason: string,
   ) {
-    const hold = await tx.escrowHold.findUnique({ where: { orderId } });
-    if (
-      !hold ||
-      hold.status === EscrowHoldStatus.REFUNDED ||
-      hold.status === EscrowHoldStatus.RELEASED
-    ) {
+    const hold = await this.lockHoldByOrderId(tx, orderId);
+    if (!hold || !RELEASABLE.includes(hold.status)) {
       return hold;
     }
 
@@ -342,7 +394,7 @@ export class StandardOrderEscrowService {
   }
 
   async unfreezeHold(tx: Prisma.TransactionClient, orderId: string) {
-    const hold = await tx.escrowHold.findUnique({ where: { orderId } });
+    const hold = await this.lockHoldByOrderId(tx, orderId);
     if (!hold || hold.status !== EscrowHoldStatus.FROZEN) {
       return hold;
     }
@@ -364,94 +416,116 @@ export class StandardOrderEscrowService {
     });
   }
 
-  async refundOrderHold(
+  /**
+   * A refund was requested for this order. The hold stops paying the brand,
+   * everything it held or released moves to refund payable, and any released
+   * brand money is recorded once as a clawback keyed to this refund. Caller
+   * holds the order lock; this takes the hold lock. Idempotent.
+   */
+  async reserveRefund(
     tx: Prisma.TransactionClient,
-    orderId: string,
-    reason: string,
-  ) {
-    const hold = await tx.escrowHold.findUnique({ where: { orderId } });
-    if (!hold) {
-      return null;
+    params: { orderId: string; refundId: string; reason: string },
+  ): Promise<{ hold: EscrowHold; split: StandardRefundSplit } | null> {
+    const hold = await this.lockHoldByOrderId(tx, params.orderId);
+    if (!hold) return null;
+    const split = this.ledgerService.standardRefundSplit(hold);
+    if (
+      hold.status === EscrowHoldStatus.REFUND_PENDING ||
+      hold.status === EscrowHoldStatus.REFUNDED
+    ) {
+      return { hold, split };
     }
-    if (hold.refundedAt || hold.status === EscrowHoldStatus.REFUNDED) {
-      return hold;
+    if (hold.status === EscrowHoldStatus.FORFEITED) {
+      throw new Error('ESCROW_HOLD_FORFEITED');
     }
 
     const updated = await tx.escrowHold.update({
       where: { id: hold.id },
       data: {
-        status: EscrowHoldStatus.REFUNDED,
-        refundedAt: new Date(),
-        refundReason: reason.trim().slice(0, 255),
+        status: EscrowHoldStatus.REFUND_PENDING,
+        refundReason: params.reason.trim().slice(0, 255),
         secondReleaseEligibleAt: null,
         secondReleaseCondition: EscrowReleaseCondition.REFUND_COMPLETED,
       },
     });
 
-    await this.ledgerService.postStandardOrderRefund(tx, hold);
+    await this.brandBalance.lockBrand(tx, hold.brandId);
+    await this.ledgerService.postStandardOrderRefundReserved(tx, {
+      refundId: params.refundId,
+      orderId: params.orderId,
+      brandId: hold.brandId,
+      currency: hold.currency,
+      totalAmount: hold.totalAmount,
+      split,
+    });
 
     /*
       Standard orders settle the other way round — the goods reach the shopper
       before the brand is paid out — but the same shortfall is possible: the
       first release fires on dispatch, and a refund after that is money the
-      brand has already been credited.
-
-      Whatever had been released becomes a debt, recovered from later earnings,
-      exactly as on the custom side. `raiseAdjustment` is keyed on the order, so
-      a refund retried or a webhook delivered twice bills it once.
+      brand has already been credited. The released hold no longer counts
+      towards the brand's position; this row says why, exactly once per refund.
     */
-    const releasedToBrand =
-      Number(hold.firstReleasedAt ? (hold.firstReleaseNetAmount ?? 0) : 0) +
-      Number(hold.secondReleasedAt ? (hold.secondReleaseNetAmount ?? 0) : 0);
-    if (releasedToBrand > 0) {
+    if (split.releasedNet.greaterThan(0)) {
       await this.brandBalance.raiseAdjustment(tx, {
         brandId: hold.brandId,
         type: BrandBalanceAdjustmentType.REFUND_CLAWBACK,
-        amount: releasedToBrand,
+        amount: split.releasedNet,
         currency: hold.currency,
-        reason: `Refund issued to the shopper on a released standard order (${reason.trim().slice(0, 120)})`,
-        orderId,
+        reason: `Refund issued to the shopper on a released standard order (${params.reason.trim().slice(0, 120)})`,
+        orderId: params.orderId,
+        sourceKey: `standard-order-refund:${params.refundId}`,
       });
     }
 
+    return { hold: updated, split };
+  }
+
+  /** The provider confirmed the refund. Caller holds refund and order locks. */
+  async settleRefund(
+    tx: Prisma.TransactionClient,
+    params: {
+      orderId: string;
+      refundId: string;
+      captureCurrency: string;
+      captureAmount: Prisma.Decimal;
+      exchangeRateSnapshotId?: string | null;
+    },
+  ) {
+    const hold = await this.lockHoldByOrderId(tx, params.orderId);
+    if (!hold) throw new Error('ESCROW_HOLD_MISSING');
+    if (hold.status === EscrowHoldStatus.REFUNDED) return hold;
+    if (hold.status !== EscrowHoldStatus.REFUND_PENDING) {
+      throw new Error('ESCROW_HOLD_NOT_REFUND_PENDING');
+    }
+    const updated = await tx.escrowHold.update({
+      where: { id: hold.id },
+      data: { status: EscrowHoldStatus.REFUNDED, refundedAt: new Date() },
+    });
+    await this.ledgerService.postStandardOrderRefundSettled(tx, {
+      refundId: params.refundId,
+      orderId: params.orderId,
+      currency: hold.currency,
+      totalAmount: hold.totalAmount,
+      captureCurrency: params.captureCurrency,
+      captureAmount: params.captureAmount,
+      exchangeRateSnapshotId: params.exchangeRateSnapshotId,
+    });
     return updated;
   }
 
-  async getReleasedBalance(brandId: string) {
-    const holds = await this.prisma.escrowHold.findMany({
-      where: { brandId },
-      select: {
-        status: true,
-        refundedAt: true,
-        firstReleasedAt: true,
-        firstReleaseNetAmount: true,
-        secondReleasedAt: true,
-        secondReleaseNetAmount: true,
-      },
-    });
-
-    return holds.reduce((sum, hold) => {
-      if (hold.refundedAt || hold.status === EscrowHoldStatus.REFUNDED) {
-        return sum;
-      }
-
-      let next = sum;
-      if (hold.firstReleasedAt) {
-        next += Number(hold.firstReleaseNetAmount);
-      }
-      if (hold.secondReleasedAt) {
-        next += Number(hold.secondReleaseNetAmount);
-      }
-      return next;
-    }, 0);
-  }
-
-  private getOrderGrossAmount(order: OrderSettlementInput) {
-    return this.roundMoney(Number(order.totalAmount ?? 0));
-  }
-
-  private roundMoney(value: number) {
-    return Math.round((value + Number.EPSILON) * 100) / 100;
+  /** Released, unrefunded brand money from standard orders, exactly. */
+  async getReleasedBalance(brandId: string, currency = 'NGN') {
+    const [row] = await this.prisma.$queryRaw<
+      Array<{ released: Prisma.Decimal }>
+    >`
+      SELECT COALESCE(SUM(
+        CASE WHEN "firstReleasedAt" IS NOT NULL THEN "firstReleaseNetAmount" ELSE 0 END +
+        CASE WHEN "secondReleasedAt" IS NOT NULL THEN "secondReleaseNetAmount" ELSE 0 END), 0) AS released
+      FROM "EscrowHold"
+      WHERE "brandId" = ${brandId}::uuid AND currency = ${currency}
+        AND status NOT IN ('REFUNDED', 'REFUND_PENDING') AND "refundedAt" IS NULL`;
+    return new Prisma.Decimal(row?.released ?? 0);
   }
 
   private shouldReleaseUpfront(
@@ -470,23 +544,25 @@ export class StandardOrderEscrowService {
       snapshot.orderType === SettlementOrderType.STANDARD_ORDER &&
       snapshot.releaseMode === SettlementReleaseMode.SPLIT_RELEASE &&
       snapshot.upfrontReleaseEnabled &&
-      Number(snapshot.upfrontReleaseGrossAmount) > 0 &&
+      new Prisma.Decimal(snapshot.upfrontReleaseGrossAmount).greaterThan(0) &&
       !hold.firstReleasedAt &&
-      hold.status !== EscrowHoldStatus.REFUNDED &&
-      hold.status !== EscrowHoldStatus.FROZEN
+      RELEASABLE.includes(hold.status)
     );
   }
 
   private async releaseFinalPortionByHoldId(
     tx: Prisma.TransactionClient,
     holdId: string,
+    requireEligible: boolean,
   ) {
-    const hold = await tx.escrowHold.findUnique({ where: { id: holdId } });
+    const hold = await this.lockHoldById(tx, holdId);
     if (
       !hold ||
       hold.secondReleasedAt ||
-      hold.status === EscrowHoldStatus.REFUNDED ||
-      hold.status === EscrowHoldStatus.FROZEN
+      !RELEASABLE.includes(hold.status) ||
+      (requireEligible &&
+        (!hold.secondReleaseEligibleAt ||
+          hold.secondReleaseEligibleAt.getTime() > Date.now()))
     ) {
       return hold;
     }
@@ -499,9 +575,18 @@ export class StandardOrderEscrowService {
       },
     });
 
-    if (Number(updated.secondReleaseAmount) > 0) {
+    await this.brandBalance.lockBrand(tx, updated.brandId);
+    if (updated.secondReleaseAmount.greaterThan(0)) {
       await this.ledgerService.postStandardOrderFinalRelease(tx, updated);
     }
+    await this.brandBalance.reconcileRecoveries(
+      tx,
+      updated.brandId,
+      updated.currency,
+      {
+        orderId: updated.orderId,
+      },
+    );
 
     return updated;
   }
@@ -518,14 +603,6 @@ export class StandardOrderEscrowService {
       return snapshot.settlementDelayHours;
     }
     return this.getSettlementHours();
-  }
-
-  private async getAutoReleaseDaysForOrder(orderId: string) {
-    const snapshot = await this.settlementSnapshotService.getByOrderId(orderId);
-    if (snapshot) {
-      return snapshot.autoReleaseDays;
-    }
-    return this.getAutoReleaseDays();
   }
 
   private async getSettlementHours() {

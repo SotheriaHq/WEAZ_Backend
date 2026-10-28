@@ -1,0 +1,166 @@
+{
+  "checkedAt": "2026-10-27T07:13:27.032Z",
+  "passed": true,
+  "cleanupPassed": true,
+  "cases": [
+    "concurrent finalizers attach six files once with one brand read per transaction",
+    "conflicting view slots roll back the entire attachment",
+    "forty repeated-product reservations release exactly once across competing attempts",
+    "repeated product lines cannot oversell and roll back both stock and reservation writes",
+    "joined policy reads cover 25 recipients and preserve target dedupe older than the latest 25 events",
+    "real notification fanout preserves category/global/scenario consent, suppression and replay with bounded reads",
+    "26 mixed notifications preserve per-event payload/type/target and same-recipient replay using bounded joined policy reads",
+    "real joined patch privacy accepts the connected actor and excludes an unconnected actor for the same recipient",
+    "category moderation JOIN pages 26 drafts without multiplying media, omits deleted/published rows and retains cursor boundaries",
+    "real category rejection updates 26 independent drafts and preserves every notification payload with nine SELECTs including email suppression",
+    "real category approval preserves existing media-present publication and 25 upload-incomplete outcomes with nine SELECTs; canonical publication-readiness audit remains separate",
+    "26 custom-order brand recipients hydrate in one SELECT, deduplicate repeated brands, omit missing brands and do no empty-page lookup",
+    "26 actual out-of-stock reminders preserve product targets with eight SELECTs and one guarded timestamp update",
+    "26 actual shopper bag reminders retain quantities and targets using eight SELECTs total",
+    "transactional billing receipt uses one current recipient JOIN, replays idempotently and rolls back inbox/email together",
+    "actual competing file claims perform one post-lease SELECT; READY/missing files skip reads and unsupported MIME uses no storage request",
+    "competing standard payment callbacks retain one conversation, three per-order messages and six durable recipient events; replay uses two data reads",
+    "actual thread lock wait observes the newly committed timestamp and keeps the placement preview and message time monotonic",
+    "a recipient foreign-key failure rolls back conversation creation, order link and message writes together",
+    "existing unpaired order conversation is adopted in place and missing-shopper input remains a no-op",
+    "two competing custom-order dispatchers hand off25 events once with bounded atomic claim groups/zero separate SELECTs and stable event/job identities; failed event stops at its eighth claimed attempt without a reread",
+    "stale outbox scan cannot claim a notification whose availability moved into the future",
+    "26 first-publication products share two SELECTs, queue handoff and empty audience are marked, republishing does not notify again; future/deleted/draft products excluded",
+    "actual durable 26-recipient fanout uses two identity lookup SELECTs and retries create no extra notifications",
+    "two competing message dispatchers share atomic leased batch claims with no standalone SELECTs, one stable handoff per row and no completed-row replay",
+    "32 actual competing custom-outbox sweeps claim one event once and hand off one stable notification/job identity",
+    "unexpired custom-outbox claim is not stolen; expired claim recovers with a new owner/attempt and an old completion cannot overwrite the newer worker",
+    "a late old failure cannot reset a newer custom-outbox claim, overwrite its error or schedule its retry",
+    "a worker crash on the eighth attempt becomes an explicit exhausted failure after lease expiry instead of remaining PROCESSING forever",
+    "failed queue handoff backs off instead of retrying in a hot loop; due retry retains the same notification/job identity and acknowledges only its own claim",
+    "SKIP LOCKED lets a later due custom-outbox event progress while another transaction holds the FIFO head, then processes that head after release",
+    "26 competing custom-order callbacks create one conversation/link/placement message and exactly two recipient outbox rows; replay repairs dispatch without re-emitting",
+    "26 different custom orders on the same buyer/brand pair share one conversation, retain all distinct messages and have strictly distinct ordered timestamps",
+    "cold standard-payment and custom-order callbacks use the same pair lock and share one conversation with two messages/four recipient records",
+    "replaying an older custom placement preserves a newer shopper message, sender and preview timestamp",
+    "custom placement waiting on a real row lock reads the committed future timestamp and advances it instead of regressing the thread preview",
+    "actual notification-outbox constraint failure rolls back thread, participants, link and message together; retry succeeds",
+    "post-commit queue failure leaves two durable pending events and a successful placement; replay uses the actual dispatcher to repair handoff without message duplication or re-emission",
+    "32 real competing email delivery commands claim one event once with one transport call and one atomically committed delivery attempt",
+    "expired email claim recovery uses a unique owner; a late old success cannot overwrite the new worker or insert a stale attempt receipt",
+    "expired email claim recovery uses a unique owner; a late old failure cannot overwrite the new worker or insert a stale attempt receipt",
+    "stale email candidates cannot bypass a moved availability date; successful claims use current body/subject and actual incremented attempt number",
+    "expired eighth-attempt email crashes become exhausted failures; password-reset timeout retries retain the established immediate retry rule and stable provider key",
+    "actual delivery-attempt constraint failure rolls back the COMPLETED update; retry commits status and receipt together with the same provider idempotency key",
+    "email claims skip a row held by another transaction so a later candidate progresses, then process the head after its lock releases",
+    "actual EmailService.send immediate delivery creates a durable email row and commits the owned first attempt before returning SENT",
+    "32 mixed immediate/scheduled email workers share the same current-row claim and produce one provider call and one delivery receipt",
+    "a late immediate email success cannot overwrite its scheduled replacement or insert a false first-attempt receipt",
+    "a late immediate email failure cannot overwrite its scheduled replacement or insert a false first-attempt receipt",
+    "immediate email uses current persisted payload, stable key and actual attempt number instead of captured arguments or a fixed attempt one",
+    "32 actual competing push delivery commands produce one send and one accepted receipt under one claim",
+    "push lease recovery uses a fresh owner; late old success cannot clobber current status, write receipts or apply stale token updates",
+    "push lease recovery uses a fresh owner; late old failure cannot clobber current status, write receipts or apply stale token updates",
+    "accepted first-device chunk is committed before a later chunk fails; retry sends only the remaining device and retains both receipts",
+    "mixed accepted/transient-error tickets retain accepted devices and retry only the failed token instead of falsely marking all delivered",
+    "a DeviceNotRegistered result from an in-flight older registration cannot deactivate or increment failures on a new UUID registration, even with the identical lastSeenAt timestamp",
+    "push claims honor current availability/payload/attempt rather than a stale scan; expired sixth-attempt crashes become explicit exhausted failures",
+    "actual push receipt constraint failure rolls back receipt and token-success changes together, leaves a retryable failed outbox and never records a false SENT result",
+    "32 concurrent receipt poll resolutions apply one result and deactivate the exact token registration once, incrementing its failure counter once",
+    "a late conflicting receipt result cannot replace an already resolved OK result or disable its token",
+    "the actual receipt poller records an old delivery error while preserving a newer registration and completes only its fully resolved sent outbox",
+    "an older receipt without a proven registration version retains its delivery result without guessing which current registration to disable",
+    "an actual token-update constraint failure rolls back receipt resolution atomically; a later retry resolves and deactivates once",
+    "expired receipt lookups become an explicit ReceiptExpired error; completion preserves an active retry and finishes only the current SENT state",
+    "actual notification service suppresses a self-authored extension rejection confirmation but persists the system-authored confirmation for that shopper",
+    "an API interruption after inbox commit leaves a durable channel instruction; 32 real competing recovery sweeps enqueue one email/one push and replay does not duplicate either",
+    "actual push enqueue constraint failure preserves the inbox and rolls back an earlier email enqueue; durable retry commits both channels together",
+    "actual email enqueue failure preserves the inbox with a failed durable instruction; replay after backoff queues both channels once",
+    "failure to persist the durable instruction rolls back the inbox creation; retry with the same notification identity safely commits the complete handoff",
+    "unexpired channel leases cannot be stolen; an expired old owner cannot enqueue channels or acknowledge a replacement claim",
+    "a late channel failure after transaction rollback cannot reset the newer lease, overwrite its error or insert a partial channel job",
+    "a crash on the last channel claim is recovered into an explicit exhausted failure while retaining the inbox and avoiding invented delivery jobs",
+    "32 cold writers for one notification identity retain one inbox, one channel instruction and one email/push without requiring the winning process to stay alive",
+    "26 individually persisted notifications recover in three bounded policy/suppression reads, with no per-event preference/user reads; global opt-out, scenario opt-out and suppression each prevent their email while push remains independent",
+    "existing batch email snapshots retain their creation-time policy without fallback reads; final email suppression remains the separate delivery dispatcher responsibility",
+    "retiring a completed channel instruction does not recreate it or duplicate channel jobs when the long-lived inbox identity is replayed",
+    "indexed retention removes at most 1000 completed instructions per category per run, progresses on the next sweep and preserves an equally old pending instruction"
+  ],
+  "fanoutChannelClaimCommands": 3,
+  "fanoutSelectCount": 9,
+  "mixedEventSelectCount": 5,
+  "mixedActorPrivacySelectCount": 8,
+  "categoryProjectionSelects": 3,
+  "categoryRejectionSelects": 9,
+  "categoryApprovalSelects": 9,
+  "cronBrandOwnerSelects": 1,
+  "stockReminderChannelClaims": 4,
+  "stockReminderSelects": 8,
+  "stockReminderReadTables": [
+    [
+      "Product",
+      "Brand"
+    ],
+    [
+      "Product",
+      "Brand"
+    ],
+    [
+      "User",
+      "UserEmailPreference",
+      "UserEmailScenarioPreference"
+    ],
+    [
+      "EmailSuppression"
+    ],
+    [
+      "Notification",
+      "Notification"
+    ],
+    [
+      "User",
+      "UserEmailPreference",
+      "UserEmailScenarioPreference"
+    ],
+    [
+      "EmailSuppression"
+    ],
+    [
+      "Notification",
+      "Notification"
+    ]
+  ],
+  "stockReminderTimestampWrites": 1,
+  "bagReminderSelects": 8,
+  "bagReminderChannelClaims": 4,
+  "billingReceiptSelects": 1,
+  "imageClaimFileSelects": 1,
+  "standardPlacementReplayDataReads": 2,
+  "customOutboxDispatchSelects": 0,
+  "customOutboxClaimCommands": 5,
+  "productPublicationSelects": 2,
+  "durableFanoutReplayLookupSelects": 2,
+  "messageOutboxClaimCommands": 2,
+  "messageOutboxStandaloneSelects": 0,
+  "customLeaseProof": {
+    "claimFencingVerified": true,
+    "redisVerified": false
+  },
+  "customThreadProof": {
+    "cases": 7
+  },
+  "emailLeaseProof": {
+    "cases": 12,
+    "liveEmailSent": false
+  },
+  "pushLeaseProof": {
+    "cases": 14,
+    "livePushSent": false
+  },
+  "channelProof": {
+    "cases": 12,
+    "providerCalls": 0,
+    "policyBatchProof": {
+      "notifications": 26,
+      "policyReads": 3,
+      "suppressionReads": 3,
+      "otherPolicyReads": 0
+    },
+    "durableInboxAndChannels": true
+  }
+}

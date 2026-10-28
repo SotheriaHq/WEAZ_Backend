@@ -72,17 +72,36 @@ export class FeaturedAutoRemovalService {
     );
 
     // Notify brand owner
-    for (const item of activeItems) {
-      this.notifyBrandOwner(
-        brandId,
-        item.entityType,
-        item.entityId,
-        'BRAND_SUSPENDED',
-      ).catch((err) =>
-        this.logger.warn(
-          `Failed to send auto-removal notification: ${err?.message}`,
-        ),
+    const brand = await this.prisma.brand.findUnique({
+      where: { id: brandId },
+      select: { ownerId: true },
+    });
+    if (brand?.ownerId) {
+      const results = await this.notifications.createEvents(
+        activeItems.map((item) => ({
+          recipientId: brand.ownerId,
+          type: NotificationType.FEATURED_AUTO_REMOVED,
+          opts: {
+            payload: {
+              entityType: item.entityType,
+              entityId: item.entityId,
+              reason: 'BRAND_SUSPENDED',
+            },
+            target: {
+              type:
+                item.entityType === 'DESIGN'
+                  ? ('COLLECTION' as const)
+                  : ('PRODUCT' as const),
+              id: item.entityId,
+            },
+          },
+        })),
       );
+      for (const result of results)
+        if (result.status === 'rejected')
+          this.logger.warn(
+            `Failed to send auto-removal notification: ${String(result.reason)}`,
+          );
     }
   }
 

@@ -2,8 +2,11 @@ import { Prisma, type PrismaClient } from '@prisma/client';
 import { retryDatabaseTransaction } from '../common/transaction-retry.util';
 
 /** One buyer's bag mutations serialize across replicas; unrelated buyers proceed. */
-export async function lockBuyerCart(tx: Prisma.TransactionClient, userId: string): Promise<void> {
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(180215, hashtext(${userId}))`;
+export async function lockBuyerCart(
+  tx: Prisma.TransactionClient,
+  userId: string,
+): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(180215, hashtext(${userId}))`;
 }
 
 export function withCartTransaction<T>(
@@ -11,10 +14,12 @@ export function withCartTransaction<T>(
   userId: string,
   operation: (tx: Prisma.TransactionClient) => Promise<T>,
 ): Promise<T> {
-  return retryDatabaseTransaction(() => prisma.$transaction(async (tx) => {
-    await lockBuyerCart(tx, userId);
-    return operation(tx);
-  }));
+  return retryDatabaseTransaction(() =>
+    prisma.$transaction(async (tx) => {
+      await lockBuyerCart(tx, userId);
+      return operation(tx);
+    }),
+  );
 }
 
 /** Consume the paid snapshot only, retaining quantities added while checkout was open. */
@@ -25,7 +30,11 @@ export async function consumePaidCartLines(
 ): Promise<void> {
   const selected = lines.filter((line) => line.cartItemId);
   if (!selected.length) return;
-  if (selected.some((line) => !Number.isSafeInteger(line.quantity) || line.quantity <= 0)) {
+  if (
+    selected.some(
+      (line) => !Number.isSafeInteger(line.quantity) || line.quantity <= 0,
+    )
+  ) {
     throw new Error('Invalid paid cart quantity');
   }
   await lockBuyerCart(tx, userId);

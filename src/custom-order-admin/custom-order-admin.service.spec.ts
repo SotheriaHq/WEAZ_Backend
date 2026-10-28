@@ -5,6 +5,7 @@ import {
   CustomOrderStatus,
   NotificationType,
   PaymentStatus,
+  Prisma,
 } from '@prisma/client';
 import { CustomOrderRefundService } from 'src/custom-orders/custom-order-refund.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -91,12 +92,19 @@ describe('CustomOrderAdminService', () => {
         inDebt: false,
       }),
       raiseAdjustment: jest.fn().mockResolvedValue({ id: 'adj_1' }),
-      applyEarningsToDebt: jest
+      // No debt: the whole release is payable.
+      payableFromRelease: jest
         .fn()
-        .mockImplementation(async (_tx: unknown, params: { amount: number }) => ({
-          recovered: 0,
-          remaining: params.amount,
-        })),
+        .mockImplementation(
+          async (_tx: unknown, params: { amount: string }) => ({
+            payable: new Prisma.Decimal(params.amount),
+            withheld: new Prisma.Decimal(0),
+          }),
+        ),
+      reconcileRecoveries: jest.fn().mockResolvedValue({
+        recovered: new Prisma.Decimal(0),
+        outstanding: new Prisma.Decimal(0),
+      }),
     };
 
     // Title hydration is a passthrough in tests (returns rows unchanged).
@@ -709,10 +717,20 @@ describe('CustomOrderAdminService', () => {
     );
 
     expect(tx.payout.create).toHaveBeenCalledTimes(1);
-    // Debt is checked before anything is written, every time.
-    expect(brandBalance.applyEarningsToDebt).toHaveBeenCalledWith(
+    // The payout is capped by the brand's position before anything is written.
+    expect(brandBalance.payableFromRelease).toHaveBeenCalledWith(
       tx,
-      expect.objectContaining({ brandId: 'brand_1', amount: 900 }),
+      expect.objectContaining({
+        brandId: 'brand_1',
+        amount: '900.00',
+        currency: 'NGN',
+      }),
+    );
+    expect(brandBalance.reconcileRecoveries).toHaveBeenCalledWith(
+      tx,
+      'brand_1',
+      'NGN',
+      expect.anything(),
     );
     expect(tx.customOrderLedgerAllocation.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -754,9 +772,10 @@ describe('CustomOrderAdminService', () => {
         customOrder: { brandId: 'brand_9' },
       },
     ]);
-    brandBalance.applyEarningsToDebt.mockResolvedValue({
-      recovered: 450,
-      remaining: 0,
+    // The brand's position is still negative: the whole batch settles debt.
+    brandBalance.payableFromRelease.mockResolvedValue({
+      payable: new Prisma.Decimal(0),
+      withheld: new Prisma.Decimal(450),
     });
 
     const tx = {
@@ -769,7 +788,8 @@ describe('CustomOrderAdminService', () => {
       },
     };
     prisma.$transaction.mockImplementation(
-      async (callback: (innerTx: typeof tx) => Promise<unknown>) => callback(tx),
+      async (callback: (innerTx: typeof tx) => Promise<unknown>) =>
+        callback(tx),
     );
 
     const result = await service.releaseEligibleLedgerAllocations(
@@ -787,6 +807,30 @@ describe('CustomOrderAdminService', () => {
       }),
     );
     expect(result.data.appliedToBrandDebt).toBe(450);
+  });
+
+  it('never pays out an earning recorded in another currency at face value', async () => {
+    prisma.customOrderLedgerAllocation.findMany.mockResolvedValue([
+      {
+        id: 'alloc_usd',
+        amount: 100,
+        netBrandAmount: 90,
+        currency: 'USD',
+        customOrderId: 'co_usd',
+        customOrder: { brandId: 'brand_usd' },
+      },
+    ]);
+
+    const result = await service.releaseEligibleLedgerAllocations(
+      { customOrderId: 'co_usd' },
+      'admin_1',
+    );
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(brandBalance.payableFromRelease).not.toHaveBeenCalled();
+    expect(result.data.awaitingSettlementCurrency).toEqual([
+      { brandId: 'brand_usd', currency: 'USD', amount: 90 },
+    ]);
   });
 
   it('lists orders with server-side attention filter and attentionTotal', async () => {
@@ -844,7 +888,10 @@ describe('CustomOrderAdminService', () => {
     // Narrow select + no interactive transaction for pure reads.
     expect(prisma.customOrder.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        select: expect.objectContaining({ id: true, buyerPriceSummaryJson: true }),
+        select: expect.objectContaining({
+          id: true,
+          buyerPriceSummaryJson: true,
+        }),
       }),
     );
   });

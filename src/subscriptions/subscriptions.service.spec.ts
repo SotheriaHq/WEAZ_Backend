@@ -21,11 +21,36 @@ describe('SubscriptionsService boundary and payment invariants', () => {
     providerCustomerEmail: 'brand@example.com',
   });
 
+  const invoiceRows = async (query: any) => {
+    const invoice = query.sql.includes('i.id =')
+      ? await prisma.brandSubscriptionInvoice.findUniqueOrThrow({
+          where: { id: query.values[0] },
+        })
+      : query.sql.includes('AND s."brandId"')
+        ? await prisma.brandSubscriptionInvoice.findFirst()
+        : await prisma.brandSubscriptionInvoice.findUnique();
+    if (!invoice) return [];
+    const { subscription, ...row } = invoice;
+    return [
+      {
+        ...row,
+        agreementBrandId: subscription.brandId,
+        agreementCustomerEmail: subscription.providerCustomerEmail,
+      },
+    ];
+  };
+
   beforeEach(() => {
     jest.useFakeTimers().setSystemTime(now);
     prisma = {
       $transaction: jest.fn((callback) => callback(prisma)),
-      $queryRaw: jest.fn(),
+      $queryRaw: jest
+        .fn()
+        .mockImplementation(async (query: any) =>
+          query.sql?.includes('FROM "BrandSubscriptionInvoice" i')
+            ? invoiceRows(query)
+            : [],
+        ),
       $executeRaw: jest.fn(),
       brandSubscription: {
         findFirst: jest.fn().mockResolvedValue(current()),
@@ -58,8 +83,8 @@ describe('SubscriptionsService boundary and payment invariants', () => {
         findMany: jest.fn(),
       },
       operationalAlert: { upsert: jest.fn(), updateMany: jest.fn() },
-      notification: { upsert: jest.fn() },
-      emailOutbox: { upsert: jest.fn() },
+      notification: { createMany: jest.fn() },
+      emailOutbox: { createMany: jest.fn() },
     };
     access = {
       assertBrandOwnerAndResolve: jest
@@ -175,6 +200,80 @@ describe('SubscriptionsService boundary and payment invariants', () => {
     expect(prisma.brandSubscription.update).not.toHaveBeenCalled();
   });
 
+  it('reads all paid-invoice capture receipts once without per-reference queries or provider calls', async () => {
+    const invoice = {
+      id: 'paid-invoice',
+      reference: 'wzsub-paid',
+      status: 'PAID',
+      subscription: current(),
+      attemptCount: 4,
+      hostedAttemptReferences: Array.from(
+        { length: 20 },
+        (_, index) => `wzsub-paid-h${index}`,
+      ),
+    };
+    const references = (service as any).paymentReferences(invoice);
+    prisma.brandSubscriptionInvoice.findFirst.mockResolvedValue(invoice);
+    prisma.brandSubscriptionInvoice.findUniqueOrThrow.mockResolvedValue(
+      invoice,
+    );
+    prisma.brandSubscriptionPaymentCapture.findMany.mockResolvedValue(
+      references.map((reference) => ({ reference, status: 'APPLIED' })),
+    );
+    jest
+      .spyOn(service, 'getForOwner')
+      .mockResolvedValue({ subscription: current() } as any);
+    expect(
+      await service.verifyForOwner('owner', 'brand-one', invoice.reference),
+    ).toMatchObject({ paid: true, status: 'PAID' });
+    expect(
+      prisma.brandSubscriptionPaymentCapture.findMany,
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      prisma.brandSubscriptionPaymentCapture.findMany,
+    ).toHaveBeenCalledWith({
+      where: { invoiceId: invoice.id, reference: { in: references } },
+      select: { reference: true, status: true },
+    });
+    expect(
+      prisma.brandSubscriptionPaymentCapture.findUnique,
+    ).not.toHaveBeenCalled();
+    expect(paystack.verify).not.toHaveBeenCalled();
+  });
+
+  it('refuses another hosted payment from a paid receipt batch', async () => {
+    const invoice = {
+      id: 'paid-invoice',
+      reference: 'wzsub-paid',
+      status: 'PAID',
+      subscription: current(),
+      attemptCount: 0,
+    };
+    prisma.brandSubscriptionInvoice.findUniqueOrThrow.mockResolvedValue(
+      invoice,
+    );
+    prisma.brandSubscriptionPaymentCapture.findMany.mockResolvedValue([
+      { reference: invoice.reference, status: 'APPLIED' },
+    ]);
+    await expect(
+      (service as any).prepareHostedPayment(invoice.id, 'brand@example.com'),
+    ).rejects.toThrow('already been received');
+    expect(paystack.verify).not.toHaveBeenCalled();
+    expect(prisma.brandSubscriptionInvoice.update).not.toHaveBeenCalled();
+  });
+
+  it('skips a renewal whose paid period has not yet ended after the current joined guard', async () => {
+    prisma.$queryRaw.mockResolvedValue([
+      { ...current(), scheduledTierFound: null, scheduledTierPrice: null },
+    ]);
+    await (service as any).prepareRenewal('sub-current', 'brand-one', now);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.brandSubscription.findUniqueOrThrow).not.toHaveBeenCalled();
+    expect(prisma.subscriptionTier.findUnique).not.toHaveBeenCalled();
+    expect(prisma.brandSubscription.update).not.toHaveBeenCalled();
+    expect(paystack.charge).not.toHaveBeenCalled();
+  });
+
   it('routes unrelated payment references back to ordinary checkout', async () => {
     expect(await service.handleProviderCharge('order-payment-one')).toBe(false);
     expect(prisma.brandSubscriptionInvoice.findUnique).not.toHaveBeenCalled();
@@ -271,6 +370,11 @@ describe('SubscriptionsService boundary and payment invariants', () => {
   });
 
   it('commits a durable receipt and transactional email with a confirmed entitlement payment', async () => {
+    prisma.$queryRaw.mockImplementation(async (query: any) =>
+      query.sql?.includes('FROM "BrandSubscriptionInvoice" i')
+        ? invoiceRows(query)
+        : [{ ownerId: 'owner', email: 'brand@example.com' }],
+    );
     const invoice = {
       id: 'invoice-one',
       subscriptionId: 'sub-current',
@@ -301,22 +405,70 @@ describe('SubscriptionsService boundary and payment invariants', () => {
       customer: { email: 'brand@example.com' },
     });
     await service.handleProviderCharge(invoice.reference);
-    expect(prisma.notification.upsert).toHaveBeenCalledWith(
+    expect(prisma.notification.createMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({
-          recipientId: 'owner',
-          payload: expect.objectContaining({ action: 'SUBSCRIPTION_BILLING' }),
-        }),
+        data: [
+          expect.objectContaining({
+            recipientId: 'owner',
+            payload: expect.objectContaining({
+              action: 'SUBSCRIPTION_BILLING',
+            }),
+          }),
+        ],
+        skipDuplicates: true,
       }),
     );
-    expect(prisma.emailOutbox.upsert).toHaveBeenCalledWith(
+    expect(prisma.emailOutbox.createMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({
-          priority: 'P1_TRANSACTIONAL',
-          idempotencyKey: 'subscription-paid-invoice-one',
-        }),
+        data: [
+          expect.objectContaining({
+            priority: 'P1_TRANSACTIONAL',
+            idempotencyKey: 'subscription-paid-invoice-one',
+          }),
+        ],
+        skipDuplicates: true,
       }),
     );
+  });
+
+  it('retains an inbox receipt without an email and skips a missing billing recipient', async () => {
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ ownerId: 'owner', email: null }])
+      .mockResolvedValueOnce([]);
+    await (service as any).notifyBilling(
+      prisma,
+      'brand-one',
+      'event',
+      'Heading',
+      'Message',
+    );
+    await (service as any).notifyBilling(
+      prisma,
+      'missing',
+      'event',
+      'Heading',
+      'Message',
+    );
+    expect(prisma.notification.createMany).toHaveBeenCalledTimes(1);
+    expect(prisma.emailOutbox.createMany).not.toHaveBeenCalled();
+  });
+
+  it('propagates a failed receipt write to its financial transaction instead of swallowing it', async () => {
+    prisma.$queryRaw.mockResolvedValue([
+      { ownerId: 'owner', email: 'brand@example.com' },
+    ]);
+    prisma.emailOutbox.createMany.mockRejectedValueOnce(
+      new Error('outbox unavailable'),
+    );
+    await expect(
+      (service as any).notifyBilling(
+        prisma,
+        'brand-one',
+        'event',
+        'Heading',
+        'Message',
+      ),
+    ).rejects.toThrow('outbox unavailable');
   });
 
   it('never blindly resubmits an interrupted refund without a provider refund ID', async () => {
@@ -336,6 +488,20 @@ describe('SubscriptionsService boundary and payment invariants', () => {
     });
     prisma.brandSubscriptionPaymentCapture.findUniqueOrThrow.mockResolvedValue(
       capture,
+    );
+    prisma.$queryRaw.mockImplementation(async (query: any) =>
+      query.sql?.includes('FROM "BrandSubscriptionPaymentCapture"')
+        ? [
+            {
+              ...capture,
+              currency: 'NGN',
+              invoiceId: capture.invoice.id,
+              invoiceAmount: 10000,
+              invoiceCurrency: 'NGN',
+              brandId: current().brandId,
+            },
+          ]
+        : [],
     );
     prisma.brandSubscriptionPaymentCapture.update.mockResolvedValue(capture);
     await (service as any).processCompensations(now);

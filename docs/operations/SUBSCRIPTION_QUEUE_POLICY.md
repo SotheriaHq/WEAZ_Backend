@@ -50,7 +50,7 @@ Evaluate entitlement time after the database reads complete, so a slow read cros
 
 Reproduce with scripts/verify-fresh-schema.cjs --seed, scripts/verify-subscription-tier-contraction.cjs, scripts/verify-customers-db.cjs and scripts/verify-subscription-queue-postgres.cjs. Evidence is in ../storage/evidence/fresh-schema.json, ../storage/evidence/subscription-tier-contraction.json and ../performance-reviews/subscription-queue-postgres-2026-10-23.json.
 
-Item 1 is locally verified. Actual SIT/local reset and live cutover are now authorized before item 2 and remain pending until recorded in the release evidence. No live schema, payment-provider behavior, device rendering or running deployment is certified by these isolated checks.
+Actual SIT/local reset, reference/admin seeding and backend cutover completed on24October. Web PR7 subsequently merged on25October; further item-1 follow-up remains held. Current schema additions require their own verified rollout. No live schema, payment-provider behavior, device rendering or running deployment is certified by these isolated checks.
 
 Verify unsubscribed storefront access, blocked unpaid custom intake, exact paid-period expiry, first activation, failed switch, recovery, cancellation, owner/account safety, admin cap overrides, next-tier notices, highest-tier Upgrade suppression, both capture entrypoints and repeat finalization. Database reset, provider callbacks, device rendering and deployment are separate release checks; focused tests do not establish unlimited capacity or universal absence of defects.
 

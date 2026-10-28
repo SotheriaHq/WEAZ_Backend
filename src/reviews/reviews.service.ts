@@ -1140,44 +1140,37 @@ export class ReviewsService {
     );
 
     let sent = 0;
-    let skipped = 0;
     let failed = 0;
-
-    for (const candidate of candidates) {
-      if (!candidate.buyerId) {
-        skipped += 1;
-        continue;
-      }
-
-      if (reviewedPairs.has(`${candidate.buyerId}:${candidate.productId}`)) {
-        skipped += 1;
-        continue;
-      }
-
-      if (disputedOrderItemIds.has(candidate.id)) {
-        skipped += 1;
-        continue;
-      }
-
-      try {
-        const created = await this.notifications.create(
-          candidate.buyerId,
-          NotificationType.REVIEW_REMINDER,
-          {
-            payload: {
-              orderId: candidate.orderId,
-              orderItemId: candidate.id,
-              productId: candidate.productId,
-              productName: candidate.nameAtPurchase,
-              targetUrl: `/orders/${candidate.orderId}`,
-            },
-            target: {
-              type: 'PRODUCT',
-              id: candidate.productId,
-            },
-            dedupeMs: 7 * 24 * 60 * 60 * 1000,
+    const eligible = candidates.filter(
+      (candidate) =>
+        candidate.buyerId &&
+        !reviewedPairs.has(`${candidate.buyerId}:${candidate.productId}`) &&
+        !disputedOrderItemIds.has(candidate.id),
+    );
+    let skipped = candidates.length - eligible.length;
+    const notifications = await this.notifications.createEvents(
+      eligible.map((candidate) => ({
+        recipientId: candidate.buyerId!,
+        type: NotificationType.REVIEW_REMINDER,
+        opts: {
+          payload: {
+            orderId: candidate.orderId,
+            orderItemId: candidate.id,
+            productId: candidate.productId,
+            productName: candidate.nameAtPurchase,
+            targetUrl: `/orders/${candidate.orderId}`,
           },
-        );
+          target: { type: 'PRODUCT' as const, id: candidate.productId },
+          dedupeMs: 7 * 24 * 60 * 60 * 1000,
+        },
+      })),
+    );
+    for (let index = 0; index < eligible.length; index += 1) {
+      const candidate = eligible[index];
+      try {
+        const result = notifications[index];
+        if (result.status === 'rejected') throw result.reason;
+        const created = result.value;
 
         if (created) {
           await this.prisma.orderItem.update({

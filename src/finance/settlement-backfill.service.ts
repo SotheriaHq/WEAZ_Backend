@@ -579,41 +579,18 @@ export class SettlementBackfillService {
     key: 'orderId' | 'customOrderId',
   ) {
     let created = 0;
-    let skippedExisting = 0;
-
-    for (const record of records) {
-      const targetId = record[key];
-      if (!targetId) {
-        continue;
-      }
-
-      const result = await this.prisma.$transaction(async (tx) => {
-        const existing = await tx.settlementSnapshot.findFirst({
-          where: { [key]: targetId },
-        });
-        if (existing) {
-          return 'existing';
-        }
-
-        try {
-          await tx.settlementSnapshot.create({ data: record.snapshotData });
-          return 'created';
-        } catch (error) {
-          if (this.isUniqueViolation(error)) {
-            return 'existing';
-          }
-          throw error;
-        }
+    const eligible = records.filter((record) => Boolean(record[key]));
+    for (let start = 0; start < eligible.length; start += 100) {
+      const result = await this.prisma.settlementSnapshot.createMany({
+        data: eligible
+          .slice(start, start + 100)
+          .map((record) => record.snapshotData),
+        skipDuplicates: true,
       });
-
-      if (result === 'created') {
-        created += 1;
-      } else {
-        skippedExisting += 1;
-      }
+      created += result.count;
     }
 
-    return { created, skippedExisting };
+    return { created, skippedExisting: eligible.length - created };
   }
 
   private standardSnapshotDraft(
@@ -847,14 +824,5 @@ export class SettlementBackfillService {
     return value && typeof value === 'object' && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : undefined;
-  }
-
-  private isUniqueViolation(error: unknown) {
-    return Boolean(
-      error &&
-        typeof error === 'object' &&
-        'code' in error &&
-        (error as { code?: string }).code === 'P2002',
-    );
   }
 }

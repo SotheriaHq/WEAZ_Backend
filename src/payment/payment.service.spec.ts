@@ -135,7 +135,7 @@ describe('PaymentService', () => {
     ).toEqual(
       expect.objectContaining({
         email: 'buyer@example.com',
-        phone: '08030000000',
+        phone: '+2348030000000',
         channel: 'CARD',
         saveNewCard: true,
         newCardDraft: {
@@ -715,7 +715,24 @@ describe('PaymentService', () => {
       nextAction: null,
       expiresAt: new Date(Date.now() + 30 * 60 * 1000),
     };
+    // Read after the product lock: checkout re-checks sellability there.
+    const lockedProduct = {
+      id: 'product-1',
+      totalStock: 0,
+      sizeStock: null,
+      trackInventory: false,
+      allowBackorders: true,
+      deletedAt: null as Date | null,
+      archivedAt: null,
+      isActive: true,
+      publishAt: null,
+      standardCheckoutEnabled: true,
+    };
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      product: {
+        findMany: jest.fn().mockResolvedValue([lockedProduct]),
+      },
       checkoutSession: {
         create: jest.fn().mockResolvedValue(checkoutSession),
       },
@@ -880,6 +897,38 @@ describe('PaymentService', () => {
         }),
       }),
     );
+
+    // A product deleted while the shopper was checking out is refused after the lock.
+    tx.product.findMany.mockResolvedValue([
+      { ...lockedProduct, deletedAt: new Date() },
+    ]);
+    tx.paymentAttempt.create.mockClear();
+    initializeGatewaySpy.mockClear();
+    await expect(
+      target.initializeUnifiedCheckout(
+        {
+          customerName: 'Ada Okafor',
+          shippingAddress: {
+            firstName: 'Ada',
+            lastName: 'Okafor',
+            street: '1 Allen Avenue',
+            city: 'Lagos',
+            state: 'Lagos',
+            country: 'Nigeria',
+            phone: '08030000000',
+          },
+          contactInfo: { phone: '08030000000' },
+          paymentMethod: PaymentMethod.PAYSTACK,
+          email: 'ada@example.com',
+          idempotencyKey: 'idem-product-removed',
+          paymentData: { phone: '08030000000', channel: 'CARD' },
+        },
+        'buyer_1',
+        'corr-product-removed',
+      ),
+    ).rejects.toThrow('Product is no longer available: WIEZ Tee');
+    expect(tx.paymentAttempt.create).not.toHaveBeenCalled();
+    expect(initializeGatewaySpy).not.toHaveBeenCalled();
   });
 
   it('rejects unified checkout when a required measurement snapshot is missing', async () => {
@@ -1479,6 +1528,7 @@ describe('PaymentService', () => {
   it('releases unified checkout reservations and abandons custom bag lines after a failed attempt', async () => {
     const tx = {
       $queryRaw: jest.fn().mockResolvedValue(undefined),
+      $executeRaw: jest.fn().mockResolvedValue(1),
       paymentAttempt: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'attempt-release-1',
@@ -1520,17 +1570,19 @@ describe('PaymentService', () => {
         update: jest.fn().mockResolvedValue(undefined),
       },
       product: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'product-1',
-          sizeStock: { M: 3 },
-        }),
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'product-1',
+            sizeStock: { M: 3 },
+          },
+        ]),
         update: jest.fn().mockResolvedValue(undefined),
       },
       productVariant: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       inventoryReservation: {
-        update: jest.fn().mockResolvedValue(undefined),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       checkoutSessionLine: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -1569,8 +1621,8 @@ describe('PaymentService', () => {
       ),
     ).resolves.toBeUndefined();
 
-    expect(tx.inventoryReservation.update).toHaveBeenCalledWith({
-      where: { id: 'reservation-1' },
+    expect(tx.inventoryReservation.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ['reservation-1'] }, status: 'RESERVED' },
       data: expect.objectContaining({
         status: 'RELEASED',
         releaseReason: 'ATTEMPT_FAILED',

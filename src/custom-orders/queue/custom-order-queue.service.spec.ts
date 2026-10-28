@@ -177,6 +177,11 @@ function harness(initial: ReturnType<typeof order>[], cap = 0, streak = 0) {
       }),
       findFirst: jest.fn(async () => null),
       create: jest.fn(async ({ data }) => data),
+      createMany: jest.fn(async ({ data }) => {
+        if (allocations.some((row) => row.customOrderId === data.customOrderId && row.allocationType === data.allocationType)) return { count: 0 };
+        allocations.push({ ...data });
+        return { count: 1 };
+      }),
     },
     customOrderNotificationOutbox: {
       createMany: jest.fn(async () => ({ count: 1 })),
@@ -184,9 +189,14 @@ function harness(initial: ReturnType<typeof order>[], cap = 0, streak = 0) {
     },
     customOrderTimelineEvent: { create: jest.fn(async () => ({})) },
     adminAuditLog: { create: jest.fn(async () => ({})) },
-    $queryRaw: jest.fn(async (query: TemplateStringsArray) => {
-      const text = Array.isArray(query) ? query.join('?') : String(query);
+    $queryRaw: jest.fn(async (query: TemplateStringsArray | Prisma.Sql) => {
+      const text = Array.isArray(query) ? query.join('?') : (query as Prisma.Sql).sql;
       locks.push(text);
+      if (text.includes('FROM "CustomOrder" o JOIN "Brand" b')) {
+        const id = (query as Prisma.Sql).values[0] as string;
+        const row = rows.get(id);
+        return row ? [{ ...row, brandOwnerId: brand.ownerId }] : [];
+      }
       return text.includes('NOW()') || text.includes('clock_timestamp()')
         ? [{ now: NOW }]
         : text.includes('Brand')
@@ -226,19 +236,17 @@ function harness(initial: ReturnType<typeof order>[], cap = 0, streak = 0) {
     finance as any,
     ledger as any,
   );
-  jest
-    .spyOn(service, 'capacity')
-    .mockImplementation(
-      async () =>
-        ({
-          brand,
-          active: cap,
-          inDelivery: 5,
-          safetyAllowed: true,
-          intakeAllowed: true,
-          queueJumpAllowed: true,
-        }) as any,
-    );
+  jest.spyOn(service, 'capacity').mockImplementation(
+    async () =>
+      ({
+        brand,
+        active: cap,
+        inDelivery: 5,
+        safetyAllowed: true,
+        intakeAllowed: true,
+        queueJumpAllowed: true,
+      }) as any,
+  );
   jest
     .spyOn(service, 'present')
     .mockImplementation(
@@ -264,17 +272,30 @@ function harness(initial: ReturnType<typeof order>[], cap = 0, streak = 0) {
 describe('custom order queue transaction boundaries', () => {
   it('prevents a different shopper or unauthorized staff member from reading or cancelling an order', async () => {
     const h = harness([order('private-order')]);
-    h.permissions.assertPermission.mockRejectedValue(new Error('Access denied'));
-    await expect(h.service.get('different-shopper', 'private-order')).rejects.toThrow('Access denied');
-    await expect(h.service.cancel('unassigned-staff', 'private-order', 'Cancel this')).rejects.toThrow('Access denied');
+    h.permissions.assertPermission.mockRejectedValue(
+      new Error('Access denied'),
+    );
+    await expect(
+      h.service.get('different-shopper', 'private-order'),
+    ).rejects.toThrow('Access denied');
+    await expect(
+      h.service.cancel('unassigned-staff', 'private-order', 'Cancel this'),
+    ).rejects.toThrow('Access denied');
     expect(h.refunds).toHaveLength(0);
     expect(h.prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('rejects a batch containing another shopper order without presenting any records', async () => {
-    const h = harness([order('own'), order('other', { buyerId: 'another-buyer' })]);
-    (h.prisma as any).user = { findUnique: jest.fn(async () => ({ type: 'REGULAR' })) };
-    await expect(h.service.batch('buyer', ['own', 'other'])).rejects.toThrow('Not authorized');
+    const h = harness([
+      order('own'),
+      order('other', { buyerId: 'another-buyer' }),
+    ]);
+    (h.prisma as any).user = {
+      findUnique: jest.fn(async () => ({ type: 'REGULAR' })),
+    };
+    await expect(h.service.batch('buyer', ['own', 'other'])).rejects.toThrow(
+      'Not authorized',
+    );
     expect(h.service.present).not.toHaveBeenCalled();
   });
   beforeEach(() => {
@@ -361,9 +382,16 @@ describe('custom order queue transaction boundaries', () => {
   });
 
   it('promotes forty orders with bounded candidate reads and no per-order brand metadata lookup', async () => {
-    const h = harness(Array.from({ length: 40 }, (_, i) => order(`order-${i}`, { queuePosition: i })), 40);
+    const h = harness(
+      Array.from({ length: 40 }, (_, i) =>
+        order(`order-${i}`, { queuePosition: i }),
+      ),
+      40,
+    );
     await h.service.drain(h.tx as any, 'brand', NOW);
-    expect([...h.rows.values()].filter((row) => row.lane === 'ACTIVE')).toHaveLength(40);
+    expect(
+      [...h.rows.values()].filter((row) => row.lane === 'ACTIVE'),
+    ).toHaveLength(40);
     expect(h.tx.customOrder.findFirst).toHaveBeenCalledTimes(1);
     expect(h.tx.customOrder.findMany).toHaveBeenCalledTimes(2);
     expect(h.service.capacity).toHaveBeenCalledTimes(1);
@@ -422,17 +450,30 @@ describe('custom order queue transaction boundaries', () => {
       h.tx,
       expect.objectContaining({ queueHold: true }),
     );
+    expect(h.tx.brand.findUnique).not.toHaveBeenCalled();
     await h.service.admitPaid(h.tx as any, 'arrival');
     expect(h.finance.applyPaidSettlement).toHaveBeenCalledTimes(1);
   });
 
   it('leaves unpaid orders without a lane while promoting eligible paid demand', async () => {
-    const h = harness([
-      order('unpaid', { lane: null, paymentStatus: 'PENDING', status: 'PENDING_PAYMENT', queuePosition: null }),
-      order('paid'),
-    ], 0);
+    const h = harness(
+      [
+        order('unpaid', {
+          lane: null,
+          paymentStatus: 'PENDING',
+          status: 'PENDING_PAYMENT',
+          queuePosition: null,
+        }),
+        order('paid'),
+      ],
+      0,
+    );
     await h.service.drain(h.tx as any, 'brand', NOW);
-    expect(h.rows.get('unpaid')).toMatchObject({ lane: null, paymentStatus: 'PENDING', status: 'PENDING_PAYMENT' });
+    expect(h.rows.get('unpaid')).toMatchObject({
+      lane: null,
+      paymentStatus: 'PENDING',
+      status: 'PENDING_PAYMENT',
+    });
     expect(h.rows.get('paid')!.lane).toBe('UP_NEXT');
   });
 
@@ -465,6 +506,7 @@ describe('custom order queue transaction boundaries', () => {
       count: 0,
     });
     await h.service.sweep();
+    expect(h.service.present).not.toHaveBeenCalled();
     expect([...h.rows.values()].every((row) => row.lane === 'TERMINAL')).toBe(
       true,
     );
@@ -492,6 +534,39 @@ describe('custom order queue transaction boundaries', () => {
     expect(h.locks[1]).toContain('Brand');
   });
 
+  it('keeps bulk cancellation authorization and per-order failures without unused queue responses', async () => {
+    const h = harness([order('one'), order('active', { lane: 'ACTIVE' })]);
+    const result = await h.service.cancelMany('brand-owner', 'brand', ['one', 'active'], 'Cancel selection');
+    expect(result.results).toEqual([
+      { id: 'one', cancelled: true },
+      { id: 'active', cancelled: false, message: 'CUSTOM_ORDER_NO_LONGER_WAITING' },
+    ]);
+    expect(h.permissions.assertPermission).toHaveBeenCalledTimes(3);
+    expect(h.service.present).not.toHaveBeenCalled();
+    expect(h.tx.brand.findUnique).not.toHaveBeenCalled();
+    expect(h.refunds).toHaveLength(1);
+  });
+
+  it('keeps the public cancellation response while refusing stale revisions', async () => {
+    const h = harness([order('one')]);
+    await expect(h.service.cancel('buyer', 'one', 'Cancel', 4)).rejects.toThrow('CUSTOM_ORDER_CHANGED_REFRESH_REQUIRED');
+    expect(h.refunds).toHaveLength(0);
+    expect(h.service.present).not.toHaveBeenCalled();
+    expect(await h.service.cancel('buyer', 'one', 'Cancel', 0)).toMatchObject({ queue: { lane: 'TERMINAL' } });
+    expect(h.service.present).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases a priority fee without an existence lookup and preserves the allocation on replay', async () => {
+    const h = harness([order('priority', { jumpFeeAmount: new Prisma.Decimal(20) })]);
+    await (h.service as any).releaseJump(h.tx, h.rows.get('priority'));
+    await (h.service as any).releaseJump(h.tx, h.rows.get('priority'));
+    expect(h.tx.customOrderLedgerAllocation.findFirst).not.toHaveBeenCalled();
+    expect(h.allocations.filter((row) => row.allocationType === 'JUMP_FEE')).toEqual([
+      expect.objectContaining({ amount: 20, commissionAmount: 2, netBrandAmount: 18, status: 'PAYOUT_ELIGIBLE' }),
+    ]);
+    expect(h.ledger.postTransaction).toHaveBeenCalledWith(h.tx, expect.objectContaining({ idempotencyKey: 'ledger:custom-order:priority:jump_release' }));
+  });
+
   it('rejects sibling refunds whose cumulative amount would exceed the shared capture', async () => {
     const h = harness([order('one')]);
     h.parent.amount = new Prisma.Decimal(200000);
@@ -505,39 +580,119 @@ describe('custom order queue transaction boundaries', () => {
   });
 });
 
-
 describe('paid custom-order intake entitlement', () => {
   const now = new Date('2026-10-23T12:00:00Z');
-  const tier = { key: 'THREAD', maxActive: 2, maxInDelivery: 2, queueJumpAllowed: false };
+  const tier = {
+    key: 'THREAD',
+    maxActive: 2,
+    maxInDelivery: 2,
+    queueJumpAllowed: false,
+  };
   function setup(agreement: any = null, brandPatch: any = {}) {
     const prisma: any = {
-      brand: { findUnique: jest.fn().mockResolvedValue({ ownerId: 'owner', owner: { status: 'ACTIVE' }, verificationStatus: 'APPROVED', activeOrderCapOverride: null, customOrderIntakeBlockedAt: null, ...brandPatch }) },
+      $queryRaw: jest.fn().mockResolvedValue([
+        {
+          id: 'brand',
+          ownerId: 'owner',
+          ownerStatus: brandPatch.owner?.status ?? 'ACTIVE',
+          verificationStatus: 'APPROVED',
+          activeOrderCapOverride: null,
+          activeOrderCapOverrideUntil: null,
+          customOrderIntakeBlockedAt: null,
+          agreementId: agreement ? 'agreement' : null,
+          agreementStatus: agreement?.status ?? null,
+          agreementPeriodEnd: agreement?.currentPeriodEnd ?? null,
+          tierKey: tier.key,
+          maxActive: tier.maxActive,
+          maxInDelivery: tier.maxInDelivery,
+          queueJumpAllowed: tier.queueJumpAllowed,
+          deltaActive: 0,
+          ...brandPatch,
+        },
+      ]),
+      brand: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({
+            ownerId: 'owner',
+            owner: { status: 'ACTIVE' },
+            verificationStatus: 'APPROVED',
+            activeOrderCapOverride: null,
+            customOrderIntakeBlockedAt: null,
+            ...brandPatch,
+          }),
+      },
       brandSubscription: { findFirst: jest.fn().mockResolvedValue(agreement) },
       subscriptionTier: { findUnique: jest.fn().mockResolvedValue(tier) },
       capacityCampaign: { findFirst: jest.fn().mockResolvedValue(null) },
     };
-    return { prisma, service: new CustomOrderQueueService(prisma, {} as any, {} as any, {} as any) };
+    return {
+      prisma,
+      service: new CustomOrderQueueService(
+        prisma,
+        {} as any,
+        {} as any,
+        {} as any,
+      ),
+    };
   }
   it('offers Thread capacity without granting intake to an unsubscribed brand', async () => {
     const h = setup();
-    expect(await h.service.capacity(h.prisma, 'brand', now)).toMatchObject({ tierKey: 'THREAD', active: 2, inDelivery: 2, intakeAllowed: false });
-    expect(h.prisma.subscriptionTier.findUnique).toHaveBeenCalledWith({ where: { key: 'THREAD' } });
+    expect(await h.service.capacity(h.prisma, 'brand', now)).toMatchObject({
+      tierKey: 'THREAD',
+      active: 2,
+      inDelivery: 2,
+      intakeAllowed: false,
+    });
+    expect(h.prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(h.prisma.subscriptionTier.findUnique).not.toHaveBeenCalled();
   });
-  it.each(['PAST_DUE', 'CANCELLED'])('blocks intake for %s while retaining the agreement capacity', async status => {
-    const h = setup({ status, currentPeriodEnd: new Date(+now + 1000), tier });
-    expect(await h.service.capacity(h.prisma, 'brand', now)).toMatchObject({ active: 2, intakeAllowed: false });
-  });
+  it.each(['PAST_DUE', 'CANCELLED'])(
+    'blocks intake for %s while retaining the agreement capacity',
+    async (status) => {
+      const h = setup({
+        status,
+        currentPeriodEnd: new Date(+now + 1000),
+        tier,
+      });
+      expect(await h.service.capacity(h.prisma, 'brand', now)).toMatchObject({
+        active: 2,
+        intakeAllowed: false,
+      });
+    },
+  );
   it('grants intake only through the exact unexpired paid period', async () => {
-    const h = setup({ status: 'ACTIVE', currentPeriodEnd: new Date(+now + 1), tier });
-    expect((await h.service.capacity(h.prisma, 'brand', now)).intakeAllowed).toBe(true);
-    expect((await h.service.capacity(h.prisma, 'brand', new Date(+now + 1))).intakeAllowed).toBe(false);
+    const h = setup({
+      status: 'ACTIVE',
+      currentPeriodEnd: new Date(+now + 1),
+      tier,
+    });
+    expect(
+      (await h.service.capacity(h.prisma, 'brand', now)).intakeAllowed,
+    ).toBe(true);
+    expect(
+      (await h.service.capacity(h.prisma, 'brand', new Date(+now + 1)))
+        .intakeAllowed,
+    ).toBe(false);
   });
-  it.each([{ owner: { status: 'SUSPENDED' } }, { verificationStatus: 'PENDING' }, { customOrderIntakeBlockedAt: now }])('keeps safety enforcement for paid brands %j', async patch => {
-    const h = setup({ status: 'ACTIVE', currentPeriodEnd: new Date(+now + 1000), tier }, patch);
-    expect((await h.service.capacity(h.prisma, 'brand', now)).intakeAllowed).toBe(false);
+  it.each([
+    { owner: { status: 'SUSPENDED' } },
+    { verificationStatus: 'PENDING' },
+    { customOrderIntakeBlockedAt: now },
+  ])('keeps safety enforcement for paid brands %j', async (patch) => {
+    const h = setup(
+      { status: 'ACTIVE', currentPeriodEnd: new Date(+now + 1000), tier },
+      patch,
+    );
+    expect(
+      (await h.service.capacity(h.prisma, 'brand', now)).intakeAllowed,
+    ).toBe(false);
   });
   it('preserves a current admin capacity override without opening unpaid intake', async () => {
     const h = setup(null, { activeOrderCapOverride: 8 });
-    expect(await h.service.capacity(h.prisma, 'brand', now)).toMatchObject({ active: 8, intakeAllowed: false });
+    expect(await h.service.capacity(h.prisma, 'brand', now)).toMatchObject({
+      active: 8,
+      intakeAllowed: false,
+    });
   });
 });

@@ -2,7 +2,6 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import type { MessageNotificationOutbox } from '@prisma/client';
 import {
-  FileType,
   MessageContextType,
   MessageKind,
   MessageOutboxStatus,
@@ -282,25 +281,10 @@ export class MessagingSideEffectsService {
       Date.now() - MESSAGE_ORPHAN_UPLOAD_RETENTION_HOURS * 60 * 60 * 1000,
     );
 
-    const orphanFiles = await this.prisma.fileUpload.findMany({
-      where: {
-        fileType: { in: [FileType.MESSAGE_IMAGE, FileType.MESSAGE_DOCUMENT] },
-        createdAt: { lt: cutoff },
-        messageAttachments: { none: {} },
-      },
-      select: { id: true, userId: true },
-      take: batchSize,
-      orderBy: { createdAt: 'asc' },
-    });
-
-    for (const file of orphanFiles) {
-      try {
-        await this.uploadService.deleteFile(file.id, file.userId);
-      } catch (error) {
-        this.logger.warn(
-          `Failed deleting orphaned message upload fileId=${file.id}: ${this.formatError(error)}`,
-        );
-      }
+    try {
+      await this.uploadService.cleanupOrphanedMessageFiles(cutoff, batchSize);
+    } catch (error) {
+      this.logger.warn(`Failed orphaned message upload cleanup: ${this.formatError(error)}`);
     }
   }
 

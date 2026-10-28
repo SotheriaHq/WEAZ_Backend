@@ -25,8 +25,10 @@ import {
 } from 'src/custom-orders/custom-order-admin-attention';
 import {
   EXTENSION_POLICY,
+  isExtensionTargetPending,
   readExtensionBudget,
 } from 'src/custom-orders/custom-order-extension.policy';
+import { loadExtensionExpiryContext } from 'src/custom-orders/extension-decision-query';
 import {
   ACTIVE_DISPUTE_STATUSES,
   DISPUTE_CLAIM_POLICY,
@@ -337,6 +339,9 @@ export class CustomOrderOpsCronService {
         take: 200,
       });
 
+      const brandOwners = await this.loadBrandOwnerMap(
+        orders.map((order) => order.brandId),
+      );
       for (const order of orders) {
         const hoursWaiting = Math.max(
           ACCEPTANCE_SLA_WARNING_HOURS,
@@ -354,7 +359,7 @@ export class CustomOrderOpsCronService {
           dedupeMs: 18 * 60 * 60 * 1000,
         });
 
-        await this.notifyBrandOwner(order.brandId, order.id, {
+        await this.notifyBrandOwner(brandOwners.get(order.brandId), order.id, {
           notificationType: NotificationType.CUSTOM_ORDER_REVIEW_REQUIRED,
           payload: { customOrderId: order.id, hoursWaiting },
           target: this.customOrderTarget(order.id),
@@ -562,6 +567,9 @@ export class CustomOrderOpsCronService {
         take: 100,
       });
 
+      const brandOwners = await this.loadBrandOwnerMap(
+        orders.map((order) => order.brandId),
+      );
       let completedCount = 0;
       for (const order of orders) {
         const completed = await this.prisma.$transaction(async (tx) => {
@@ -575,7 +583,11 @@ export class CustomOrderOpsCronService {
               status: CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION,
               buyerAcceptanceWindowEndsAt: { lte: now },
               issues: { none: {} },
-              disputes: { none: { status: { in: ['OPEN', 'BRAND_RESPONDED', 'ADMIN_REVIEW'] } } },
+              disputes: {
+                none: {
+                  status: { in: ['OPEN', 'BRAND_RESPONDED', 'ADMIN_REVIEW'] },
+                },
+              },
             },
             data: {
               status: CustomOrderStatus.COMPLETED,
@@ -591,7 +603,8 @@ export class CustomOrderOpsCronService {
           let canRelease = true;
           if (this.queue) {
             await this.queue.drain(tx, order.brandId, now);
-            canRelease = (await this.queue.capacity(tx, order.brandId, now)).safetyAllowed;
+            canRelease = (await this.queue.capacity(tx, order.brandId, now))
+              .safetyAllowed;
           }
 
           await tx.customOrderTimelineEvent.create({
@@ -659,7 +672,7 @@ export class CustomOrderOpsCronService {
           dedupeMs: 60 * 1000,
         });
 
-        await this.notifyBrandOwner(order.brandId, order.id, {
+        await this.notifyBrandOwner(brandOwners.get(order.brandId), order.id, {
           notificationType: NotificationType.CUSTOM_ORDER_PROGRESS_UPDATED,
           target: this.adminCustomOrderTarget(order.id),
           payload: {
@@ -1086,7 +1099,9 @@ export class CustomOrderOpsCronService {
     const widestWindowHours = Math.max(
       ...EXTENSION_POLICY.brandDeadlineWarningHours,
     );
-    const horizon = new Date(now.getTime() + widestWindowHours * 60 * 60 * 1000);
+    const horizon = new Date(
+      now.getTime() + widestWindowHours * 60 * 60 * 1000,
+    );
 
     try {
       const orders = await this.prisma.customOrder.findMany({
@@ -1116,6 +1131,9 @@ export class CustomOrderOpsCronService {
         take: 200,
       });
 
+      const brandOwners = await this.loadBrandOwnerMap(
+        orders.map((order) => order.brandId),
+      );
       await mapPool(orders, CRON_NOTIFY_CONCURRENCY, async (order) => {
         // A request already in flight is the thing the nudge would have asked
         // for — saying it again is noise.
@@ -1152,7 +1170,7 @@ export class CustomOrderOpsCronService {
           },
         });
 
-        await this.notifyBrandOwner(order.brandId, order.id, {
+        await this.notifyBrandOwner(brandOwners.get(order.brandId), order.id, {
           notificationType: NotificationType.CUSTOM_ORDER_STALE_STAGE_WARNING,
           payload: {
             customOrderId: order.id,
@@ -1197,19 +1215,46 @@ export class CustomOrderOpsCronService {
           customOrderId: true,
           requestedExtraDays: true,
           customOrder: {
-            select: { id: true, brandId: true, buyerId: true, anonymizedAt: true },
+            select: {
+              id: true,
+              brandId: true,
+              buyerId: true,
+              anonymizedAt: true,
+            },
           },
         },
         take: 200,
       });
 
+      const adminIds = requests.length ? await this.getActiveAdminIds() : [];
       await mapPool(requests, CRON_NOTIFY_CONCURRENCY, async (request) => {
         if (request.customOrder.anonymizedAt) return;
 
         await this.prisma.$transaction(async (tx) => {
+          await tx.$queryRaw`SELECT id FROM "CustomOrder" WHERE id = ${request.customOrderId}::uuid FOR UPDATE`;
+          const current = await loadExtensionExpiryContext(
+            tx,
+            request.id,
+            request.customOrderId,
+          );
+          const claimedAt = new Date();
+          if (
+            !current ||
+            current.anonymizedAt ||
+            current.buyerResponseStatus !== 'OPEN' ||
+            !current.respondByAt ||
+            current.respondByAt > claimedAt ||
+            !isExtensionTargetPending(current.status, current.targetType)
+          )
+            return;
           // Guarded on OPEN so a shopper answering in the same minute wins.
           const claimed = await tx.customOrderExtensionRequest.updateMany({
-            where: { id: request.id, buyerResponseStatus: 'OPEN' },
+            where: {
+              id: request.id,
+              customOrderId: request.customOrderId,
+              buyerResponseStatus: 'OPEN',
+              respondByAt: { lte: claimedAt },
+            },
             data: {
               buyerResponseStatus: 'EXPIRED',
               expiredAt: now,
@@ -1235,58 +1280,74 @@ export class CustomOrderOpsCronService {
               eventType: 'EXTENSION_EXPIRED',
               payloadJson: {
                 requestId: request.id,
-                requestedExtraDays: request.requestedExtraDays,
+                requestedExtraDays: current.requestedExtraDays,
                 reason: 'NO_BUYER_RESPONSE',
               } as Prisma.InputJsonValue,
             },
           });
-        });
+          await markAdminAttentionFlag(
+            tx,
+            request.customOrderId,
+            'STALE_STAGE',
+          );
 
-        await this.markAdminAttention(request.customOrderId, 'STALE_STAGE');
-
-        await this.notifyBrandOwner(request.customOrder.brandId, request.customOrderId, {
-          notificationType: NotificationType.CUSTOM_ORDER_EXTENSION_RESOLVED,
-          payload: {
-            customOrderId: request.customOrderId,
-            requestId: request.id,
-            response: 'EXPIRED',
-            message:
-              'The shopper did not answer your extension request in time. WIEZ is reviewing the order — keep producing unless told otherwise.',
-          },
-          target: this.studioCustomOrderTarget(request.customOrderId),
-          dedupeMs: 60 * 60 * 1000,
-        });
-
-        await this.sideEffects.enqueueNotification({
-          customOrderId: request.customOrderId,
-          recipientIds: [request.customOrder.buyerId],
-          notificationType: NotificationType.CUSTOM_ORDER_EXTENSION_RESOLVED,
-          payload: {
-            customOrderId: request.customOrderId,
-            requestId: request.id,
-            response: 'EXPIRED',
-            message:
-              'The request for extra time on your order expired without an answer. Nothing was granted and WIEZ is looking into it.',
-          },
-          target: this.customOrderTarget(request.customOrderId),
-          dedupeMs: 60 * 60 * 1000,
-        });
-
-        const adminIds = await this.getActiveAdminIds();
-        if (adminIds.length > 0) {
-          await this.sideEffects.enqueueNotification({
-            customOrderId: request.customOrderId,
-            recipientIds: adminIds,
-            notificationType: NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
-            payload: {
-              customOrderId: request.customOrderId,
-              requestId: request.id,
-              reason: 'EXTENSION_UNANSWERED',
+          await this.notifyBrandOwner(
+            current.ownerId,
+            request.customOrderId,
+            {
+              notificationType:
+                NotificationType.CUSTOM_ORDER_EXTENSION_RESOLVED,
+              payload: {
+                customOrderId: request.customOrderId,
+                requestId: request.id,
+                response: 'EXPIRED',
+                message:
+                  'The shopper did not answer your extension request in time. WIEZ is reviewing the order — keep producing unless told otherwise.',
+              },
+              target: this.studioCustomOrderTarget(request.customOrderId),
+              dedupeMs: 60 * 60 * 1000,
             },
-            target: this.adminCustomOrderTarget(request.customOrderId),
-            dedupeMs: 60 * 60 * 1000,
-          });
-        }
+            tx,
+          );
+
+          await this.sideEffects.enqueueNotification(
+            {
+              customOrderId: request.customOrderId,
+              recipientIds: [current.buyerId],
+              notificationType:
+                NotificationType.CUSTOM_ORDER_EXTENSION_RESOLVED,
+              payload: {
+                customOrderId: request.customOrderId,
+                requestId: request.id,
+                response: 'EXPIRED',
+                message:
+                  'The request for extra time on your order expired without an answer. Nothing was granted and WIEZ is looking into it.',
+              },
+              target: this.customOrderTarget(request.customOrderId),
+              dedupeMs: 60 * 60 * 1000,
+            },
+            tx,
+          );
+
+          if (adminIds.length > 0) {
+            await this.sideEffects.enqueueNotification(
+              {
+                customOrderId: request.customOrderId,
+                recipientIds: adminIds,
+                notificationType:
+                  NotificationType.CUSTOM_ORDER_ADMIN_REVIEW_TRIGGERED,
+                payload: {
+                  customOrderId: request.customOrderId,
+                  requestId: request.id,
+                  reason: 'EXTENSION_UNANSWERED',
+                },
+                target: this.adminCustomOrderTarget(request.customOrderId),
+                dedupeMs: 60 * 60 * 1000,
+              },
+              tx,
+            );
+          }
+        });
       });
     } catch (error) {
       this.logger.warn(
@@ -1313,12 +1374,9 @@ export class CustomOrderOpsCronService {
           buyerResponseStatus: { in: ['OPEN', 'COUNTERED'] },
           customOrder: {
             status: {
-              in: [
-                CustomOrderStatus.READY_FOR_DISPATCH,
-                CustomOrderStatus.IN_TRANSIT,
-                CustomOrderStatus.DELIVERED_PENDING_BUYER_CONFIRMATION,
-                CustomOrderStatus.COMPLETED,
-                CustomOrderStatus.CLOSED,
+              notIn: [
+                CustomOrderStatus.ACCEPTED,
+                CustomOrderStatus.IN_PRODUCTION,
               ],
             },
           },
@@ -1328,29 +1386,45 @@ export class CustomOrderOpsCronService {
       });
 
       await mapPool(requests, CRON_NOTIFY_CONCURRENCY, async (request) => {
-        const claimed = await this.prisma.customOrderExtensionRequest.updateMany({
-          where: {
-            id: request.id,
-            buyerResponseStatus: request.buyerResponseStatus as never,
-          },
-          data: {
-            buyerResponseStatus: 'VOIDED',
-            voidedAt: now,
-            resolvedAt: now,
-          },
-        });
-        if (claimed.count === 0) return;
+        await this.prisma.$transaction(async (tx) => {
+          await tx.$queryRaw`SELECT id FROM "CustomOrder" WHERE id = ${request.customOrderId}::uuid FOR UPDATE`;
+          const current = await loadExtensionExpiryContext(
+            tx,
+            request.id,
+            request.customOrderId,
+          );
+          if (
+            !current ||
+            !['OPEN', 'COUNTERED'].includes(current.buyerResponseStatus) ||
+            (!current.anonymizedAt &&
+              isExtensionTargetPending(current.status, current.targetType))
+          )
+            return;
+          const claimed = await tx.customOrderExtensionRequest.updateMany({
+            where: {
+              id: request.id,
+              customOrderId: request.customOrderId,
+              buyerResponseStatus: current.buyerResponseStatus,
+            },
+            data: {
+              buyerResponseStatus: 'VOIDED',
+              voidedAt: now,
+              resolvedAt: now,
+            },
+          });
+          if (claimed.count === 0) return;
 
-        await this.prisma.customOrderTimelineEvent.create({
-          data: {
-            customOrderId: request.customOrderId,
-            actorType: CustomOrderActorType.SYSTEM,
-            eventType: 'EXTENSION_VOIDED',
-            payloadJson: {
-              requestId: request.id,
-              reason: 'STAGE_ALREADY_REACHED',
-            } as Prisma.InputJsonValue,
-          },
+          await tx.customOrderTimelineEvent.create({
+            data: {
+              customOrderId: request.customOrderId,
+              actorType: CustomOrderActorType.SYSTEM,
+              eventType: 'EXTENSION_VOIDED',
+              payloadJson: {
+                requestId: request.id,
+                reason: 'STAGE_ALREADY_REACHED',
+              } as Prisma.InputJsonValue,
+            },
+          });
         });
       });
     } catch (error) {
@@ -1429,7 +1503,7 @@ export class CustomOrderOpsCronService {
   }
 
   private async notifyBrandOwner(
-    brandId: string,
+    ownerId: string | undefined,
     customOrderId: string,
     options: {
       notificationType: NotificationType;
@@ -1437,23 +1511,22 @@ export class CustomOrderOpsCronService {
       target: ReturnType<CustomOrderOpsCronService['customOrderTarget']>;
       dedupeMs?: number;
     },
+    tx?: Prisma.TransactionClient,
   ): Promise<void> {
-    const brand = await this.prisma.brand.findUnique({
-      where: { id: brandId },
-      select: { ownerId: true },
-    });
-    if (!brand?.ownerId) {
+    if (!ownerId) {
       return;
     }
 
-    await this.sideEffects.enqueueNotification({
+    const notification = {
       customOrderId,
-      recipientIds: [brand.ownerId],
+      recipientIds: [ownerId],
       notificationType: options.notificationType,
       payload: options.payload,
       target: options.target,
       dedupeMs: options.dedupeMs,
-    });
+    };
+    if (tx) await this.sideEffects.enqueueNotification(notification, tx);
+    else await this.sideEffects.enqueueNotification(notification);
   }
 
   private async getActiveAdminIds(): Promise<string[]> {

@@ -1,3 +1,4 @@
+import type { NotificationEvent } from '../../notifications/notification-batch-query';
 import {
   Injectable,
   BadRequestException,
@@ -57,73 +58,76 @@ export class AdminFeaturedService {
     );
 
     const id = uuidv4();
-    const featured = await retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
-      // Serialize the small global featured quota across every API replica.
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(180214, 1)`;
-      await tx.$queryRaw`SELECT "_id" FROM "Brand" WHERE "_id" = ${brandId}::uuid FOR UPDATE`;
-      if (entityType === 'PRODUCT') {
-        await tx.$queryRaw`SELECT "_id" FROM "Product" WHERE "_id" = ${entityId}::uuid FOR UPDATE`;
-      } else {
-        await tx.$queryRaw`SELECT "_id" FROM "Collection" WHERE "_id" = ${entityId}::uuid FOR UPDATE`;
-      }
-      const current = await this.resolveEntity(entityType, entityId, tx);
-      if (current.brandId !== brandId) throw new BadRequestException('Item brand changed; please retry');
-      await this.checkEligibility(entityType, entityId, brandId, tx);
-      const item = await tx.featuredItem.create({
-        data: {
-          id,
-          entityType,
-          entityId,
-          brandId,
-          startsAt,
-          expiresAt,
-          isActive: true,
-          featuredById: actorId,
-          displayImages: displayImages ?? [],
-          useCoverOnly: useCoverOnly ?? true,
-        },
-        include: {
-          brand: { select: { id: true, name: true } },
-          featuredBy: { select: adminUserDisplaySelect },
-        },
-      });
-
-      // Increment brand featured count
-      await tx.brand.update({
-        where: { id: brandId },
-        data: { featuredCount: { increment: 1 } },
-      });
-
-      // Sync legacy isFeatured flag on Product
-      if (entityType === 'PRODUCT') {
-        await tx.product.update({
-          where: { id: entityId },
-          data: { isFeatured: true },
-        });
-      }
-
-      // Audit log
-      await (tx as any).adminAuditLog.create({
-        data: {
-          id: uuidv4(),
-          actorUserId: actorId,
-          action: AdminAuditAction.ADMIN_FEATURED_CREATE,
-          targetType: 'FeaturedItem',
-          targetId: id,
-          newState: {
+    const featured = await retryDatabaseTransaction(() =>
+      this.prisma.$transaction(async (tx) => {
+        // Serialize the small global featured quota across every API replica.
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(180214, 1)`;
+        await tx.$queryRaw`SELECT "_id" FROM "Brand" WHERE "_id" = ${brandId}::uuid FOR UPDATE`;
+        if (entityType === 'PRODUCT') {
+          await tx.$queryRaw`SELECT "_id" FROM "Product" WHERE "_id" = ${entityId}::uuid FOR UPDATE`;
+        } else {
+          await tx.$queryRaw`SELECT "_id" FROM "Collection" WHERE "_id" = ${entityId}::uuid FOR UPDATE`;
+        }
+        const current = await this.resolveEntity(entityType, entityId, tx);
+        if (current.brandId !== brandId)
+          throw new BadRequestException('Item brand changed; please retry');
+        await this.checkEligibility(entityType, entityId, brandId, tx);
+        const item = await tx.featuredItem.create({
+          data: {
+            id,
             entityType,
             entityId,
             brandId,
-            startsAt: startsAt.toISOString(),
-            expiresAt: expiresAt.toISOString(),
+            startsAt,
+            expiresAt,
+            isActive: true,
+            featuredById: actorId,
+            displayImages: displayImages ?? [],
+            useCoverOnly: useCoverOnly ?? true,
           },
-          ipAddress: req.socket?.remoteAddress ?? null,
-          userAgent: req.headers['user-agent'] ?? null,
-        },
-      });
+          include: {
+            brand: { select: { id: true, name: true } },
+            featuredBy: { select: adminUserDisplaySelect },
+          },
+        });
 
-      return item;
-    }));
+        // Increment brand featured count
+        await tx.brand.update({
+          where: { id: brandId },
+          data: { featuredCount: { increment: 1 } },
+        });
+
+        // Sync legacy isFeatured flag on Product
+        if (entityType === 'PRODUCT') {
+          await tx.product.update({
+            where: { id: entityId },
+            data: { isFeatured: true },
+          });
+        }
+
+        // Audit log
+        await (tx as any).adminAuditLog.create({
+          data: {
+            id: uuidv4(),
+            actorUserId: actorId,
+            action: AdminAuditAction.ADMIN_FEATURED_CREATE,
+            targetType: 'FeaturedItem',
+            targetId: id,
+            newState: {
+              entityType,
+              entityId,
+              brandId,
+              startsAt: startsAt.toISOString(),
+              expiresAt: expiresAt.toISOString(),
+            },
+            ipAddress: req.socket?.remoteAddress ?? null,
+            userAgent: req.headers['user-agent'] ?? null,
+          },
+        });
+
+        return item;
+      }),
+    );
 
     // Notify brand owner
     this.notifyBrandOwner(brandId, NotificationType.ITEM_FEATURED, {
@@ -553,7 +557,10 @@ export class AdminFeaturedService {
         orderBy: { name: 'asc' },
       });
 
-      const active = await this.loadActiveFeaturedForEligibility(products.map((p) => p.brandId), products.map((p) => p.id));
+      const active = await this.loadActiveFeaturedForEligibility(
+        products.map((p) => p.brandId),
+        products.map((p) => p.id),
+      );
       for (const p of products) {
         const { eligible, reason } = await this.checkEligibilityQuick(
           'PRODUCT',
@@ -614,7 +621,10 @@ export class AdminFeaturedService {
         orderBy: { title: 'asc' },
       });
 
-      const active = await this.loadActiveFeaturedForEligibility(designs.flatMap((d) => d.owner?.brand ? [d.owner.brand.id] : []), designs.map((d) => d.id));
+      const active = await this.loadActiveFeaturedForEligibility(
+        designs.flatMap((d) => (d.owner?.brand ? [d.owner.brand.id] : [])),
+        designs.map((d) => d.id),
+      );
       for (const d of designs) {
         const brandId = d.owner?.brand?.id;
         if (!brandId) continue;
@@ -816,6 +826,7 @@ export class AdminFeaturedService {
 
     const summaries = await loadFeaturedSummaries(this.prisma, expired);
     let expiredCount = 0;
+    const events: NotificationEvent[] = [];
     for (const item of expired) {
       try {
         // Snapshot performance metrics before deactivating
@@ -826,26 +837,32 @@ export class AdminFeaturedService {
             isActive: false,
             removeReason: 'EXPIRED',
             removedAt: now,
-            ...(summary?.viewsDelta == null ? {} : { viewsDelta: summary.viewsDelta }),
-            ...(summary?.threadsDelta == null ? {} : { threadsDelta: summary.threadsDelta }),
+            ...(summary?.viewsDelta == null
+              ? {}
+              : { viewsDelta: summary.viewsDelta }),
+            ...(summary?.threadsDelta == null
+              ? {}
+              : { threadsDelta: summary.threadsDelta }),
           },
         });
         if (!result.count) continue;
         expiredCount += result.count;
 
-        // Notify brand owner of expiry
-        this.notifications.create(
-          item.brand.ownerId,
-          NotificationType.FEATURED_AUTO_REMOVED,
-          {
-            payload: { entityType: item.entityType, entityId: item.entityId, reason: 'EXPIRED' },
-            target: { type: item.entityType === 'DESIGN' ? 'COLLECTION' : 'PRODUCT', id: item.entityId },
+        events.push({
+          recipientId: item.brand.ownerId,
+          type: NotificationType.FEATURED_AUTO_REMOVED,
+          opts: {
+            payload: {
+              entityType: item.entityType,
+              entityId: item.entityId,
+              reason: 'EXPIRED',
+            },
+            target: {
+              type: item.entityType === 'DESIGN' ? 'COLLECTION' : 'PRODUCT',
+              id: item.entityId,
+            },
           },
-        ).catch((err) =>
-          this.logger.warn(
-            `Failed to send expiry notification: ${err?.message}`,
-          ),
-        );
+        });
       } catch (err: any) {
         this.logger.warn(
           `Failed to expire featured item ${item.id}: ${err?.message}`,
@@ -853,13 +870,25 @@ export class AdminFeaturedService {
       }
     }
 
+    if (events.length) {
+      const results = await this.notifications.createEvents(events);
+      for (const result of results)
+        if (result.status === 'rejected')
+          this.logger.warn(
+            `Failed to send expiry notification: ${String(result.reason)}`,
+          );
+    }
     this.logger.log(`Expired ${expiredCount} featured item(s)`);
     return expiredCount;
   }
 
   // ── Private helpers ──
 
-  private async resolveEntity(entityType: string, entityId: string, client: Prisma.TransactionClient = this.prisma) {
+  private async resolveEntity(
+    entityType: string,
+    entityId: string,
+    client: Prisma.TransactionClient = this.prisma,
+  ) {
     if (entityType === 'PRODUCT') {
       const product = await client.product.findUnique({
         where: { id: entityId },
@@ -975,10 +1004,19 @@ export class AdminFeaturedService {
     }
   }
 
-  private async loadActiveFeaturedForEligibility(brandIds: string[], entityIds: string[]) {
+  private async loadActiveFeaturedForEligibility(
+    brandIds: string[],
+    entityIds: string[],
+  ) {
     if (!brandIds.length && !entityIds.length) return [];
     return this.prisma.featuredItem.findMany({
-      where: { isActive: true, OR: [{ brandId: { in: [...new Set(brandIds)] } }, { entityId: { in: [...new Set(entityIds)] } }] },
+      where: {
+        isActive: true,
+        OR: [
+          { brandId: { in: [...new Set(brandIds)] } },
+          { entityId: { in: [...new Set(entityIds)] } },
+        ],
+      },
       select: { brandId: true, entityType: true, entityId: true },
     });
   }
@@ -1003,9 +1041,15 @@ export class AdminFeaturedService {
       return { eligible: false, reason: 'Brand under penalty' };
     }
 
-    if (active.filter((item) => item.brandId === brandId).length >= MAX_PER_BRAND)
+    if (
+      active.filter((item) => item.brandId === brandId).length >= MAX_PER_BRAND
+    )
       return { eligible: false, reason: 'Brand already featured' };
-    if (active.some((item) => item.entityType === entityType && item.entityId === entityId))
+    if (
+      active.some(
+        (item) => item.entityType === entityType && item.entityId === entityId,
+      )
+    )
       return { eligible: false, reason: 'Already featured' };
 
     return { eligible: true };

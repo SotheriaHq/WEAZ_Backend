@@ -1,0 +1,33 @@
+# Bulk product import contract and recovery
+
+The authenticated `POST /collections/:id/bulk-upload` imports products into a **StoreCollection**. A design ID is rejected. The `file` multipart field remains CSV metadata for all three accepted mode values (`csv`, `images`, `mixed`); this endpoint does not return an upload URL. Responses retain job ID, lowercase status, counters and errors. GET `/collections/bulk-upload/:jobId` and POST `/collections/bulk-upload/:jobId/retry` remain restricted to the initiating account. Retry accepts `rowIndices` or the existing `rows` alias; an empty selection resumes unfinished rows. Successful rows are never recreated.
+
+Inputs are limited by the configured byte limit and 1,000 rows per request. This is an operational input bound, not a measured system-capacity claim. CSV headers must be nonempty/unique; row IDs must be unique within a job. UTF-8 BOMs and existing column aliases are supported. Invalid finite-number/boolean values fail the affected row instead of silently becoming a default. Product DTO validation and canonical product publication checks still apply. An active product must satisfy structured media, taxonomy, variants and style-detail requirements. CSV image URLs do not bypass these requirements; existing draft import support remains.
+
+Job and row insertion is one transaction, with createMany pages of 500. Workers load at most 25 unfinished rows at a time, resolve collection/brand through one joined query per page and reauthorize catalog access for that page. A staff member's unrelated primary brand does not determine the destination. Each product still receives its own authoritative transaction and guards. Bulk processing skips response-only signed-media hydration while keeping canonical indexing, filters, price-range updates and lifecycle effects.
+
+The job has a five-minute renewable UTC database lease and a random processing token. Claims, renewal, completion and failure cleanup are fenced by that token. A worker that waits on a lock must recheck expiry in a fresh READ COMMITTED statement. BullMQ IDs use hyphens, never colons; eight attempts with exponential five-second starting backoff cover a stopped worker's lease-recovery window. Production queue failures remain visible; inline fallback is local/development only.
+
+Product creation, membership/media/variant writes and the row's createdProductId/productCreatedAt checkpoint commit together. The row becomes SUCCESS after canonical post-commit work finishes. A retry of a checkpointed row resumes the product instead of inserting another. A normal hard deletion sets the FK to null but retains productCreatedAt, preventing resurrection. The FK is unique, so two rows cannot claim one product. Post-commit integrations retain their existing at-least-once semantics; this checkpoint does not certify exactly-once notification delivery or close the separate source-index/notification race audit.
+
+Completion uses one aggregate query across all job rows, preserving failures outside a selected retry and counting only terminal rows. A stale worker cannot change a replacement worker's results. Infrastructure failure releases its own lease; a process crash is recovered when the lease expires. Catalog revocation/deletion stops a subsequent page and remains visible for recovery.
+
+## Migration and release
+
+Fresh product rows reuse their transaction's write result instead of loading
+display-only brand and variant relations. On recovery, a single joined read
+returns current product state, all memberships and the latest review submission.
+Checkpoint owner/collection identity comes from the existing locked job read;
+lease checks still run after lock waits. The measured26-draft fixture performs
+zero display-product and checkpoint-identity reloads; canonical per-product
+validation, writes and post-commit effects are retained.
+
+Migration `20261023120000_bulk_import_store_checkpoint` corrects the FK from Collection to StoreCollection, adds token/lease fields, normalizes the product reference to a unique UUID FK and adds its committed timestamp. It refuses incompatible design-linked jobs rather than deleting/reinterpreting them. This is a fresh-regression contraction, reserved for the owner-authorized reset/final release. Index creation inside this migration is intended for that reset boundary; no populated-production capacity or lock-duration claim has been made. A rollback requires a reviewed forward migration; restoring the old binary alone after this contraction is unsupported.
+
+Run `node scripts/verify-bulk-import-postgres.cjs` for actual production-method checks in an automatically removed local database. The fixture covers contract rejection before persistence, 26 creations/two context reads, replay, interrupted post-commit recovery, hard deletion/tombstones, partial/subset errors, competing leases, stale-token fencing and expiry during an actual lock wait. Evidence: `../performance-reviews/bulk-import-postgres-2026-10-23.json`. Live SIT imports and full fresh-regression UI/provider checks remain final-release gates.
+
+References: [BullMQ retry-safe jobs](https://docs.bullmq.io/patterns/idempotent-jobs), [job IDs](https://docs.bullmq.io/guide/jobs/job-ids), [retry/backoff](https://docs.bullmq.io/guide/retrying-failing-jobs), [PostgreSQL locking](https://www.postgresql.org/docs/current/explicit-locking.html).
+
+Current import transactions lock the destination collection before a single joined collection/category/type read. Both taxonomy and publish-readiness validation reuse that fresh snapshot for the same row only. The nine-case PostgreSQL fixture checks category deactivation while waiting on the collection lock; 26 draft rows perform 26 authoritative JOINs without extra category delegate reads. This does not close the remaining postcommit/index review.
+
+Post-save review notices and first-publication work share a flush per 25-row import page. Each review submission has a stable recipient UUID; retries do not emit another notice for that submission. The import marks successful rows after this flush, retaining the existing best-effort review-notification error policy. A crash before the flush leaves the checkpoint unfinished. Recovery indexes the persisted tags and uses the current product name. The 13-case PostgreSQL fixture covers interrupted flush recovery, repeated notices, two recipient-policy reads for 26 recovered rows and shared publication projections. A scalar slug anti-JOIN preserves the earliest free suffix without transferring all matching slug rows. Concurrent insert conflict recovery and source/index ordering remain separate race checks.

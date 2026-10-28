@@ -99,7 +99,7 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
     logout: false,
   },
   push: {
-    enabled: false,
+    enabled: true,
     sound: true,
     vibration: true,
     showPreview: true,

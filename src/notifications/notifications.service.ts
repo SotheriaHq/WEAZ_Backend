@@ -12,6 +12,7 @@ import { EventsGateway } from 'src/realtime/events.gateway';
 import {
   EmailSuppressionReason,
   NotificationType,
+  Notification,
   PatchStatus,
   Prisma,
 } from '@prisma/client';
@@ -42,6 +43,7 @@ import {
 import * as argon2 from 'argon2';
 import { createHash } from 'crypto';
 import { ConfigService } from '@nestjs/config';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { resolveWebAppBaseUrl as resolveConfiguredWebAppBaseUrl } from 'src/common/utils/web-app-url';
 import {
   canonicalUserProfileSelect,
@@ -49,9 +51,33 @@ import {
   resolveRequiredProfileField,
 } from 'src/common/user-profile-source.helper';
 import { canonicalBrandProfileSelect } from 'src/common/brand-profile-source.helper';
-import { PushNotificationsService } from './push-notifications.service';
+import {
+  PushNotificationsService,
+  PushOutboxPayload,
+} from './push-notifications.service';
 import { normalizeCatalogTarget } from 'src/common/domain/catalog-target';
 import { NotificationRealtimeBusService } from 'src/realtime/notification-realtime-bus.service';
+import {
+  loadNotificationBatchPolicy,
+  loadNotificationEventPolicies,
+  NotificationBatchPolicy,
+  NotificationEvent,
+} from './notification-batch-query';
+import {
+  claimNotificationChannels,
+  ClaimedNotificationChannels,
+  cleanupNotificationChannels,
+  reapExhaustedNotificationChannels,
+} from './notification-channel-query';
+
+type NotificationEmailPolicy = Pick<
+  NotificationBatchPolicy,
+  | 'email'
+  | 'globalEnabled'
+  | 'securityCriticalEnabled'
+  | 'scenarios'
+  | 'suppressed'
+>;
 
 type EmailSettingsResponse = {
   globalEnabled: boolean;
@@ -509,11 +535,15 @@ export class NotificationsService {
       select: { notificationSettings: true },
     });
 
-    if (!user?.notificationSettings) {
+    return this.normalizeSettings(user?.notificationSettings);
+  }
+
+  private normalizeSettings(value: unknown): NotificationSettings {
+    if (!value) {
       return DEFAULT_NOTIFICATION_SETTINGS;
     }
 
-    const raw = (user.notificationSettings as any) ?? {};
+    const raw = (value as any) ?? {};
     const legacyEngagement = raw.engagement ?? {};
 
     // Merge with defaults, including legacy key migration (engagement -> social/tags)
@@ -936,13 +966,15 @@ export class NotificationsService {
   private async isEmailAllowedForScenario(
     userId: string,
     scenarioKey: string,
+    tx?: Prisma.TransactionClient,
   ): Promise<boolean> {
+    const client = tx ?? this.prisma;
     const [profile, override] = await Promise.all([
-      this.prisma.userEmailPreference.findUnique({
+      client.userEmailPreference.findUnique({
         where: { userId },
         select: { globalEnabled: true, securityCriticalEnabled: true },
       }),
-      this.prisma.userEmailScenarioPreference.findUnique({
+      client.userEmailScenarioPreference.findUnique({
         where: { userId_scenarioKey: { userId, scenarioKey } },
         select: { enabled: true },
       }),
@@ -1391,11 +1423,12 @@ export class NotificationsService {
     recipientId: string,
     actorId: string | null,
     settings: NotificationSettings,
+    patched?: boolean,
   ): Promise<boolean> {
     if (!settings.tags.mentions) return false;
     if (settings.tags.fromUnpatchedUsers) return true;
     if (!actorId) return true;
-    return this.areUsersPatched(actorId, recipientId);
+    return patched ?? this.areUsersPatched(actorId, recipientId);
   }
 
   private async canReceiveCommentFromActor(
@@ -1403,6 +1436,7 @@ export class NotificationsService {
     actorId: string | null,
     payload: Record<string, any> | null | undefined,
     settings: NotificationSettings,
+    patched?: boolean,
   ): Promise<boolean> {
     if (!settings.comments.enabled) return false;
 
@@ -1410,7 +1444,7 @@ export class NotificationsService {
     if (isReplyComment && !settings.comments.replies) return false;
 
     if (!settings.comments.fromUnpatchedUsers && actorId) {
-      return this.areUsersPatched(actorId, recipientId);
+      return patched ?? this.areUsersPatched(actorId, recipientId);
     }
 
     return true;
@@ -1423,20 +1457,32 @@ export class NotificationsService {
     message: string;
     payload: Record<string, unknown> | null;
     targetUrl?: string;
+    policy?: NotificationEmailPolicy;
+    tx?: Prisma.TransactionClient;
   }): Promise<void> {
+    const client = args.tx ?? this.prisma;
     const scenarioKey = getEmailScenarioKey(args.type, args.payload);
-    const allowed = await this.isEmailAllowedForScenario(
-      args.recipientId,
-      scenarioKey,
-    );
+    const allowed = args.policy
+      ? (args.policy.scenarios[scenarioKey] ??
+          isEmailScenarioEnabledByDefault(scenarioKey)) &&
+        (isEmailScenarioCritical(scenarioKey)
+          ? (args.policy.securityCriticalEnabled ?? true)
+          : (args.policy.globalEnabled ?? true))
+      : await this.isEmailAllowedForScenario(
+          args.recipientId,
+          scenarioKey,
+          args.tx,
+        );
     if (!allowed) {
       return;
     }
 
-    const recipient = await this.prisma.user.findUnique({
-      where: { id: args.recipientId },
-      select: { email: true },
-    });
+    const recipient = args.policy
+      ? { email: args.policy.email }
+      : await client.user.findUnique({
+          where: { id: args.recipientId },
+          select: { email: true },
+        });
     if (!recipient?.email) {
       return;
     }
@@ -1444,13 +1490,15 @@ export class NotificationsService {
     const recipientEmail = this.normalizeEmail(recipient.email);
     const recipientHash = this.hashValue(recipientEmail);
 
-    const suppression = await this.prisma.emailSuppression.findFirst({
-      where: {
-        recipientEmailHash: recipientHash,
-        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-      },
-      select: { id: true },
-    });
+    const suppression = args.policy
+      ? args.policy.suppressed
+      : await client.emailSuppression.findFirst({
+          where: {
+            recipientEmailHash: recipientHash,
+            OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+          },
+          select: { id: true },
+        });
     if (suppression) {
       return;
     }
@@ -1466,7 +1514,7 @@ export class NotificationsService {
       payload: args.payload,
     });
 
-    await this.emailService.send(
+    const queued = await this.emailService.send(
       recipientEmail,
       rendered.subject,
       rendered.html,
@@ -1479,16 +1527,301 @@ export class NotificationsService {
         priority: getEmailPriorityForScenario(args.type, scenarioKey),
         idempotencyKey: `notif:${args.notificationId}`,
       },
+      args.tx,
+    );
+    if (queued?.dispatchStatus === 'FAILED')
+      throw new Error('Notification email enqueue failed');
+  }
+
+  private prepareNotificationChannels(
+    created: Notification & { actor?: unknown },
+    settings: NotificationSettings,
+    opts?: CreateNotificationOptions,
+    policy?: NotificationBatchPolicy,
+  ): Prisma.NotificationChannelOutboxUncheckedCreateInput {
+    const payload = this.toRecord(created.payload);
+    const preview = opts?.target?.preview;
+    const targetUrl =
+      this.sanitizeTargetUrl(payload?.targetUrl) ??
+      (typeof preview === 'string' && preview.startsWith('/')
+        ? this.sanitizeTargetUrl(preview)
+        : undefined);
+    const emailPolicy: NotificationEmailPolicy | undefined = policy
+      ? {
+          email: policy.email,
+          globalEnabled: policy.globalEnabled,
+          securityCriticalEnabled: policy.securityCriticalEnabled,
+          scenarios: policy.scenarios,
+          suppressed: policy.suppressed,
+        }
+      : undefined;
+    return {
+      id: created.id,
+      emailEnabled: !opts?.suppressEmail,
+      pushEnabled: !opts?.suppressPush,
+      messageSnapshot: this.formatMessage(created),
+      targetUrl: targetUrl ?? null,
+      settingsJson: settings as unknown as Prisma.InputJsonValue,
+      emailPolicyJson: emailPolicy
+        ? (emailPolicy as unknown as Prisma.InputJsonValue)
+        : Prisma.DbNull,
+      pushPayloadJson: opts?.suppressPush
+        ? Prisma.DbNull
+        : (this.pushNotifications.buildPushPayload({
+            notification: created,
+            settings,
+          }) as unknown as Prisma.InputJsonValue),
+    };
+  }
+
+  private readNotificationEmailPolicy(
+    value: Prisma.JsonValue | null,
+  ): NotificationEmailPolicy | undefined {
+    if (value === null) return undefined;
+    const policy = this.toRecord(value),
+      scenarios = this.toRecord(policy?.scenarios as Prisma.JsonValue);
+    if (
+      !policy ||
+      !scenarios ||
+      !Object.values(scenarios).every((item) => typeof item === 'boolean') ||
+      (policy.email !== null && typeof policy.email !== 'string') ||
+      (policy.globalEnabled !== null &&
+        typeof policy.globalEnabled !== 'boolean') ||
+      (policy.securityCriticalEnabled !== null &&
+        typeof policy.securityCriticalEnabled !== 'boolean') ||
+      typeof policy.suppressed !== 'boolean'
+    )
+      throw new Error('Invalid notification email policy snapshot');
+    return policy as unknown as NotificationEmailPolicy;
+  }
+
+  private readNotificationPushPayload(
+    value: Prisma.JsonValue | null,
+  ): PushOutboxPayload {
+    const payload = this.toRecord(value);
+    if (
+      !payload ||
+      typeof payload.title !== 'string' ||
+      typeof payload.body !== 'string' ||
+      typeof payload.sound !== 'boolean' ||
+      !this.toRecord(payload.data as Prisma.JsonValue)
+    )
+      throw new Error('Invalid notification push snapshot');
+    return payload as unknown as PushOutboxPayload;
+  }
+
+  private async dispatchNotificationChannelsForId(id: string): Promise<void> {
+    await this.dispatchNotificationChannelsForIds([id]);
+  }
+
+  private async dispatchNotificationChannelsForIds(
+    ids: string[],
+  ): Promise<void> {
+    const remaining = new Set(ids);
+    if (!remaining.size) return;
+    try {
+      while (remaining.size) {
+        const take = Math.min(10, remaining.size);
+        const rows = await claimNotificationChannels(this.prisma, take, [
+          ...remaining,
+        ]);
+        if (!rows.length) break;
+        rows.forEach((row) => remaining.delete(row.id));
+        await this.dispatchNotificationChannelBatch(rows);
+        if (rows.length < take) break;
+      }
+    } catch {
+      this.logger.warn(
+        'Notification channel handoff remains durable after a dispatch failure',
+      );
+    }
+  }
+
+  @Cron('*/10 * * * * *')
+  async dispatchPendingNotificationChannels(batchSize = 100): Promise<number> {
+    const take = Number.isFinite(batchSize)
+      ? Math.min(100, Math.max(0, Math.trunc(batchSize)))
+      : 100;
+    if (!take) return 0;
+    await reapExhaustedNotificationChannels(this.prisma);
+    let claimed = 0,
+      completed = 0;
+    while (claimed < take) {
+      const rows = await claimNotificationChannels(
+        this.prisma,
+        Math.min(10, take - claimed),
+      );
+      if (!rows.length) break;
+      claimed += rows.length;
+      const outcomes = await this.dispatchNotificationChannelBatch(rows);
+      completed += outcomes.filter(Boolean).length;
+    }
+    return completed;
+  }
+
+  private async dispatchNotificationChannelBatch(
+    rows: ClaimedNotificationChannels[],
+  ): Promise<boolean[]> {
+    const recipientIds = [
+      ...new Set(
+        rows
+          .filter((row) => row.emailEnabled && row.emailPolicyJson === null)
+          .map((row) => row.recipientId),
+      ),
+    ];
+    // Single-event producers have no email snapshot. Resolve their policies once
+    // per bounded claim group, before opening independent channel transactions.
+    const policies = await loadNotificationBatchPolicy(
+      this.prisma,
+      recipientIds,
+      NotificationType.THREAD,
+      { dedupeMs: 0 },
+    );
+    return Promise.all(
+      rows.map((row) =>
+        this.dispatchClaimedNotificationChannels(
+          row,
+          policies.get(row.recipientId),
+        ),
+      ),
     );
   }
 
-  private async findNotificationReplay(notificationId: string, recipientId: string, type: NotificationType, actorId: string | null) {
+  private async dispatchClaimedNotificationChannels(
+    row: ClaimedNotificationChannels,
+    fallbackPolicy?: NotificationEmailPolicy,
+  ): Promise<boolean> {
+    const ownership = {
+      id: row.id,
+      status: 'PROCESSING' as const,
+      lockOwner: row.lockOwner,
+    };
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const owned = await tx.notificationChannelOutbox.updateMany({
+          where: ownership,
+          data: { lockExpiresAt: new Date(Date.now() + 60000) },
+        });
+        if (!owned.count) return false;
+        if (row.emailEnabled) {
+          const policy =
+            this.readNotificationEmailPolicy(row.emailPolicyJson) ??
+            fallbackPolicy ??
+            (
+              await loadNotificationBatchPolicy(
+                tx,
+                [row.recipientId],
+                NotificationType.THREAD,
+                { dedupeMs: 0 },
+              )
+            ).get(row.recipientId);
+          await this.enqueueEmailForNotification({
+            recipientId: row.recipientId,
+            notificationId: row.id,
+            type: row.notificationType,
+            message: row.messageSnapshot,
+            payload: this.toRecord(row.payload),
+            targetUrl: row.targetUrl ?? undefined,
+            policy,
+            tx,
+          });
+        }
+        if (row.pushEnabled) {
+          const settings = this.normalizeSettings(row.settingsJson);
+          await this.pushNotifications.enqueue(
+            {
+              recipientId: row.recipientId,
+              notification: {
+                id: row.id,
+                type: row.notificationType,
+                payload: row.payload,
+                actor: row.actorId ? { id: row.actorId } : null,
+              },
+              settings,
+              notificationTypeEnabled: this.isNotificationEnabled(
+                row.notificationType,
+                settings,
+              ),
+              preparedPayload: this.readNotificationPushPayload(
+                row.pushPayloadJson,
+              ),
+            },
+            tx,
+          );
+        }
+        await tx.notificationChannelOutbox.updateMany({
+          where: ownership,
+          data: {
+            status: 'COMPLETED',
+            lockedAt: null,
+            lockOwner: null,
+            lockExpiresAt: null,
+            lastError: null,
+          },
+        });
+        return true;
+      });
+    } catch (error) {
+      const exhausted = row.attempts >= 8;
+      const updated = await this.prisma.notificationChannelOutbox.updateMany({
+        where: ownership,
+        data: {
+          status: 'FAILED',
+          lockedAt: null,
+          lockOwner: null,
+          lockExpiresAt: null,
+          availableAt: new Date(
+            Date.now() +
+              (exhausted ? 86400 : Math.min(3600, 15 * 2 ** row.attempts)) *
+                1000,
+          ),
+          lastError: exhausted
+            ? 'DLQ_EXHAUSTED:notification channel enqueue failed'
+            : 'Notification channel enqueue failed',
+        },
+      });
+      if (updated.count && exhausted)
+        this.logger.error(
+          `Notification channel handoff exhausted notificationId=${row.id}`,
+        );
+      else if (updated.count) {
+        const code = (error as { code?: unknown })?.code;
+        const safeCode =
+          typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code)
+            ? code
+            : 'Error';
+        this.logger.warn(
+          `Notification channel handoff failed notificationId=${row.id} attempt=${row.attempts} code=${safeCode}`,
+        );
+      }
+      return false;
+    }
+  }
+
+  @Cron(CronExpression.EVERY_HOUR)
+  async cleanupNotificationChannelOutbox(): Promise<void> {
+    await cleanupNotificationChannels(this.prisma);
+  }
+
+  private async findNotificationReplay(
+    notificationId: string,
+    recipientId: string,
+    type: NotificationType,
+    actorId: string | null,
+  ) {
     const existing = await this.prisma.notification.findUnique({
       where: { id: notificationId },
       include: { actor: { select: NOTIFICATION_ACTOR_SELECT } },
     });
-    if (existing && (existing.recipientId !== recipientId || existing.type !== type || existing.actorId !== actorId)) {
-      throw new BadRequestException('Notification identity does not match its original delivery');
+    if (
+      existing &&
+      (existing.recipientId !== recipientId ||
+        existing.type !== type ||
+        existing.actorId !== actorId)
+    ) {
+      throw new BadRequestException(
+        'Notification identity does not match its original delivery',
+      );
     }
     return existing;
   }
@@ -1497,6 +1830,208 @@ export class NotificationsService {
     recipientId: string,
     type: NotificationType,
     opts?: CreateNotificationOptions,
+  ) {
+    return this.createWithPolicy(recipientId, type, opts);
+  }
+
+  /** Bounded fan-out, with recipient policy and dedupe reads joined per batch. */
+  async createForRecipients(
+    recipientIds: string[],
+    type: NotificationType,
+    opts?: CreateNotificationOptions,
+  ) {
+    const allIds = [...new Set(recipientIds.filter(Boolean))];
+    if (opts?.notificationId && allIds.length !== 1)
+      throw new BadRequestException(
+        'notificationId requires exactly one recipient',
+      );
+    const uniqueIds = allIds.filter((id) => id !== opts?.actorId);
+    const results: PromiseSettledResult<
+      Awaited<ReturnType<NotificationsService['create']>>
+    >[] = [];
+    for (let offset = 0; offset < uniqueIds.length; offset += 25) {
+      const ids = uniqueIds.slice(offset, offset + 25);
+      let policies: Awaited<ReturnType<typeof loadNotificationBatchPolicy>>;
+      let actor: Prisma.UserGetPayload<{
+        select: typeof NOTIFICATION_ACTOR_SELECT;
+      }> | null;
+      try {
+        [policies, actor] = await Promise.all([
+          loadNotificationBatchPolicy(this.prisma, ids, type, opts),
+          opts?.actorId
+            ? this.prisma.user.findUnique({
+                where: { id: opts.actorId },
+                select: NOTIFICATION_ACTOR_SELECT,
+              })
+            : Promise.resolve(null),
+        ]);
+      } catch (reason) {
+        this.logger.warn(`Notification policy batch failed: ${String(reason)}`);
+        results.push(
+          ...ids.map(() => ({ status: 'rejected' as const, reason })),
+        );
+        continue;
+      }
+      const channelIds = new Set<string>();
+      const batch = await Promise.allSettled(
+        ids.map((id) => {
+          const policy = policies.get(id);
+          // An absent recipient cannot receive a notification, and must not fall
+          // back to N individual policy reads.
+          if (!policy)
+            return Promise.reject(
+              new NotFoundException('Notification recipient not found'),
+            );
+          return this.createWithPolicy(id, type, opts, {
+            policy,
+            actor,
+            channelIds,
+          });
+        }),
+      );
+      for (const result of batch)
+        if (result.status === 'rejected')
+          this.logger.warn(
+            `Notification recipient write failed: ${String(result.reason)}`,
+          );
+      results.push(...batch);
+      await this.dispatchNotificationChannelsForIds([...channelIds]);
+    }
+    return results;
+  }
+
+  /** Mixed scheduled events: bounded shared policy/actor reads without sharing payloads or consent. */
+  async createEvents(events: NotificationEvent[]) {
+    const results: PromiseSettledResult<
+      Awaited<ReturnType<NotificationsService['create']>>
+    >[] = [];
+    for (let offset = 0; offset < events.length; offset += 25) {
+      const batch = events.slice(offset, offset + 25);
+      let replays: Notification[];
+      let policies: Awaited<ReturnType<typeof loadNotificationEventPolicies>>;
+      let actors: Prisma.UserGetPayload<{
+        select: typeof NOTIFICATION_ACTOR_SELECT;
+      }>[];
+      try {
+        const actorIds = [
+          ...new Set(
+            batch
+              .map((event) => event.opts?.actorId)
+              .filter((id): id is string => Boolean(id)),
+          ),
+        ];
+        const durableIds = [
+          ...new Set(
+            batch
+              .map((event) => event.opts?.notificationId)
+              .filter((id): id is string => Boolean(id)),
+          ),
+        ];
+        [policies, actors, replays] = await Promise.all([
+          loadNotificationEventPolicies(this.prisma, batch),
+          actorIds.length
+            ? this.prisma.user.findMany({
+                where: { id: { in: actorIds } },
+                select: NOTIFICATION_ACTOR_SELECT,
+              })
+            : Promise.resolve([]),
+          durableIds.length
+            ? this.prisma.notification.findMany({
+                where: { id: { in: durableIds } },
+              })
+            : Promise.resolve([]),
+        ]);
+      } catch (reason) {
+        results.push(
+          ...batch.map(() => ({ status: 'rejected' as const, reason })),
+        );
+        continue;
+      }
+      const actorMap = new Map(actors.map((actor) => [actor.id, actor]));
+      const replayMap = new Map(replays.map((replay) => [replay.id, replay]));
+      const channelIds = new Set<string>();
+      // Preserve serial semantics for repeated events to the same recipient;
+      // add successful writes to later event snapshots instead of rereading SQL.
+      for (let index = 0; index < batch.length; index += 1) {
+        const event = batch[index];
+        try {
+          const policy = policies.get(index);
+          if (!policy)
+            throw new NotFoundException('Notification recipient not found');
+          const value = await this.createWithPolicy(
+            event.recipientId,
+            event.type,
+            event.opts,
+            {
+              policy,
+              channelIds,
+              actor: actorMap.get(event.opts?.actorId ?? '') ?? null,
+              ...(event.opts?.notificationId
+                ? { replay: replayMap.get(event.opts.notificationId) ?? null }
+                : {}),
+            },
+          );
+          results.push({ status: 'fulfilled', value });
+          if (!value) continue;
+          if (event.opts?.notificationId)
+            replayMap.set(event.opts.notificationId, value);
+          for (let next = index + 1; next < batch.length; next += 1) {
+            const future = batch[next],
+              futurePolicy = policies.get(next);
+            const ms = Math.max(
+              future.opts?.dedupeMs ?? DEFAULT_SEMANTIC_DEDUPE_MS,
+              0,
+            );
+            if (
+              !futurePolicy ||
+              future.opts?.notificationId ||
+              ms <= 0 ||
+              future.recipientId !== value.recipientId ||
+              future.type !== value.type ||
+              (future.opts?.actorId && future.opts.actorId !== value.actorId) ||
+              value.createdAt.getTime() < Date.now() - ms
+            )
+              continue;
+            futurePolicy.candidates.unshift(value);
+            futurePolicy.candidates = [
+              ...new Map(
+                futurePolicy.candidates.map((candidate) => [
+                  candidate.id,
+                  candidate,
+                ]),
+              ).values(),
+            ]
+              .sort(
+                (left, right) =>
+                  right.createdAt.getTime() - left.createdAt.getTime(),
+              )
+              .slice(0, MAX_SEMANTIC_DEDUPE_CANDIDATES);
+            const targetId = (value.payload as Record<string, any> | null)
+              ?.target?.id;
+            if (future.opts?.dedupeMs && future.opts.target?.id === targetId)
+              futurePolicy.targetDuplicate = value;
+          }
+        } catch (reason) {
+          results.push({ status: 'rejected', reason });
+        }
+      }
+      await this.dispatchNotificationChannelsForIds([...channelIds]);
+    }
+    return results;
+  }
+
+  private async createWithPolicy(
+    recipientId: string,
+    type: NotificationType,
+    opts?: CreateNotificationOptions,
+    batch?: {
+      policy: NotificationBatchPolicy;
+      channelIds: Set<string>;
+      replay?: Notification | null;
+      actor: Prisma.UserGetPayload<{
+        select: typeof NOTIFICATION_ACTOR_SELECT;
+      }> | null;
+    },
   ) {
     this.logger.debug(
       `Creating notification: type=${type}, recipient=${recipientId}, actor=${opts?.actorId}`,
@@ -1510,20 +2045,47 @@ export class NotificationsService {
 
     const notificationId = opts?.notificationId;
     if (notificationId) {
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(notificationId)) {
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          notificationId,
+        )
+      ) {
         throw new BadRequestException('Invalid notificationId');
       }
-      const replay = await this.findNotificationReplay(notificationId, recipientId, type, actorId);
-      if (replay) return replay;
+      const replay =
+        batch && batch.replay !== undefined
+          ? batch.replay
+          : await this.findNotificationReplay(
+              notificationId,
+              recipientId,
+              type,
+              actorId,
+            );
+      if (replay) {
+        if (
+          replay.recipientId !== recipientId ||
+          replay.type !== type ||
+          replay.actorId !== actorId
+        )
+          throw new BadRequestException(
+            'Notification identity does not match its original delivery',
+          );
+        if (!batch) await this.dispatchNotificationChannelsForId(replay.id);
+        else batch.channelIds.add(replay.id);
+        return batch ? { ...replay, actor: batch.actor } : replay;
+      }
     }
 
     // Check user settings
-    const settings = await this.getSettings(recipientId);
+    const settings = batch
+      ? this.normalizeSettings(batch.policy.notificationSettings)
+      : await this.getSettings(recipientId);
     if (type === ('TAG_MENTION' as NotificationType)) {
       const canReceive = await this.canReceiveTagMentionFromActor(
         recipientId,
         actorId,
         settings,
+        batch?.policy.patched,
       );
       if (!canReceive) {
         this.logger.debug(
@@ -1537,6 +2099,7 @@ export class NotificationsService {
         actorId,
         opts?.payload,
         settings,
+        batch?.policy.patched,
       );
       if (!canReceive) {
         this.logger.debug(
@@ -1564,6 +2127,7 @@ export class NotificationsService {
           message,
           payload: this.toRecord(sanitizedPayload as Prisma.JsonValue),
           targetUrl: undefined,
+          policy: batch?.policy,
         }).catch((error) => {
           this.logger.warn(
             `Failed to enqueue login email-only notification for user=${recipientId}: ${String(error)}`,
@@ -1600,18 +2164,20 @@ export class NotificationsService {
 
         // Fast path: when explicit target and dedupe window are provided, use JSON path lookup.
         if (opts?.dedupeMs && opts.target) {
-          const existing = await this.prisma.notification.findFirst({
-            where: {
-              recipientId,
-              type,
-              actorId: actorId ?? undefined,
-              createdAt: { gte: since },
-              payload: {
-                path: ['target', 'id'],
-                equals: opts.target.id,
-              },
-            },
-          });
+          const existing = batch
+            ? batch.policy.targetDuplicate
+            : await this.prisma.notification.findFirst({
+                where: {
+                  recipientId,
+                  type,
+                  actorId: actorId ?? undefined,
+                  createdAt: { gte: since },
+                  payload: {
+                    path: ['target', 'id'],
+                    equals: opts.target.id,
+                  },
+                },
+              });
           if (existing) {
             this.logger.debug(
               'Duplicate notification found via target path, skipping creation',
@@ -1629,16 +2195,18 @@ export class NotificationsService {
           resolvedTarget,
         );
 
-        const candidates = await this.prisma.notification.findMany({
-          where: {
-            recipientId,
-            type,
-            actorId: actorId ?? undefined,
-            createdAt: { gte: since },
-          },
-          orderBy: { createdAt: 'desc' },
-          take: MAX_SEMANTIC_DEDUPE_CANDIDATES,
-        });
+        const candidates = batch
+          ? batch.policy.candidates
+          : await this.prisma.notification.findMany({
+              where: {
+                recipientId,
+                type,
+                actorId: actorId ?? undefined,
+                createdAt: { gte: since },
+              },
+              orderBy: { createdAt: 'desc' },
+              take: MAX_SEMANTIC_DEDUPE_CANDIDATES,
+            });
 
         for (const candidate of candidates) {
           const candidatePayload = this.toRecord(
@@ -1663,33 +2231,69 @@ export class NotificationsService {
       }
 
       let replayedDelivery = false;
-      const created = await this.prisma.notification.create({
-        data: {
-          id: notificationId ?? uuidv4(),
-          type,
-          payload: {
-            ...sanitizedPayload,
-            ...(opts?.target ? { target: opts.target } : {}),
-          },
-          isRead: false,
-          recipient: { connect: { id: recipientId } },
-          ...(actorId ? { actor: { connect: { id: actorId } } } : {}),
+      const data: Prisma.NotificationCreateInput = {
+        id: notificationId ?? uuidv4(),
+        type,
+        payload: {
+          ...sanitizedPayload,
+          ...(opts?.target ? { target: opts.target } : {}),
         },
-        include: {
-          actor: {
-            select: NOTIFICATION_ACTOR_SELECT,
-          },
-        },
-      }).catch(async (error) => {
+        isRead: false,
+        recipient: { connect: { id: recipientId } },
+        ...(actorId ? { actor: { connect: { id: actorId } } } : {}),
+      };
+      const creation = this.prisma.$transaction(async (tx) => {
+        const created = batch
+          ? {
+              ...(await tx.notification.create({
+                data: {
+                  id: data.id,
+                  type,
+                  payload: data.payload,
+                  isRead: false,
+                  recipientId,
+                  actorId,
+                },
+              })),
+              actor: batch.actor,
+            }
+          : await tx.notification.create({
+              data,
+              include: { actor: { select: NOTIFICATION_ACTOR_SELECT } },
+            });
+        if (!opts?.suppressEmail || !opts?.suppressPush)
+          await tx.notificationChannelOutbox.create({
+            data: this.prepareNotificationChannels(
+              created,
+              settings,
+              opts,
+              batch?.policy,
+            ),
+          });
+        return created;
+      });
+      const created = await creation.catch(async (error) => {
         if (notificationId && (error as { code?: string }).code === 'P2002') {
-          const replay = await this.findNotificationReplay(notificationId, recipientId, type, actorId);
-          if (replay) { replayedDelivery = true; return replay; }
+          const replay = await this.findNotificationReplay(
+            notificationId,
+            recipientId,
+            type,
+            actorId,
+          );
+          if (replay) {
+            replayedDelivery = true;
+            return replay;
+          }
         }
         throw error;
       });
 
       // A concurrent worker already persisted this delivery and owns its side effects.
-      if (replayedDelivery) return created;
+      if (replayedDelivery) {
+        if (!batch) await this.dispatchNotificationChannelsForId(created.id);
+        else batch.channelIds.add(created.id);
+        return created;
+      }
 
       this.logger.debug(`Notification created successfully: id=${created.id}`);
 
@@ -1743,61 +2347,9 @@ export class NotificationsService {
         // Log for monitoring, but don't fail the notification creation
       }
 
-      const emailPayload = this.toRecord(
-        created.payload as Prisma.JsonValue | null,
-      );
-      /*
-        The email goes where the app goes.
-
-        Only `payload.targetUrl` used to reach the email, and plenty of senders
-        never set it — they pass a SYSTEM `target` whose `preview` is the
-        role-correct path instead (`/custom-orders/:id` for the buyer,
-        `/studio/custom-orders/:id` for the brand, `/admin/custom-orders/:id`
-        for an admin). The app routed those notifications perfectly and the
-        email arrived with no button, telling the reader to "tap to open it"
-        with nothing to tap. That is the "admin review triggered" email.
-
-        `preview` is only trusted when it is already a path, because for other
-        target kinds it holds a display title ("Summer Drop"), and the
-        allowlist would otherwise accept "/Summer Drop" as a route.
-      */
-      const targetPreview = opts?.target?.preview;
-      const targetUrl =
-        this.sanitizeTargetUrl(emailPayload?.targetUrl) ??
-        (typeof targetPreview === 'string' && targetPreview.startsWith('/')
-          ? this.sanitizeTargetUrl(targetPreview)
-          : undefined);
-      const message = this.formatMessage(created);
-
-      if (!opts?.suppressEmail) {
-        void this.enqueueEmailForNotification({
-          recipientId,
-          notificationId: created.id,
-          type,
-          message,
-          payload: emailPayload,
-          targetUrl,
-        }).catch((error) => {
-          this.logger.warn(
-            `Failed to enqueue notification email for notification=${created.id}: ${String(error)}`,
-          );
-        });
-      }
-
-      if (!opts?.suppressPush) {
-        void this.pushNotifications
-          .enqueue({
-            recipientId,
-            notification: created,
-            settings,
-            notificationTypeEnabled: this.isNotificationEnabled(type, settings),
-          })
-          .catch((error) => {
-            this.logger.warn(
-              `Failed to enqueue push notification=${created.id}: ${String(error)}`,
-            );
-          });
-      }
+      if (!batch) await this.dispatchNotificationChannelsForId(created.id);
+      else if (!opts?.suppressEmail || !opts?.suppressPush)
+        batch.channelIds.add(created.id);
 
       return created;
     } catch (error) {

@@ -7,6 +7,10 @@ import {
   NOTIFICATION_FANOUT_JOB,
 } from './queue.constants';
 import type { NotificationFanoutJob } from './notifications.queue.service';
+import {
+  assertNotificationIdentity,
+  recipientNotificationId,
+} from './notification-identity';
 
 @Processor(NOTIFICATIONS_QUEUE)
 export class NotificationsProcessor extends WorkerHost {
@@ -27,7 +31,9 @@ export class NotificationsProcessor extends WorkerHost {
       target,
       dedupeMs,
       notificationId,
+      notificationNamespace,
     } = job.data;
+    assertNotificationIdentity(notificationId, notificationNamespace);
 
     const uniqueRecipients = Array.from(
       new Set((recipientIds || []).filter(Boolean)),
@@ -37,28 +43,39 @@ export class NotificationsProcessor extends WorkerHost {
       throw new Error('notificationId requires exactly one recipient');
     }
 
-    const chunkSize = 25;
-    for (let i = 0; i < uniqueRecipients.length; i += chunkSize) {
-      const chunk = uniqueRecipients.slice(i, i + chunkSize);
-      await Promise.all(
-        chunk.map(async (recipientId) => {
-          try {
-            await this.notifications.create(recipientId, notificationType, {
+    const results = notificationNamespace
+      ? await this.notifications.createEvents(
+          uniqueRecipients.map((recipientId) => ({
+            recipientId,
+            type: notificationType,
+            opts: {
               actorId,
               payload,
               target,
               dedupeMs,
-              ...(notificationId ? { notificationId } : {}),
-            });
-          } catch (error) {
-            // Durable outbox jobs are idempotent and must let BullMQ retry a failed write.
-            if (notificationId) throw error;
-            this.logger.warn(
-              `Failed notification fanout to ${recipientId}: ${String(error)}`,
-            );
-          }
-        }),
-      );
+              notificationId: recipientNotificationId(
+                notificationNamespace,
+                recipientId,
+              ),
+            },
+          })),
+        )
+      : await this.notifications.createForRecipients(
+          uniqueRecipients,
+          notificationType,
+          {
+            actorId,
+            payload,
+            target,
+            dedupeMs,
+            ...(notificationId ? { notificationId } : {}),
+          },
+        );
+    for (const result of results) {
+      if (result.status !== 'rejected') continue;
+      // Durable outbox jobs must let BullMQ retry a failed write.
+      if (notificationId || notificationNamespace) throw result.reason;
+      this.logger.warn(`Failed notification fanout: ${String(result.reason)}`);
     }
   }
 }

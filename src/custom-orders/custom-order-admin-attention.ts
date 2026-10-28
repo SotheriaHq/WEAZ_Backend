@@ -1,9 +1,4 @@
-import {
-  CustomOrderStatus,
-  Prisma,
-  Role,
-  UserStatus,
-} from '@prisma/client';
+import { CustomOrderStatus, Prisma, Role, UserStatus } from '@prisma/client';
 
 /**
  * Sticky "needs admin attention" helpers shared by the ops cron (set), buyer
@@ -48,7 +43,8 @@ export type AttentionPrisma = {
 const DEFAULT_COOLDOWN_HOURS = 6;
 
 export function resolveAttentionCooldownHours(
-  envValue: string | undefined = process.env.CUSTOM_ORDER_ATTENTION_COOLDOWN_HOURS,
+  envValue: string | undefined = process.env
+    .CUSTOM_ORDER_ATTENTION_COOLDOWN_HOURS,
 ): number {
   const parsed = Number(envValue);
   if (!Number.isFinite(parsed) || parsed < 0) {
@@ -83,13 +79,12 @@ export async function markAdminAttention(
   options?: {
     cooldownHours?: number;
     onError?: (message: string) => void;
+    throwOnError?: boolean;
   },
 ): Promise<boolean> {
   const cooldownHours =
     options?.cooldownHours ?? resolveAttentionCooldownHours();
-  const cooldownCutoff = new Date(
-    Date.now() - cooldownHours * 60 * 60 * 1000,
-  );
+  const cooldownCutoff = new Date(Date.now() - cooldownHours * 60 * 60 * 1000);
 
   try {
     const result = await prisma.customOrder.updateMany({
@@ -114,8 +109,8 @@ export async function markAdminAttention(
     });
     return result.count > 0;
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : String(error);
+    if (options?.throwOnError) throw error;
+    const message = error instanceof Error ? error.message : String(error);
     options?.onError?.(
       `Failed to set admin-attention flag for custom order ${customOrderId}: ${message}`,
     );
@@ -147,8 +142,7 @@ export async function clearAdminAttention(
     });
     return result.count > 0;
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : String(error);
+    const message = error instanceof Error ? error.message : String(error);
     options?.onError?.(
       `Failed to clear admin-attention flag for custom order ${customOrderId}: ${message}`,
     );
@@ -183,8 +177,7 @@ export async function clearAdminAttentionMany(
     });
     return result.count;
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : String(error);
+    const message = error instanceof Error ? error.message : String(error);
     options?.onError?.(
       `Failed to bulk-clear admin-attention flags: ${message}`,
     );
@@ -211,9 +204,7 @@ export async function markAdminAttentionMany(
   }
   const cooldownHours =
     options?.cooldownHours ?? resolveAttentionCooldownHours();
-  const cooldownCutoff = new Date(
-    Date.now() - cooldownHours * 60 * 60 * 1000,
-  );
+  const cooldownCutoff = new Date(Date.now() - cooldownHours * 60 * 60 * 1000);
   try {
     const result = await prisma.customOrder.updateMany({
       where: {
@@ -235,11 +226,8 @@ export async function markAdminAttentionMany(
     });
     return result.count;
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : String(error);
-    options?.onError?.(
-      `Failed to bulk-set admin-attention flags: ${message}`,
-    );
+    const message = error instanceof Error ? error.message : String(error);
+    options?.onError?.(`Failed to bulk-set admin-attention flags: ${message}`);
     return 0;
   }
 }
@@ -258,6 +246,21 @@ type AdminLookupPrisma = {
   };
 };
 
+export async function loadActiveAdminIds(
+  prisma: AdminLookupPrisma,
+  take = 50,
+): Promise<string[]> {
+  const admins = await prisma.user.findMany({
+    where: {
+      role: { in: [Role.Admin, Role.SuperAdmin] },
+      status: UserStatus.ACTIVE,
+    },
+    select: { id: true },
+    take,
+  });
+  return admins.map((admin) => admin.id);
+}
+
 /**
  * Cached active Admin/SuperAdmin ids. Avoids a user-table scan on every
  * dispute/issue and every cron path within the same process tick window.
@@ -272,15 +275,7 @@ export async function getCachedActiveAdminIds(
     return activeAdminIdsCache.ids;
   }
 
-  const admins = await prisma.user.findMany({
-    where: {
-      role: { in: [Role.Admin, Role.SuperAdmin] },
-      status: UserStatus.ACTIVE,
-    },
-    select: { id: true },
-    take: options?.take ?? 50,
-  });
-  const ids = admins.map((admin) => admin.id);
+  const ids = await loadActiveAdminIds(prisma, options?.take ?? 50);
   activeAdminIdsCache = { ids, expiresAt: now + ttlMs };
   return ids;
 }

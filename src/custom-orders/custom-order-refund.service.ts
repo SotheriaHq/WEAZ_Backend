@@ -1,21 +1,9 @@
 import {
   BadRequestException,
   Injectable,
-  Logger,
   NotFoundException,
-  Optional,
 } from '@nestjs/common';
-import {
-  BrandBalanceAdjustmentType,
-  CustomOrderActorType,
-  CustomOrderLedgerAllocationStatus,
-  PaymentStatus,
-  PaymentSubjectType,
-  Prisma,
-} from '@prisma/client';
-import { BrandBalanceService } from 'src/finance/brand-balance.service';
-import { LedgerService } from 'src/finance/ledger.service';
-import { PrismaService } from 'src/prisma/prisma.service';
+import { CustomOrderActorType, PaymentStatus, Prisma } from '@prisma/client';
 import { CustomOrderQueueService } from './queue/custom-order-queue.service';
 
 interface InitiateCustomOrderRefundParams {
@@ -27,86 +15,16 @@ interface InitiateCustomOrderRefundParams {
   actorId?: string;
 }
 
-type RefundAttemptSnapshot = {
-  id: string;
-  reference: string;
-  provider: string;
-  providerMode: string;
-  amount: Prisma.Decimal;
-  currency: string;
-  status: string;
-};
-
+/**
+ * Custom-order refunds are requested here and carried out by the durable
+ * queue-refund engine: an order-scoped amount is reserved inside the caller's
+ * transaction, and the provider call, confirmation and settlement happen later
+ * outside any lock. This service never contacts a payment provider and never
+ * refunds a whole unified capture.
+ */
 @Injectable()
 export class CustomOrderRefundService {
-  private readonly logger = new Logger(CustomOrderRefundService.name);
-
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly ledgerService: LedgerService,
-    private readonly brandBalance: BrandBalanceService,
-    @Optional() private readonly queue?: CustomOrderQueueService,
-  ) {}
-
-  private async executeGatewayRefundIfNeeded(attempt: RefundAttemptSnapshot) {
-    if (String(attempt.providerMode || '').toLowerCase() !== 'live') {
-      return;
-    }
-
-    const provider = String(attempt.provider || '').toUpperCase();
-    if (provider === 'PAYSTACK') {
-      const secret = process.env.PAYSTACK_SECRET_KEY;
-      if (!secret) {
-        throw new BadRequestException(
-          'PAYSTACK_SECRET_KEY is required for live refunds',
-        );
-      }
-
-      const response = await fetch('https://api.paystack.co/refund', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${secret}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          transaction: attempt.reference,
-          amount: Math.round(Number(attempt.amount) * 100),
-          currency: attempt.currency,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new BadRequestException('Failed to execute Paystack refund');
-      }
-      return;
-    }
-
-    if (provider === 'FLUTTERWAVE') {
-      const secret = process.env.FLUTTERWAVE_SECRET_KEY;
-      if (!secret) {
-        throw new BadRequestException(
-          'FLUTTERWAVE_SECRET_KEY is required for live refunds',
-        );
-      }
-
-      const response = await fetch('https://api.flutterwave.com/v3/refunds', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${secret}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          tx_ref: attempt.reference,
-          amount: Number(attempt.amount),
-          currency: attempt.currency,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new BadRequestException('Failed to execute Flutterwave refund');
-      }
-    }
-  }
+  constructor(private readonly queue: CustomOrderQueueService) {}
 
   async initiateRefund(
     tx: Prisma.TransactionClient,
@@ -116,8 +34,6 @@ export class CustomOrderRefundService {
       where: { id: params.customOrderId },
       select: {
         id: true,
-        brandId: true,
-        currency: true,
         paymentReference: true,
         paymentStatus: true,
         queuePolicyVersion: true,
@@ -130,271 +46,65 @@ export class CustomOrderRefundService {
     }
 
     if (params.refundAmount !== undefined) {
-      if (!this.queue || !params.disputeId || !params.actorId) throw new BadRequestException('Partial refund requires an authorized dispute resolution');
-      const refund = await this.queue.requestPartialRefundInTransaction(tx, order.id, params.refundAmount, params.disputeId, params.reason, params.actorId);
-      return { customOrderId: order.id, paymentAttemptId: refund.paymentAttemptId, reference: order.paymentReference, alreadyRefunded: refund.status === 'SETTLED', refundId: refund.id };
-    }
-    if (order.queuePolicyVersion && !order.activatedAt) {
-      if (!this.queue) throw new BadRequestException('Queue refund processing is unavailable');
-      const refund = await this.queue.requestCancellationInTransaction(tx, order.id, params.reason, params.actorType, params.actorId);
-      return { customOrderId: order.id, paymentAttemptId: refund.paymentAttemptId, reference: order.paymentReference, alreadyRefunded: refund.status === 'SETTLED', refundId: refund.id };
-    }
-    if (this.queue && order.paymentStatus !== PaymentStatus.REFUNDED) {
-      const refund = await this.queue.requestFullRefundInTransaction(tx, order.id, params.reason, params.actorType, params.actorId);
-      return { customOrderId: order.id, paymentAttemptId: refund.paymentAttemptId, reference: order.paymentReference, alreadyRefunded: refund.status === 'SETTLED', refundId: refund.id };
-    }
-
-    const attempt = order.paymentReference
-      ? await tx.paymentAttempt.findUnique({
-          where: { reference: order.paymentReference },
-        })
-      : await tx.paymentAttempt.findFirst({
-          where: { customOrderId: params.customOrderId },
-          orderBy: { createdAt: 'desc' },
-        });
-
-    if (!attempt) {
-      throw new BadRequestException(
-        'Custom-order refund cannot be initiated without a payment attempt',
+      if (!params.disputeId || !params.actorId)
+        throw new BadRequestException(
+          'Partial refund requires an authorized dispute resolution',
+        );
+      const refund = await this.queue.requestPartialRefundInTransaction(
+        tx,
+        order.id,
+        params.refundAmount,
+        params.disputeId,
+        params.reason,
+        params.actorId,
       );
+      return this.result(order, refund);
     }
 
-    if (
-      attempt.status === 'REFUNDED' &&
-      order.paymentStatus === PaymentStatus.REFUNDED
-    ) {
-      return {
-        customOrderId: order.id,
-        paymentAttemptId: attempt.id,
-        reference: attempt.reference,
-        alreadyRefunded: true,
-      };
-    }
-    if (attempt.status !== 'PAID') {
-      throw new BadRequestException(
-        'Custom-order refund can only be initiated for a paid attempt',
-      );
-    }
-
-    const claimed = await tx.paymentAttempt.updateMany({
-      where: {
-        reference: attempt.reference,
-        status: 'PAID',
-      },
-      data: {
-        status: 'REFUND_IN_PROGRESS',
-        lastVerifiedAt: new Date(),
-      },
-    });
-
-    if (claimed.count === 0) {
-      const latest = await tx.paymentAttempt.findUnique({
-        where: { reference: attempt.reference },
-        select: { status: true },
+    if (order.paymentStatus === PaymentStatus.REFUNDED) {
+      // Already refunded in full: idempotent, and never a second provider refund.
+      const refund = await tx.customOrderQueueRefund.findFirst({
+        where: { customOrderId: order.id },
+        orderBy: { createdAt: 'desc' },
       });
-
-      if (latest?.status === 'REFUNDED') {
-        if (order.paymentStatus !== PaymentStatus.REFUNDED) {
-          await tx.customOrder.update({
-            where: { id: params.customOrderId },
-            data: { paymentStatus: PaymentStatus.REFUNDED },
-          });
-        }
-
-        return {
-          customOrderId: order.id,
-          paymentAttemptId: attempt.id,
-          reference: attempt.reference,
-          alreadyRefunded: true,
-        };
-      }
-
       return {
         customOrderId: order.id,
-        paymentAttemptId: attempt.id,
-        reference: attempt.reference,
+        paymentAttemptId: refund?.paymentAttemptId ?? null,
+        reference: order.paymentReference,
         alreadyRefunded: true,
+        refundId: refund?.id ?? null,
       };
     }
 
-    try {
-      await this.executeGatewayRefundIfNeeded(attempt as RefundAttemptSnapshot);
-    } catch (err: any) {
-      const failureMessage = err?.message || 'Refund execution failed';
-      const failedAt = new Date().toISOString();
-
-      await this.prisma.paymentEvent
-        .create({
-          data: {
-            paymentAttemptId: attempt.id,
-            type: 'REFUND_FAILED',
-            source: 'custom-order-refund',
-            payload: {
-              subjectType: PaymentSubjectType.CUSTOM_ORDER,
-              customOrderId: params.customOrderId,
-              reason: params.reason,
-              actorType: params.actorType,
-              actorId: params.actorId ?? null,
-              error: failureMessage,
-              failedAt,
-            },
-          },
-        })
-        .catch(() => undefined);
-
-      await this.prisma.paymentAttempt
-        .update({
-          where: { reference: attempt.reference },
-          data: {
-            status: 'PAID',
-            failureMessage: failureMessage,
-            lastVerifiedAt: new Date(),
-            responseSnapshot: {
-              refundFailedAt: failedAt,
-              refundFailure: failureMessage,
-              refundReason: params.reason,
-              refundActorType: params.actorType,
-              refundActorId: params.actorId ?? null,
-            },
-          },
-        })
-        .catch(() => undefined);
-
-      this.logger.error(
-        `Refund gateway execution failed for custom order ${params.customOrderId} (${attempt.reference}): ${failureMessage}`,
-      );
-      throw err;
-    }
-
-    const now = new Date();
-    const allocations = await tx.customOrderLedgerAllocation.findMany({
-      where: { customOrderId: params.customOrderId },
-      select: {
-        amount: true,
-        commissionAmount: true,
-        netBrandAmount: true,
-        status: true,
-        eligibleAt: true,
-        paidOutAt: true,
-      },
-    });
-
-    const releasedAllocations = allocations.filter(
-      (allocation) =>
-        allocation.status ===
-          CustomOrderLedgerAllocationStatus.PAYOUT_ELIGIBLE ||
-        allocation.status === CustomOrderLedgerAllocationStatus.PAID_OUT ||
-        allocation.eligibleAt !== null ||
-        allocation.paidOutAt !== null,
-    );
-    const releasedCommission = this.roundMoney(
-      releasedAllocations.reduce(
-        (sum, allocation) => sum + Number(allocation.commissionAmount),
-        0,
-      ),
-    );
-    const releasedNet = this.roundMoney(
-      releasedAllocations.reduce(
-        (sum, allocation) => sum + Number(allocation.netBrandAmount),
-        0,
-      ),
-    );
-    const releasedGross = this.roundMoney(
-      releasedAllocations.reduce(
-        (sum, allocation) => sum + Number(allocation.amount),
-        0,
-      ),
-    );
-    const totalAmount = this.roundMoney(Number(attempt.amount));
-    const unreleasedGross = this.roundMoney(
-      Math.max(
-        allocations.length > 0 ? totalAmount - releasedGross : totalAmount,
-        0,
-      ),
-    );
-
-    await tx.paymentAttempt.update({
-      where: { reference: attempt.reference },
-      data: {
-        status: 'REFUNDED',
-        lastVerifiedAt: now,
-        responseSnapshot: {
-          refundRequestedAt: now.toISOString(),
-          refundReason: params.reason,
-          refundActorType: params.actorType,
-          refundActorId: params.actorId ?? null,
-        },
-      },
-    });
-
-    await tx.paymentEvent.create({
-      data: {
-        paymentAttemptId: attempt.id,
-        type: 'REFUND_REQUESTED',
-        source: 'custom-order-refund',
-        payload: {
-          subjectType: PaymentSubjectType.CUSTOM_ORDER,
-          customOrderId: params.customOrderId,
-          reason: params.reason,
-          actorType: params.actorType,
-          actorId: params.actorId ?? null,
-          requestedAt: now.toISOString(),
-        },
-      },
-    });
-
-    if (order.paymentStatus !== PaymentStatus.REFUNDED) {
-      await tx.customOrder.update({
-        where: { id: params.customOrderId },
-        data: {
-          paymentStatus: PaymentStatus.REFUNDED,
-        },
-      });
-    }
-
-    await this.ledgerService.postCustomOrderRefund(tx, {
-      customOrderId: params.customOrderId,
-      brandId: order.brandId,
-      currency: order.currency,
-      totalAmount,
-      releasedCommission,
-      releasedNet,
-      unreleasedGross,
-    });
-
-    /*
-      Money the brand had already been credited is now a debt.
-
-      `releasedNet` is exactly the part of this order the brand had been given —
-      eligible or paid out. The shopper has just been refunded all of it by the
-      platform, so that amount is owed back. Recording it as an adjustment
-      rather than leaving the balance arithmetic to go quietly negative is what
-      lets the brand be shown WHAT they owe and WHY, and lets recovery be
-      applied order by order with a history behind it.
-
-      Unreleased money needs nothing: it was never the brand's.
-    */
-    if (releasedNet > 0) {
-      await this.brandBalance.raiseAdjustment(tx, {
-        brandId: order.brandId,
-        type: BrandBalanceAdjustmentType.REFUND_CLAWBACK,
-        amount: releasedNet,
-        currency: order.currency,
-        reason: `Refund issued to the shopper on a paid custom order (${params.reason})`,
-        customOrderId: params.customOrderId,
-        createdById: params.actorId ?? null,
-      });
-    }
-
-    return {
-      customOrderId: order.id,
-      paymentAttemptId: attempt.id,
-      reference: attempt.reference,
-      alreadyRefunded: false,
-    };
+    const refund =
+      order.queuePolicyVersion && !order.activatedAt
+        ? await this.queue.requestCancellationInTransaction(
+            tx,
+            order.id,
+            params.reason,
+            params.actorType,
+            params.actorId,
+          )
+        : await this.queue.requestFullRefundInTransaction(
+            tx,
+            order.id,
+            params.reason,
+            params.actorType,
+            params.actorId,
+          );
+    return this.result(order, refund);
   }
 
-  private roundMoney(value: number) {
-    return Math.round((value + Number.EPSILON) * 100) / 100;
+  private result(
+    order: { id: string; paymentReference: string | null },
+    refund: { id: string; paymentAttemptId: string; status: string },
+  ) {
+    return {
+      customOrderId: order.id,
+      paymentAttemptId: refund.paymentAttemptId,
+      reference: order.paymentReference,
+      alreadyRefunded: refund.status === 'SETTLED',
+      refundId: refund.id,
+    };
   }
 }

@@ -94,6 +94,11 @@ describe('custom-order-admin-attention', () => {
         expect.stringContaining('co_1'),
       );
     });
+
+    it('propagates errors when the attention flag is required by a surrounding transaction', async () => {
+      updateMany.mockRejectedValue(new Error('atomic flag failure'));
+      await expect(markAdminAttention(prisma, 'co_1', 'DISPUTE_OPENED', { throwOnError: true })).rejects.toThrow('atomic flag failure');
+    });
   });
 
   describe('clearAdminAttention', () => {

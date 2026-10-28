@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PaymentStatus, Prisma } from '@prisma/client';
 import { FinancialDocumentsService } from './financial-documents.service';
 import { StandardOrderEscrowService } from './standard-order-escrow.service';
@@ -17,6 +17,8 @@ type PaidOrderSnapshot = {
 
 @Injectable()
 export class StandardOrderFinanceSyncService {
+  private readonly logger = new Logger(StandardOrderFinanceSyncService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly standardOrderEscrowService: StandardOrderEscrowService,
@@ -121,51 +123,110 @@ export class StandardOrderFinanceSyncService {
         continue;
       }
 
-      await this.prisma.$transaction(async (tx) => {
-        const paymentCurrency =
-          attempt.currency || linkedOrders[0]?.currency || 'NGN';
-        const settlementCurrency =
-          attempt.settlementCurrency || paymentCurrency;
-        const grossAmount = this.roundMoney(
-          linkedOrders.reduce(
-            (sum, order) => sum + Number(order.totalAmount ?? 0),
-            0,
-          ),
-        );
-        const settlementAmount =
-          settlementCurrency === paymentCurrency
-            ? grossAmount
-            : this.roundMoney(
-                Number(
-                  attempt.settlementAmount ?? attempt.amount ?? grossAmount,
-                ),
-              );
-
-        await this.standardOrderEscrowService.ensureHoldsForPaidOrders(
-          tx,
-          linkedOrders,
-          settlementAmount,
-          settlementCurrency,
-        );
-
-        await this.financialDocumentsService.issueBuyerReceipt(tx, {
-          paymentAttemptId: attempt.id,
-          orderIds: linkedOrders.map((order) => order.id),
-          currency: paymentCurrency,
-          grossAmount,
-          settlementCurrency,
-          settlementAmount,
-          issuedToName: linkedOrders[0]?.customerName ?? null,
-          lineItems: linkedOrders.map((order) => ({
-            label: `Order ${order.id.slice(0, 8)}`,
-            amount: Number(order.totalAmount ?? 0),
-          })),
-        });
-      });
+      await this.prisma.$transaction((tx) =>
+        this.syncCapture(tx, attempt, linkedOrders),
+      );
     }
   }
 
-  private roundMoney(value: number) {
-    return Math.round((value + Number.EPSILON) * 100) / 100;
+  /**
+   * Same as the post-payment sync, inside the caller's transaction: a refund
+   * requested before the asynchronous sync ran still finds its escrow hold.
+   */
+  async ensureHoldsForReferenceInTransaction(
+    tx: Prisma.TransactionClient,
+    reference: string,
+  ) {
+    const [attempt, orders] = await Promise.all([
+      tx.paymentAttempt.findFirst({
+        where: { reference, status: 'PAID' },
+        select: {
+          id: true,
+          reference: true,
+          amount: true,
+          currency: true,
+          settlementAmount: true,
+          settlementCurrency: true,
+        },
+      }),
+      tx.order.findMany({
+        where: {
+          paymentReference: reference,
+          paymentStatus: PaymentStatus.PAID,
+        },
+        select: {
+          id: true,
+          brandId: true,
+          buyerId: true,
+          createdAt: true,
+          customerName: true,
+          paymentReference: true,
+          totalAmount: true,
+          currency: true,
+        },
+        orderBy: { id: 'asc' },
+      }),
+    ]);
+    if (attempt && orders.length) await this.syncCapture(tx, attempt, orders);
+  }
+
+  private async syncCapture(
+    tx: Prisma.TransactionClient,
+    attempt: {
+      id: string;
+      reference: string;
+      amount: Prisma.Decimal;
+      currency: string;
+      settlementAmount: Prisma.Decimal | null;
+      settlementCurrency: string;
+    },
+    linkedOrders: PaidOrderSnapshot[],
+  ) {
+    const paymentCurrency =
+      attempt.currency || linkedOrders[0]?.currency || 'NGN';
+    const settlementCurrency = attempt.settlementCurrency || paymentCurrency;
+    const gross = linkedOrders.reduce(
+      (sum, order) => sum.plus(order.totalAmount ?? 0),
+      new Prisma.Decimal(0),
+    );
+    // These orders' share of the capture at the original payment rate. A
+    // unified capture can also carry custom lines and other brands' orders.
+    const captureAmount = new Prisma.Decimal(attempt.amount ?? 0);
+    const settlement =
+      settlementCurrency === paymentCurrency
+        ? gross
+        : captureAmount.greaterThan(0) && attempt.settlementAmount !== null
+          ? new Prisma.Decimal(attempt.settlementAmount)
+              .times(gross)
+              .dividedBy(captureAmount)
+              .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP)
+          : new Prisma.Decimal(0);
+    if (!settlement.greaterThan(0)) {
+      this.logger.warn(
+        `Capture ${attempt.id} has no recorded settlement amount; escrow not created`,
+      );
+      return;
+    }
+
+    await this.standardOrderEscrowService.ensureHoldsForPaidOrders(
+      tx,
+      linkedOrders,
+      settlement,
+      settlementCurrency,
+    );
+
+    await this.financialDocumentsService.issueBuyerReceipt(tx, {
+      paymentAttemptId: attempt.id,
+      orderIds: linkedOrders.map((order) => order.id),
+      currency: paymentCurrency,
+      grossAmount: gross.toNumber(),
+      settlementCurrency,
+      settlementAmount: settlement.toNumber(),
+      issuedToName: linkedOrders[0]?.customerName ?? null,
+      lineItems: linkedOrders.map((order) => ({
+        label: `Order ${order.id.slice(0, 8)}`,
+        amount: Number(order.totalAmount ?? 0),
+      })),
+    });
   }
 }

@@ -38,11 +38,8 @@ async function upsertCategory(
     select: { id: true },
   });
 
+  // Reference defaults are inserted once; admin edits to existing rows are kept.
   if (existing) {
-    await prisma.collectionCategory.update({
-      where: { id: existing.id },
-      data: { name, description: description ?? null, isActive: true, order },
-    });
     return existing.id;
   }
 
@@ -73,15 +70,6 @@ async function upsertCategoryType(
   });
 
   if (existing) {
-    await prisma.collectionCategoryType.update({
-      where: { id: existing.id },
-      data: {
-        name,
-        description: description ?? null,
-        isActive: true,
-        order,
-      },
-    });
     return existing.id;
   }
 
@@ -142,17 +130,6 @@ async function ensureDefaultTaxonomy() {
     let dimensionId: string;
 
     if (existingDim) {
-      await prisma.filterDimension.update({
-        where: { id: existingDim.id },
-        data: {
-          name: dim.name,
-          description: dim.description,
-          order: dim.order,
-          isMulti: dim.isMulti,
-          appliesTo: dim.appliesTo,
-          isActive: true,
-        },
-      });
       dimensionId = existingDim.id;
     } else {
       const created = await prisma.filterDimension.create({
@@ -177,12 +154,7 @@ async function ensureDefaultTaxonomy() {
         select: { id: true },
       });
 
-      if (existingVal) {
-        await prisma.filterValue.update({
-          where: { id: existingVal.id },
-          data: { name: val.name, order: val.order, isActive: true },
-        });
-      } else {
+      if (!existingVal) {
         await prisma.filterValue.create({
           data: {
             id: randomUUID(),
@@ -196,20 +168,7 @@ async function ensureDefaultTaxonomy() {
       }
     }
 
-    const activeValueSlugs = dim.values.map((value) => value.slug);
-    const deactivatedValues = await prisma.filterValue.updateMany({
-      where: {
-        dimensionId,
-        isActive: true,
-        slug: { notIn: activeValueSlugs },
-      },
-      data: { isActive: false },
-    });
-    if (deactivatedValues.count > 0) {
-      console.log(
-        `  Deactivated ${deactivatedValues.count} obsolete values in filter dimension: ${dim.slug}`,
-      );
-    }
+    // Values an admin added are not defaults and are never deactivated here.
   }
 
   return idsBySlug;
@@ -227,9 +186,14 @@ async function main() {
 
   const seededTagCount = await seedPlatformTags(prisma);
 
-  const systemConfig = new SystemConfigService(prisma as unknown as PrismaService);
+  const systemConfig = new SystemConfigService(
+    prisma as unknown as PrismaService,
+  );
   await systemConfig.seedDefaults();
-  await new SettlementPolicyService(prisma as unknown as PrismaService, systemConfig).seedDefaults();
+  await new SettlementPolicyService(
+    prisma as unknown as PrismaService,
+    systemConfig,
+  ).seedDefaults();
 
   // Log final counts
   const [totalTags, approvedTags, pendingTags, rejectedTags] =

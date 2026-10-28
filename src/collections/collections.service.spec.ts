@@ -135,6 +135,11 @@ describe('CollectionsService brand catalog access', () => {
       cartItem: {
         deleteMany: jest.fn(),
       },
+      // Collection lock; the soft delete and primary re-sync share a transaction.
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      $transaction: jest.fn(async (run: (tx: unknown) => unknown) =>
+        run(prisma),
+      ),
     };
     const brandAccessService = {
       resolveBrandIdFromBrandOrOwnerId: jest.fn().mockResolvedValue('brand_1'),
@@ -149,6 +154,7 @@ describe('CollectionsService brand catalog access', () => {
         'store',
       ),
     ).resolves.toEqual(expect.objectContaining({ success: true }));
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(brandAccessService.assertCanManageCatalog).toHaveBeenCalledWith(
       'catalog_manager_1',
       'brand_1',
@@ -614,13 +620,13 @@ describe('CollectionsService brand catalog access', () => {
       const service = createService(prisma);
 
       const result = await service.getMarketFeed({
-        cursor: 'collection_0',
+        cursor: 'ec9b80d6-8d93-4abb-b8cc-aa17e731f588',
         limit: 1,
       });
 
       expect(prisma.collection.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          cursor: { id: 'collection_0' },
+          cursor: { id: 'ec9b80d6-8d93-4abb-b8cc-aa17e731f588' },
           skip: 1,
           orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
         }),

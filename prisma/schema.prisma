@@ -209,6 +209,7 @@ model FileUpload {
 
   @@index([processingStatus, updatedAt])
   @@index([s3Url])
+  @@index([fileType, createdAt, id], map: "FileUpload_type_createdAt_id_idx")
 }
 
 model UserProfile {
@@ -251,6 +252,8 @@ model UserProfile {
   updatedAt             DateTime          @updatedAt
 
   @@index([profileVisibility])
+  @@index([profileImageId])
+  @@index([bannerImageId])
 }
 
 model ProfilePhotoView {
@@ -307,6 +310,7 @@ model Post {
   threads       Thread[]
   threadsCount  Int          @default(0) @map("likesCount")
   commentsCount Int          @default(0)
+  @@index([videoId])
 }
 
 model Comment {
@@ -758,6 +762,8 @@ enum EscrowHoldStatus {
   FROZEN
   REFUNDED
   FORFEITED
+  /// A provider refund was requested; nothing may be released until it settles.
+  REFUND_PENDING
 }
 
 enum EscrowReleaseCondition {
@@ -1003,10 +1009,12 @@ enum PresignStatus {
 }
 
 enum TagEntityType {
+  /// A design (stored in Collection).
   COLLECTION
   PRODUCT
   BRAND
   USER_BRAND
+  STORE_COLLECTION
 }
 
 enum TagStatus {
@@ -1227,6 +1235,13 @@ enum PushReceiptStatus {
   ERROR
 }
 
+enum NotificationChannelStatus {
+  PENDING
+  PROCESSING
+  FAILED
+  COMPLETED
+}
+
 enum EmailPriority {
   P0_SECURITY
   P1_TRANSACTIONAL
@@ -1426,7 +1441,6 @@ model Collection {
 
   products         CollectionProduct[]
   draftSessions    CollectionDraftSession[]
-  bulkUploadJobs   CollectionBulkUploadJob[]
   lifecycleReviews Review[]                  @relation("ReviewLegacyCollection")
   reviewPrompts    ReviewPrompt[]            @relation("ReviewPromptLegacyCollection")
 
@@ -1481,6 +1495,7 @@ model StoreCollection {
   viewsCount             Int                      @default(0)
   products               StoreCollectionProduct[]
   primaryProducts        Product[]                @relation("PrimaryStoreCollection")
+  bulkUploadJobs         CollectionBulkUploadJob[]
   lifecycleReviews       Review[]                 @relation("ReviewStoreCollection")
   reviewPrompts          ReviewPrompt[]           @relation("ReviewPromptStoreCollection")
 
@@ -1549,8 +1564,10 @@ model CollectionBulkUploadJob {
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
   completedAt   DateTime?
+  processingToken String? @db.Uuid
+  leaseExpiresAt DateTime?
 
-  collection Collection                @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  collection StoreCollection           @relation(fields: [collectionId], references: [id], onDelete: Cascade)
   owner      User                      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   rows       CollectionBulkUploadRow[]
 
@@ -1567,7 +1584,9 @@ model CollectionBulkUploadRow {
   status           BulkUploadRowStatus @default(PENDING)
   errorMessage     String?
   payload          Json?
-  createdProductId String?
+  createdProductId String?             @unique @db.Uuid
+  productCreatedAt DateTime?
+  createdProduct Product? @relation(fields: [createdProductId], references: [id], onDelete: SetNull)
   createdAt        DateTime            @default(now())
   updatedAt        DateTime            @updatedAt
 
@@ -1858,6 +1877,7 @@ model CollectionMedia {
   @@unique([collectionId, viewSlot])
   @@index([collectionId, viewSlot])
   @@index([reviewStatus])
+  @@index([fileUploadId])
 }
 
 model CollectionReaction {
@@ -1957,10 +1977,36 @@ model Notification {
   createdAt   DateTime         @default(now())
   recipient   User             @relation("UserNotificationsReceived", fields: [recipientId], references: [id], onDelete: Cascade)
   actor       User?            @relation("UserNotificationsActed", fields: [actorId], references: [id])
+  channelOutbox NotificationChannelOutbox?
 
   @@index([recipientId])
   @@index([recipientId, isRead])
   @@index([recipientId, createdAt])
+}
+
+model NotificationChannelOutbox {
+  id String @id @db.Uuid
+  notification Notification @relation(fields: [id], references: [id], onDelete: Cascade)
+  emailEnabled Boolean
+  pushEnabled Boolean
+  messageSnapshot String
+  targetUrl String?
+  settingsJson Json
+  pushPayloadJson Json?
+  emailPolicyJson Json?
+  status NotificationChannelStatus @default(PENDING)
+  attempts Int @default(0)
+  availableAt DateTime @default(now())
+  lockedAt DateTime?
+  lockOwner String? @db.Uuid
+  lockExpiresAt DateTime?
+  lastError String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, availableAt, createdAt])
+  @@index([status, lockExpiresAt])
+  @@index([status, updatedAt])
 }
 
 model PushDeviceToken {
@@ -1976,6 +2022,7 @@ model PushDeviceToken {
   expoProjectId  String?
   isActive       Boolean      @default(true)
   lastSeenAt     DateTime     @default(now())
+  registrationVersion String @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   lastSuccessAt  DateTime?
   lastFailureAt  DateTime?
   failureCount   Int          @default(0)
@@ -2028,6 +2075,7 @@ model PushDeliveryReceipt {
   pushOutboxId String            @db.Uuid
   pushOutbox   PushOutbox        @relation(fields: [pushOutboxId], references: [id], onDelete: Cascade)
   tokenId      String?           @db.Uuid
+  tokenRegistrationVersion String? @db.Uuid
   ticketId     String?           @unique
   status       PushReceiptStatus @default(PENDING)
   errorCode    String?
@@ -2880,9 +2928,16 @@ model BrandBalanceAdjustment {
   reason          String
   /// The order that caused it, and the order that paid it down.
   customOrderId   String?                      @db.Uuid
+  customOrder     CustomOrder?                 @relation("BrandBalanceAdjustmentCustomOrder", fields: [customOrderId], references: [id], onDelete: NoAction)
   orderId         String?                      @db.Uuid
+  order           Order?                       @relation("BrandBalanceAdjustmentOrder", fields: [orderId], references: [id], onDelete: NoAction)
+  /// Stable identity of a system-raised adjustment (for example one refund),
+  /// so a retried refund or a duplicated webhook records it exactly once.
+  sourceKey       String?                      @unique
   /// Who raised it: an admin id for a manual adjustment, null for the system.
   createdById     String?                      @db.Uuid
+  /// Set once the owner was told about this committed row.
+  announcedAt     DateTime?
   settledAt       DateTime?
   createdAt       DateTime                     @default(now())
   updatedAt       DateTime                     @updatedAt
@@ -2891,6 +2946,9 @@ model BrandBalanceAdjustment {
 
   @@index([brandId, status])
   @@index([brandId, createdAt])
+  @@index([brandId, currency, status, createdAt])
+  @@index([orderId])
+  @@index([customOrderId])
 }
 
 /// One payment against one debt, so the history reads as a statement.
@@ -2902,11 +2960,17 @@ model BrandBalanceRecovery {
   currency      String                 @default("NGN")
   /// The order whose earnings paid this down.
   customOrderId String?                @db.Uuid
+  customOrder   CustomOrder?           @relation("BrandBalanceRecoveryCustomOrder", fields: [customOrderId], references: [id], onDelete: NoAction)
   orderId       String?                @db.Uuid
+  order         Order?                 @relation("BrandBalanceRecoveryOrder", fields: [orderId], references: [id], onDelete: NoAction)
   note          String?
+  /// Set once the owner was told about this committed row.
+  announcedAt   DateTime?
   createdAt     DateTime               @default(now())
 
   @@index([adjustmentId, createdAt])
+  @@index([orderId])
+  @@index([customOrderId])
 }
 
 enum BrandBalanceAdjustmentType {
@@ -3483,6 +3547,9 @@ model Order {
   checkoutSessionLines     CheckoutSessionLine[]
   lifecycleReviews         Review[]                 @relation("ReviewOrder")
   reviewPrompts            ReviewPrompt[]           @relation("ReviewPromptOrder")
+  refund                   StandardOrderRefund?
+  balanceAdjustments       BrandBalanceAdjustment[] @relation("BrandBalanceAdjustmentOrder")
+  balanceRecoveries        BrandBalanceRecovery[]   @relation("BrandBalanceRecoveryOrder")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -3492,6 +3559,48 @@ model Order {
   @@index([buyerId])
   @@index([paymentReference])
   @@index([unifiedCheckoutSessionId])
+}
+
+/// One provider refund of one standard order's own share of its capture.
+/// `amount`/`currency` are what the shopper paid for this order;
+/// `settlementAmount`/`settlementCurrency` are the escrow's NGN amount at the
+/// original payment rate. Status lifecycle matches CustomOrderQueueRefund:
+/// REQUESTED → SUBMITTING → PROCESSING → SETTLED, plus FAILED (definitely not
+/// submitted) and NEEDS_ATTENTION (uncertain; never resubmitted automatically).
+model StandardOrderRefund {
+  id                 String         @id @default(uuid()) @db.Uuid
+  requestKey         String         @unique
+  orderId            String         @unique @db.Uuid
+  order              Order          @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  paymentAttemptId   String         @db.Uuid
+  paymentAttempt     PaymentAttempt @relation(fields: [paymentAttemptId], references: [id], onDelete: Restrict)
+  escrowHoldId       String         @unique @db.Uuid
+  escrowHold         EscrowHold     @relation(fields: [escrowHoldId], references: [id], onDelete: Restrict)
+  provider           String
+  trigger            String
+  reason             String
+  amount             Decimal        @db.Decimal(12, 2)
+  currency           String
+  settlementAmount   Decimal        @db.Decimal(12, 2)
+  settlementCurrency String
+  breakdownJson      Json
+  status             String         @default("REQUESTED")
+  providerRefundId   String?
+  attempts           Int            @default(0)
+  leaseToken         String?        @db.Uuid
+  lockedAt           DateTime?
+  nextAttemptAt      DateTime       @default(now())
+  lastError          String?
+  actorId            String?        @db.Uuid
+  settledAt          DateTime?
+  /// Set once the shopper was told the provider processed the refund.
+  buyerNotifiedAt    DateTime?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  @@unique([provider, providerRefundId])
+  @@index([status, nextAttemptAt])
+  @@index([paymentAttemptId])
 }
 
 model EscrowHold {
@@ -3527,15 +3636,18 @@ model EscrowHold {
   createdAt                     DateTime                       @default(now())
   updatedAt                     DateTime                       @updatedAt
   payoutSourceAllocations       PayoutLedgerSourceAllocation[]
+  refund                        StandardOrderRefund?
 
   @@index([brandId, status])
   @@index([status, secondReleaseEligibleAt])
   @@index([buyerId])
 }
 
+/// One account per (code, currency). Amounts in different currencies never
+/// share a balance; every entry's account currency equals its transaction's.
 model LedgerAccount {
   id              String            @id @default(uuid()) @db.Uuid
-  code            String            @unique
+  code            String
   name            String
   type            LedgerAccountType
   subType         String
@@ -3544,7 +3656,7 @@ model LedgerAccount {
   childAccounts   LedgerAccount[]   @relation("LedgerAccountParent")
   entityType      String?
   entityId        String?           @db.Uuid
-  currency        String            @default("NGN")
+  currency        String
   currentBalance  Decimal           @default(0) @db.Decimal(18, 2)
   isSystemAccount Boolean           @default(false)
   isActive        Boolean           @default(true)
@@ -3552,7 +3664,8 @@ model LedgerAccount {
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
 
-  @@index([entityType, entityId])
+  @@unique([code, currency])
+  @@index([entityType, entityId, currency])
   @@index([type, subType])
 }
 
@@ -3717,6 +3830,8 @@ model CustomOrder {
   cancellationActorType         CustomOrderActorType?
   predecessorOrderId            String? @db.Uuid
   queueRefunds                  CustomOrderQueueRefund[]
+  balanceAdjustments            BrandBalanceAdjustment[]             @relation("BrandBalanceAdjustmentCustomOrder")
+  balanceRecoveries             BrandBalanceRecovery[]               @relation("BrandBalanceRecoveryCustomOrder")
   paymentStatus                 PaymentStatus                        @default(PENDING)
   paymentMethod                 PaymentMethod                        @default(PENDING_SELECTION)
   paymentReference              String?
@@ -4232,6 +4347,9 @@ model CustomOrderNotificationOutbox {
   status           CustomOrderOutboxStatus @default(PENDING)
   attempts         Int                     @default(0)
   availableAt      DateTime                @default(now())
+  lockedAt         DateTime?
+  lockOwner        String?
+  lockExpiresAt    DateTime?               @default(now())
   processedAt      DateTime?
   lastError        String?
   createdAt        DateTime                @default(now())
@@ -4240,6 +4358,7 @@ model CustomOrderNotificationOutbox {
   @@index([status, availableAt, createdAt])
   @@index([customOrderId, createdAt])
   @@index([recipientId, createdAt])
+  @@index([status, lockExpiresAt])
 }
 
 model CustomOrderAnalyticsEvent {
@@ -4432,6 +4551,7 @@ model PaymentAttempt {
   webhookIngressAudits           WebhookIngressAudit[]
   retryHistory                   PaymentAttemptRetryHistory[]
   queueRefunds                   CustomOrderQueueRefund[]
+  standardOrderRefunds           StandardOrderRefund[]
   checkoutIntentLinks            PaymentAttemptCheckoutIntentLink[]
 
   @@index([buyerId, createdAt])
@@ -5185,6 +5305,7 @@ model Product {
   wishlistItems         WishlistItem[]
   variants              ProductVariant[]
   sizingMetadata        ProductSizingMetadata?
+  bulkImportRow         CollectionBulkUploadRow?
   designCollections     CollectionProduct[]
   collections           StoreCollectionProduct[]
   entityFilters         EntityFilter[]           @relation("ProductEntityFilters")

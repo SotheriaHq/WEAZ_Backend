@@ -1234,30 +1234,26 @@ export class SizeFitService {
     }
 
     let sent = 0;
-    for (const profile of dueProfiles) {
-      try {
-        await this.notifications.create(
-          profile.userId,
-          NT_SIZE_FIT_UPDATE_REMINDER,
-          {
-            target: { ...REMINDER_TARGET, id: profile.userId },
-            payload: {
-              /*
-                The fittings sheet, not the profile it lives on.
-
-                This was `/profile`, which dropped the user on their own page
-                with the reminder's whole subject one more tap away and no
-                indication of which tap. `?tab=fits` is the same convention
-                `?tab=orders` already uses: the web profile opens the size-fit
-                sheet on it, and `mobileRouting` maps it to `/fittings`.
-              */
-              targetUrl: '/profile?tab=fits',
-              message:
-                'Please update your custom size/fits profile. We recommend refreshing it every 2 weeks.',
-            },
-            dedupeMs: this.daysToMs(6),
+    const notifications = await this.notifications.createEvents(
+      dueProfiles.map((profile) => ({
+        recipientId: profile.userId,
+        type: NT_SIZE_FIT_UPDATE_REMINDER,
+        opts: {
+          target: { ...REMINDER_TARGET, id: profile.userId },
+          payload: {
+            targetUrl: '/profile?tab=fits',
+            message:
+              'Please update your custom size/fits profile. We recommend refreshing it every 2 weeks.',
           },
-        );
+          dedupeMs: this.daysToMs(6),
+        },
+      })),
+    );
+    for (let index = 0; index < dueProfiles.length; index += 1) {
+      const profile = dueProfiles[index];
+      try {
+        const result = notifications[index];
+        if (result.status === 'rejected') throw result.reason;
 
         const nextDays = this.normalizeReminderDays(
           profile.requireUpdateEveryDays,

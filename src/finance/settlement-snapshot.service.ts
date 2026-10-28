@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+} from '@nestjs/common';
 import { Prisma, SettlementOrderType } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { SettlementCalculationResult } from './settlement-calculator.service';
@@ -13,30 +17,75 @@ export class SettlementSnapshotService {
     calculation: SettlementCalculationResult,
     tx?: Prisma.TransactionClient,
   ) {
-    const client = tx ?? this.prisma;
-    this.validateBusinessObject(calculation);
+    return (await this.createFromCalculations([calculation], tx))[0];
+  }
 
-    const existing = await this.findExisting(client, calculation);
-    if (existing) {
-      return existing;
-    }
-
-    try {
-      return await client.settlementSnapshot.create({
-        data: this.toSnapshotData(calculation),
+  async createFromCalculations(
+    calculations: SettlementCalculationResult[],
+    tx?: Prisma.TransactionClient,
+  ) {
+    for (const calculation of calculations)
+      this.validateBusinessObject(calculation);
+    const client: SettlementSnapshotClient = tx ?? this.prisma;
+    const results: Prisma.SettlementSnapshotGetPayload<
+      Record<string, never>
+    >[] = [];
+    for (let start = 0; start < calculations.length; start += 100) {
+      const chunk = calculations.slice(start, start + 100);
+      // ON CONFLICT never aborts a PostgreSQL transaction. Existing immutable
+      // snapshots win; only conflict rows need a fresh shared lookup afterward.
+      const inserted = await client.settlementSnapshot.createManyAndReturn({
+        data: chunk.map((calculation) => this.toSnapshotData(calculation)),
+        skipDuplicates: true,
       });
-    } catch (error) {
-      if (!this.isUniqueViolation(error)) {
-        throw error;
+      const key = (row: {
+        orderId: string | null;
+        customOrderId: string | null;
+      }) =>
+        row.orderId ? `order:${row.orderId}` : `custom:${row.customOrderId}`;
+      const snapshots = new Map(inserted.map((row) => [key(row), row]));
+      const missing = chunk.filter((row) => !snapshots.has(key(row)));
+      if (missing.length) {
+        const existing = await client.settlementSnapshot.findMany({
+          where: {
+            OR: [
+              {
+                orderId: {
+                  in: [
+                    ...new Set(
+                      missing.flatMap((row) =>
+                        row.orderId ? [row.orderId] : [],
+                      ),
+                    ),
+                  ],
+                },
+              },
+              {
+                customOrderId: {
+                  in: [
+                    ...new Set(
+                      missing.flatMap((row) =>
+                        row.customOrderId ? [row.customOrderId] : [],
+                      ),
+                    ),
+                  ],
+                },
+              },
+            ],
+          },
+        });
+        for (const row of existing) snapshots.set(key(row), row);
       }
-
-      const snapshot = await this.findExisting(client, calculation);
-      if (snapshot) {
-        return snapshot;
+      for (const row of chunk) {
+        const snapshot = snapshots.get(key(row));
+        if (!snapshot)
+          throw new ConflictException(
+            'Settlement snapshot changed during creation. Retry the operation.',
+          );
+        results.push(snapshot);
       }
-
-      throw error;
     }
+    return results;
   }
 
   async getByOrderId(orderId: string, tx?: Prisma.TransactionClient) {
@@ -54,25 +103,6 @@ export class SettlementSnapshotService {
     return client.settlementSnapshot.findFirst({
       where: { customOrderId },
     });
-  }
-
-  private async findExisting(
-    client: SettlementSnapshotClient,
-    calculation: SettlementCalculationResult,
-  ) {
-    if (calculation.orderId) {
-      return client.settlementSnapshot.findFirst({
-        where: { orderId: calculation.orderId },
-      });
-    }
-
-    if (calculation.customOrderId) {
-      return client.settlementSnapshot.findFirst({
-        where: { customOrderId: calculation.customOrderId },
-      });
-    }
-
-    return null;
   }
 
   private validateBusinessObject(calculation: SettlementCalculationResult) {
@@ -151,14 +181,5 @@ export class SettlementSnapshotService {
 
   private decimal(value: number) {
     return new Prisma.Decimal(value.toFixed(2));
-  }
-
-  private isUniqueViolation(error: unknown) {
-    return Boolean(
-      error &&
-        typeof error === 'object' &&
-        'code' in error &&
-        (error as { code?: string }).code === 'P2002',
-    );
   }
 }

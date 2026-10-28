@@ -8,18 +8,24 @@ import { NotificationType, Prisma } from '@prisma/client';
 import { LedgerService } from 'src/finance/ledger.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { reserveFullOrderRefund } from './queue-refund-reservation';
+import {
+  loadQueueRefundContexts,
+  QueueRefundContext,
+} from './queue-refund-query';
 
 type Tx = Prisma.TransactionClient;
-type Refund = Prisma.CustomOrderQueueRefundGetPayload<{
-  include: { paymentAttempt: true; customOrder: true };
-}>;
+type Refund = QueueRefundContext;
 type Gateway = 'PAYSTACK' | 'FLUTTERWAVE';
 type JsonObject = Record<string, unknown>;
+type RefundNoticeContext = {
+  customOrderId: string;
+  paymentAttemptId: string;
+  customOrder: { buyerId: string };
+};
 const object = (value: unknown): JsonObject =>
   value && typeof value === 'object' ? (value as JsonObject) : {};
 const string = (value: unknown) =>
   typeof value === 'string' || typeof value === 'number' ? String(value) : '';
-const include = { paymentAttempt: true, customOrder: true } as const;
 const LEASE_MS = 10 * 60000;
 const POLL_MS = 5 * 60000;
 
@@ -55,10 +61,14 @@ export class CustomOrderQueueRefundsService {
       take: 20,
       orderBy: { lockedAt: 'asc' },
     });
+    let attention = 0;
     for (const row of stale)
-      await this.attention(row.id, 'GATEWAY_SUBMISSION_OUTCOME_UNKNOWN', [
-        'SUBMITTING',
-      ]);
+      if (
+        await this.attention(row.id, 'GATEWAY_SUBMISSION_OUTCOME_UNKNOWN', [
+          'SUBMITTING',
+        ])
+      )
+        attention++;
     const rows = await this.prisma.customOrderQueueRefund.findMany({
       where: {
         nextAttemptAt: { lte: now },
@@ -99,7 +109,7 @@ export class CustomOrderQueueRefundsService {
         }),
       );
     }
-    return { processed, attention: stale.length };
+    return { processed, attention };
   }
 
   private money(value: unknown): Prisma.Decimal {
@@ -107,6 +117,12 @@ export class CustomOrderQueueRefundsService {
     if (!amount.isFinite() || amount.isNegative() || amount.decimalPlaces() > 2)
       throw new GatewayFailure('REFUND_INVALID_MONEY_SNAPSHOT', false);
     return amount;
+  }
+
+  private async currentRefund(tx: Tx, id: string): Promise<Refund> {
+    const [row] = await loadQueueRefundContexts(tx, { id });
+    if (!row) throw new NotFoundException('Queue refund not found');
+    return row;
   }
 
   private async reserve(tx: Tx, row: Refund) {
@@ -123,14 +139,32 @@ export class CustomOrderQueueRefundsService {
       row.currency !== row.paymentAttempt.currency ||
       row.currency !== quote.currency ||
       refund.greaterThan(row.paymentAttempt.amount) ||
-      (quote.refundKind !== 'POST_ACTIVE_PARTIAL' && (row.customOrder.lane !== 'TERMINAL' || !row.customOrder.cancelledAt))
+      (quote.refundKind !== 'POST_ACTIVE_PARTIAL' &&
+        (row.customOrder.lane !== 'TERMINAL' || !row.customOrder.cancelledAt))
     )
       throw new GatewayFailure(
         'REFUND_SNAPSHOT_RECONCILIATION_REQUIRED',
         false,
       );
-    if (['POST_ACTIVE_FULL', 'POST_ACTIVE_PARTIAL'].includes(String(quote.refundKind))) {
-      await reserveFullOrderRefund(tx, this.ledger, { id: row.id, customOrderId: row.customOrderId, brandId: row.customOrder.brandId, currency: row.currency, reservationKey: typeof quote.reservationKey === 'string' ? quote.reservationKey : undefined, captureAmount: captured.toNumber(), releasedNet: this.money(quote.releasedNet).toNumber(), releasedCommission: this.money(quote.releasedCommission).toNumber(), unreleasedGross: this.money(quote.unreleasedGross).toNumber() });
+    if (
+      ['POST_ACTIVE_FULL', 'POST_ACTIVE_PARTIAL'].includes(
+        String(quote.refundKind),
+      )
+    ) {
+      await reserveFullOrderRefund(tx, this.ledger, {
+        id: row.id,
+        customOrderId: row.customOrderId,
+        brandId: row.customOrder.brandId,
+        currency: row.currency,
+        reservationKey:
+          typeof quote.reservationKey === 'string'
+            ? quote.reservationKey
+            : undefined,
+        captureAmount: captured.toNumber(),
+        releasedNet: this.money(quote.releasedNet).toNumber(),
+        releasedCommission: this.money(quote.releasedCommission).toNumber(),
+        unreleasedGross: this.money(quote.unreleasedGross).toNumber(),
+      });
       return;
     }
     await this.ledger.postTransaction(tx, {
@@ -201,20 +235,14 @@ export class CustomOrderQueueRefundsService {
         },
       });
       if (!claimed.count) return null;
-      const row = await tx.customOrderQueueRefund.findUniqueOrThrow({
-        where: { id },
-        include,
-      });
+      const row = await this.currentRefund(tx, id);
       await this.reserve(tx, row);
       return row;
     });
   }
 
   private async processOne(id: string): Promise<boolean> {
-    const existing = await this.prisma.customOrderQueueRefund.findUnique({
-      where: { id },
-      include,
-    });
+    const [existing] = await loadQueueRefundContexts(this.prisma, { id });
     if (!existing) return false;
     if (existing.status === 'PROCESSING') return this.poll(existing);
     let row: Refund | null;
@@ -374,34 +402,68 @@ export class CustomOrderQueueRefundsService {
     return secret;
   }
 
-  private providerSettlement(row: Refund): { amount: Prisma.Decimal; currency: string } {
+  private providerSettlement(row: Refund): {
+    amount: Prisma.Decimal;
+    currency: string;
+  } {
     const saved = object(object(row.breakdownJson).settlement);
     if (saved.status === 'RECORDED' && typeof saved.currency === 'string') {
       const amount = this.money(saved.amount);
-      if (saved.currency !== row.paymentAttempt.settlementCurrency || amount.greaterThan(row.paymentAttempt.settlementAmount ?? row.paymentAttempt.amount)) throw new GatewayFailure('REFUND_SETTLEMENT_SNAPSHOT_MISMATCH', false);
+      if (
+        saved.currency !== row.paymentAttempt.settlementCurrency ||
+        amount.greaterThan(
+          row.paymentAttempt.settlementAmount ?? row.paymentAttempt.amount,
+        )
+      )
+        throw new GatewayFailure('REFUND_SETTLEMENT_SNAPSHOT_MISMATCH', false);
       return { amount, currency: saved.currency };
     }
     // Older same-currency requests need no conversion; foreign-currency requests require their original snapshot.
-    if (!Object.keys(saved).length && (!row.paymentAttempt.settlementCurrency || row.paymentAttempt.settlementCurrency === row.currency)) return { amount: this.money(row.amount), currency: row.currency };
-    throw new GatewayFailure(string(saved.reason) || 'REFUND_ORIGINAL_FX_SNAPSHOT_MISSING', false);
+    if (
+      !Object.keys(saved).length &&
+      (!row.paymentAttempt.settlementCurrency ||
+        row.paymentAttempt.settlementCurrency === row.currency)
+    )
+      return { amount: this.money(row.amount), currency: row.currency };
+    throw new GatewayFailure(
+      string(saved.reason) || 'REFUND_ORIGINAL_FX_SNAPSHOT_MISSING',
+      false,
+    );
   }
 
   private async verifyCapture(row: Refund, gateway: Gateway, secret: string) {
-    const url = gateway === 'PAYSTACK'
-      ? `https://api.paystack.co/transaction/verify/${encodeURIComponent(row.paymentAttempt.reference)}`
-      : `https://api.flutterwave.com/v3/transactions/${encodeURIComponent(this.flutterwaveTransaction(row))}/verify`;
-    const response = await fetch(url, { headers: { Authorization: `Bearer ${secret}` }, signal: AbortSignal.timeout(15000) });
-    if (!response.ok) throw new GatewayFailure('REFUND_CAPTURE_VERIFICATION_UNAVAILABLE', true);
-    const payload = object(await response.json()), data = object(payload.data);
-    const expectedCurrency = row.paymentAttempt.settlementCurrency || row.paymentAttempt.currency;
-    const expectedAmount = row.paymentAttempt.settlementAmount ?? row.paymentAttempt.amount;
-    const amount = this.money(data.amount).dividedBy(gateway === 'PAYSTACK' ? 100 : 1);
-    if ((payload.status !== true && payload.status !== 'success') ||
+    const url =
+      gateway === 'PAYSTACK'
+        ? `https://api.paystack.co/transaction/verify/${encodeURIComponent(row.paymentAttempt.reference)}`
+        : `https://api.flutterwave.com/v3/transactions/${encodeURIComponent(this.flutterwaveTransaction(row))}/verify`;
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${secret}` },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok)
+      throw new GatewayFailure('REFUND_CAPTURE_VERIFICATION_UNAVAILABLE', true);
+    const payload = object(await response.json()),
+      data = object(payload.data);
+    const expectedCurrency =
+      row.paymentAttempt.settlementCurrency || row.paymentAttempt.currency;
+    const expectedAmount =
+      row.paymentAttempt.settlementAmount ?? row.paymentAttempt.amount;
+    const amount = this.money(data.amount).dividedBy(
+      gateway === 'PAYSTACK' ? 100 : 1,
+    );
+    if (
+      (payload.status !== true && payload.status !== 'success') ||
       !['success', 'successful'].includes(string(data.status).toLowerCase()) ||
       string(data.reference ?? data.tx_ref) !== row.paymentAttempt.reference ||
-      row.paymentAttempt.providerTransactionId && string(data.id) !== row.paymentAttempt.providerTransactionId ||
-      string(data.currency).toUpperCase() !== expectedCurrency.toUpperCase() || !amount.equals(expectedAmount)) {
-      throw new GatewayFailure('REFUND_ORIGINAL_CAPTURE_VERIFICATION_MISMATCH', true);
+      (row.paymentAttempt.providerTransactionId &&
+        string(data.id) !== row.paymentAttempt.providerTransactionId) ||
+      string(data.currency).toUpperCase() !== expectedCurrency.toUpperCase() ||
+      !amount.equals(expectedAmount)
+    ) {
+      throw new GatewayFailure(
+        'REFUND_ORIGINAL_CAPTURE_VERIFICATION_MISMATCH',
+        true,
+      );
     }
   }
 
@@ -441,7 +503,8 @@ export class CustomOrderQueueRefundsService {
       return (
         sameTransaction &&
         (!checkId || string(data.id) === row.providerRefundId) &&
-        string(data.currency).toUpperCase() === settlement.currency.toUpperCase() &&
+        string(data.currency).toUpperCase() ===
+          settlement.currency.toUpperCase() &&
         normalized.equals(settlement.amount)
       );
     } catch {
@@ -576,12 +639,9 @@ export class CustomOrderQueueRefundsService {
     const data = rawData;
     const providerId = string(data.id ?? data.refund_id);
     if (providerId) {
-      const row = await this.prisma.customOrderQueueRefund.findFirst({
-        where: {
-          providerRefundId: providerId,
-          paymentAttempt: { provider: gateway },
-        },
-        include,
+      const [row] = await loadQueueRefundContexts(this.prisma, {
+        providerRefundId: providerId,
+        gateway,
       });
       if (!row) return false;
       try {
@@ -607,14 +667,9 @@ export class CustomOrderQueueRefundsService {
     // so equal-price sibling refunds cannot be confused with one another.
     const reference = string(data.transaction_reference ?? data.tx_ref);
     if (!reference) return false;
-    const rows = await this.prisma.customOrderQueueRefund.findMany({
-      where: {
-        paymentAttempt: { reference, provider: gateway },
-        providerRefundId: { not: null },
-        status: 'PROCESSING',
-      },
-      include,
-      take: 20,
+    const rows = await loadQueueRefundContexts(this.prisma, {
+      paymentReference: reference,
+      gateway,
     });
     for (const row of rows) await this.poll(row);
     return rows.length > 0;
@@ -675,10 +730,7 @@ export class CustomOrderQueueRefundsService {
   ) {
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "CustomOrderQueueRefund" WHERE "id" = ${row.id}::uuid FOR UPDATE`;
-      const current = await tx.customOrderQueueRefund.findUniqueOrThrow({
-        where: { id: row.id },
-        include,
-      });
+      const current = await this.currentRefund(tx, row.id);
       if (current.status === 'SETTLED') return;
       if (
         ![
@@ -698,7 +750,16 @@ export class CustomOrderQueueRefundsService {
         referenceId: current.id,
         totalAmount: amount,
         currency: current.currency,
-        ...(settlement.status === 'RECORDED' ? { baseCurrency: String(settlement.currency), baseCurrencyAmount: this.money(settlement.amount).toNumber(), fxRateSnapshotId: typeof settlement.exchangeRateSnapshotId === 'string' ? settlement.exchangeRateSnapshotId : null } : {}),
+        ...(settlement.status === 'RECORDED'
+          ? {
+              baseCurrency: String(settlement.currency),
+              baseCurrencyAmount: this.money(settlement.amount).toNumber(),
+              fxRateSnapshotId:
+                typeof settlement.exchangeRateSnapshotId === 'string'
+                  ? settlement.exchangeRateSnapshotId
+                  : null,
+            }
+          : {}),
         description: 'Gateway confirmed waiting-order refund processed',
         lines: [
           {
@@ -733,7 +794,9 @@ export class CustomOrderQueueRefundsService {
       await tx.customOrder.update({
         where: { id: current.customOrderId },
         data: {
-          ...(object(current.breakdownJson).refundKind === 'POST_ACTIVE_PARTIAL' ? {} : { status: 'CLOSED', paymentStatus: 'REFUNDED' }),
+          ...(object(current.breakdownJson).refundKind === 'POST_ACTIVE_PARTIAL'
+            ? {}
+            : { status: 'CLOSED', paymentStatus: 'REFUNDED' }),
           orderRevision: { increment: 1 },
         },
       });
@@ -773,10 +836,7 @@ export class CustomOrderQueueRefundsService {
   async reconcile(refundId: string, providerRefundId: string, actorId: string) {
     if (!/^[A-Za-z0-9_-]{1,120}$/.test(providerRefundId))
       throw new ConflictException('REFUND_PROVIDER_ID_INVALID');
-    const row = await this.prisma.customOrderQueueRefund.findUnique({
-      where: { id: refundId },
-      include,
-    });
+    const [row] = await loadQueueRefundContexts(this.prisma, { id: refundId });
     if (!row) throw new NotFoundException('Queue refund not found');
     if (row.status === 'SETTLED')
       return {
@@ -817,10 +877,7 @@ export class CustomOrderQueueRefundsService {
       // Serialize linking across equal-priced siblings of the same parent capture.
       await tx.$queryRaw`SELECT "id" FROM "PaymentAttempt" WHERE "id" = ${row.paymentAttemptId}::uuid FOR UPDATE`;
       await tx.$queryRaw`SELECT "id" FROM "CustomOrderQueueRefund" WHERE "id" = ${refundId}::uuid FOR UPDATE`;
-      const current = await tx.customOrderQueueRefund.findUniqueOrThrow({
-        where: { id: refundId },
-        include,
-      });
+      const current = await this.currentRefund(tx, refundId);
       if (
         !['NEEDS_ATTENTION', 'FAILED'].includes(current.status) ||
         (current.providerRefundId &&
@@ -875,16 +932,30 @@ export class CustomOrderQueueRefundsService {
   }
 
   private async attention(id: string, code: string, statuses: string[]) {
-    await this.prisma.$transaction(async (tx) => {
+    return this.prisma.$transaction(async (tx) => {
       const claimed = await tx.customOrderQueueRefund.updateMany({
         where: { id, status: { in: statuses } },
         data: { status: 'NEEDS_ATTENTION', lastError: code, lockedAt: null },
       });
-      if (!claimed.count) return;
-      const row = await tx.customOrderQueueRefund.findUniqueOrThrow({
-        where: { id },
-        include,
-      });
+      if (!claimed.count) return false;
+      const contexts = await tx.$queryRaw<
+        Array<{
+          customOrderId: string;
+          paymentAttemptId: string;
+          buyerId: string;
+        }>
+      >(Prisma.sql`
+        SELECT r."customOrderId", r."paymentAttemptId", o."buyerId"
+        FROM "CustomOrderQueueRefund" r
+        JOIN "CustomOrder" o ON o.id = r."customOrderId"
+        WHERE r.id = ${id}::uuid
+      `);
+      const context = contexts[0];
+      if (!context) throw new NotFoundException('Refund context not found');
+      const row: RefundNoticeContext = {
+        ...context,
+        customOrder: { buyerId: context.buyerId },
+      };
       await tx.operationalAlert.upsert({
         where: { dedupeKey: `queue-refund:${id}:attention` },
         create: {
@@ -919,10 +990,16 @@ export class CustomOrderQueueRefundsService {
         'QUEUE_REFUND_NEEDS_ATTENTION',
         'Your custom-order refund needs WIEZ attention. Your request remains recorded. You can contact WIEZ through your order conversation.',
       );
+      return true;
     });
   }
 
-  private async notify(tx: Tx, row: Refund, stage: string, message: string) {
+  private async notify(
+    tx: Tx,
+    row: RefundNoticeContext,
+    stage: string,
+    message: string,
+  ) {
     await tx.customOrderTimelineEvent.create({
       data: {
         customOrderId: row.customOrderId,

@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { OrderService } from './order.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
@@ -24,12 +24,15 @@ describe('OrderService', () => {
       order: {
         findFirst: jest.fn(),
         update: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn(),
       },
       $transaction: jest.fn(),
     };
 
     notifications = {
       create: jest.fn(),
+      emitOrderUpdated: jest.fn(),
     };
 
     refundService = {
@@ -72,6 +75,27 @@ describe('OrderService', () => {
       service.updateStatus('owner_1', 'order_1', OrderStatus.DELIVERED),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.order.update).not.toHaveBeenCalled();
+    expect(prisma.order.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('refuses a transition when a concurrent command already moved the order', async () => {
+    prisma.brand.findFirst.mockResolvedValue({ id: 'brand_1' });
+    prisma.order.findFirst.mockResolvedValue({
+      id: 'order_1',
+      status: OrderStatus.PROCESSING,
+      paymentStatus: 'PAID',
+      brandId: 'brand_1',
+      buyerId: 'buyer_1',
+      brand: { name: 'Brand' },
+      deliveredAt: null,
+    });
+    prisma.order.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      service.updateStatus('owner_1', 'order_1', OrderStatus.SHIPPED),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(escrowService.releaseShipmentPortion).not.toHaveBeenCalled();
+    expect(notifications.create).not.toHaveBeenCalled();
   });
 
   it('allows valid transitions from processing to shipped', async () => {
@@ -85,7 +109,7 @@ describe('OrderService', () => {
       brand: { name: 'Brand' },
       deliveredAt: null,
     });
-    prisma.order.update.mockResolvedValue({
+    prisma.order.findUniqueOrThrow.mockResolvedValue({
       id: 'order_1',
       status: OrderStatus.SHIPPED,
     });
@@ -96,9 +120,10 @@ describe('OrderService', () => {
       OrderStatus.SHIPPED,
     );
 
-    expect(prisma.order.update).toHaveBeenCalledWith(
+    // Conditional on the status the command validated.
+    expect(prisma.order.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'order_1' },
+        where: { id: 'order_1', status: OrderStatus.PROCESSING },
         data: expect.objectContaining({ status: OrderStatus.SHIPPED }),
       }),
     );
@@ -153,7 +178,16 @@ describe('OrderService', () => {
       expect.objectContaining({
         orderId: 'order_1',
         reason: 'ORDER_RETURNED',
+        trigger: 'RETURN',
         actorId: 'owner_1',
+      }),
+    );
+    // The shopper is told the refund is pending, never that it is done.
+    expect(notifications.create).toHaveBeenCalledWith(
+      'buyer_1',
+      expect.anything(),
+      expect.objectContaining({
+        payload: expect.objectContaining({ refundStatus: 'PENDING' }),
       }),
     );
   });

@@ -8,6 +8,7 @@ export type CollectionMembership = {
   isPrimary: boolean;
   createdAt: Date;
   orderIndex: number;
+  collectionDeleted: boolean;
 };
 
 const uniqueIds = (ids: string[]) => [...new Set(ids)].sort();
@@ -27,13 +28,18 @@ export async function appendProductMemberships(
       WHERE "_id" = ANY(${batch}::uuid[]) ORDER BY "_id" FOR UPDATE
     `);
     const positions = await tx.storeCollectionProduct.groupBy({
-      by: ['collectionId'], where: { collectionId: { in: batch } },
+      by: ['collectionId'],
+      where: { collectionId: { in: batch } },
       _max: { orderIndex: true },
     });
-    const maxima = new Map(positions.map((row) => [row.collectionId, row._max.orderIndex]));
+    const maxima = new Map(
+      positions.map((row) => [row.collectionId, row._max.orderIndex]),
+    );
     await tx.storeCollectionProduct.createMany({
       data: batch.map((collectionId) => ({
-        id: randomUUID(), productId, collectionId,
+        id: randomUUID(),
+        productId,
+        collectionId,
         orderIndex: (maxima.get(collectionId) ?? -1) + 1,
         isPrimary: collectionId === primaryCollectionId,
       })),
@@ -81,10 +87,21 @@ export async function readProductMemberships(
         isPrimary: true,
         createdAt: true,
         orderIndex: true,
+        collection: { select: { deletedAt: true } },
       },
     });
-    for (const row of rows) grouped.get(row.productId)?.push(row);
+    for (const { collection, ...row } of rows)
+      grouped
+        .get(row.productId)
+        ?.push({ ...row, collectionDeleted: Boolean(collection?.deletedAt) });
   }
+  // A deleted collection is never the primary while a live one exists. The
+  // database order is otherwise kept, so a live primary stays primary.
+  for (const memberships of grouped.values())
+    memberships.sort(
+      (left, right) =>
+        Number(left.collectionDeleted) - Number(right.collectionDeleted),
+    );
   return grouped;
 }
 

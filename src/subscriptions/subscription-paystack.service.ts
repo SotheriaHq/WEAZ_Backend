@@ -1,6 +1,8 @@
 import {
   BadGatewayException,
   Injectable,
+  Inject,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 
@@ -32,12 +34,21 @@ export type SubscriptionProviderRefund = {
 
 @Injectable()
 export class SubscriptionPaystackService {
+  constructor(
+    @Optional()
+    @Inject('SUBSCRIPTION_PAYSTACK_BASE_URL')
+    private readonly baseUrl = 'https://api.paystack.co',
+  ) {}
+
   private async request<T>(
     route: string,
     body?: Record<string, unknown>,
     allowMissing = false,
   ): Promise<T | null> {
-    if ((process.env.PAYMENTS_MODE ?? 'live').trim().toLowerCase() !== 'live') throw new ServiceUnavailableException('Subscription provider requests are disabled in simulated payment mode. No charge has been initiated.');
+    if ((process.env.PAYMENTS_MODE ?? 'live').trim().toLowerCase() !== 'live')
+      throw new ServiceUnavailableException(
+        'Subscription provider requests are disabled in simulated payment mode. No charge has been initiated.',
+      );
     const secret = process.env.PAYSTACK_SECRET_KEY?.trim();
     if (!secret)
       throw new ServiceUnavailableException(
@@ -45,7 +56,7 @@ export class SubscriptionPaystackService {
       );
     let response: Response;
     try {
-      response = await fetch(`https://api.paystack.co${route}`, {
+      response = await fetch(`${this.baseUrl}${route}`, {
         method: body ? 'POST' : 'GET',
         headers: {
           Authorization: `Bearer ${secret}`,

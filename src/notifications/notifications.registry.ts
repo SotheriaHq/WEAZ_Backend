@@ -463,6 +463,7 @@ export class NotificationRegistry {
         reason: Joi.string().optional(),
         hoursElapsed: Joi.number().optional(),
         autoCancelled: Joi.boolean().optional(),
+        refundStatus: Joi.string().optional(),
         targetUrl: Joi.string().optional(),
         message: Joi.string().optional(),
       }),
@@ -470,7 +471,8 @@ export class NotificationRegistry {
         if (n.payload?.message) return n.payload.message;
         const orderCode = formatOrderCode(n.payload?.orderId);
         if (n.payload?.autoCancelled) {
-          return `Order ${orderCode} passed its fulfilment window and was cancelled and refunded. Tap for the details.`;
+          // The refund is confirmed later by the payment provider, with its own notice.
+          return `Order ${orderCode} passed its fulfilment window and was cancelled. Your refund is being processed with the payment provider. Tap for the details.`;
         }
         return `👀 Order ${orderCode} is overdue and needs a look — no dispatch within the fulfilment window yet. Tap to review.`;
       },
