@@ -29,3 +29,22 @@ Stop old transfer writers and webhook workers before applying `20261028140000_pa
 The actual PostgreSQL/loopback-HTTP fixture checks competing initiation, free database locks during HTTP, competing OTP requests, webhook versus delayed reply, lost/mismatched responses, current debt after a real lock wait, OTP debt checks, terminal event ordering, stable-reference failure retry and opposing administrative claims. The integrated financial fixture passes 55 scenarios on PostgreSQL 17 and isolated PostgreSQL 15 locally; 23 focused payout/order unit tests and backend types pass. No live-provider money or device behavior is certified by the simulator. Remote CI, migration deployment and explicit gateway acceptance remain release gates.
 
 Run `node scripts/verify-standard-refund-integrity.cjs` against a loopback PostgreSQL source. The script creates and removes its own database. `--payout-only` produces a separate focused report without overwriting the combined report.
+
+## Currency integration and deployment drain
+
+The current SIT currency policy is preserved during integration. Provider
+refunds use the charged amount/currency, while standard-order settlement
+reversals use the original NGN snapshot. The current integration fixture adds
+USD standard/custom provider checks and a lost refund behind 150 unrelated
+records when the optional transaction filter is ignored. Pagination is bounded
+to ten pages with a creation-time lower bound; any incomplete lookup remains
+unknown and cannot authorize resubmission.
+
+The deployment now stops the old API and worker before installing dependencies
+or migrating. Its read-only migration preflight detects unapplied/failed schema
+changes. If a deployment fails before schema changes are attempted, the verified
+release is restored. Once new migrations have been attempted, old binaries are
+not automatically restarted against an unverified schema: writers stay stopped
+for forward repair. The four-case shell fixture verifies successful ordering,
+failed migration, failed install and failed build using a temporary application
+and command stubs. No real deployment is performed by that fixture.

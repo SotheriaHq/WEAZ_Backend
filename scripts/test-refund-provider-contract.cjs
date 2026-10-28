@@ -67,7 +67,7 @@ test('incomplete provider pagination is unknown, never a partial successful look
 test('provider search has a strict page budget and requires a transaction identity', async () => {
   await fixture(async (client, requests) => {
     assert.equal(await client.findByNote(capture, marker), null);
-    assert(requests.length <= 5);
+    assert(requests.length <= 10);
     const previous = requests.length;
     assert.equal(await client.findByNote({ ...capture, providerTransactionId: null }, marker), null);
     assert.equal(requests.length, previous);

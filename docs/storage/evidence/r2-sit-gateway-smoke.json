@@ -1,5 +1,5 @@
 {
-  "time": "2026-10-28T13:08:58.647Z",
+  "time": "2026-10-28T13:46:52.977Z",
   "gateway": "https://wiez-sit-media-gateway.sotheria-hq.workers.dev",
   "checks": [
     "unsigned-worker-request-denied",
@@ -14,6 +14,7 @@
   "cleanup": true,
   "privateApiAuthorization": "Not exercised: requires deployed API identities and private parent fixtures.",
   "cacheObservation": "Warm-path authorization tested; internal edge cache hit is not externally observable.",
+  "svgDeliveryStatus": 200,
   "failure": {
     "phase": "public-mime-allowlist",
     "code": "DEPLOYED_WORKER_MIME_ALLOWLIST_OUTDATED",

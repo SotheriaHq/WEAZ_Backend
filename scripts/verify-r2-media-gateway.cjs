@@ -102,6 +102,7 @@ async function main() {
     await client.send(new PutObjectCommand({ Bucket: settings.bucket, Key: vectorKey,
       Body: '<svg xmlns="http://www.w3.org/2000/svg"/>', ContentType: 'image/svg+xml' }));
     const deniedVector = await request(signPublicGatewayUrl(gateway, vectorKey));
+    report.svgDeliveryStatus = deniedVector.status;
     ensure(deniedVector.status === 415, 'DEPLOYED_WORKER_MIME_ALLOWLIST_OUTDATED');
     pass('unsupported-svg-public-delivery-denied');
   } catch (error) {

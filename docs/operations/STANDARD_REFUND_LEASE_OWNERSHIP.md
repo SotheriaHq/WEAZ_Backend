@@ -98,3 +98,14 @@ contracts, foreign-currency behavior, SIT rollout or the custom-order worker.
 In particular, the existing provider lookup's filter/pagination contract still
 requires the separate integration audit. See the
 [operator runbook](STANDARD_ORDER_REFUND_RUNBOOK.md).
+
+## SIT currency merge
+
+Provider refunds return the amount/currency actually charged. Standard refund
+notices use those same shopper figures; NGN accounting reverses its separate
+original-payment-rate snapshot. The current website documents the optional
+Paystack `transaction` list filter, whereas the provider SDK omits it. Recovery
+therefore also tolerates that filter being ignored: it inspects complete pages,
+checks the exact note and capture identity, uses the request's creation time
+with a ten-minute margin, and stops at ten pages. An incomplete search is unknown.
+A 150-unrelated-record fixture verifies this behavior without another refund POST.

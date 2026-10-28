@@ -383,7 +383,7 @@ describe('durable per-order queued refunds', () => {
     ).toBe(false);
   });
 
-  it('submits and verifies the stored provider currency while keeping the financial ledger in the original currency', async () => {
+  it('submits and verifies the charged currency while leaving settlement accounting separate', async () => {
     const h = harness();
     h.row.currency = 'USD';
     h.row.paymentAttempt.currency = 'USD';
@@ -402,10 +402,12 @@ describe('durable per-order queued refunds', () => {
     });
     global.fetch = jest.fn(async (_url, options) => {
       expect(JSON.parse(String(options?.body))).toMatchObject({
-        currency: 'NGN',
-        amount: 22600000000,
+        currency: 'USD',
+        amount: 11300000,
       });
-      return response(paystackData('processed', { amount: 22600000000 }));
+      return response(
+        paystackData('processed', { amount: 11300000, currency: 'USD' }),
+      );
     });
     await (h.service as any).processOne(h.row.id);
     expect(h.row.status).toBe('SETTLED');

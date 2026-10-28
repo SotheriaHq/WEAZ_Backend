@@ -49,6 +49,7 @@ function paystackSimulator() {
     gates: new Map(),
     lookupGates: new Map(),
     sequence: 7000,
+    ignoreTransactionFilter: false,
     unauthorized: 0,
   };
   // Create returns the transaction object; fetch and list return its numeric id.
@@ -103,7 +104,14 @@ function paystackSimulator() {
           status: 'pending',
         };
         state.refunds.set(String(refund.id), refund);
-        if (mode === 'drop') {
+        if (mode === 'drop-buried') {
+          for (let index = 0; index < 150; index++) {
+            const id = ++state.sequence;
+            state.refunds.set(String(id), { id, reference: `noise-${id}`, transactionId: id,
+              amount: 100, currency: 'NGN', note: 'another refund', status: 'pending' });
+          }
+        }
+        if (mode === 'drop' || mode === 'drop-buried') {
           // The refund exists at the provider, but the answer never arrives.
           req.socket.destroy();
           return;
@@ -121,7 +129,7 @@ function paystackSimulator() {
         const capture = [...state.transactions.entries()].find(([, transaction]) => String(transaction.id) === transactionId);
         if (capture && state.listDown.has(capture[0])) return send(503, { status: false });
         const page = Number(url.searchParams.get('page') || 1);
-        const rows = [...state.refunds.values()].filter((refund) => String(refund.transactionId) === transactionId);
+        const rows = [...state.refunds.values()].filter((refund) => state.ignoreTransactionFilter || String(refund.transactionId) === transactionId).sort((a,b) => b.id-a.id);
         return send(200, { status: true, data: rows.slice((page - 1) * 100, page * 100).map((refund) => view(refund, false)), meta: { page, pageCount: Math.ceil(rows.length / 100) } });
       }
       if (req.method === 'GET' && url.pathname.startsWith('/refund/')) {
@@ -244,14 +252,14 @@ async function main() {
     });
 
     let transactionSequence = 5000;
-    const paid = async ({ brandId, amount = 100, status = 'PROCESSING', productId = null, mode = 'test' }) => {
+    const paid = async ({ brandId, amount = 100, status = 'PROCESSING', productId = null, mode = 'test', currency = 'NGN', settlementAmount = amount }) => {
       const id = randomUUID(),
         reference = `refund-fixture-${randomUUID()}`,
         providerTransactionId = String(++transactionSequence);
       const order = await prisma.order.create({
         data: {
           id, brandId, buyerId: buyer, customerName: 'Refund fixture', items: productId ? [{ productId }] : [],
-          totalAmount: amount, currency: 'NGN', status, paymentStatus: 'PAID', paidAt: new Date(), paymentReference: reference,
+          totalAmount: amount, currency, status, paymentStatus: 'PAID', paidAt: new Date(), paymentReference: reference,
         },
       });
       if (productId)
@@ -259,12 +267,12 @@ async function main() {
       const capture = await prisma.paymentAttempt.create({
         data: {
           buyerId: buyer, provider: 'PAYSTACK', providerMode: mode, paymentMethod: 'PAYSTACK', status: 'PAID', reference,
-          providerTransactionId, amount, currency: 'NGN', settlementAmount: amount, settlementCurrency: 'NGN',
+          providerTransactionId, amount, currency, settlementAmount, settlementCurrency: 'NGN',
           orderIds: [id], subjectType: 'STANDARD_ORDER',
         },
       });
-      simulator.state.transactions.set(reference, { id: Number(providerTransactionId), amount: Math.round(amount * 100), currency: 'NGN' });
-      await prisma.$transaction((tx) => escrow.ensureHoldsForPaidOrders(tx, [order], amount, 'NGN'), { timeout: 20000 });
+      simulator.state.transactions.set(reference, { id: Number(providerTransactionId), amount: Math.round(amount * 100), currency });
+      await prisma.$transaction((tx) => escrow.ensureHoldsForPaidOrders(tx, [order], settlementAmount, 'NGN'), { timeout: 20000 });
       return { order, capture, reference, hold: await prisma.escrowHold.findUniqueOrThrow({ where: { orderId: id } }) };
     };
     const request = (orderId, trigger = 'ADMIN') =>
@@ -431,6 +439,34 @@ async function main() {
     await refunds.processPending();
     assert.equal(posts(b1.reference), 1);
     evidence.cases.push('a submission whose answer is lost is found by its note at the provider and linked; the refund is never sent a second time');
+
+    const buried = await paid({ brandId: brand1 });
+    const buriedId = (await request(buried.order.id)).id;
+    simulator.state.modes.set(buried.reference, 'drop-buried');
+    simulator.state.ignoreTransactionFilter = true;
+    try {
+      await only([buriedId]); await refunds.processPending();
+      const found = await refundRow(buriedId);
+      assert.equal(found.status, 'PROCESSING');
+      assert.equal(providerRefund(found.providerRefundId).reference, buried.reference);
+      assert.equal(posts(buried.reference), 1);
+    } finally { simulator.state.ignoreTransactionFilter = false; }
+    evidence.cases.push('a provider that ignores the optional transaction filter still recovers a lost refund behind 150 newer unrelated records using complete bounded pagination, exact note and capture identity, without resending');
+
+    const usd = await paid({ brandId: brand3, amount: 40, currency: 'USD', settlementAmount: 54448 });
+    const usdId = (await request(usd.order.id)).id;
+    await only([usdId]); await refunds.processPending();
+    const usdRow = await refundRow(usdId), usdProvider = providerRefund(usdRow.providerRefundId);
+    assert.equal(usdRow.currency, 'USD'); assert.equal(usdRow.amount.toFixed(2), '40.00');
+    assert.equal(usdProvider.currency, 'USD'); assert.equal(usdProvider.amount, 4000);
+    usdProvider.status = 'processed';
+    await refunds.handleWebhook('PAYSTACK', { event: 'refund.processed', data: { id: usdProvider.id } });
+    await refunds.notifySettled();
+    assert.equal((await refundRow(usdId)).status, 'SETTLED');
+    const usdJournal = await prisma.ledgerTransaction.findFirstOrThrow({ where: { referenceType: 'StandardOrderRefund', referenceId: usdId, type: 'REFUND_ISSUED' } });
+    assert.equal(usdJournal.currency, 'NGN'); assert.equal(usdJournal.totalAmount.toFixed(2), '54448.00');
+    assert(buyerNotices.some(notice => notice.payload?.orderId === usd.order.id && notice.payload.message.includes('USD 40.00')));
+    evidence.cases.push('a USD40 capture refunds USD40 at the provider and in shopper notices while the NGN54448 original-rate settlement is reversed separately in the balanced ledger');
 
     const b2 = await paid({ brandId: brand1 });
     const refundB2 = (await request(b2.order.id)).id;
@@ -817,6 +853,7 @@ async function main() {
     evidence.paystackSimulator = {
       refundSubmissions: [...simulator.state.posts.values()].reduce((sum, count) => sum + count, 0),
       providerRefunds: simulator.state.refunds.size,
+      unrelatedPaginationFixtures: [...simulator.state.refunds.values()].filter(row => row.reference.startsWith('noise-')).length,
       unauthorizedRequests: simulator.state.unauthorized,
     };
     assert.equal(simulator.state.unauthorized, 0);

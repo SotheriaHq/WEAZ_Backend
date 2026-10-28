@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-10-28T13:04:44.941Z",
+  "checkedAt": "2026-10-28T13:57:40.974Z",
   "passed": true,
   "cleanupPassed": true,
   "cases": [
@@ -7,6 +7,8 @@
     "a final release committed first is clawed back in full by the waiting refund (90.00); a refund committed first stops the waiting release and the release sweep, posting no release journal; released-but-unwithdrawn money returns without leaving a debt",
     "four refunds submit once each to the simulator; a reference-only webhook, a refund-id webhook and a status poll each settle money, escrow and order exactly once; replays post nothing; a provider-failed refund keeps its reservation and goes to a person; shoppers get one processed notice per settled refund",
     "a submission whose answer is lost is found by its note at the provider and linked; the refund is never sent a second time",
+    "a provider that ignores the optional transaction filter still recovers a lost refund behind 150 newer unrelated records using complete bounded pagination, exact note and capture identity, without resending",
+    "a USD40 capture refunds USD40 at the provider and in shopper notices while the NGN54448 original-rate settlement is reversed separately in the balanced ledger",
     "a lost answer with the provider lookup unavailable stops at NEEDS_ATTENTION with an open alert and is never resent; the admin reconcile route rejects another capture's refund and an unknown id, links the verified one and the settlement resolves the alert",
     "an interrupted submission (stale lease) is never resubmitted: it links the refund the provider holds, or waits for a person when there is none",
     "a definitive provider rejection fails with backoff and is retried; the provider holds exactly one refund afterwards",
@@ -28,6 +30,7 @@
     "a real locked refund at the queue head is skipped while a later due refund submits; the locked head processes after release",
     "an application clock two hours ahead cannot poll a refund before its database due time",
     "an application clock two hours behind still recovers an expired submission by lookup and schedules its next poll from database time without resubmitting",
+    "a custom refund uses its USD90 charged amount at the provider, retains its separate original-rate NGN122508 snapshot and preserves the current operation owner",
     "custom refund late error lookup cannot clear a replacement owner, change attention or settle money; the active owner finishes once",
     "custom refund late pending lookup cannot clear a replacement owner, change attention or settle money; the active owner finishes once",
     "custom refund late processed lookup cannot clear a replacement owner, change attention or settle money; the active owner finishes once",
@@ -66,8 +69,9 @@
     "liveProviderCalls": 0
   },
   "paystackSimulator": {
-    "refundSubmissions": 34,
-    "providerRefunds": 34,
+    "refundSubmissions": 37,
+    "providerRefunds": 187,
+    "unrelatedPaginationFixtures": 150,
     "unauthorizedRequests": 0
   },
   "databaseEngine": "PostgreSQL 15 / isolated postgres:15-alpine container"

@@ -132,8 +132,8 @@ export class RefundProviderClient {
   /** The currency and amount the capture was actually charged in. */
   chargedAmount(capture: RefundCapture): RefundTarget {
     return {
-      currency: (capture.settlementCurrency || capture.currency).toUpperCase(),
-      amount: new Prisma.Decimal(capture.settlementAmount ?? capture.amount),
+      currency: capture.currency.toUpperCase(),
+      amount: new Prisma.Decimal(capture.amount),
     };
   }
 
@@ -250,13 +250,15 @@ export class RefundProviderClient {
    * Refunds the provider holds for this capture whose note carries `marker`.
    * Used after an uncertain submission to find the refund that was created,
    * instead of creating another. Paystack only; others return null (unknown).
-   * Use the documented transaction-id filter and inspect every reported page,
-   * within a five-page budget. A failed/incomplete search is unknown, never a
+   * Use the current documented transaction-id filter and inspect every reported
+   * page, even when a provider ignores that optional filter. The ten-page budget
+   * and creation-time lower bound also preserve recovery on older provider APIs. A failed/incomplete search is unknown, never a
    * partial match. Missing transaction ids require manual reconciliation.
    */
   async findByNote(
     capture: RefundCapture,
     marker: string,
+    since?: Date,
   ): Promise<ProviderRefund[] | null> {
     const gateway = this.gateway(capture.provider);
     if (gateway !== 'PAYSTACK') return null;
@@ -265,11 +267,14 @@ export class RefundProviderClient {
     const secret = this.secret(gateway, capture.providerMode);
     const matches: ProviderRefund[] = [];
     const ids = new Set<string>();
-    for (let page = 1; page <= 5; page++) {
+    for (let page = 1; page <= 10; page++) {
       const query = new URLSearchParams({
         transaction,
         perPage: '100',
         page: String(page),
+        ...(since
+          ? { from: new Date(since.getTime() - 10 * 60 * 1000).toISOString() }
+          : {}),
       });
       const { ok, payload } = await this.request(
         `${this.baseUrls.PAYSTACK}/refund?${query}`,
@@ -296,7 +301,7 @@ export class RefundProviderClient {
         if (
           !Number.isSafeInteger(pageCount) ||
           pageCount < 0 ||
-          pageCount > 5 ||
+          pageCount > 10 ||
           (pageCount < page && payload.data.length !== 0)
         )
           return null;

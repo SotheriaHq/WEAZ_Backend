@@ -234,7 +234,7 @@ export class CustomOrderQueueRefundsService {
     }
     let result: ProviderRefund;
     try {
-      const target = this.providerSettlement(row);
+      const target = this.providerTarget(row);
       await this.provider.verifyCapture(row.paymentAttempt);
       result = await this.provider.submit(
         row.paymentAttempt,
@@ -295,7 +295,7 @@ export class CustomOrderQueueRefundsService {
         if (
           !this.provider.matches(
             current.paymentAttempt,
-            this.providerSettlement(current),
+            this.providerTarget(current),
             result,
           )
         ) {
@@ -346,6 +346,7 @@ export class CustomOrderQueueRefundsService {
       found = await this.provider.findByNote(
         row.paymentAttempt,
         `Queue refund ${row.id}`,
+        row.createdAt,
       );
     } catch {
       /* Unknown remains a manual reconciliation state. */
@@ -356,7 +357,7 @@ export class CustomOrderQueueRefundsService {
         found?.length === 1 &&
         this.provider.matches(
           row.paymentAttempt,
-          this.providerSettlement(row),
+          this.providerTarget(row),
           found[0],
         );
     } catch {
@@ -438,7 +439,7 @@ export class CustomOrderQueueRefundsService {
     try {
       matches = this.provider.matches(
         row.paymentAttempt,
-        this.providerSettlement(row),
+        this.providerTarget(row),
         result,
       );
     } catch {
@@ -524,7 +525,7 @@ export class CustomOrderQueueRefundsService {
       if (
         !this.provider.matches(
           row.paymentAttempt,
-          this.providerSettlement(row),
+          this.providerTarget(row),
           result,
         )
       )
@@ -542,7 +543,7 @@ export class CustomOrderQueueRefundsService {
           if (
             !this.provider.matches(
               current.paymentAttempt,
-              this.providerSettlement(current),
+              this.providerTarget(current),
               result,
             )
           )
@@ -840,10 +841,20 @@ export class CustomOrderQueueRefundsService {
     });
   }
 
-  private providerSettlement(row: Refund): {
+  private providerTarget(row: Refund): {
     amount: Prisma.Decimal;
     currency: string;
   } {
+    const target = { amount: this.money(row.amount), currency: row.currency };
+    if (
+      row.currency !== row.paymentAttempt.currency ||
+      target.amount.greaterThan(row.paymentAttempt.amount)
+    ) {
+      throw new GatewayFailure(
+        'REFUND_SNAPSHOT_RECONCILIATION_REQUIRED',
+        false,
+      );
+    }
     const saved = object(object(row.breakdownJson).settlement);
     if (saved.status === 'RECORDED' && typeof saved.currency === 'string') {
       const amount = this.money(saved.amount);
@@ -854,7 +865,7 @@ export class CustomOrderQueueRefundsService {
         )
       )
         throw new GatewayFailure('REFUND_SETTLEMENT_SNAPSHOT_MISMATCH', false);
-      return { amount, currency: saved.currency };
+      return target;
     }
     // Older same-currency requests need no conversion; foreign-currency requests require their original snapshot.
     if (
@@ -916,7 +927,7 @@ export class CustomOrderQueueRefundsService {
           verified &&
           (!this.provider.matches(
             current.paymentAttempt,
-            this.providerSettlement(current),
+            this.providerTarget(current),
             verified,
           ) ||
             current.providerRefundId !== verified.id)

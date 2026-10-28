@@ -295,3 +295,18 @@ Still open:
 - The custom-order refund engine still has its own provider code.
 - The admin-payouts lock order has not been reviewed.
 - The seven migrations are not yet applied on SIT.
+
+## Final currency-merge checkpoint (28 October)
+
+The merged currency/provider boundaries pass 58 actual financial scenarios on
+PostgreSQL 17 and isolated PostgreSQL 15, with database/container cleanup.
+These include the 11 payout cases, USD standard/custom provider amounts,
+separate standard NGN settlement reversal and a provider ignoring the optional
+transaction filter. Forty focused units across five affected suites and full
+backend types pass. The earlier 55-case checkpoint above predates these three
+additional cases. The full custom-order NGN accounting conversion remains its
+separate currency workstream; catalogue charging is currently restricted to NGN.
+
+The deployment lifecycle now drains the old runtime before dependency or schema
+replacement. Four functional shell failure/order cases pass. Application schema
+migration and deployed acceptance still await successful remote CI and release.

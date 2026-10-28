@@ -37,8 +37,9 @@ export class OrderRefundService {
       refundId: refund.id,
       paymentAttemptId: refund.paymentAttemptId,
       status: refund.status,
-      amount: refund.settlementAmount,
-      currency: refund.settlementCurrency,
+      // What the shopper paid and gets back, not the NGN accounting figure.
+      amount: refund.amount,
+      currency: refund.currency,
       alreadyRefunded: refund.status === 'SETTLED',
     };
   }

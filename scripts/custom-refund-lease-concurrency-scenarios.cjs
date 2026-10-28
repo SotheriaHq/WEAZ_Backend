@@ -23,12 +23,12 @@ module.exports = async function scenarios({ prisma, ledger, balance, provider, s
   };
   const settled = id => prisma.ledgerTransaction.count({ where: { referenceType: 'CustomOrderQueueRefund', referenceId: id, type: 'REFUND_ISSUED' } });
   let sequence = 90_000;
-  async function fixture({ start = true, refundAmount=90, quote={}, mode='test' } = {}) {
+  async function fixture({ start = true, refundAmount=90, quote={}, mode='test', currency='NGN', settlementAmount=100 } = {}) {
     const reference = `custom-refund-owner-${randomUUID()}`, transactionId = ++sequence;
     const order = await prisma.customOrder.create({ data: { brandId, buyerId: buyer, sourceType: 'DESIGN', sourceId: source.id, sourceTitleSnapshot: 'Refund fixture', configurationId: config.id, configurationVersionId: version.id, status: 'CANCELLED_BY_BUYER_PRE_ACCEPTANCE', lane: 'TERMINAL', cancelledAt: new Date(), paymentStatus: 'PAID', baseProductionChargeSnapshot: 100, fabricCostPerYardSnapshot: 0, computedYards: 0, internalPriceBreakdownJson: {}, buyerPriceSummaryJson: { grandTotal: 100 }, measurementSnapshotJson: {}, measurementConfirmedAt: new Date(), productionLeadDaysSnapshot: 1, deliveryMinDaysSnapshot: 1, deliveryMaxDaysSnapshot: 2, paymentReference: reference } });
-    const capture = await prisma.paymentAttempt.create({ data: { buyerId: buyer, provider: 'PAYSTACK', providerMode: mode, paymentMethod: 'PAYSTACK', status: 'PAID', reference, providerTransactionId: String(transactionId), amount: 100, currency: 'NGN', settlementAmount: 100, settlementCurrency: 'NGN', subjectType: 'CUSTOM_ORDER' } });
-    simulator.state.transactions.set(reference, { id: transactionId, amount: 10000, currency: 'NGN' });
-    const refund = await prisma.customOrderQueueRefund.create({ data: { customOrderId: order.id, paymentAttemptId: capture.id, amount: refundAmount, currency: 'NGN', breakdownJson: { captureAmount: 100, refundAmount, vatAmount:100-refundAmount, garmentCharge: 0, jumpCharge: 0, currency: 'NGN', refundKind: 'WAITING_CANCELLED', settlement: { status: 'RECORDED', currency: 'NGN', amount: refundAmount },...quote }, nextAttemptAt: new Date(0) } });
+    const capture = await prisma.paymentAttempt.create({ data: { buyerId: buyer, provider: 'PAYSTACK', providerMode: mode, paymentMethod: 'PAYSTACK', status: 'PAID', reference, providerTransactionId: String(transactionId), amount: 100, currency, settlementAmount, settlementCurrency: 'NGN', subjectType: 'CUSTOM_ORDER' } });
+    simulator.state.transactions.set(reference, { id: transactionId, amount: 10000, currency });
+    const refund = await prisma.customOrderQueueRefund.create({ data: { customOrderId: order.id, paymentAttemptId: capture.id, amount: refundAmount, currency, breakdownJson: { captureAmount: 100, refundAmount, vatAmount:100-refundAmount, garmentCharge: 0, jumpCharge: 0, currency, refundKind: 'WAITING_CANCELLED', settlement: { status: 'RECORDED', currency: 'NGN', amount: currency === 'NGN' ? refundAmount : refundAmount * (settlementAmount/100) },...quote }, nextAttemptAt: new Date(0) } });
     await only(refund.id);
     if (start) { assert.equal(await service().processOne(refund.id), true); assert.equal((await read(refund.id)).status, 'PROCESSING'); }
     return { id: refund.id, order, capture, reference, read: () => read(refund.id) };
@@ -45,6 +45,13 @@ module.exports = async function scenarios({ prisma, ledger, balance, provider, s
     await service().handleWebhook('PAYSTACK',{event:'refund.processed',data:{id:row.providerRefundId}});
     assert.equal((await prisma.customOrder.findUniqueOrThrow({where:{id:item.order.id}})).orderRevision,afterOrder.orderRevision);
   }
+  const foreign = await fixture({currency:'USD',settlementAmount:136120});
+  const foreignRow = await foreign.read(), foreignProvider = simulator.state.refunds.get(foreignRow.providerRefundId);
+  assert.equal(foreignProvider.currency,'USD'); assert.equal(foreignProvider.amount,9000);
+  assert.equal(foreignRow.currency,'USD'); assert.equal(foreignRow.breakdownJson.settlement.currency,'NGN');
+  assert.equal(foreignRow.breakdownJson.settlement.amount,122508);
+  cases.push('a custom refund uses its USD90 charged amount at the provider, retains its separate original-rate NGN122508 snapshot and preserves the current operation owner');
+
   for (const variant of ['error','pending','processed','mismatch']) {
     const item = await fixture();
     const oldGate = makeGate(variant === 'processed' ? { status: 'processed' } : variant === 'mismatch' ? { amount: 1 } : {});
@@ -130,7 +137,7 @@ module.exports = async function scenarios({ prisma, ledger, balance, provider, s
     const table = family === 'standard' ? 'StandardOrderRefund' : 'CustomOrderQueueRefund';
     const {Prisma}=require('@prisma/client');
     const current = family === 'standard' ? await refunds.load(item.id) : await item.read();
-    const target = family === 'standard' ? refunds.target(current) : service().providerSettlement(current);
+    const target = family === 'standard' ? refunds.target(current) : service().providerTarget(current);
     const manual = await provider.submit(item.capture,target,`manual-${randomUUID()}`);
     const oldPosts=simulator.state.posts.get(item.reference);
     await prisma.$executeRaw(Prisma.sql`UPDATE ${Prisma.raw('"'+table+'"')} SET status='FAILED',"nextAttemptAt"=to_timestamp(0) AT TIME ZONE 'UTC' WHERE id=${item.id}::uuid`);

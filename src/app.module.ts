@@ -28,6 +28,7 @@ import { AdminModule } from './admin/admin.module';
 import { EmailModule } from './email/email.module';
 import { FeaturedModule } from './featured/featured.module';
 import { PaymentModule } from './payment/payment.module';
+import { LocationsModule } from './locations/locations.module';
 import { SearchModule } from './search/search.module';
 import { ReviewsModule } from './reviews/reviews.module';
 import { CustomOrderConfigurationsModule } from './custom-order-configurations/custom-order-configurations.module';
@@ -104,6 +105,7 @@ const isHardProduction =
     AdminModule,
     FeaturedModule,
     PaymentModule,
+    LocationsModule,
     SearchModule,
     ReviewsModule,
     CustomOrderConfigurationsModule,
