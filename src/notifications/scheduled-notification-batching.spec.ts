@@ -649,6 +649,7 @@ describe('scheduled event notification batching', () => {
     expect(refund.initiateRefund).toHaveBeenCalledWith(tx, {
       orderId: 'winner',
       reason: 'SLA_FULFILLMENT_TIMEOUT',
+      trigger: 'SLA_TIMEOUT',
     });
     expect(
       notify.createEvents.mock.calls[0][0].every(
