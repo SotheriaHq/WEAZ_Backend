@@ -14,6 +14,14 @@ export class DesignResponseDto {
   categoryId?: string | null;
   subCategoryId?: string | null;
   categoryTypeId?: string | null;
+  pendingCategorySuggestionId?: string | null;
+  pendingCategoryName?: string | null;
+  pendingCategorySuggestion?: {
+    id: string;
+    name: string;
+    garmentTypeName: string | null;
+    status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  } | null;
   tags?: string[];
   medias?: unknown[];
   media?: unknown[];

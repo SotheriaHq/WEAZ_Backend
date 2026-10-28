@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-10-27T18:52:50.722Z",
+  "checkedAt": "2026-10-28T13:04:44.941Z",
   "passed": true,
   "cleanupPassed": true,
   "cases": [
@@ -27,11 +27,47 @@
     "32 competing refund sweeps submit one provider refund and record one completed submission attempt",
     "a real locked refund at the queue head is skipped while a later due refund submits; the locked head processes after release",
     "an application clock two hours ahead cannot poll a refund before its database due time",
-    "an application clock two hours behind still recovers an expired submission by lookup and schedules its next poll from database time without resubmitting"
+    "an application clock two hours behind still recovers an expired submission by lookup and schedules its next poll from database time without resubmitting",
+    "custom refund late error lookup cannot clear a replacement owner, change attention or settle money; the active owner finishes once",
+    "custom refund late pending lookup cannot clear a replacement owner, change attention or settle money; the active owner finishes once",
+    "custom refund late processed lookup cannot clear a replacement owner, change attention or settle money; the active owner finishes once",
+    "custom refund late mismatch lookup cannot clear a replacement owner, change attention or settle money; the active owner finishes once",
+    "a real custom-order lock wait rechecks database ownership before money settles, preserving a newer pending lookup",
+    "32 actual custom-refund sweeps share one submission and one reservation, preserving four-wide worker processing",
+    "an expired custom submission with no known provider result goes to reconciliation and is never posted again",
+    "an uncertain custom POST is recovered through the shared transaction-filtered provider lookup without a duplicate refund",
+    "invalid immutable money snapshots are quarantined without a provider POST or an endless polling retry",
+    "standard admin reconciliation freezes a due FAILED refund before real provider GET; 32 sweepers and a second admin cannot resubmit or replace the active owner",
+    "custom admin reconciliation freezes a due FAILED refund before real provider GET; 32 sweepers and a second admin cannot resubmit or replace the active owner",
+    "equal-amount standard/custom siblings of a mixed capture cannot reuse one provider refund, through either the service or raw SQL; clearing a link preserves identity history",
+    "a standard refund also refuses an identity already owned by a custom refund, including a different payment capture, with durable attention evidence",
+    "the database rejects a direct settlement by an expired custom-refund owner before any monetary side effects",
+    "a full post-active custom refund closes the order and revises it once, preserves its paid parent capture, and ignores repeated processed webhooks",
+    "a partial post-active refund settles its exact amount and revises the order once without closing production or clearing its paid status",
+    "zero refunds settle without a provider POST; mock refunds require an explicit local/test switch and use the same atomic order/ledger settlement",
+    "32 competing debit/credit commands preserve one source identity, refuse brand/type collisions and recover debts oldest-first exactly once",
+    "a manual debt command waits on its source order before Brand locking, avoiding the actual order/FK/Brand lock inversion",
+    "25 competing initiations send one HTTP POST; real brand and payout locks can be acquired while the provider response is paused, proving no database transaction spans HTTP",
+    "concurrent OTP finalization sends once, refuses manual cancellation and concurrent lookup during the send; a success webhook wins over the late pending response, with one payout journal and two financial documents, and no persisted OTP",
+    "a drop submission response retains its reservation and original reference, requires provider verification and cannot produce a second transfer",
+    "a wrong-amount submission response retains its reservation and original reference, requires provider verification and cannot produce a second transfer",
+    "a wrong-reference submission response retains its reservation and original reference, requires provider verification and cannot produce a second transfer",
+    "a wrong-currency submission response retains its reservation and original reference, requires provider verification and cannot produce a second transfer",
+    "a payout actually waiting behind a committed debt adjustment rechecks the current reserved position and refuses transfer without any provider call",
+    "OTP finalization rechecks current earnings and source reservations instead of trusting the earlier initiation",
+    "a late polling owner and out-of-order pending/failed webhooks cannot regress PAID; reversal stays in reconciliation and a later success cannot post a second payout",
+    "an explicitly retried provider-confirmed failure preserves the original Paystack reference and recipient instead of minting another identity",
+    "opposing administrative claims read the locked current owner and exactly one admin wins"
   ],
+  "payoutProof": {
+    "cases": 11,
+    "transferPosts": 11,
+    "providerTransfers": 9,
+    "liveProviderCalls": 0
+  },
   "paystackSimulator": {
-    "refundSubmissions": 19,
-    "providerRefunds": 19,
+    "refundSubmissions": 34,
+    "providerRefunds": 34,
     "unauthorizedRequests": 0
   }
 }

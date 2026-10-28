@@ -92,6 +92,10 @@ export class DesignMetadataDto {
 
   @IsOptional()
   @IsUUID('4')
+  pendingCategorySuggestionId?: string | null;
+
+  @IsOptional()
+  @IsUUID('4')
   subCategoryId?: string;
 
   @IsOptional()

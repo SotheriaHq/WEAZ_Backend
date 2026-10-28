@@ -26,6 +26,7 @@ import {
   scheduleStandardRefundRetry,
 } from './standard-refund-lease-query';
 import { StandardOrderEscrowService } from './standard-order-escrow.service';
+import { claimRefundReconciliation } from './refund-lease-query';
 import { StandardOrderFinanceSyncService } from './standard-order-finance-sync.service';
 import {
   ProviderRefund,
@@ -274,17 +275,8 @@ export class StandardOrderRefundsService {
           'REFUND_GATEWAY_RESPONSE_MISMATCH',
           false,
         );
-      const linked = await this.withOwnedLease(
-        id,
-        leaseToken,
-        ['SUBMITTING'],
-        async (tx) => {
-          await linkStandardRefundProvider(tx, id, refund.id, POLL_MS);
-          return true;
-        },
-      );
+      const linked = await this.linkProviderResult(id, leaseToken, refund.id);
       if (!linked) {
-        await this.recordLateProviderResult(id, refund.id);
         return false;
       }
       return this.apply(
@@ -353,16 +345,8 @@ export class StandardOrderRefundsService {
     const matching = (found ?? []).filter((refund) =>
       this.provider.matches(row.capture, target, refund),
     );
-    if (matching.length === 1) {
-      const linked = await this.withOwnedLease(
-        id,
-        owner,
-        ['SUBMITTING'],
-        async (tx) => {
-          await linkStandardRefundProvider(tx, id, matching[0].id, POLL_MS);
-          return true;
-        },
-      );
+    if (found?.length === 1 && matching.length === 1) {
+      const linked = await this.linkProviderResult(id, owner, matching[0].id);
       if (linked) {
         await this.apply(
           { ...row, providerRefundId: matching[0].id, status: 'PROCESSING' },
@@ -459,48 +443,85 @@ export class StandardOrderRefundsService {
       };
     if (!['NEEDS_ATTENTION', 'FAILED'].includes(row.status))
       throw new ConflictException('REFUND_NOT_AWAITING_RECONCILIATION');
-    const refund = await this.provider
-      .fetch(row.capture, providerRefundId)
-      .catch(() => {
-        throw new ConflictException(
-          'REFUND_PROVIDER_RECONCILIATION_UNAVAILABLE',
-        );
-      });
-    if (!this.provider.matches(row.capture, this.target(row), refund))
-      throw new ConflictException('REFUND_PROVIDER_RECONCILIATION_MISMATCH');
     const owner = randomUUID();
-    await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM "StandardOrderRefund" WHERE id = ${refundId}::uuid FOR UPDATE`;
-      const current = await tx.standardOrderRefund.findUniqueOrThrow({
-        where: { id: refundId },
-      });
-      if (
-        !['NEEDS_ATTENTION', 'FAILED'].includes(current.status) ||
-        (current.providerRefundId &&
-          current.providerRefundId !== providerRefundId)
-      )
-        throw new ConflictException('REFUND_RECONCILIATION_STATE_CHANGED');
-      await tx.$executeRaw(Prisma.sql`
-        WITH clock AS (SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now)
-        UPDATE "StandardOrderRefund" SET status='PROCESSING',"providerRefundId"=${providerRefundId},
-          "leaseToken"=${owner}::uuid,"lockedAt"=clock.now,"lastError"=NULL,
-          "nextAttemptAt"=clock.now+${POLL_MS}::bigint*INTERVAL '1 millisecond',"updatedAt"=clock.now
-        FROM clock WHERE id=${refundId}::uuid
-      `);
-      await tx.paymentEvent.create({
-        data: {
-          paymentAttemptId: current.paymentAttemptId,
-          type: 'STANDARD_ORDER_REFUND_RECONCILED',
-          source: 'standard-order-refunds',
-          payload: {
-            refundId,
-            orderId: current.orderId,
-            providerRefundId,
-            actorId,
+    await this.prisma.$transaction(
+      async (tx) => {
+        await this.lockParents(tx, refundId);
+        if (!(await claimRefundReconciliation(tx, refundId, owner)))
+          throw new ConflictException('REFUND_RECONCILIATION_STATE_CHANGED');
+        await tx.paymentEvent.create({
+          data: {
+            paymentAttemptId: row.paymentAttemptId,
+            type: 'STANDARD_ORDER_REFUND_RECONCILIATION_STARTED',
+            source: 'standard-order-refunds',
+            payload: { refundId, providerRefundId, actorId },
           },
+        });
+      },
+      { timeout: 15000 },
+    );
+    let refund: ProviderRefund;
+    try {
+      refund = await this.provider
+        .fetch(row.capture, providerRefundId)
+        .catch(() => {
+          throw new ConflictException(
+            'REFUND_PROVIDER_RECONCILIATION_UNAVAILABLE',
+          );
+        });
+      if (!this.provider.matches(row.capture, this.target(row), refund))
+        throw new ConflictException('REFUND_PROVIDER_RECONCILIATION_MISMATCH');
+      const applied = await this.withOwnedLease(
+        refundId,
+        owner,
+        ['NEEDS_ATTENTION'],
+        async (tx) => {
+          const current = await this.load(refundId, tx);
+          if (
+            (current.providerRefundId &&
+              current.providerRefundId !== providerRefundId) ||
+            !this.provider.matches(
+              current.capture,
+              this.target(current),
+              refund,
+            )
+          )
+            throw new ConflictException('REFUND_RECONCILIATION_STATE_CHANGED');
+          if (
+            !(await linkStandardRefundProvider(
+              tx,
+              refundId,
+              providerRefundId,
+              POLL_MS,
+            ))
+          )
+            throw new ConflictException('REFUND_PROVIDER_ID_ALREADY_LINKED');
+          await tx.paymentEvent.create({
+            data: {
+              paymentAttemptId: current.paymentAttemptId,
+              type: 'STANDARD_ORDER_REFUND_RECONCILED',
+              source: 'standard-order-refunds',
+              payload: {
+                refundId,
+                orderId: current.orderId,
+                providerRefundId,
+                actorId,
+              },
+            },
+          });
+          return true;
         },
-      });
-    });
+      );
+      if (!applied)
+        throw new ConflictException('REFUND_RECONCILIATION_STATE_CHANGED');
+    } catch (error) {
+      const code =
+        error instanceof ConflictException
+          ? error.message
+          : 'REFUND_PROVIDER_RECONCILIATION_UNAVAILABLE';
+      await this.attention(refundId, code, ['NEEDS_ATTENTION'], null, owner);
+      throw error;
+    }
     await this.apply(
       { ...row, status: 'PROCESSING', providerRefundId },
       refund,
@@ -540,7 +561,7 @@ export class StandardOrderRefundsService {
 
   /**
    * The provider confirmed the refund. Money, escrow and order change together.
-   * Lock order: order → hold → refund row → brand → ledger.
+   * Lock order: capture → order → hold → refund row → brand → ledger.
    */
   private async complete(
     id: string,
@@ -549,11 +570,7 @@ export class StandardOrderRefundsService {
     owner: string,
   ) {
     return this.prisma.$transaction(async (tx) => {
-      const head = await tx.standardOrderRefund.findUniqueOrThrow({
-        where: { id },
-        select: { orderId: true },
-      });
-      await tx.$queryRaw`SELECT "_id" FROM "Order" WHERE "_id" = ${head.orderId}::uuid FOR UPDATE`;
+      const head = await this.lockParents(tx, id);
       await this.escrow.lockHoldByOrderId(tx, head.orderId);
       await tx.$queryRaw`SELECT id FROM "StandardOrderRefund" WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.standardOrderRefund.findUniqueOrThrow({
@@ -680,26 +697,67 @@ export class StandardOrderRefundsService {
       );
       return false;
     }
-    const linked = await this.withOwnedLease(
+    const linked = await this.linkProviderResult(
       row.id,
       leaseToken,
-      ['SUBMITTING'],
-      async (tx) => {
-        await tx.standardOrderRefund.update({
-          where: { id: row.id },
-          data: {
-            providerRefundId: `simulated:${row.id}`,
-            status: 'PROCESSING',
-          },
-        });
-        return true;
-      },
+      `simulated:${row.id}`,
     );
     if (!linked) return false;
     return this.complete(row.id, 'SIMULATED_PROCESSED', true, leaseToken);
   }
 
   /** Check ownership with a new database-clock statement after a real row-lock wait. */
+  private async lockParents(tx: Tx, id: string) {
+    const head = await tx.standardOrderRefund.findUniqueOrThrow({
+      where: { id },
+      select: { orderId: true, paymentAttemptId: true },
+    });
+    await tx.$queryRaw`SELECT id FROM "PaymentAttempt" WHERE id=${head.paymentAttemptId}::uuid FOR NO KEY UPDATE`;
+    await tx.$queryRaw`SELECT "_id" FROM "Order" WHERE "_id"=${head.orderId}::uuid FOR NO KEY UPDATE`;
+    return head;
+  }
+
+  private async linkProviderResult(
+    id: string,
+    owner: string,
+    providerId: string,
+  ) {
+    let identityConflict = false;
+    const linked = await this.withOwnedLease(
+      id,
+      owner,
+      ['SUBMITTING'],
+      async (tx) => {
+        const count = await linkStandardRefundProvider(
+          tx,
+          id,
+          providerId,
+          POLL_MS,
+        );
+        identityConflict = count === 0;
+        return count > 0;
+      },
+    );
+    if (!linked) {
+      if (identityConflict)
+        await this.attention(
+          id,
+          'REFUND_PROVIDER_ID_ALREADY_LINKED',
+          ['SUBMITTING'],
+          null,
+          owner,
+        );
+      await this.recordLateProviderResult(
+        id,
+        providerId,
+        identityConflict
+          ? 'REFUND_PROVIDER_ID_ALREADY_LINKED'
+          : 'REFUND_SUBMISSION_LEASE_LOST',
+      );
+    }
+    return linked;
+  }
+
   private async withOwnedLease(
     id: string,
     owner: string,
@@ -708,6 +766,7 @@ export class StandardOrderRefundsService {
   ): Promise<boolean> {
     return this.prisma.$transaction(
       async (tx) => {
+        await this.lockParents(tx, id);
         if (!(await lockStandardRefundLease(tx, id, owner, statuses)))
           return false;
         return work(tx);
@@ -717,9 +776,14 @@ export class StandardOrderRefundsService {
   }
 
   /** A late provider result is evidence, never permission to clear another claim. */
-  private async recordLateProviderResult(id: string, providerRefundId: string) {
+  private async recordLateProviderResult(
+    id: string,
+    providerRefundId: string,
+    code = 'REFUND_SUBMISSION_LEASE_LOST',
+  ) {
     await this.prisma.$transaction(
       async (tx) => {
+        await this.lockParents(tx, id);
         await tx.$queryRaw(
           Prisma.sql`SELECT id FROM "StandardOrderRefund" WHERE id=${id}::uuid FOR UPDATE`,
         );
@@ -736,7 +800,7 @@ export class StandardOrderRefundsService {
           refundId: id,
           orderId: current.orderId,
           providerRefundId,
-          code: 'REFUND_SUBMISSION_LEASE_LOST',
+          code,
         };
         await tx.paymentEvent.upsert({
           where: {
@@ -845,8 +909,11 @@ export class StandardOrderRefundsService {
     return `WIEZ standard refund ${row.id}`;
   }
 
-  private async load(id: string): Promise<RefundWithCapture> {
-    const row = await this.prisma.standardOrderRefund.findUnique({
+  private async load(
+    id: string,
+    db: Pick<Tx, 'standardOrderRefund'> = this.prisma,
+  ): Promise<RefundWithCapture> {
+    const row = await db.standardOrderRefund.findUnique({
       where: { id },
       include: {
         paymentAttempt: {

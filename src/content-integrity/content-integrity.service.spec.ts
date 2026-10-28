@@ -425,7 +425,7 @@ describe('ContentIntegrityService', () => {
         .fn()
         .mockResolvedValue('https://signed.example/review-front.jpg?token=ok'),
     };
-    const { prisma, service } = createService(
+    const { service } = createService(
       {
         contentSubmission: {
           findUnique: jest.fn().mockResolvedValue({
@@ -561,6 +561,7 @@ describe('ContentIntegrityService', () => {
   });
   describe('createSubmission supersedes open submissions for the same target', () => {
     const buildTx = () => ({
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 'source' }]),
       contentSubmission: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         create: jest.fn().mockResolvedValue({ id: 'submission-2' }),
@@ -682,16 +683,14 @@ describe('ContentIntegrityService', () => {
     };
     const { prisma, service } = createService(
       {
-        $queryRaw: jest
-          .fn()
-          .mockResolvedValue(
-            rows.map((row) => ({
-              id: row.brandId,
-              name: row.brandId,
-              trustTier: null,
-              reviewMode: null,
-            })),
-          ),
+        $queryRaw: jest.fn().mockResolvedValue(
+          rows.map((row) => ({
+            id: row.brandId,
+            name: row.brandId,
+            trustTier: null,
+            reviewMode: null,
+          })),
+        ),
         product: {
           findMany: jest.fn().mockResolvedValue(products),
           findUnique: jest.fn(),
@@ -702,14 +701,12 @@ describe('ContentIntegrityService', () => {
           count: jest.fn().mockResolvedValue(50),
         },
         user: {
-          findMany: jest
-            .fn()
-            .mockResolvedValue(
-              rows.map((row) => ({
-                id: row.submittedById,
-                username: row.submittedById,
-              })),
-            ),
+          findMany: jest.fn().mockResolvedValue(
+            rows.map((row) => ({
+              id: row.submittedById,
+              username: row.submittedById,
+            })),
+          ),
           findUnique: jest.fn(),
         },
       },
@@ -754,17 +751,15 @@ describe('ContentIntegrityService', () => {
         findUnique: jest.fn(),
       },
       collection: {
-        findMany: jest
-          .fn()
-          .mockResolvedValue([
-            {
-              id: 'store',
-              domain: 'STORE',
-              title: 'Store',
-              status: 'PUBLISHED',
-              ownerId: 'owner',
-            },
-          ]),
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'store',
+            domain: 'STORE',
+            title: 'Store',
+            status: 'PUBLISHED',
+            ownerId: 'owner',
+          },
+        ]),
         findFirst: jest.fn(),
         findUnique: jest.fn(),
       },

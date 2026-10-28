@@ -94,7 +94,7 @@ export class BrandBalanceService {
   /** Serializes every money command for one brand. */
   async lockBrand(tx: Prisma.TransactionClient, brandId: string) {
     const rows = await tx.$queryRaw<Array<{ id: string }>>`
-      SELECT "_id" AS id FROM "Brand" WHERE "_id" = ${brandId}::uuid FOR UPDATE`;
+      SELECT "_id" AS id FROM "Brand" WHERE "_id" = ${brandId}::uuid FOR NO KEY UPDATE`;
     if (!rows.length) throw new BadRequestException('Brand not found');
   }
 
@@ -137,7 +137,26 @@ export class BrandBalanceService {
     if (isSystemRaised && !params.sourceKey) {
       throw new BadRequestException('A system adjustment needs a source key');
     }
-
+    if (params.orderId && params.customOrderId)
+      throw new BadRequestException(
+        'An adjustment can reference only one order',
+      );
+    // Parent facts precede Brand/debt locks, including manual adjustments. A
+    // later FK check must not invert an order → Brand money command's locks.
+    if (params.orderId) {
+      const rows = await tx.$queryRaw<
+        Array<{ brandId: string }>
+      >`SELECT "brandId" FROM "Order" WHERE "_id"=${params.orderId}::uuid FOR NO KEY UPDATE`;
+      if (rows[0]?.brandId !== params.brandId)
+        throw new BadRequestException('BRAND_ADJUSTMENT_ORDER_MISMATCH');
+    }
+    if (params.customOrderId) {
+      const rows = await tx.$queryRaw<
+        Array<{ brandId: string }>
+      >`SELECT "brandId" FROM "CustomOrder" WHERE id=${params.customOrderId}::uuid FOR NO KEY UPDATE`;
+      if (rows[0]?.brandId !== params.brandId)
+        throw new BadRequestException('BRAND_ADJUSTMENT_ORDER_MISMATCH');
+    }
     await this.lockBrand(tx, params.brandId);
     const isCredit = params.type === BrandBalanceAdjustmentType.MANUAL_CREDIT;
     const data = {
@@ -159,7 +178,15 @@ export class BrandBalanceService {
           }
         : {}),
     };
-    let row: { id: string; amount: Prisma.Decimal; currency: string };
+    let row: {
+      id: string;
+      amount: Prisma.Decimal;
+      currency: string;
+      brandId: string;
+      type: BrandBalanceAdjustmentType;
+      orderId: string | null;
+      customOrderId: string | null;
+    };
     if (params.sourceKey) {
       await tx.brandBalanceAdjustment.createMany({
         data: [data],
@@ -167,15 +194,38 @@ export class BrandBalanceService {
       });
       row = await tx.brandBalanceAdjustment.findUniqueOrThrow({
         where: { sourceKey: params.sourceKey },
-        select: { id: true, amount: true, currency: true },
+        select: {
+          id: true,
+          amount: true,
+          currency: true,
+          brandId: true,
+          type: true,
+          orderId: true,
+          customOrderId: true,
+        },
       });
-      if (!row.amount.equals(amount) || row.currency !== currency) {
+      if (
+        !row.amount.equals(amount) ||
+        row.currency !== currency ||
+        row.brandId !== params.brandId ||
+        row.type !== params.type ||
+        row.orderId !== (params.orderId ?? null) ||
+        row.customOrderId !== (params.customOrderId ?? null)
+      ) {
         throw new BadRequestException('BRAND_ADJUSTMENT_SOURCE_CONFLICT');
       }
     } else {
       row = await tx.brandBalanceAdjustment.create({
         data,
-        select: { id: true, amount: true, currency: true },
+        select: {
+          id: true,
+          amount: true,
+          currency: true,
+          brandId: true,
+          type: true,
+          orderId: true,
+          customOrderId: true,
+        },
       });
     }
 

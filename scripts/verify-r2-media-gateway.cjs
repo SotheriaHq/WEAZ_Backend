@@ -24,6 +24,7 @@ async function main() {
     privateApiAuthorization: 'Not exercised: requires deployed API identities and private parent fixtures.',
     cacheObservation: 'Warm-path authorization tested; internal edge cache hit is not externally observable.' };
   const objectKey = `__wiez_gateway_smoke/${randomUUID()}/pixel.png`;
+  const attemptedKeys = [];
   let client; let attemptedObject = false; let phase = 'configuration';
   const pass = (name) => report.checks.push(name);
   const ensure = (condition, code) => { if (!condition) throw new Error(code); };
@@ -45,6 +46,7 @@ async function main() {
     const body = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK1kAAAAASUVORK5CYII=', 'base64');
     phase = 'temporary-object';
     attemptedObject = true;
+    attemptedKeys.push(objectKey);
     await client.send(new PutObjectCommand({ Bucket: settings.bucket, Key: objectKey, Body: body, ContentType: 'image/png' }));
     const capability = signPublicGatewayUrl(gateway, objectKey);
     phase = 'signed-get';
@@ -94,15 +96,25 @@ async function main() {
     if (anonymous.status === 400) missingAuthorization = /<Code>InvalidArgument<\/Code>/.test(await anonymous.text());
     ensure([401, 403, 404].includes(anonymous.status) || missingAuthorization, 'UNSIGNED_PRIVATE_OBJECT_READABLE');
     pass('unsigned-r2-api-object-denied');
+    phase = 'public-mime-allowlist';
+    const vectorKey = objectKey.replace('pixel.png', 'unsupported.svg');
+    attemptedKeys.push(vectorKey);
+    await client.send(new PutObjectCommand({ Bucket: settings.bucket, Key: vectorKey,
+      Body: '<svg xmlns="http://www.w3.org/2000/svg"/>', ContentType: 'image/svg+xml' }));
+    const deniedVector = await request(signPublicGatewayUrl(gateway, vectorKey));
+    ensure(deniedVector.status === 415, 'DEPLOYED_WORKER_MIME_ALLOWLIST_OUTDATED');
+    pass('unsupported-svg-public-delivery-denied');
   } catch (error) {
     report.failure = { phase, code: /^[A-Z0-9_]+$/.test(error?.message ?? '') ? error.message : 'PROBE_FAILED',
       httpStatus: error?.$metadata?.httpStatusCode ?? null };
   } finally {
     if (client && attemptedObject) {
       try {
-        await client.send(new DeleteObjectCommand({ Bucket: 'wiez-sit-media', Key: objectKey }));
-        try { await client.send(new HeadObjectCommand({ Bucket: 'wiez-sit-media', Key: objectKey })); throw new Error('OBJECT_REMAINS'); }
-        catch (error) { if (error?.$metadata?.httpStatusCode !== 404) throw error; }
+        for (const key of attemptedKeys) {
+          await client.send(new DeleteObjectCommand({ Bucket: 'wiez-sit-media', Key: key }));
+          try { await client.send(new HeadObjectCommand({ Bucket: 'wiez-sit-media', Key: key })); throw new Error('OBJECT_REMAINS'); }
+          catch (error) { if (error?.$metadata?.httpStatusCode !== 404) throw error; }
+        }
         report.cleanup = true;
       } catch { report.cleanupFailure = 'TEMPORARY_OBJECT_CLEANUP_FAILED'; }
     } else if (!attemptedObject) report.cleanup = true;

@@ -52,6 +52,15 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -73,14 +82,19 @@ jobs:
         run: node --test scripts/reset-safety.test.cjs
       - run: npx prisma generate
       - name: Refund, debt and integrity regressions
-        run: npm test -- src/custom-orders/custom-order-refund.service.spec.ts src/order/order.service.spec.ts src/common/payments/order-payment-reconciliation.util.spec.ts src/custom-order-admin/custom-order-admin.service.spec.ts src/payout/payout.service.spec.ts src/collections/collections.service.spec.ts src/categories/categories.service.spec.ts src/tags/tag-index.service.spec.ts --runInBand
+        run: npm test -- src/custom-orders/custom-order-refund.service.spec.ts src/order/order.service.spec.ts src/common/payments/order-payment-reconciliation.util.spec.ts src/custom-order-admin/custom-order-admin.service.spec.ts src/payout/payout.service.spec.ts src/admin/payouts/admin-payouts.service.spec.ts src/admin/payouts/admin-payouts-webhook.controller.spec.ts src/collections/collections.service.spec.ts src/categories/categories.service.spec.ts src/tags/tag-index.service.spec.ts --runInBand
       - name: Upload privacy and finalization regressions
         run: npm test -- src/upload/upload.service.spec.ts src/upload/file-deletion-query.spec.ts src/collections/collection-cleanup-concurrency.spec.ts src/queue/image-processing.processor.spec.ts src/designs/mappers/design-response.mapper.spec.ts --runInBand
+      - name: Provider protocol and upload-content boundaries
+        run: |
+          node scripts/test-refund-provider-contract.cjs
+          node --test scripts/test-upload-content-security.cjs infrastructure/media-gateway/worker.test.cjs
       - name: Query batching and payment concurrency regressions
-        run: npm test -- src/subscriptions src/brands/brand-commerce-access.service.spec.ts src/brands/brand-customers.service.spec.ts src/finance/ledger.service.spec.ts src/finance/settlement-snapshot.service.spec.ts src/finance/standard-order-escrow.service.spec.ts src/finance/custom-order-finance-sync.service.spec.ts src/finance/settlement-policy.service.spec.ts src/finance/settlement-backfill.service.spec.ts src/store/collection-price-range.util.spec.ts src/store/bulk-unpublish.spec.ts src/store/bulk-product-taxonomy.spec.ts src/store/product-publication-batching.spec.ts src/content-integrity/content-integrity.service.spec.ts src/content-integrity/content-submission-batching.spec.ts src/collections/collection-membership-query.spec.ts src/collections/category-moderation-batching.spec.ts src/admin/featured/featured-expiry.spec.ts src/brands/permissions/brand-permission-batch.spec.ts src/custom-orders/checkout-bag-batching.spec.ts src/custom-orders/custom-orders.service.spec.ts src/custom-orders/custom-order-side-effects.service.spec.ts src/custom-order-ops/custom-order-ops.cron.service.spec.ts src/custom-orders/queue/intake-batch.spec.ts src/custom-orders/queue/custom-order-queue.service.spec.ts src/custom-orders/queue/custom-order-queue-refunds.service.spec.ts src/custom-orders/queue/paid-capture-admission.spec.ts src/tags/tag-usage-query.spec.ts src/tags/tag-reindex-batching.spec.ts src/collections/finalized-media-query.spec.ts src/payment/checkout-inventory-query.spec.ts src/notifications/notification-batch-query.spec.ts src/notifications/scheduled-notification-batching.spec.ts src/notifications/email-outbox-dispatcher.service.spec.ts src/notifications/push-outbox-batching.spec.ts src/notifications/push-notifications.service.spec.ts src/reviews/review-lifecycle.service.spec.ts src/queue/notification-durable-replay.spec.ts src/messaging/messaging-side-effects.service.spec.ts src/payment/payment.service.spec.ts src/payment/placement-notification-batching.spec.ts src/notifications/notifications.service.spec.ts src/posts/reaction-concurrency.spec.ts src/commentsv2/comment-delete-concurrency.spec.ts --runInBand
+        run: npm test -- src/auth/auth.service.spec.ts src/subscriptions src/brands/brand-commerce-access.service.spec.ts src/brands/brand-customers.service.spec.ts src/finance/ledger.service.spec.ts src/finance/settlement-snapshot.service.spec.ts src/finance/standard-order-escrow.service.spec.ts src/finance/custom-order-finance-sync.service.spec.ts src/finance/settlement-policy.service.spec.ts src/finance/settlement-backfill.service.spec.ts src/store/collection-price-range.util.spec.ts src/store/bulk-unpublish.spec.ts src/store/bulk-product-taxonomy.spec.ts src/store/product-publication-batching.spec.ts src/content-integrity/content-integrity.service.spec.ts src/content-integrity/content-submission-batching.spec.ts src/collections/collection-membership-query.spec.ts src/collections/category-moderation-batching.spec.ts src/admin/featured/featured-expiry.spec.ts src/brands/permissions/brand-permission-batch.spec.ts src/custom-orders/checkout-bag-batching.spec.ts src/custom-orders/custom-orders.service.spec.ts src/custom-orders/custom-order-side-effects.service.spec.ts src/custom-order-ops/custom-order-ops.cron.service.spec.ts src/custom-orders/queue/intake-batch.spec.ts src/custom-orders/queue/custom-order-queue.service.spec.ts src/custom-orders/queue/custom-order-queue-refunds.service.spec.ts src/custom-orders/queue/paid-capture-admission.spec.ts src/tags/tag-usage-query.spec.ts src/tags/tag-reindex-batching.spec.ts src/collections/finalized-media-query.spec.ts src/payment/checkout-inventory-query.spec.ts src/notifications/notification-batch-query.spec.ts src/notifications/scheduled-notification-batching.spec.ts src/notifications/email-outbox-dispatcher.service.spec.ts src/notifications/push-outbox-batching.spec.ts src/notifications/push-notifications.service.spec.ts src/reviews/review-lifecycle.service.spec.ts src/queue/notification-durable-replay.spec.ts src/messaging/messaging-side-effects.service.spec.ts src/payment/payment.service.spec.ts src/payment/placement-notification-batching.spec.ts src/notifications/notifications.service.spec.ts src/posts/reaction-concurrency.spec.ts src/commentsv2/comment-delete-concurrency.spec.ts --runInBand
       - name: PostgreSQL ledger and complaint concurrency
         env:
           DATABASE_URL: postgresql://postgres:ci-disposable-only@localhost:5432/postgres
+          VERIFY_LOCAL_REDIS_OUTBOX: "true"
         run: |
           node scripts/verify-ledger-concurrency.cjs
           node scripts/verify-custom-order-issue-race.cjs

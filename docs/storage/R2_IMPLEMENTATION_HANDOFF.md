@@ -1,5 +1,15 @@
 # R2 integration handoff
 
+Current update, 27 October: the real SIT bucket and Worker probes pass again.
+The actual upload HTTP/JWT/service/image-worker integration against real R2
+passes in a disposable database and isolated Redis namespace; see
+`evidence/r2-application.json` and [upload security audit](UPLOAD_SECURITY_AUDIT.md).
+SIT and local reference/admin seeds were reverified read-only; no reset repeated.
+The running SIT backend is still S3 (`fc37166`, 143 migrations). Application
+activation, final client/device regression and deployment remain explicit gates.
+Antivirus is a separate deferred work item by product-owner instruction.
+The older dated notes below describe the earlier preparation state.
+
 Date: 2026-10-22. Status: **local integration in progress; application cutover
 has not been performed**. The existing S3 configuration remains the deployment
 default. Implementation and isolated verification do not authorize production

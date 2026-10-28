@@ -7,8 +7,12 @@ import {
   lockBulkImportCheckpoint,
 } from '../collections/bulk-import-query';
 import { appendProductMemberships } from '../collections/collection-membership-query';
+import { retryProductCreation } from './product-creation-transaction';
 import { refreshCollectionPriceRanges } from './collection-price-range.util';
 import { withCartTransaction } from '../bagging/cart-transaction.util';
+import { deleteOwnedFile } from '../upload/file-deletion-query';
+import { lockContentReviewTarget } from '../content-integrity/content-review-lock';
+import { REQUIRED_CONTENT_MEDIA_VIEW_SLOTS } from '../content-integrity/content-integrity.constants';
 import type { NotificationEvent } from '../notifications/notification-batch-query';
 import { loadStockLifecycleProducts } from './product-lifecycle-query';
 import {
@@ -17,8 +21,15 @@ import {
   loadProductRemovalContext,
   loadProductRemovalEffects,
 } from './product-removal-query';
-import { loadProductPublications, loadProductPatchers, ProductPublication } from './product-publication-query';
-import { productPublicationNamespace, recipientNotificationId } from '../queue/notification-identity';
+import {
+  loadProductPublications,
+  loadProductPatchers,
+  ProductPublication,
+} from './product-publication-query';
+import {
+  productPublicationNamespace,
+  recipientNotificationId,
+} from '../queue/notification-identity';
 import {
   Injectable,
   NotFoundException,
@@ -62,7 +73,6 @@ import { v4 as uuidv4 } from 'uuid';
 import {
   assertStorePolicyConstraints,
   normalizeCustomOrderSettings,
-  sanitizeCustomOrderLeadTime,
   sanitizeProcessingTime,
   sanitizeResponseTimeSla,
   sanitizeReturnWindow,
@@ -84,8 +94,6 @@ import {
   Prisma,
   NotificationType,
   OrderStatus,
-  PatchMode,
-  PatchStatus,
   PaymentStatus,
   SizingMode,
   UserType,
@@ -178,9 +186,20 @@ const PRODUCT_VARIANT_SIZE_ALIASES: Record<string, string> = {
 };
 const PRODUCT_UPDATE_INCLUDE = {
   brand: true,
-  variants: { select: { size: true, color: true, sku: true, price: true, stock: true, colorHex: true } },
+  variants: {
+    select: {
+      size: true,
+      color: true,
+      sku: true,
+      price: true,
+      stock: true,
+      colorHex: true,
+    },
+  },
 } satisfies Prisma.ProductInclude;
-type ProductUpdateContext = Prisma.ProductGetPayload<{ include: typeof PRODUCT_UPDATE_INCLUDE }>;
+type ProductUpdateContext = Prisma.ProductGetPayload<{
+  include: typeof PRODUCT_UPDATE_INCLUDE;
+}>;
 
 const CUSTOM_ORDER_OUT_OF_STOCK_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const CUSTOM_ORDER_OUT_OF_STOCK_REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -1193,74 +1212,60 @@ export class StoreService {
     productId: string,
     mediaId: string,
   ) {
-    const product = await this.assertBrandOwnsProduct(
+    await this.assertBrandOwnsProduct(
       brandOwnerId,
       productId,
       BRAND_PERMISSIONS.CATALOG_DELETE,
     );
-
-    const upload = await this.prisma.fileUpload.findFirst({
-      where: { id: mediaId },
-      select: { id: true, s3Url: true, userId: true },
-    });
-
-    if (!upload) throw new NotFoundException('Media not found');
-
-    const existingImages = Array.isArray(product.images) ? product.images : [];
-    if (!existingImages.includes(upload.s3Url)) {
-      throw new NotFoundException('Media not found');
-    }
-    const nextImages = existingImages.filter((u) => u !== upload.s3Url);
-
-    let nextThumbnail = product.thumbnail ?? null;
-    if (nextThumbnail === upload.s3Url) {
-      nextThumbnail = nextImages[0] ?? null;
-    }
-
-    const productMediaDelegate = (this.prisma as any).productMedia;
-    const structuredMedia = productMediaDelegate?.findFirst
-      ? await productMediaDelegate.findFirst({
-          where: { productId, fileUploadId: mediaId },
-          select: { id: true, viewSlot: true },
-        })
-      : null;
-    if (
-      product.publicationStatus === CollectionStatus.PUBLISHED &&
-      structuredMedia?.viewSlot &&
-      this.contentIntegrity
-        ?.getRequiredViewSlots()
-        .includes(structuredMedia.viewSlot)
-    ) {
-      throw new BadRequestException(
-        'Published products cannot remove required front, back, left side, or right side media until replacement media is reviewed.',
-      );
-    }
-
-    if (typeof (this.prisma as any).$transaction === 'function') {
-      await this.prisma.$transaction(async (tx) => {
-        if ((tx as any).productMedia?.deleteMany) {
-          await (tx as any).productMedia.deleteMany({
-            where: { productId, fileUploadId: mediaId },
-          });
-        }
-        await tx.product.update({
-          where: { id: productId },
-          data: { images: nextImages, thumbnail: nextThumbnail },
-        });
+    await this.prisma.$transaction(async (tx) => {
+      await lockContentReviewTarget(tx, { productId });
+      const product = await tx.product.findUniqueOrThrow({
+        where: { id: productId },
+        select: { images: true, thumbnail: true, publicationStatus: true },
       });
-    } else {
-      await productMediaDelegate?.deleteMany?.({
+      const upload = await tx.fileUpload.findFirst({
+        where: { id: mediaId },
+        select: { id: true, s3Url: true, userId: true },
+      });
+
+      if (!upload) throw new NotFoundException('Media not found');
+
+      const existingImages = Array.isArray(product.images)
+        ? product.images
+        : [];
+      if (!existingImages.includes(upload.s3Url)) {
+        throw new NotFoundException('Media not found');
+      }
+      const nextImages = existingImages.filter((u) => u !== upload.s3Url);
+
+      let nextThumbnail = product.thumbnail ?? null;
+      if (nextThumbnail === upload.s3Url) {
+        nextThumbnail = nextImages[0] ?? null;
+      }
+
+      const structuredMedia = await tx.productMedia.findFirst({
+        where: { productId, fileUploadId: mediaId },
+        select: { id: true, viewSlot: true },
+      });
+      if (
+        product.publicationStatus === CollectionStatus.PUBLISHED &&
+        structuredMedia?.viewSlot &&
+        REQUIRED_CONTENT_MEDIA_VIEW_SLOTS.includes(structuredMedia.viewSlot)
+      ) {
+        throw new BadRequestException(
+          'Published products cannot remove required front, back, left side, or right side media until replacement media is reviewed.',
+        );
+      }
+
+      await tx.productMedia.deleteMany({
         where: { productId, fileUploadId: mediaId },
       });
-      await this.prisma.product.update({
+      await tx.product.update({
         where: { id: productId },
         data: { images: nextImages, thumbnail: nextThumbnail },
       });
-    }
-
-    if (upload.userId === brandOwnerId) {
-      await this.uploadService.deleteFileIfUnused(mediaId, brandOwnerId);
-    }
+      await deleteOwnedFile(tx, mediaId, upload.userId, false);
+    });
 
     return { success: true };
   }
@@ -1270,7 +1275,7 @@ export class StoreService {
     productId: string,
     mediaIds: string[],
   ) {
-    const product = await this.assertBrandOwnsProduct(brandOwnerId, productId);
+    await this.assertBrandOwnsProduct(brandOwnerId, productId);
 
     const ids = Array.isArray(mediaIds) ? mediaIds.filter(Boolean) : [];
     if (ids.length > this.maxProductMediaCount) {
@@ -1278,47 +1283,59 @@ export class StoreService {
         `You can upload up to ${this.maxProductMediaCount} images`,
       );
     }
-    if (ids.length === 0) {
-      if (product.publicationStatus === CollectionStatus.PUBLISHED) {
-        throw new BadRequestException(
-          'Published products cannot remove all media. Upload replacement media first.',
-        );
-      }
-      await this.prisma.$transaction(async (tx) => {
+    if (new Set(ids).size !== ids.length)
+      throw new BadRequestException('Media IDs must be unique');
+    await this.prisma.$transaction(async (tx) => {
+      await lockContentReviewTarget(tx, { productId });
+      const product = await tx.product.findUniqueOrThrow({
+        where: { id: productId },
+        select: { images: true, thumbnail: true, publicationStatus: true },
+      });
+      if (ids.length === 0) {
+        if (product.publicationStatus === CollectionStatus.PUBLISHED) {
+          throw new BadRequestException(
+            'Published products cannot remove all media. Upload replacement media first.',
+          );
+        }
         await (tx as any).productMedia.deleteMany({ where: { productId } });
         await tx.product.update({
           where: { id: productId },
           data: { images: [], thumbnail: null },
         });
+        return;
+      }
+
+      const uploads = await tx.fileUpload.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, s3Url: true },
       });
-      return { success: true };
-    }
 
-    const uploads = await this.prisma.fileUpload.findMany({
-      where: { id: { in: ids } },
-      select: { id: true, s3Url: true },
-    });
+      if (uploads.length !== ids.length) {
+        throw new BadRequestException('One or more mediaIds are invalid');
+      }
 
-    if (uploads.length !== ids.length) {
-      throw new BadRequestException('One or more mediaIds are invalid');
-    }
+      const urlById = new Map<string, string>();
+      for (const u of uploads) urlById.set(u.id, u.s3Url);
 
-    const urlById = new Map<string, string>();
-    for (const u of uploads) urlById.set(u.id, u.s3Url);
+      const nextImages = ids.map((id) => urlById.get(id)!).filter(Boolean);
+      const existingImages = Array.isArray(product.images)
+        ? product.images
+        : [];
+      if (
+        nextImages.length !== existingImages.length ||
+        nextImages.some((url) => !existingImages.includes(url))
+      ) {
+        throw new BadRequestException(
+          'Reorder all current media. Refresh the product after an upload or deletion.',
+        );
+      }
 
-    const nextImages = ids.map((id) => urlById.get(id)!).filter(Boolean);
-    const existingImages = Array.isArray(product.images) ? product.images : [];
-    if (nextImages.some((url) => !existingImages.includes(url))) {
-      throw new BadRequestException('One or more mediaIds are invalid');
-    }
+      const thumbUrl = product.thumbnail ?? null;
+      const nextThumbnail =
+        thumbUrl && nextImages.includes(thumbUrl)
+          ? thumbUrl
+          : (nextImages[0] ?? null);
 
-    const thumbUrl = product.thumbnail ?? null;
-    const nextThumbnail =
-      thumbUrl && nextImages.includes(thumbUrl)
-        ? thumbUrl
-        : (nextImages[0] ?? null);
-
-    await this.prisma.$transaction(async (tx) => {
       await tx.product.update({
         where: { id: productId },
         data: { images: nextImages, thumbnail: nextThumbnail },
@@ -1341,34 +1358,42 @@ export class StoreService {
     productId: string,
     mediaId: string,
   ) {
-    const product = await this.assertBrandOwnsProduct(brandOwnerId, productId);
+    await this.assertBrandOwnsProduct(brandOwnerId, productId);
+    await this.prisma.$transaction(async (tx) => {
+      await lockContentReviewTarget(tx, { productId });
+      const product = await tx.product.findUniqueOrThrow({
+        where: { id: productId },
+        select: { images: true, thumbnail: true, publicationStatus: true },
+      });
+      const upload = await tx.fileUpload.findFirst({
+        where: { id: mediaId },
+        select: { id: true, s3Url: true },
+      });
 
-    const upload = await this.prisma.fileUpload.findFirst({
-      where: { id: mediaId },
-      select: { id: true, s3Url: true },
-    });
+      if (!upload) throw new NotFoundException('Media not found');
 
-    if (!upload) throw new NotFoundException('Media not found');
+      const existingImages = Array.isArray(product.images)
+        ? product.images
+        : [];
+      if (!existingImages.includes(upload.s3Url)) {
+        throw new NotFoundException('Media not found');
+      }
+      if (
+        !existingImages.includes(upload.s3Url) &&
+        existingImages.length >= this.maxProductMediaCount
+      ) {
+        throw new BadRequestException(
+          `You can upload up to ${this.maxProductMediaCount} images`,
+        );
+      }
+      const nextImages = existingImages.includes(upload.s3Url)
+        ? existingImages
+        : [...existingImages, upload.s3Url];
 
-    const existingImages = Array.isArray(product.images) ? product.images : [];
-    if (!existingImages.includes(upload.s3Url)) {
-      throw new NotFoundException('Media not found');
-    }
-    if (
-      !existingImages.includes(upload.s3Url) &&
-      existingImages.length >= this.maxProductMediaCount
-    ) {
-      throw new BadRequestException(
-        `You can upload up to ${this.maxProductMediaCount} images`,
-      );
-    }
-    const nextImages = existingImages.includes(upload.s3Url)
-      ? existingImages
-      : [...existingImages, upload.s3Url];
-
-    await this.prisma.product.update({
-      where: { id: productId },
-      data: { images: nextImages, thumbnail: upload.s3Url },
+      await tx.product.update({
+        where: { id: productId },
+        data: { images: nextImages, thumbnail: upload.s3Url },
+      });
     });
 
     return { success: true };
@@ -2214,7 +2239,6 @@ export class StoreService {
     });
     return outcomes;
   }
-
   async createProduct(brandOwnerId: string, dto: CreateProductDto) {
     const brand = await this.resolveCatalogBrandForActor(brandOwnerId);
     return this.createProductWithContext(brandOwnerId, dto, brand);
@@ -2439,297 +2463,285 @@ export class StoreService {
       : null;
     let contentSubmissionId: string | null = null;
 
-    const product = await this.prisma.$transaction(
-      async (tx) => {
-        if (checkpoint) {
-          const saved = await lockBulkImportCheckpoint(tx, checkpoint);
-          if (
-            saved.collectionId !== requestedCollectionId ||
-            saved.ownerId !== brandOwnerId
-          )
-            throw new ForbiddenException(
-              'Import checkpoint does not match this actor and collection',
-            );
-          if (saved.productCreatedAt && !saved.createdProductId)
-            throw new ConflictException(
-              'Imported product was removed; it will not be recreated',
-            );
-          if (saved.createdProductId) {
-            const existing = await loadBulkImportProduct(
+    const product = await retryProductCreation((attempt) =>
+      this.prisma.$transaction(
+        async (tx) => {
+          contentSubmissionId = null;
+          if (checkpoint) {
+            const saved = await lockBulkImportCheckpoint(tx, checkpoint);
+            if (
+              saved.collectionId !== requestedCollectionId ||
+              saved.ownerId !== brandOwnerId
+            )
+              throw new ForbiddenException(
+                'Import checkpoint does not match this actor and collection',
+              );
+            if (saved.productCreatedAt && !saved.createdProductId)
+              throw new ConflictException(
+                'Imported product was removed; it will not be recreated',
+              );
+            if (saved.createdProductId) {
+              const existing = await loadBulkImportProduct(
+                tx,
+                saved.createdProductId,
+              );
+              if (
+                !existing ||
+                existing.brandId !== brand.id ||
+                existing.deletedAt ||
+                existing.archivedAt
+              )
+                throw new ConflictException(
+                  'Imported product is unavailable; it will not be recreated',
+                );
+              contentSubmissionId = existing.latestSubmissionId;
+              return existing;
+            }
+          }
+          const slug =
+            attempt > 0
+              ? `${this.normalizeSlugBase(resolvedName)}-${uuidv4()}`
+              : checkpoint
+                ? await loadBulkProductSlug(
+                    tx,
+                    this.normalizeSlugBase(resolvedName),
+                  )
+                : await this.ensureUniqueProductSlug(tx, resolvedName);
+          let collectionId = requestedCollectionId;
+
+          if (!collectionId) {
+            // Product drafts still need a primary StoreCollection link under the
+            // current schema. This is compatibility storage, not collection-owned
+            // product behavior.
+            collectionId = await this.ensureDefaultStoreCollection(
               tx,
-              saved.createdProductId,
+              brandOwnerUserId,
+            );
+          }
+
+          let bulkTaxonomy: BulkProductTaxonomy | undefined;
+          if (checkpoint) {
+            await this.lockCollectionForUpdate(tx, collectionId);
+            bulkTaxonomy = await loadBulkProductTaxonomy(
+              tx,
+              collectionId,
+              requestedCategoryId,
+              requestedCategoryTypeId,
             );
             if (
-              !existing ||
-              existing.brandId !== brand.id ||
-              existing.deletedAt ||
-              existing.archivedAt
-            )
+              !bulkTaxonomy.collectionId ||
+              bulkTaxonomy.deletedAt ||
+              bulkTaxonomy.ownerId !== brandOwnerUserId
+            ) {
               throw new ConflictException(
-                'Imported product is unavailable; it will not be recreated',
+                'Store collection changed or was deleted during import',
               );
-            contentSubmissionId = existing.latestSubmissionId;
-            return existing;
+            }
+          } else {
+            await this.assertCategoryTypeForCollection(
+              tx,
+              collectionId,
+              requestedCategoryTypeId,
+            );
           }
-        }
-        let slug = checkpoint
-          ? await loadBulkProductSlug(tx, this.normalizeSlugBase(resolvedName))
-          : await this.ensureUniqueProductSlug(tx, resolvedName);
-        let collectionId = requestedCollectionId;
-
-        if (!collectionId) {
-          // Product drafts still need a primary StoreCollection link under the
-          // current schema. This is compatibility storage, not collection-owned
-          // product behavior.
-          collectionId = await this.ensureDefaultStoreCollection(
+          await this.assertProductTaxonomy(
             tx,
-            brandOwnerUserId,
-          );
-        }
-
-        let bulkTaxonomy: BulkProductTaxonomy | undefined;
-        if (checkpoint) {
-          await this.lockCollectionForUpdate(tx, collectionId);
-          bulkTaxonomy = await loadBulkProductTaxonomy(
-            tx,
-            collectionId,
             requestedCategoryId,
             requestedCategoryTypeId,
-          );
-          if (
-            !bulkTaxonomy.collectionId ||
-            bulkTaxonomy.deletedAt ||
-            bulkTaxonomy.ownerId !== brandOwnerUserId
-          ) {
-            throw new ConflictException(
-              'Store collection changed or was deleted during import',
-            );
-          }
-        } else {
-          await this.assertCategoryTypeForCollection(
-            tx,
-            collectionId,
-            requestedCategoryTypeId,
-          );
-        }
-        await this.assertProductTaxonomy(
-          tx,
-          requestedCategoryId,
-          requestedCategoryTypeId,
-          bulkTaxonomy,
-        );
-        if (nextIsActive) {
-          await this.assertProductPublishReady(
-            tx,
-            {
-              name: resolvedName,
-              description: dto.description,
-              categoryId: requestedCategoryId,
-              categoryTypeId: requestedCategoryTypeId,
-              gender: dto.gender || 'EVERYBODY',
-              tags: resolvedTags,
-              price: resolvedPrice,
-              images: normalizedImages,
-              thumbnail: resolvedThumbnail,
-              variants: derivedFromVariants?.variants ?? [],
-              totalStock:
-                derivedFromVariants?.totalStock ?? (dto.totalStock || 0),
-              trackInventory: dto.trackInventory ?? true,
-              customOrderEnabled: nextCustomOrderEnabled,
-            },
             bulkTaxonomy,
           );
-        }
-
-        if (!checkpoint) await this.lockCollectionForUpdate(tx, collectionId);
-        if (nextIsActive) {
-          await this.assertCollectionCapacity(tx, collectionId);
-        }
-        const orderIndex = await tx.storeCollectionProduct.count({
-          where: { collectionId },
-        });
-
-        let created = null as Awaited<
-          ReturnType<typeof tx.product.create>
-        > | null;
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          try {
-            created = await tx.product.create({
-              data: {
-                id: uuidv4(),
-                collectionId,
+          if (nextIsActive) {
+            await this.assertProductPublishReady(
+              tx,
+              {
+                name: resolvedName,
+                description: dto.description,
                 categoryId: requestedCategoryId,
                 categoryTypeId: requestedCategoryTypeId,
-                brandId: brand.id,
-                name: resolvedName,
-                slug,
-                description: dto.description,
-                currency,
-                standardCheckoutEnabled: dto.standardCheckoutEnabled !== false,
-                customOrderEnabled: nextCustomOrderEnabled,
-                price: new Prisma.Decimal(resolvedPrice),
-                salePrice: dto.salePrice
-                  ? new Prisma.Decimal(dto.salePrice)
-                  : null,
-                saleStartAt: dto.saleStartAt ? new Date(dto.saleStartAt) : null,
-                saleEndAt: dto.saleEndAt ? new Date(dto.saleEndAt) : null,
-                // Product details
-                sku: dto.sku || null,
-                weight: dto.weight ? new Prisma.Decimal(dto.weight) : null,
-                weightUnit: dto.weightUnit || 'kg',
-                materials: dto.materials || null,
-                careInstructions: dto.careInstructions || null,
-                costPerItem: dto.costPerItem
-                  ? new Prisma.Decimal(dto.costPerItem)
-                  : null,
-                // Variants (legacy + derived)
-                sizes: derivedFromVariants?.sizes ?? dto.sizes ?? [],
-                sizeStock:
-                  derivedFromVariants?.sizeStock ?? dto.sizeStock ?? null,
-                sizingMode: this.normalizeSizingMode(dto.sizingMode),
-                rtwSizeSystem: dto.rtwSizeSystem || null,
-                rtwSizeType: dto.rtwSizeType || null,
-                rtwLinkedToInventory: dto.rtwLinkedToInventory ?? false,
-                customGender: dto.customGender || null,
-                customMeasurementKeys: this.normalizeRequiredMeasurementKeys(
-                  dto.customMeasurementKeys,
-                ),
-                customFreeformPointIds: this.normalizeRequiredMeasurementKeys(
-                  dto.customFreeformPointIds,
-                ),
-                fitPreference: dto.fitPreference || null,
-                targetAgeGroup: dto.targetAgeGroup || 'ADULT',
-                colors: derivedFromVariants?.colors ?? dto.colors ?? [],
-                colorImages: dto.colorImages || null,
-                colorHexCodes:
-                  derivedFromVariants?.colorHexCodes ??
-                  dto.colorHexCodes ??
-                  null,
-                // Media
+                gender: dto.gender || 'EVERYBODY',
+                tags: resolvedTags,
+                price: resolvedPrice,
                 images: normalizedImages,
                 thumbnail: resolvedThumbnail,
-                // Inventory
-                totalStock: initialTotalStock,
-                lowStockThreshold: dto.lowStockThreshold || 5,
+                variants: derivedFromVariants?.variants ?? [],
+                totalStock:
+                  derivedFromVariants?.totalStock ?? (dto.totalStock || 0),
                 trackInventory: dto.trackInventory ?? true,
-                allowBackorders: dto.allowBackorders ?? false,
-                customOrderOutOfStockTriggeredAt: initialOutOfStockTriggeredAt,
-                customOrderOutOfStockReminderSentAt: null,
-                customOrderOutOfStockDiscontinueAt:
-                  initialOutOfStockDiscontinueAt,
-                // Metadata
-                tags: resolvedTags,
-                gender: dto.gender || 'EVERYBODY',
-                isActive: createIsActive,
-                publicationStatus: publicationDecision.publicationStatus,
-                isPhysicalProduct: dto.isPhysicalProduct ?? true,
-                customsRegion: dto.customsRegion || null,
-                // Policies
-                returnsEligible: dto.returnsEligible ?? true,
-                // SEO
-                metaTitle: dto.metaTitle || null,
-                metaDescription: dto.metaDescription || null,
-                // Scheduling
-                publishAt: dto.publishAt ? new Date(dto.publishAt) : null,
+                customOrderEnabled: nextCustomOrderEnabled,
+              },
+              bulkTaxonomy,
+            );
+          }
+
+          if (!checkpoint) await this.lockCollectionForUpdate(tx, collectionId);
+          if (nextIsActive) {
+            await this.assertCollectionCapacity(tx, collectionId);
+          }
+          const orderIndex = await tx.storeCollectionProduct.count({
+            where: { collectionId },
+          });
+
+          const created = await tx.product.create({
+            data: {
+              id: uuidv4(),
+              collectionId,
+              categoryId: requestedCategoryId,
+              categoryTypeId: requestedCategoryTypeId,
+              brandId: brand.id,
+              name: resolvedName,
+              slug,
+              description: dto.description,
+              currency,
+              standardCheckoutEnabled: dto.standardCheckoutEnabled !== false,
+              customOrderEnabled: nextCustomOrderEnabled,
+              price: new Prisma.Decimal(resolvedPrice),
+              salePrice: dto.salePrice
+                ? new Prisma.Decimal(dto.salePrice)
+                : null,
+              saleStartAt: dto.saleStartAt ? new Date(dto.saleStartAt) : null,
+              saleEndAt: dto.saleEndAt ? new Date(dto.saleEndAt) : null,
+              // Product details
+              sku: dto.sku || null,
+              weight: dto.weight ? new Prisma.Decimal(dto.weight) : null,
+              weightUnit: dto.weightUnit || 'kg',
+              materials: dto.materials || null,
+              careInstructions: dto.careInstructions || null,
+              costPerItem: dto.costPerItem
+                ? new Prisma.Decimal(dto.costPerItem)
+                : null,
+              // Variants (legacy + derived)
+              sizes: derivedFromVariants?.sizes ?? dto.sizes ?? [],
+              sizeStock:
+                derivedFromVariants?.sizeStock ?? dto.sizeStock ?? null,
+              sizingMode: this.normalizeSizingMode(dto.sizingMode),
+              rtwSizeSystem: dto.rtwSizeSystem || null,
+              rtwSizeType: dto.rtwSizeType || null,
+              rtwLinkedToInventory: dto.rtwLinkedToInventory ?? false,
+              customGender: dto.customGender || null,
+              customMeasurementKeys: this.normalizeRequiredMeasurementKeys(
+                dto.customMeasurementKeys,
+              ),
+              customFreeformPointIds: this.normalizeRequiredMeasurementKeys(
+                dto.customFreeformPointIds,
+              ),
+              fitPreference: dto.fitPreference || null,
+              targetAgeGroup: dto.targetAgeGroup || 'ADULT',
+              colors: derivedFromVariants?.colors ?? dto.colors ?? [],
+              colorImages: dto.colorImages || null,
+              colorHexCodes:
+                derivedFromVariants?.colorHexCodes ?? dto.colorHexCodes ?? null,
+              // Media
+              images: normalizedImages,
+              thumbnail: resolvedThumbnail,
+              // Inventory
+              totalStock: initialTotalStock,
+              lowStockThreshold: dto.lowStockThreshold || 5,
+              trackInventory: dto.trackInventory ?? true,
+              allowBackorders: dto.allowBackorders ?? false,
+              customOrderOutOfStockTriggeredAt: initialOutOfStockTriggeredAt,
+              customOrderOutOfStockReminderSentAt: null,
+              customOrderOutOfStockDiscontinueAt:
+                initialOutOfStockDiscontinueAt,
+              // Metadata
+              tags: resolvedTags,
+              gender: dto.gender || 'EVERYBODY',
+              isActive: createIsActive,
+              publicationStatus: publicationDecision.publicationStatus,
+              isPhysicalProduct: dto.isPhysicalProduct ?? true,
+              customsRegion: dto.customsRegion || null,
+              // Policies
+              returnsEligible: dto.returnsEligible ?? true,
+              // SEO
+              metaTitle: dto.metaTitle || null,
+              metaDescription: dto.metaDescription || null,
+              // Scheduling
+              publishAt: dto.publishAt ? new Date(dto.publishAt) : null,
+            },
+          });
+
+          if (this.contentIntegrity && structuredProductMedia.length > 0) {
+            await this.contentIntegrity.replaceProductMedia(tx, {
+              productId: created.id,
+              brandId: brand.id,
+              actorUserId: brandOwnerId,
+              media: structuredProductMedia,
+            });
+          }
+
+          await tx.storeCollectionProduct.create({
+            data: {
+              id: uuidv4(),
+              collectionId,
+              productId: created.id,
+              orderIndex,
+              isPrimary: true,
+            },
+          });
+
+          if (derivedFromVariants && derivedFromVariants.variants.length > 0) {
+            await tx.productVariant.createMany({
+              data: derivedFromVariants.variants.map((v) => ({
+                id: uuidv4(),
+                productId: created.id,
+                size: v.size,
+                color: v.color,
+                sku: v.sku,
+                price: v.price,
+                stock: v.stock,
+                colorHex: v.colorHex,
+              })),
+            });
+          }
+
+          if (
+            nextIsActive &&
+            publicationDecision.requiresPreReview &&
+            this.contentIntegrity
+          ) {
+            const submission = await this.contentIntegrity.createSubmission(
+              tx,
+              {
+                entityType: ContentEntityType.PRODUCT,
+                productId: created.id,
+                brandId: brand.id,
+                submittedById: brandOwnerId,
+                previousStatus: CollectionStatus.DRAFT,
+              },
+            );
+            contentSubmissionId = submission.id;
+          }
+
+          if (checkpoint) {
+            await tx.collectionBulkUploadRow.update({
+              where: { id: checkpoint.rowId },
+              data: {
+                createdProductId: created.id,
+                productCreatedAt: created.createdAt,
+                status: 'PROCESSING',
+                errorMessage: null,
               },
             });
-            break;
-          } catch (error) {
-            if (
-              error instanceof Prisma.PrismaClientKnownRequestError &&
-              error.code === 'P2002' &&
-              attempt < 2
-            ) {
-              slug = this.generateSlug(resolvedName);
-              continue;
-            }
-            throw error;
+            // These membership/scalar values were just written in this transaction.
+            // Import callers need only an ID, so do not reload display relations.
+            return {
+              ...created,
+              collections: [{ collectionId, orderIndex }],
+            };
           }
-        }
 
-        if (!created) {
-          throw new InternalServerErrorException('Unable to create product');
-        }
-
-        if (this.contentIntegrity && structuredProductMedia.length > 0) {
-          await this.contentIntegrity.replaceProductMedia(tx, {
-            productId: created.id,
-            brandId: brand.id,
-            actorUserId: brandOwnerId,
-            media: structuredProductMedia,
-          });
-        }
-
-        await tx.storeCollectionProduct.create({
-          data: {
-            id: uuidv4(),
-            collectionId,
-            productId: created.id,
-            orderIndex,
-            isPrimary: true,
-          },
-        });
-
-        if (derivedFromVariants && derivedFromVariants.variants.length > 0) {
-          await tx.productVariant.createMany({
-            data: derivedFromVariants.variants.map((v) => ({
-              id: uuidv4(),
-              productId: created.id,
-              size: v.size,
-              color: v.color,
-              sku: v.sku,
-              price: v.price,
-              stock: v.stock,
-              colorHex: v.colorHex,
-            })),
-          });
-        }
-
-        if (
-          nextIsActive &&
-          publicationDecision.requiresPreReview &&
-          this.contentIntegrity
-        ) {
-          const submission = await this.contentIntegrity.createSubmission(tx, {
-            entityType: ContentEntityType.PRODUCT,
-            productId: created.id,
-            brandId: brand.id,
-            submittedById: brandOwnerId,
-            previousStatus: CollectionStatus.DRAFT,
-          });
-          contentSubmissionId = submission.id;
-        }
-
-        if (checkpoint) {
-          await tx.collectionBulkUploadRow.update({
-            where: { id: checkpoint.rowId },
-            data: {
-              createdProductId: created.id,
-              productCreatedAt: created.createdAt,
-              status: 'PROCESSING',
-              errorMessage: null,
+          return tx.product.findUnique({
+            where: { id: created.id },
+            include: {
+              collections: { select: { collectionId: true, orderIndex: true } },
+              brand: {
+                select: { id: true, name: true, logo: true, currency: true },
+              },
+              variants: true,
             },
           });
-          // These membership/scalar values were just written in this transaction.
-          // Import callers need only an ID, so do not reload display relations.
-          return {
-            ...created,
-            collections: [{ collectionId, orderIndex }],
-          };
-        }
-
-        return tx.product.findUnique({
-          where: { id: created.id },
-          include: {
-            collections: { select: { collectionId: true, orderIndex: true } },
-            brand: {
-              select: { id: true, name: true, logo: true, currency: true },
-            },
-            variants: true,
-          },
-        });
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+      ),
     );
 
     if (!product) {
@@ -3413,7 +3425,12 @@ export class StoreService {
         finalCategoryId,
         finalCategoryTypeId,
         !includeResponseMedia && (finalCategoryId || finalCategoryTypeId)
-          ? await loadBulkProductTaxonomy(tx, null, finalCategoryId, finalCategoryTypeId)
+          ? await loadBulkProductTaxonomy(
+              tx,
+              null,
+              finalCategoryId,
+              finalCategoryTypeId,
+            )
           : undefined,
       );
       if (structuredUpdateMedia && this.contentIntegrity) {
@@ -3576,7 +3593,8 @@ export class StoreService {
 
       if (!includeResponseMedia) {
         const collections = await tx.storeCollectionProduct.findMany({
-          where: { productId }, select: { collectionId: true, orderIndex: true },
+          where: { productId },
+          select: { collectionId: true, orderIndex: true },
         });
         return { ...savedProduct, collections };
       }
@@ -4051,7 +4069,11 @@ export class StoreService {
     return this.archiveProductCommand(brandOwnerId, productId, true);
   }
 
-  private async archiveProductCommand(brandOwnerId: string, productId: string, includeResponseMedia: boolean) {
+  private async archiveProductCommand(
+    brandOwnerId: string,
+    productId: string,
+    includeResponseMedia: boolean,
+  ) {
     const product = await loadProductRemovalContext(this.prisma, productId);
 
     if (!product) {
@@ -4086,11 +4108,17 @@ export class StoreService {
         archiveLastReminder: null,
         isActive: false,
       },
-      ...(includeResponseMedia ? { include: {
-        collections: { select: { collectionId: true, orderIndex: true } },
-        brand: { select: { id: true, name: true, logo: true, currency: true } },
-        variants: true,
-      } } : {}),
+      ...(includeResponseMedia
+        ? {
+            include: {
+              collections: { select: { collectionId: true, orderIndex: true } },
+              brand: {
+                select: { id: true, name: true, logo: true, currency: true },
+              },
+              variants: true,
+            },
+          }
+        : {}),
     });
 
     const effects = await loadProductRemovalEffects(this.prisma, productId);
@@ -4131,7 +4159,9 @@ export class StoreService {
       }
     }
 
-    return includeResponseMedia ? this.attachProductMedia(archived, { includeOwnerFinancials: true }) : archived;
+    return includeResponseMedia
+      ? this.attachProductMedia(archived, { includeOwnerFinancials: true })
+      : archived;
   }
 
   // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -4246,7 +4276,11 @@ export class StoreService {
     productId: string,
     cancelPendingOrders = false,
   ) {
-    const product = await loadProductRemovalContext(this.prisma, productId, true);
+    const product = await loadProductRemovalContext(
+      this.prisma,
+      productId,
+      true,
+    );
 
     if (!product) {
       throw new NotFoundException('Product not found');
@@ -4274,7 +4308,11 @@ export class StoreService {
       };
     }
 
-    const effects = await loadProductRemovalEffects(this.prisma, productId, false);
+    const effects = await loadProductRemovalEffects(
+      this.prisma,
+      productId,
+      false,
+    );
 
     // Get affected collection titles for notification
     const affectedCollections = effects.collectionTitles;
@@ -4292,7 +4330,11 @@ export class StoreService {
         SELECT "deletedAt" FROM "Product" WHERE "_id" = ${productId}::uuid FOR UPDATE`;
       if (!current || current.deletedAt) return false;
 
-      const orders = await loadProductActiveOrders(tx, product.brandId, productId);
+      const orders = await loadProductActiveOrders(
+        tx,
+        product.brandId,
+        productId,
+      );
       if (orders.some((order) => order.status === 'SHIPPED')) {
         throw new ConflictException({
           code: 'PRODUCT_HAS_SHIPPED_ORDERS',
@@ -4319,22 +4361,32 @@ export class StoreService {
         let refund: { amount: Prisma.Decimal; currency: string } | null = null;
         if (order.paymentStatus === PaymentStatus.PAID) {
           if (!this.standardOrderRefunds)
-            throw new InternalServerErrorException('Refund processing is unavailable');
+            throw new InternalServerErrorException(
+              'Refund processing is unavailable',
+            );
           // Request the refund first: it takes the capture lock before the order lock.
-          const requested = await this.standardOrderRefunds.requestInTransaction(tx, {
-            orderId: order.id,
-            trigger: 'PRODUCT_REMOVAL',
-            reason: 'PRODUCT_REMOVED_BY_BRAND',
-            actorId: brandOwnerId,
-          });
-          refund = { amount: requested.settlementAmount, currency: requested.settlementCurrency };
+          const requested =
+            await this.standardOrderRefunds.requestInTransaction(tx, {
+              orderId: order.id,
+              trigger: 'PRODUCT_REMOVAL',
+              reason: 'PRODUCT_REMOVED_BY_BRAND',
+              actorId: brandOwnerId,
+            });
+          refund = {
+            amount: requested.settlementAmount,
+            currency: requested.settlementCurrency,
+          };
         }
         const cancelled = await tx.order.updateMany({
           where: { id: order.id, status: { in: ['PENDING', 'PROCESSING'] } },
           data: { status: 'CANCELLED' },
         });
         if (cancelled.count === 1) {
-          cancelledOrders.push({ id: order.id, buyerId: order.buyerId, refund });
+          cancelledOrders.push({
+            id: order.id,
+            buyerId: order.buyerId,
+            refund,
+          });
         }
       }
 
@@ -4378,16 +4430,14 @@ export class StoreService {
             },
           },
         );
-      } catch (error) {
+      } catch {
         this.logger.warn(
           `Failed to notify buyer about cancellation of order ${order.id}`,
         );
       }
     }
 
-    await this.recalculateCollectionPriceRanges(
-      effects.collectionIds,
-    );
+    await this.recalculateCollectionPriceRanges(effects.collectionIds);
 
     if (previousIndexedTags.length > 0 && this.systemTags) {
       await this.systemTags.syncTags(previousIndexedTags, []);

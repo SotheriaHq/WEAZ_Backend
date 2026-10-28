@@ -4,6 +4,10 @@ import { FileSpecDto } from '../dto/create-collection.dto';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { UploadService } from 'src/upload/upload.service';
 import { SystemConfigService } from 'src/admin/system-config/system-config.service';
+import {
+  assertAllowedUploadType,
+  DIRECT_UPLOAD_HARD_LIMIT_BYTES,
+} from 'src/upload/upload-policy';
 
 const FILE_TYPE_CONFIG_KEYS: Record<string, string> = {
   [FileType.POST_IMAGE]: 'upload.maxSize.postImage',
@@ -21,10 +25,23 @@ export class HelperService {
   ) {}
 
   public async validateFileSpec(fileSpec: FileSpecDto, fileType: FileType) {
+    assertAllowedUploadType(fileSpec.name, fileSpec.type, fileType as any);
+    if (!Number.isSafeInteger(fileSpec.size) || fileSpec.size <= 0) {
+      throw new BadRequestException(
+        'File size must be a positive whole number of bytes',
+      );
+    }
     const configKey = FILE_TYPE_CONFIG_KEYS[fileType];
-    const maxSize = configKey
+    const configuredMaxSize = configKey
       ? await this.systemConfigService.getMaxFileSize(configKey)
       : 2 * 1024 * 1024;
+    if (!Number.isFinite(configuredMaxSize) || configuredMaxSize <= 0) {
+      throw new BadRequestException('Upload size policy is unavailable');
+    }
+    const maxSize = Math.min(
+      configuredMaxSize,
+      DIRECT_UPLOAD_HARD_LIMIT_BYTES[fileType],
+    );
 
     if (fileSpec.size > maxSize) {
       const limitMB = (maxSize / (1024 * 1024)).toFixed(1);
@@ -51,7 +68,7 @@ export class HelperService {
       ],
     };
 
-    if (!allowedMimes[fileType].includes(fileSpec.type)) {
+    if (!allowedMimes[fileType]?.includes(fileSpec.type)) {
       throw new BadRequestException(
         `File type ${fileSpec.type} not allowed for ${fileType}`,
       );
@@ -131,6 +148,9 @@ export class HelperService {
     const pepper =
       process.env.VIEW_IP_HASH_SECRET || process.env.JWT_ACCESS_SECRET || '';
     if (!pepper) return null;
-    return createHmac('sha256', pepper).update(value).digest('hex').slice(0, 32);
+    return createHmac('sha256', pepper)
+      .update(value)
+      .digest('hex')
+      .slice(0, 32);
   }
 }

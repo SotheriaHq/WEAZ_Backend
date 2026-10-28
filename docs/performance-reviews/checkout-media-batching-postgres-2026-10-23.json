@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-10-27T07:13:27.032Z",
+  "checkedAt": "2026-10-28T13:12:05.315Z",
   "passed": true,
   "cleanupPassed": true,
   "cases": [
@@ -12,8 +12,8 @@
     "26 mixed notifications preserve per-event payload/type/target and same-recipient replay using bounded joined policy reads",
     "real joined patch privacy accepts the connected actor and excludes an unconnected actor for the same recipient",
     "category moderation JOIN pages 26 drafts without multiplying media, omits deleted/published rows and retains cursor boundaries",
-    "real category rejection updates 26 independent drafts and preserves every notification payload with nine SELECTs including email suppression",
-    "real category approval preserves existing media-present publication and 25 upload-incomplete outcomes with nine SELECTs; canonical publication-readiness audit remains separate",
+    "real category rejection commits 27 independent metadata updates and notices, retains draft status and records the original suggestion",
+    "real category approval updates draft and previously published metadata without changing any content publication state",
     "26 custom-order brand recipients hydrate in one SELECT, deduplicate repeated brands, omit missing brands and do no empty-page lookup",
     "26 actual out-of-stock reminders preserve product targets with eight SELECTs and one guarded timestamp update",
     "26 actual shopper bag reminders retain quantities and targets using eight SELECTs total",
@@ -34,6 +34,7 @@
     "a worker crash on the eighth attempt becomes an explicit exhausted failure after lease expiry instead of remaining PROCESSING forever",
     "failed queue handoff backs off instead of retrying in a hot loop; due retry retains the same notification/job identity and acknowledges only its own claim",
     "SKIP LOCKED lets a later due custom-outbox event progress while another transaction holds the FIFO head, then processes that head after release",
+    "actual isolated Redis/BullMQ queue and real notification processor recover a lost enqueue acknowledgement; after the first job is auto-removed, retry still persists one inbox notification using its stable UUID",
     "26 competing custom-order callbacks create one conversation/link/placement message and exactly two recipient outbox rows; replay repairs dispatch without re-emitting",
     "26 different custom orders on the same buyer/brand pair share one conversation, retain all distinct messages and have strictly distinct ordered timestamps",
     "cold standard-payment and custom-order callbacks use the same pair lock and share one conversation with two messages/four recipient records",
@@ -79,15 +80,72 @@
     "26 individually persisted notifications recover in three bounded policy/suppression reads, with no per-event preference/user reads; global opt-out, scenario opt-out and suppression each prevent their email while push remains independent",
     "existing batch email snapshots retain their creation-time policy without fallback reads; final email suppression remains the separate delivery dispatcher responsibility",
     "retiring a completed channel instruction does not recreate it or duplicate channel jobs when the long-lived inbox identity is replayed",
-    "indexed retention removes at most 1000 completed instructions per category per run, progresses on the next sweep and preserves an equally old pending instruction"
+    "indexed retention removes at most 1000 completed instructions per category per run, progresses on the next sweep and preserves an equally old pending instruction",
+    "32 cold requests whose optimistic reads all finish before insertion commit one semantic notification under the actual transaction lock",
+    "single and batched event producers with 26 stale preflights share the same scope lock and retain one inbox identity",
+    "distinct actors and changed semantic content remain distinct while a null actor retains the existing wildcard match policy",
+    "the post-lock explicit-target branch finds an older matching event beyond the newest 25 semantic candidates without exposing query metadata",
+    "a real lock waiter observes the previous owner commit in a separate READ COMMITTED statement and returns that winning notification",
+    "the database clock rechecks expiry after a real lock wait and timestamps the new event after the wait rather than at transaction start",
+    "explicit independent event identities and an explicitly disabled semantic window preserve separate notifications",
+    "semantic fingerprints use the same merged target payload for incoming and persisted events, including the default-window target option",
+    "a cached target and semantic candidate expiring while shared actor hydration waits cannot suppress a newly eligible event",
+    "26 independent semantic creation commands retain four shared recipient-policy reads, no per-recipient user hydration, and exactly one fresh bounded guard plus one scope lock per transaction",
+    "32 concurrent first logins use one atomic device command each, retain one device and classify only the inserting request as new",
+    "returning logins preserve first-seen time and trust, use normalized IP hashes, preserve revocation and isolate an identical fingerprint on another account",
+    "inbox-disabled login notification waits for its real email outbox commit, preserves email-only behavior and reuses an explicit event identity on retry",
+    "login payload validation preserves new-device scenario routing and honors producer suppression, scenario opt-out and security-email opt-out without an external provider request",
+    "manual admin delivery commits its audit, inbox and requested email job together, while in-app-only delivery retains its explicit channel choice",
+    "an actual admin email enqueue constraint rolls back the audit, delivery log and inbox; retry commits all requested channels without contacting a provider",
+    "a real Product.slug violation rolls back the entire attempt, including an earlier product and primary membership; a fresh transaction then commits a consistent retry",
+    "five real concurrent first attempts select the same available slug; four losers restart with UUID suffixes and commit five products with exactly ten intended memberships",
+    "an unrelated Product primary-key conflict is not mistaken for a slug race and is not retried; its earlier write rolls back",
+    "repeated real slug collisions stop after three complete attempts and leave no partial records",
+    "valid product and membership inserts no longer access a wrong-table trigger field, while an inconsistent primary pointer is still rejected and rolled back",
+    "a pending category is absent from the actual public taxonomy and category-based content lookup",
+    "real design approval publishes the design while leaving its proposed category pending and absent from public category lookup",
+    "26 opposing reviewer requests commit one decision and one audit; bounded retry finishes 29 linked rows exactly once without publishing drafts or overwriting a later category choice",
+    "real constraint failure leaves a committed category decision and a durable unprocessed link; retry atomically saves metadata, one inbox and its channel intent",
+    "26 concurrent distinct requests from one user respect the five-per-day database-serialized quota without provider calls",
+    "26 competing category/garment-type proposals create one pair identity, with no public category or garment type",
+    "the actual design facade initializes, edits and saves a draft with its pending pair, keeps both public taxonomy keys empty and refuses another brand attaching that private proposal",
+    "a real inbox CHECK failure rolls back design publication and submission; retry atomically saves one review submission, one inbox and one channel intent",
+    "content approval publishes the design independently while the proposed category/type remains absent from public taxonomy and category-filtered content",
+    "separate taxonomy approval resolves both related keys atomically, leaves a published design published and never publishes a linked draft",
+    "an existing category can receive a new pending garment-type proposal, an approved pair is refused as a duplicate, and root-only proposals remain supported but cannot satisfy design publish taxonomy",
+    "the direct design submit facade retains required-media checks and accepts a complete pending pair; rejecting that garment type never unpublishes approved content or disables its existing category",
+    "proposal DTOs accept real punctuation and international garment names, preserve an existing category’s stable slug, avoid non-Latin identity collisions and refuse directional-control injection",
+    "an actual publish lock waiter cannot overwrite a concurrently approved taxonomy pair or publish a stale draft; the losing request returns 409 with no review submission or false notice",
+    "26 competing approve/reject decisions yield one current source/submission decision, one audit, one trust event and one durable inbox/channel intent",
+    "a saved draft cannot be published by a still-open old submission",
+    "a changed review fingerprint refuses an old approval until the current source is resubmitted",
+    "approval rechecks required media readiness and rolls back without notification when processing is incomplete",
+    "self-review and a deleted source cannot produce a decision or review audit",
+    "a real channel-intent CHECK failure atomically rolls back decision, media, audit, trust event and inbox; retry commits one complete outcome",
+    "a real lock waiter reads a committed withdrawal and preserves the saved draft",
+    "a real lock waiter sees the superseding submission and refuses its stale decision while the current review can be approved",
+    "26 concurrent resubmissions share the source lock and retain exactly one current submission without provider calls",
+    "competing product approval and required-media deletion serialize; an approved product retains all required slots, otherwise deletion wins and approval is refused",
+    "clear-all media and product approval cannot commit a published product with an empty media list",
+    "two concurrent product removals retain both changes and keep a file still referenced by other content",
+    "primary selection uses the current locked image list and cannot overwrite a concurrent upload",
+    "a stale reorder cannot silently drop a concurrent upload; a complete reorder that wins first remains valid",
+    "both collection deletion entry points preserve required published-design media and perform no storage I/O",
+    "draft design removal reassigns its cover atomically while preserving media shared with another source",
+    "a storage-queue CHECK failure preserves design, cover, file and media; retry queues the key exactly once and soft-deletes the now-empty design without a storage request",
+    "permanent design deletion rolls back on storage-queue failure; six competitors produce one deletion, preserve shared files and queue the unused original plus its variant once",
+    "a real design deletion lock waiter observes a committed restore and refuses permanent deletion",
+    "a real store-collection deletion lock waiter observes a committed restore and refuses permanent deletion"
   ],
+  "semanticScopeLockCommands": 192,
+  "semanticCurrentReadCommands": 192,
   "fanoutChannelClaimCommands": 3,
   "fanoutSelectCount": 9,
   "mixedEventSelectCount": 5,
   "mixedActorPrivacySelectCount": 8,
   "categoryProjectionSelects": 3,
-  "categoryRejectionSelects": 9,
-  "categoryApprovalSelects": 9,
+  "categoryRejectionSelects": 7,
+  "categoryApprovalSelects": 7,
   "cronBrandOwnerSelects": 1,
   "stockReminderChannelClaims": 4,
   "stockReminderSelects": 8,
@@ -139,7 +197,7 @@
   "messageOutboxStandaloneSelects": 0,
   "customLeaseProof": {
     "claimFencingVerified": true,
-    "redisVerified": false
+    "redisVerified": true
   },
   "customThreadProof": {
     "cases": 7
@@ -162,5 +220,32 @@
       "otherPolicyReads": 0
     },
     "durableInboxAndChannels": true
+  },
+  "semanticProof": {
+    "cases": 10,
+    "queryProof": {
+      "notifications": 26,
+      "currentReads": 26,
+      "scopeLocks": 26,
+      "sharedPolicyReads": 4,
+      "perRecipientUserReads": 0
+    },
+    "externalProviderCalls": 0
+  },
+  "authNotificationProof": {
+    "cases": 6,
+    "providerCalls": 0
+  },
+  "productCreationProof": {
+    "cases": 5,
+    "externalProviderCalls": 0
+  },
+  "categoryApprovalProof": {
+    "cases": 14,
+    "providerCalls": 0
+  },
+  "contentReviewProof": {
+    "cases": 20,
+    "providerCalls": 0
   }
 }

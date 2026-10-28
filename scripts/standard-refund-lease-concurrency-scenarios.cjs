@@ -54,7 +54,7 @@ module.exports = async function verifyStandardRefundLeaseOwnership({prisma, refu
   await only([id]);await refunds.processPending();
   const originalFetch=provider.fetch.bind(provider), gated=Object.create(provider);
   gated.fetch=async (...args)=>({...await originalFetch(...args),state:'PROCESSED',rawStatus:'processed'});
-  const held=deferred(), release=deferred();let oldPoll;
+  const held=deferred(), release=deferred(), replacementFetched=deferred();let oldPoll, replacementPoll;
   const blocking=prisma.$transaction(async tx=>{
     await tx.$queryRaw`SELECT "_id" FROM "Order" WHERE "_id"=${capture.order.id}::uuid FOR UPDATE`;
     held.resolve();await release.promise;
@@ -65,20 +65,26 @@ module.exports = async function verifyStandardRefundLeaseOwnership({prisma, refu
     oldPoll=refunds.poll(id);oldPoll.catch(()=>{});
     const deadline=Date.now()+5000;
     for(;;){
-      const waiting=await prisma.$queryRaw`SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FROM "Order"%FOR UPDATE%'`;
+      const waiting=await prisma.$queryRaw`SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FROM "Order"%FOR NO KEY UPDATE%'`;
       if(waiting.length)break;
       assert(Date.now()<deadline,'Refund settlement did not reach the real order lock');
       await new Promise(resolve=>setTimeout(resolve,20));
     }
     await prisma.$executeRaw`UPDATE "StandardOrderRefund" SET "lockedAt"=clock_timestamp() AT TIME ZONE 'UTC'-INTERVAL '11 minutes' WHERE id=${id}::uuid`;
-    refunds.provider=provider;
-    assert.equal(await refunds.poll(id),true);
+    const replacementProvider=Object.create(provider);
+    replacementProvider.fetch=async (...args)=>{const reply=await originalFetch(...args);replacementFetched.resolve();return reply;};
+    refunds.provider=replacementProvider;
+    replacementPoll=refunds.poll(id);replacementPoll.catch(()=>{});
+    await arrived(replacementFetched,replacementPoll);
+    // Both callbacks now obey capture → order. Let the old callback acquire the
+    // order and reject its expired owner before the new callback can apply.
     release.resolve();await blocking;await oldPoll;
+    assert.equal(await replacementPoll,true);
     assert.equal((await refundRow(id)).status,'PROCESSING');
     assert.equal(await settledJournals(id),0);
     assert.equal(posts(capture.reference),1);
   }finally{
-    release.resolve();await Promise.allSettled([blocking,oldPoll].filter(Boolean));refunds.provider=provider;
+    release.resolve();await Promise.allSettled([blocking,oldPoll,replacementPoll].filter(Boolean));refunds.provider=provider;
   }
   cases.push('a processed response waiting on a real order lock loses ownership to a newer pending lookup and cannot settle escrow or ledger after the lock is released');
 

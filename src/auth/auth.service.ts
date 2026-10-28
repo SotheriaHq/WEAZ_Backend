@@ -779,8 +779,8 @@ export class AuthService {
       const signupLocation = this.describeSignupLocation(req);
       const signupDisplayName = this.resolveSignupDisplayName(user);
 
-      // Notify SIGNUP event (account created) without blocking signup latency.
-      void this.notifications
+      // Persist the signup notification; delivery providers run asynchronously.
+      await this.notifications
         .create(user.id, NotificationType.SIGNUP, {
           payload: {
             action: 'SIGNUP',
@@ -877,17 +877,12 @@ export class AuthService {
         );
       }
 
-      // Device fingerprinting and the login notification are both bookkeeping.
-      // The comment above this block already said "without blocking login
-      // latency", but `recordLoginDevice` was awaited — two sequential DB
-      // round-trips (lookup, then insert-or-update) that the caller waited on
-      // purely so a boolean could be attached to a notification that is itself
-      // fire-and-forget. Header reads happen here, synchronously, because the
-      // request object must not be touched after the response is sent.
+      // Persist device state and enqueue eligible notification channels before
+      // responding. No email or push provider is contacted on the login path.
       const ipAddress = this.extractClientIp(req);
       const userAgent = req.headers['user-agent'] ?? null;
       const deviceSignals = this.trustedDeviceService.captureSignals(req);
-      void this.trustedDeviceService
+      await this.trustedDeviceService
         .recordLoginDevice(user.id, deviceSignals)
         .then((deviceResult) =>
           this.notifications.create(user.id, NotificationType.LOGIN, {
@@ -1249,7 +1244,7 @@ export class AuthService {
         result: verificationDispatchResult,
       });
 
-      void this.notifications
+      await this.notifications
         .create(user.id, NotificationType.SIGNUP, {
           payload: {
             action: 'SIGNUP',
@@ -1278,7 +1273,7 @@ export class AuthService {
         }),
       );
     } else {
-      void this.notifications
+      await this.notifications
         .create(user.id, NotificationType.LOGIN, {
           payload: {
             ip: this.extractClientIp(req),
@@ -1573,7 +1568,7 @@ export class AuthService {
         user.id,
         req!,
       );
-      void this.notifications
+      await this.notifications
         .create(user.id, NotificationType.LOGIN, {
           payload: {
             ip: this.extractClientIp(req!),

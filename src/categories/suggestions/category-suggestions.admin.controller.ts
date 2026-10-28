@@ -6,14 +6,13 @@ import {
   Body,
   Query,
   UseGuards,
+  ParseUUIDPipe,
 } from '@nestjs/common';
+import { CategorySuggestionListQueryDto } from './dto/category-suggestion-list-query.dto';
 import { JwtAuthGuard } from '../../auth/guard/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guard/role.guard';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
-import {
-  CategorySuggestionsService,
-  CategorySuggestionStatus,
-} from './category-suggestions.service';
+import { CategorySuggestionsService } from './category-suggestions.service';
 import { ModerateCategorySuggestionDto } from './dto/moderate-category-suggestion.dto';
 import { Role } from '@prisma/client';
 import { Req } from '@nestjs/common';
@@ -35,15 +34,15 @@ export class CategorySuggestionsAdminController {
   @ApiOperation({
     summary: 'List category suggestions (filter by status optional)',
   })
-  async list(@Query('status') status?: CategorySuggestionStatus): Promise<any> {
-    return this.suggestions.adminList(status);
+  async list(@Query() query: CategorySuggestionListQueryDto): Promise<any> {
+    return this.suggestions.adminList(query.status, query.cursor, query.limit);
   }
 
   @Patch(':id')
   @RequirePermissions(ADMIN_PERMISSIONS.TAXONOMY_SUGGESTIONS_MODERATE)
   @ApiOperation({ summary: 'Moderate a suggestion (approve or reject)' })
   async moderate(
-    @Param('id') id: string,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
     @Body() dto: ModerateCategorySuggestionDto,
     @Req() req: any,
   ): Promise<any> {

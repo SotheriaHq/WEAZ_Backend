@@ -776,6 +776,15 @@ export class OrderService {
           secondReleasedAt: true,
           refundedAt: true,
           refundReason: true,
+          refund: {
+            select: {
+              status: true,
+              amount: true,
+              currency: true,
+              createdAt: true,
+              settledAt: true,
+            },
+          },
         },
       }),
       (this.prisma as any).financialDocument.findFirst({
@@ -848,6 +857,15 @@ export class OrderService {
         paymentStatus: order.paymentStatus ?? null,
         paidAt: order.paidAt ?? paymentAttempt?.confirmedAt ?? null,
         escrowStatus: hold?.status ?? null,
+        refund: hold?.refund
+          ? {
+              status: hold.refund.status,
+              amount: Number(hold.refund.amount),
+              currency: hold.refund.currency,
+              requestedAt: hold.refund.createdAt,
+              processedAt: hold.refund.settledAt,
+            }
+          : null,
         commissionRate: hold ? Number(hold.commissionRate ?? 0) : null,
         commissionAmount: hold
           ? this.roundCurrency(Number(hold.commissionAmount ?? 0))

@@ -1,5 +1,40 @@
 # Data integrity and canonical refunds — audit and plan (26 October 2026)
 
+## 28 October verification update
+
+The original findings below describe the starting state. The shared refund
+provider adapter now enforces exact fetched IDs, consistent capture hints,
+documented Paystack transaction-ID filtering and bounded complete pagination.
+Standard and custom refund workers use unique owners checked after source locks;
+unknown submissions are looked up rather than submitted again. Admin lookup
+claims a manual hold before contacting the provider. The normalized, immutable
+provider identity registry prevents one refund being applied to two orders
+across refund families, including direct SQL writes.
+
+Current actual PostgreSQL verification passes 44 scenarios on PostgreSQL 17 and
+PostgreSQL 15. It checks ledger currency separation/conservation, typed tag
+targets, primary membership consistency, unique debt sources/FIFO recovery,
+refund and release races, product deletion, owner replacement, admin lookup
+races, immutable provider identity history and full/partial/zero/mock custom
+refunds. See [refund ownership](STANDARD_REFUND_LEASE_OWNERSHIP.md) for evidence
+and mandatory migration drain steps. Focused Jest verification passes 53 tests.
+
+**28 October continuation:** payout transfers now save an owned intent before
+provider HTTP, serialize against the current brand debt position and refuse
+stale/out-of-order outcomes. The combined actual PostgreSQL 17 fixture passes
+55 scenarios, including 11 payout scenarios; 23 payout/order unit tests and
+backend types pass. Web/native order detail presents current refund states,
+separating provider processing from bank credit; 16 web tests and a native/web
+contract with a deliberate drift failure pass. See [payout ownership](PAYOUT_TRANSFER_OWNERSHIP.md).
+
+The current 55-case fixture also passes on an isolated PostgreSQL 15
+container; database and container cleanup pass. Final client regression, remote CI,
+application migration and deployed acceptance remain open release gates.
+Currency/NGN original-payment-rate integration remains a separate workstream.
+No application database migration or reset was performed in this update.
+
+## Original audit
+
 Scope: relational integrity/normalization (ledger, debt, escrow, orders, tags,
 store-collection membership, reference seeds) and the refund, cancellation and
 product-deletion money flows. Evidence is from source at backend

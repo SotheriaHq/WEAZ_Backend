@@ -23,6 +23,7 @@ type Order = Pick<
   'id' | 'buyerId' | 'brandId' | 'lane' | 'cancelledAt'
 >;
 export type QueueRefundContext = CustomOrderQueueRefund & {
+  leaseToken: string | null;
   paymentAttempt: Capture;
   customOrder: Order;
 };
@@ -46,6 +47,7 @@ export async function loadQueueRefundContexts(
   const rows = await tx.$queryRaw<
     Array<
       CustomOrderQueueRefund & {
+        leaseToken: string | null;
         captureReference: string;
         captureProvider: string;
         captureMode: string;

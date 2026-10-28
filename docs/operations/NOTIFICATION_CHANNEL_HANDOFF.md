@@ -19,6 +19,28 @@ These bounds protect database resources; they are not a production throughput cl
 
 ## Verification
 
+### 26 October follow-up: semantic creation, login and manual admin delivery
+
+The latest focused PostgreSQL run passes 33 cases with cleanup and zero external provider calls. It includes the original 12 channel cases, ten semantic-creation cases, six auth/admin cases and five product-creation transaction cases. All 156 current migrations, including the pending financial/integrity migrations, apply in that disposable database. This does not verify all financial behavior or apply anything to the application databases.
+
+Semantic notifications without an explicit event identity now lock their recipient/type scope, then read current candidates in a separate READ COMMITTED statement. The database clock evaluates the window after a lock wait and timestamps a new event after that wait. The existing null-actor wildcard, newest-25 candidate bound and separate older explicit-target match remain. Distinct explicit event IDs and dedupeMs=0 retain their bypass contract. The incoming fingerprint includes the same merged target payload as the persisted notification.
+
+Each independent semantic command needs one fresh bounded guard read and one scope lock; these are authoritative mutation checks rather than recipient/actor hydration. For 26 commands, actual PostgreSQL records 26 guard reads, 26 locks, four shared policy reads and zero per-recipient user hydration. The combined fixture reports these guard commands separately, preserving its shared-policy budgets. The new recipient/type/createdAt index supports the current candidate query.
+
+Trusted-device recording now uses one conflict-safe upsert. Thirty-two competing first logins retain one device and classify only its inserting request as new. Returning logins preserve trust, first-seen time and revocation. Login/signup callers await database enqueueing; delivery remains asynchronous. Inbox-disabled login uses the explicit notification identity for email idempotency, honors producer suppression and waits for email enqueueing. LOGIN validation retains newDevice/highRisk/method so scenario preferences are evaluated on the actual login context. Existing best-effort failure behavior is retained: a database enqueue failure is not proof of delivery.
+
+Manual admin sends keep their explicit in_app/email/both channel choices. Their log, audit, optional inbox and email outbox job now commit together, with a stable log-derived email key. An actual enqueue constraint proves rollback and successful retry. Subscription billing already writes its inbox/email receipt atomically; the remaining direct collection notification helper has no active callers. No push policy was inferred for these manual/billing paths.
+
+The focused checks pass 139 distinct tests across the combined nine-suite and corrected targeted runs. The two older fixtures now include the explicit SLA refund trigger and a notification timestamp for window checks. The final 36-test notification suite and affected auth/admin/notification/inventory source lint pass. Full backend typechecking still has four old financial test-interface errors from the in-progress refund rewrite. Thus wider item3 and the overall release remain open.
+
+The product-creation cases verify a whole-transaction slug retry, five cold competing writers, rollback of earlier product/membership changes, refusal to retry unrelated uniqueness errors and a three-attempt ceiling. They exposed a shared-trigger record-field error in the pending primary-membership migration; the corrected nested branch permits valid writes while still rejecting inconsistent primary pointers. A successful migration alone did not catch this runtime defect.
+
+CI now provisions disposable Redis and opts into the existing real queue fixture, and includes the new PG scenarios. The configuration is not a claim that remote CI has run; no commit/push/build/deployment has occurred for this follow-up.
+
+Implementation references: [PostgreSQL15 ON CONFLICT/RETURNING](https://www.postgresql.org/docs/15/sql-insert.html). Provider refund protocol review remains separate; [Paystack's refund API](https://paystack.com/docs/api/refund/) documents the list filter as a transaction ID, which must not be assumed interchangeable with a merchant reference.
+
+### Earlier combined evidence
+
 The combined PostgreSQL/Redis fixture passes 78 scenarios with cleanup. The focused fixture passes 12 channel scenarios with cleanup and zero external provider calls. These 12 scenarios are included in the combined run, rather than additional cases.
 
 Coverage includes API interruption after inbox commit, 32 competing recovery sweeps, actual email/push/instruction constraint failures, stale owner and late failure fencing, final-attempt crash recovery, 32 cold inbox writers and replay after retention. All 96 focused tests across seven suites, backend type checking and source lint pass.

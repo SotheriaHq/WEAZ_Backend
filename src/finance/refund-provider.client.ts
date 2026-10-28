@@ -240,18 +240,19 @@ export class RefundProviderClient {
     const { ok, payload } = await this.request(url, secret);
     if (!ok || (payload.status !== true && payload.status !== 'success'))
       throw new RefundProviderError('REFUND_STATUS_LOOKUP_UNAVAILABLE', false);
-    return this.normalize(gateway, capture, {
-      ...object(payload.data),
-      id: providerRefundId,
-    });
+    const data = object(payload.data);
+    if (text(data.id) !== providerRefundId)
+      throw new RefundProviderError('REFUND_STATUS_IDENTITY_MISMATCH', false);
+    return this.normalize(gateway, capture, data);
   }
 
   /**
    * Refunds the provider holds for this capture whose note carries `marker`.
    * Used after an uncertain submission to find the refund that was created,
    * instead of creating another. Paystack only; others return null (unknown).
-   * The provider's reference filter only narrows the page; the note marker and
-   * `matches()` decide. A refund not found here goes to a person, never resent.
+   * Use the documented transaction-id filter and inspect every reported page,
+   * within a five-page budget. A failed/incomplete search is unknown, never a
+   * partial match. Missing transaction ids require manual reconciliation.
    */
   async findByNote(
     capture: RefundCapture,
@@ -259,17 +260,50 @@ export class RefundProviderClient {
   ): Promise<ProviderRefund[] | null> {
     const gateway = this.gateway(capture.provider);
     if (gateway !== 'PAYSTACK') return null;
+    const transaction = capture.providerTransactionId;
+    if (!transaction || !/^\d+$/.test(transaction)) return null;
     const secret = this.secret(gateway, capture.providerMode);
-    const url = `${this.baseUrls.PAYSTACK}/refund?reference=${encodeURIComponent(capture.reference)}&perPage=100`;
-    const { ok, payload } = await this.request(url, secret);
-    if (!ok || payload.status !== true || !Array.isArray(payload.data))
-      return null;
     const matches: ProviderRefund[] = [];
-    for (const item of payload.data) {
-      const refund = await this.normalize(gateway, capture, object(item));
-      if (refund.note.includes(marker)) matches.push(refund);
+    const ids = new Set<string>();
+    for (let page = 1; page <= 5; page++) {
+      const query = new URLSearchParams({
+        transaction,
+        perPage: '100',
+        page: String(page),
+      });
+      const { ok, payload } = await this.request(
+        `${this.baseUrls.PAYSTACK}/refund?${query}`,
+        secret,
+      );
+      if (
+        !ok ||
+        payload.status !== true ||
+        !Array.isArray(payload.data) ||
+        payload.data.length > 100
+      )
+        return null;
+      for (const item of payload.data) {
+        const refund = await this.normalize(gateway, capture, object(item));
+        if (refund.note.trim() !== marker) continue;
+        if (!refund.id || ids.has(refund.id)) return null;
+        ids.add(refund.id);
+        matches.push(refund);
+      }
+      const meta = object(payload.meta);
+      if (meta.page != null && Number(meta.page) !== page) return null;
+      if (meta.pageCount != null) {
+        const pageCount = Number(meta.pageCount);
+        if (
+          !Number.isSafeInteger(pageCount) ||
+          pageCount < 0 ||
+          pageCount > 5 ||
+          (pageCount < page && payload.data.length !== 0)
+        )
+          return null;
+        if (page >= pageCount) return matches;
+      } else if (payload.data.length < 100) return matches;
     }
-    return matches;
+    return null;
   }
 
   /** Refund belongs to this capture and moves exactly `target`. */
@@ -279,10 +313,15 @@ export class RefundProviderClient {
     refund: ProviderRefund,
   ): boolean {
     const sameTransaction =
-      refund.transactionReference === capture.reference ||
+      (!refund.transactionReference ||
+        refund.transactionReference === capture.reference) &&
+      (!refund.transactionId ||
+        !capture.providerTransactionId ||
+        refund.transactionId === capture.providerTransactionId) &&
       Boolean(
-        capture.providerTransactionId &&
-          refund.transactionId === capture.providerTransactionId,
+        refund.transactionReference === capture.reference ||
+          (capture.providerTransactionId &&
+            refund.transactionId === capture.providerTransactionId),
       );
     return (
       sameTransaction &&
@@ -416,6 +455,7 @@ export class RefundProviderClient {
 
   private async request(url: string, secret: string, body?: unknown) {
     const response = await fetch(url, {
+      redirect: 'error',
       method: body ? 'POST' : 'GET',
       headers: {
         Authorization: `Bearer ${secret}`,

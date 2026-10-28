@@ -69,6 +69,7 @@ import {
   cleanupNotificationChannels,
   reapExhaustedNotificationChannels,
 } from './notification-channel-query';
+import { loadCurrentNotificationDuplicates } from './notification-dedupe-query';
 
 type NotificationEmailPolicy = Pick<
   NotificationBatchPolicy,
@@ -1900,6 +1901,89 @@ export class NotificationsService {
     return results;
   }
 
+  /** Persist category-decision inbox/channel intents in the same transaction as the draft metadata. */
+  async stageCategoryDecisionEvents(
+    tx: Prisma.TransactionClient,
+    events: NotificationEvent[],
+  ): Promise<number> {
+    return this.stageSystemDecisionEvents(tx, events, [
+      NotificationType.COLLECTION_UPLOAD,
+    ]);
+  }
+
+  async stageContentReviewEvents(
+    tx: Prisma.TransactionClient,
+    events: NotificationEvent[],
+  ): Promise<number> {
+    return this.stageSystemDecisionEvents(tx, events, [
+      NotificationType.CONTENT_SUBMITTED_FOR_REVIEW,
+      NotificationType.CONTENT_REVIEW_APPROVED,
+      NotificationType.CONTENT_REVIEW_REJECTED,
+      NotificationType.CONTENT_CHANGES_REQUESTED,
+    ]);
+  }
+
+  /** Persist decision, inbox and channel intent atomically; never call providers inside a transaction. */
+  private async stageSystemDecisionEvents(
+    tx: Prisma.TransactionClient,
+    events: NotificationEvent[],
+    allowed: NotificationType[],
+  ): Promise<number> {
+    if (
+      events.length > 25 ||
+      events.some(
+        (event) => !allowed.includes(event.type) || event.opts?.actorId,
+      )
+    ) {
+      throw new BadRequestException(
+        'Invalid system decision notification batch',
+      );
+    }
+    if (!events.length) return 0;
+    const policies = await loadNotificationEventPolicies(
+      tx,
+      events.map((event) => ({
+        ...event,
+        opts: { ...event.opts, dedupeMs: 0 },
+      })),
+    );
+    const notifications: Prisma.NotificationCreateManyInput[] = [];
+    const channels: Prisma.NotificationChannelOutboxCreateManyInput[] = [];
+    events.forEach((event, index) => {
+      const policy = policies.get(index);
+      if (!policy)
+        throw new NotFoundException(
+          'Decision notification recipient not found',
+        );
+      const settings = this.normalizeSettings(policy.notificationSettings);
+      if (!this.isNotificationEnabled(event.type, settings)) return;
+      const created: Notification = {
+        id: event.opts?.notificationId ?? uuidv4(),
+        recipientId: event.recipientId,
+        actorId: null,
+        type: event.type,
+        html: null,
+        isRead: false,
+        createdAt: new Date(),
+        payload: {
+          ...this.validateAndSanitizePayload(
+            event.type,
+            event.opts?.payload ?? {},
+          ),
+          ...(event.opts?.target ? { target: event.opts.target } : {}),
+        },
+      };
+      notifications.push(created);
+      channels.push(
+        this.prepareNotificationChannels(created, settings, event.opts, policy),
+      );
+    });
+    if (notifications.length)
+      await tx.notification.createMany({ data: notifications });
+    if (channels.length)
+      await tx.notificationChannelOutbox.createMany({ data: channels });
+    return notifications.length;
+  }
   /** Mixed scheduled events: bounded shared policy/actor reads without sharing payloads or consent. */
   async createEvents(events: NotificationEvent[]) {
     const results: PromiseSettledResult<
@@ -2108,19 +2192,19 @@ export class NotificationsService {
         return null;
       }
     } else if (!this.isNotificationEnabled(type, settings)) {
-      if (type === NotificationType.LOGIN) {
+      if (type === NotificationType.LOGIN && !opts?.suppressEmail) {
         const sanitizedPayload = this.validateAndSanitizePayload(
           type,
           opts?.payload ?? {},
         );
-        const syntheticNotificationId = uuidv4();
+        const syntheticNotificationId = notificationId ?? uuidv4();
         const message = this.formatMessage({
           id: syntheticNotificationId,
           type,
           payload: sanitizedPayload,
         });
 
-        void this.enqueueEmailForNotification({
+        await this.enqueueEmailForNotification({
           recipientId,
           notificationId: syntheticNotificationId,
           type,
@@ -2128,9 +2212,9 @@ export class NotificationsService {
           payload: this.toRecord(sanitizedPayload as Prisma.JsonValue),
           targetUrl: undefined,
           policy: batch?.policy,
-        }).catch((error) => {
+        }).catch(() => {
           this.logger.warn(
-            `Failed to enqueue login email-only notification for user=${recipientId}: ${String(error)}`,
+            `Failed to persist login email-only notification for user=${recipientId}`,
           );
         });
       }
@@ -2159,6 +2243,15 @@ export class NotificationsService {
         opts?.dedupeMs ?? DEFAULT_SEMANTIC_DEDUPE_MS,
         0,
       );
+      const fingerprintPayload = {
+        ...sanitizedPayload,
+        ...(opts?.target ? { target: opts.target } : {}),
+      };
+      const incomingFingerprint = this.buildSemanticFingerprint(
+        type,
+        fingerprintPayload,
+        opts?.target ?? this.extractTarget(type, fingerprintPayload),
+      );
       if (dedupeWindowMs > 0 && !notificationId) {
         const since = new Date(Date.now() - dedupeWindowMs);
 
@@ -2178,22 +2271,13 @@ export class NotificationsService {
                   },
                 },
               });
-          if (existing) {
+          if (existing && existing.createdAt.getTime() >= since.getTime()) {
             this.logger.debug(
               'Duplicate notification found via target path, skipping creation',
             );
             return existing;
           }
         }
-
-        const resolvedTarget =
-          opts?.target ??
-          this.extractTarget(type, sanitizedPayload as Record<string, any>);
-        const incomingFingerprint = this.buildSemanticFingerprint(
-          type,
-          sanitizedPayload as Record<string, unknown>,
-          resolvedTarget,
-        );
 
         const candidates = batch
           ? batch.policy.candidates
@@ -2209,6 +2293,7 @@ export class NotificationsService {
             });
 
         for (const candidate of candidates) {
+          if (candidate.createdAt.getTime() < since.getTime()) continue;
           const candidatePayload = this.toRecord(
             candidate.payload as Prisma.JsonValue | null,
           );
@@ -2242,36 +2327,66 @@ export class NotificationsService {
         recipient: { connect: { id: recipientId } },
         ...(actorId ? { actor: { connect: { id: actorId } } } : {}),
       };
-      const creation = this.prisma.$transaction(async (tx) => {
-        const created = batch
-          ? {
-              ...(await tx.notification.create({
-                data: {
-                  id: data.id,
-                  type,
-                  payload: data.payload,
-                  isRead: false,
-                  recipientId,
-                  actorId,
-                },
-              })),
-              actor: batch.actor,
-            }
-          : await tx.notification.create({
-              data,
-              include: { actor: { select: NOTIFICATION_ACTOR_SELECT } },
+      const creation = this.prisma.$transaction(
+        async (tx) => {
+          if (dedupeWindowMs > 0 && !notificationId) {
+            const current = await loadCurrentNotificationDuplicates(tx, {
+              recipientId,
+              type,
+              actorId,
+              windowMs: dedupeWindowMs,
+              explicitTargetId: opts?.dedupeMs ? opts.target?.id : undefined,
             });
-        if (!opts?.suppressEmail || !opts?.suppressPush)
-          await tx.notificationChannelOutbox.create({
-            data: this.prepareNotificationChannels(
-              created,
-              settings,
-              opts,
-              batch?.policy,
-            ),
-          });
-        return created;
-      });
+            const duplicate =
+              current.targetDuplicate ??
+              current.candidates.find((candidate) => {
+                const payload = this.toRecord(candidate.payload);
+                return (
+                  this.buildSemanticFingerprint(
+                    type,
+                    payload,
+                    this.extractTarget(type, payload),
+                  ) === incomingFingerprint
+                );
+              });
+            if (duplicate) {
+              replayedDelivery = true;
+              return { ...duplicate, actor: batch?.actor ?? null };
+            }
+            data.createdAt = current.observedAt;
+          }
+          const created = batch
+            ? {
+                ...(await tx.notification.create({
+                  data: {
+                    id: data.id,
+                    type,
+                    payload: data.payload,
+                    isRead: false,
+                    createdAt: data.createdAt,
+                    recipientId,
+                    actorId,
+                  },
+                })),
+                actor: batch.actor,
+              }
+            : await tx.notification.create({
+                data,
+                include: { actor: { select: NOTIFICATION_ACTOR_SELECT } },
+              });
+          if (!opts?.suppressEmail || !opts?.suppressPush)
+            await tx.notificationChannelOutbox.create({
+              data: this.prepareNotificationChannels(
+                created,
+                settings,
+                opts,
+                batch?.policy,
+              ),
+            });
+          return created;
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+      );
       const created = await creation.catch(async (error) => {
         if (notificationId && (error as { code?: string }).code === 'P2002') {
           const replay = await this.findNotificationReplay(

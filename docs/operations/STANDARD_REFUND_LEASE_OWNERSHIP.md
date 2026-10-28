@@ -1,4 +1,65 @@
-# Standard refund worker ownership
+# Standard and custom refund worker ownership
+
+Updated 28 October 2026. Both refund workers now use the shared protocol in
+`src/finance/refund-lease-query.ts`. Earlier standard-only verification below is
+historical; use the evidence file's `checkedAt` and case list for the latest run.
+
+Current local verification: 44 actual PostgreSQL/provider-simulator scenarios
+pass on both PostgreSQL 17 and an isolated PostgreSQL 15 container, with 34
+submissions/34 provider refund objects, zero unauthorized requests and complete
+database/container cleanup. Six focused Jest suites pass 53 tests. The seven
+separate provider HTTP contract tests cover exact identities and bounded,
+complete Paystack pagination. See
+`docs/performance-reviews/refund-integrity-postgres15-2026-10-28.json` for the
+PostgreSQL 15 proof. No live gateway transfer or foreign-currency settlement
+certification is claimed by these local checks.
+
+## Cross-family identity and reconciliation
+
+`ProviderRefundIdentity` reserves each `(provider, providerRefundId)` for exactly
+one standard or custom refund and its original payment capture. Database
+triggers also protect direct writes. Identity history remains reserved when a
+current link is cleared, so another refund cannot later reuse it. The worker
+records an identity collision as manual attention with durable provider-result
+evidence rather than submitting another refund.
+
+Admin reconciliation first claims a unique owner and moves a due failed refund
+to `NEEDS_ATTENTION`, **before** its external provider GET. Automatic workers
+cannot submit it while the admin verifies the provider record. Failed lookup or
+identity validation leaves manual attention; another reconciliation may retry
+the lookup after ownership is released. An interrupted admin lookup remains on
+manual hold and may be claimed again after the ten-minute lease expires.
+
+Result handling locks capture → order → optional escrow hold → refund, then
+checks the current owner using a fresh database-clock statement. Custom refund
+completion also revises its order once: full/cancelled-order refunds close it
+and set payment status to `REFUNDED`; a post-active partial refund preserves the
+order status and payment status. A unified parent capture remains paid because
+its other lines or retained deductions can remain valid.
+
+## Migration and deployment boundary
+
+Drain old refund workers, refund webhook processing and reconciliation requests
+before applying `20261027210000_custom_refund_owner_fencing` and
+`20261028093000_provider_refund_identity`. The first migration refuses existing
+custom refunds that are submitting or still locked. The second refuses duplicate
+provider identities during backfill; it never chooses a winner or invents an
+owner. Investigate any such row using the provider record before retrying.
+Deploy API and workers from the same revision before reopening these paths.
+
+These migrations were applied only to disposable verification databases. They
+have not been applied to SIT or the application's local database by this work.
+
+## Why identity registration uses two statements
+
+Under PostgreSQL Read Committed, `INSERT ... ON CONFLICT DO NOTHING` can wait
+for a transaction whose result is absent from that statement's snapshot. A
+separate SELECT sees its committed identity before the worker links it. See
+[PostgreSQL transaction isolation](https://www.postgresql.org/docs/16/transaction-iso.html).
+Explicit source locks preserve current facts while applying each result; see
+[PostgreSQL consistency checks](https://www.postgresql.org/docs/current/applevel-consistency.html).
+
+## Earlier standard-only checkpoint
 
 Submission, unknown-outcome lookup, polling, admin reconciliation and explicit
 test simulation now use a unique UUID owner. Successful submission retains that

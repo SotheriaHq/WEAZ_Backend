@@ -47,6 +47,7 @@ function paystackSimulator() {
     modes: new Map(),
     listDown: new Set(),
     gates: new Map(),
+    lookupGates: new Map(),
     sequence: 7000,
     unauthorized: 0,
   };
@@ -115,14 +116,23 @@ function paystackSimulator() {
         return send(200, { status: true, message: 'Refund has been queued for processing', data: view(refund, true) });
       }
       if (req.method === 'GET' && url.pathname === '/refund') {
-        const reference = url.searchParams.get('reference');
-        if (reference && state.listDown.has(reference)) return send(503, { status: false });
-        const rows = [...state.refunds.values()].filter((refund) => !reference || refund.reference === reference);
-        return send(200, { status: true, data: rows.map((refund) => view(refund, false)) });
+        const transactionId = url.searchParams.get('transaction');
+        if (!transactionId || url.searchParams.has('reference')) return send(400, { status: false });
+        const capture = [...state.transactions.entries()].find(([, transaction]) => String(transaction.id) === transactionId);
+        if (capture && state.listDown.has(capture[0])) return send(503, { status: false });
+        const page = Number(url.searchParams.get('page') || 1);
+        const rows = [...state.refunds.values()].filter((refund) => String(refund.transactionId) === transactionId);
+        return send(200, { status: true, data: rows.slice((page - 1) * 100, page * 100).map((refund) => view(refund, false)), meta: { page, pageCount: Math.ceil(rows.length / 100) } });
       }
       if (req.method === 'GET' && url.pathname.startsWith('/refund/')) {
         const refund = state.refunds.get(decodeURIComponent(url.pathname.slice('/refund/'.length)));
         if (!refund) return send(404, { status: false, message: 'Refund not found' });
+        const gate = state.lookupGates.get(String(refund.id))?.shift();
+        if (gate) {
+          const snapshot = view(refund, false);
+          gate.arrived.resolve(); await gate.release.promise;
+          return send(gate.status || 200, gate.status ? { status: false } : { status: true, data: { ...snapshot, ...gate.override } });
+        }
         return send(200, { status: true, data: view(refund, false) });
       }
       return send(404, { status: false });
@@ -152,7 +162,7 @@ async function main() {
   testUrl.searchParams.set('options', '-c timezone=UTC');
   const admin = new Client({ connectionString: adminUrl.toString() });
   const savedEnv = Object.fromEntries(
-    ['PAYSTACK_SECRET_KEY', 'NODE_ENV', 'STANDARD_ORDER_REFUND_SIMULATION_ENABLED'].map((key) => [key, process.env[key]]),
+    ['PAYSTACK_SECRET_KEY', 'NODE_ENV', 'STANDARD_ORDER_REFUND_SIMULATION_ENABLED', 'CUSTOM_ORDER_QUEUE_REFUND_SIMULATION_ENABLED'].map((key) => [key, process.env[key]]),
   );
   // A synthetic test-mode key: the real one is never read into a request here.
   process.env.PAYSTACK_SECRET_KEY = `sk_test_fixture_${randomUUID().replaceAll('-', '')}`;
@@ -277,6 +287,8 @@ async function main() {
       prisma.ledgerTransaction.count({ where: { referenceType: 'StandardOrderRefund', referenceId: refundId, type: 'REFUND_ISSUED' } });
 
     // ── Concurrent requests converge ───────────────────────────────────────
+    const payoutOnly = process.argv.includes('--payout-only');
+    if (!payoutOnly) {
     const a1 = await paid({ brandId: brand1 });
     assert.equal(a1.hold.status, 'PARTIALLY_RELEASED');
     assert.equal(a1.hold.firstReleaseNetAmount.toFixed(2), '27.00');
@@ -796,6 +808,12 @@ async function main() {
 
     const leaseProof = await require('./standard-refund-lease-concurrency-scenarios.cjs')({prisma,refunds,provider,paid,request,only,refundRow,posts,settledJournals,brandId:brand1});
     evidence.cases.push(...leaseProof.cases);
+    const customLeaseProof = await require('./custom-refund-lease-concurrency-scenarios.cjs')({prisma,ledger,balance,provider,simulator,buyer,ownerId:owner1,brandId:brand1,paid,refunds,request,onlyStandard:only});
+    evidence.cases.push(...customLeaseProof.cases);
+    }
+    const payoutProof = await require('./payout-transfer-concurrency-scenarios.cjs')({prisma, ledger, balance, paid, adminId});
+    evidence.cases.push(...payoutProof.cases);
+    evidence.payoutProof = payoutProof.payoutProof;
     evidence.paystackSimulator = {
       refundSubmissions: [...simulator.state.posts.values()].reduce((sum, count) => sum + count, 0),
       providerRefunds: simulator.state.refunds.size,
@@ -819,7 +837,7 @@ async function main() {
     }
     await admin.end();
     await fs.writeFile(
-      path.resolve(__dirname, '../docs/performance-reviews/standard-refund-integrity-postgres-2026-10-26.json'),
+      path.resolve(__dirname, process.argv.includes('--payout-only') ? '../docs/performance-reviews/payout-transfer-concurrency-postgres-2026-10-28.json' : '../docs/performance-reviews/standard-refund-integrity-postgres-2026-10-26.json'),
       JSON.stringify(evidence, null, 2) + '\n',
     );
     console.log(JSON.stringify(evidence));
@@ -832,7 +850,7 @@ main().catch((error) => {
       ? error.message
       : error.name === 'PrismaClientValidationError'
         ? String(error.message).split('\n').slice(-4).join('\n')
-        : error.code || error.name || 'Standard refund integrity fixture failed',
+        : [error.code, error.meta?.code, error.meta?.message, JSON.stringify(error.meta ?? {}), error.name].filter(Boolean).join(' ') || 'Standard refund integrity fixture failed',
   );
   process.exitCode = 1;
 });
