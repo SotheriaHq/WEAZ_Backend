@@ -118,6 +118,7 @@ import { CategoriesService } from 'src/categories/categories.service';
 import { reconcileStandardOrderPaymentStatuses } from 'src/common/payments/order-payment-reconciliation.util';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 import { StandardOrderRefundsService } from 'src/finance/standard-order-refunds.service';
+import { assertCatalogueCurrency } from 'src/payment/currency-policy';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 import { buildPayoutSourceBreakdown } from 'src/payout/payout-detail.presenter';
 import {
@@ -2350,7 +2351,8 @@ export class StoreService {
       );
     }
 
-    const currency = (dto.currency || brand.currency || 'NGN').trim();
+    // Prices are set in a currency checkout can charge; shoppers see estimates.
+    const currency = assertCatalogueCurrency(dto.currency || brand.currency);
 
     const structuredProductMedia =
       this.contentIntegrity &&
@@ -3140,7 +3142,7 @@ export class StoreService {
 
     if (dto.description !== undefined) updateData.description = dto.description;
     if (dto.currency !== undefined) {
-      updateData.currency = (dto.currency || product.currency || 'NGN').trim();
+      updateData.currency = assertCatalogueCurrency(dto.currency || product.currency);
     }
     if (dto.standardCheckoutEnabled !== undefined) {
       updateData.standardCheckoutEnabled = dto.standardCheckoutEnabled;
@@ -4327,7 +4329,7 @@ export class StoreService {
             reason: 'PRODUCT_REMOVED_BY_BRAND',
             actorId: brandOwnerId,
           });
-          refund = { amount: requested.settlementAmount, currency: requested.settlementCurrency };
+          refund = { amount: requested.amount, currency: requested.currency };
         }
         const cancelled = await tx.order.updateMany({
           where: { id: order.id, status: { in: ['PENDING', 'PROCESSING'] } },

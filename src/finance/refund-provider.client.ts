@@ -10,6 +10,10 @@ const DEFAULT_BASE_URLS: Record<RefundGateway, string> = {
   FLUTTERWAVE: 'https://api.flutterwave.com',
 };
 const TIMEOUT_MS = 15000;
+const LIST_PAGE_SIZE = 100;
+const LIST_MAX_PAGES = 10;
+/** Provider clocks and our row timestamp can differ by a little. */
+const LIST_FROM_MARGIN_MS = 10 * 60 * 1000;
 
 const object = (value: unknown): JsonObject =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -129,11 +133,15 @@ export class RefundProviderClient {
     return secret;
   }
 
-  /** The currency and amount the capture was actually charged in. */
+  /**
+   * The currency and amount the capture was actually charged in. Settlement
+   * (NGN accounting at the original rate) is a separate figure and is never
+   * what the provider collected or refunds.
+   */
   chargedAmount(capture: RefundCapture): RefundTarget {
     return {
-      currency: (capture.settlementCurrency || capture.currency).toUpperCase(),
-      amount: new Prisma.Decimal(capture.settlementAmount ?? capture.amount),
+      currency: capture.currency.toUpperCase(),
+      amount: new Prisma.Decimal(capture.amount),
     };
   }
 
@@ -250,26 +258,37 @@ export class RefundProviderClient {
    * Refunds the provider holds for this capture whose note carries `marker`.
    * Used after an uncertain submission to find the refund that was created,
    * instead of creating another. Paystack only; others return null (unknown).
-   * The provider's reference filter only narrows the page; the note marker and
-   * `matches()` decide. A refund not found here goes to a person, never resent.
+   *
+   * Paystack's List Refunds documents only `page`, `perPage`, `from` and `to`
+   * (PaystackOSS/openapi `paths/refund.yaml`); it has no transaction filter.
+   * So refunds created since `since` are paged through, and the note marker
+   * and `matches()` decide. More pages than the bound, or any failed page,
+   * returns null: a refund not found goes to a person, never resent.
    */
   async findByNote(
     capture: RefundCapture,
     marker: string,
+    since?: Date,
   ): Promise<ProviderRefund[] | null> {
     const gateway = this.gateway(capture.provider);
     if (gateway !== 'PAYSTACK') return null;
     const secret = this.secret(gateway, capture.providerMode);
-    const url = `${this.baseUrls.PAYSTACK}/refund?reference=${encodeURIComponent(capture.reference)}&perPage=100`;
-    const { ok, payload } = await this.request(url, secret);
-    if (!ok || payload.status !== true || !Array.isArray(payload.data))
-      return null;
+    const from = since
+      ? `&from=${encodeURIComponent(new Date(since.getTime() - LIST_FROM_MARGIN_MS).toISOString())}`
+      : '';
     const matches: ProviderRefund[] = [];
-    for (const item of payload.data) {
-      const refund = await this.normalize(gateway, capture, object(item));
-      if (refund.note.includes(marker)) matches.push(refund);
+    for (let page = 1; page <= LIST_MAX_PAGES; page += 1) {
+      const url = `${this.baseUrls.PAYSTACK}/refund?perPage=${LIST_PAGE_SIZE}&page=${page}${from}`;
+      const { ok, payload } = await this.request(url, secret);
+      if (!ok || payload.status !== true || !Array.isArray(payload.data))
+        return null;
+      for (const item of payload.data) {
+        const refund = await this.normalize(gateway, capture, object(item));
+        if (refund.note.includes(marker)) matches.push(refund);
+      }
+      if (payload.data.length < LIST_PAGE_SIZE) return matches;
     }
-    return matches;
+    return null;
   }
 
   /** Refund belongs to this capture and moves exactly `target`. */
