@@ -378,18 +378,6 @@ export class PaymentService implements OnModuleInit {
       throw new Error('PAYMENTS_MODE must be set to "live" in production.');
     }
 
-    if (this.isLegacyPaystackWebhookAliasEnabled()) {
-      throw new Error(
-        'PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED must be false in production.',
-      );
-    }
-
-    if (this.isLegacyFlutterwaveWebhookAliasEnabled()) {
-      throw new Error(
-        'PAYMENT_LEGACY_FLUTTERWAVE_WEBHOOK_ALIAS_ENABLED must be false in production.',
-      );
-    }
-
     if (!this.resolvePaystackSecret()) {
       throw new Error(
         `A Paystack secret is required in production. Configure one of: ${describePaystackSecretEnvKeys()}`,
@@ -6247,22 +6235,6 @@ export class PaymentService implements OnModuleInit {
     // We do NOT default to mock to prevent accidental mock-mode deploys in production.
     return (
       (process.env.PAYMENTS_MODE ?? 'live').trim().toLowerCase() !== 'live'
-    );
-  }
-
-  private isLegacyPaystackWebhookAliasEnabled(): boolean {
-    return (
-      String(process.env.PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED ?? '')
-        .trim()
-        .toLowerCase() === 'true'
-    );
-  }
-
-  private isLegacyFlutterwaveWebhookAliasEnabled(): boolean {
-    return (
-      String(process.env.PAYMENT_LEGACY_FLUTTERWAVE_WEBHOOK_ALIAS_ENABLED ?? '')
-        .trim()
-        .toLowerCase() === 'true'
     );
   }
 
