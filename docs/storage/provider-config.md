@@ -1,39 +1,24 @@
-# Storage provider and authenticated public-media delivery
+# R2 storage and authenticated media delivery
 
-The default remains S3. Selecting R2 is explicit and requires R2-specific
-credentials, bucket and account API endpoint. This implementation does not
-deploy a Worker, create buckets, copy historical objects or switch an environment.
+R2 is the sole object store. There is no AWS S3 provider, IAM credential chain,
+public bucket, CDN alias or presigned POST fallback. Missing R2 settings fail
+startup. `STORAGE_PROVIDER` may be omitted or set to `R2`; any other value fails.
 
-## Provider configuration
+| Setting | Requirement |
+| --- | --- |
+| `R2_BUCKET` | Private R2 bucket, 3–63 valid characters |
+| `R2_ACCOUNT_ID` / `R2_ENDPOINT` | Valid matching account ID or HTTPS R2 account API origin |
+| `R2_ACCESS_KEY_ID` | Dedicated R2 object access key |
+| `R2_SECRET_ACCESS_KEY` | Dedicated R2 object access secret |
+| Region | Always `auto` |
 
-| Setting | S3 | R2 |
-| --- | --- | --- |
-| `STORAGE_PROVIDER` | `S3`, also the default when no R2 settings exist | Must explicitly be `R2` |
-| Bucket | `AWS_S3_BUCKET`, then `S3_BUCKET` | `R2_BUCKET` |
-| Region | `AWS_REGION`, then `REGION`, then `eu-north-1` | Always `auto` |
-| Endpoint | Optional HTTPS `S3_ENDPOINT` | `R2_ENDPOINT`, or derived from `R2_ACCOUNT_ID` |
-| Credentials | Explicit AWS/legacy pair, or the SDK IAM chain | `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` are mandatory |
-| Path style | Enabled for an explicit endpoint | Enabled |
-
-S3 supports the legacy `ACCESS_KEY_ID`/`SECRET_ACCESS_KEY` pair and preserves an
-explicit `AWS_SESSION_TOKEN`. Partial explicit credentials fail startup.
-Explicit `STORAGE_PROVIDER=S3` allows preparing unused R2 settings without changing
-the active provider. R2 settings with an unspecified provider fail rather than
-silently continuing to write to S3.
-
-R2 never inherits an AWS bucket, region or credentials. Unrelated AWS settings
-may remain for services such as SES. R2 endpoints must be HTTPS account API
-origins; the default and the `eu`, `us` and `fedramp` jurisdiction forms are
-recognized. A configured account ID must match the endpoint. Buckets in a
-jurisdiction require its corresponding endpoint and Worker binding configuration.
-[Cloudflare authentication and jurisdiction endpoints](https://developers.cloudflare.com/r2/api/tokens/)
-
-All R2 objects remain private. Public-bucket flags are rejected. Legacy
-`MEDIA_PUBLIC_BASE_URL`, `CDN_PUBLIC_BASE_URL`, `CLOUDFRONT_PUBLIC_BASE_URL`,
-`CLOUDFRONT_URL`, `S3_PUBLIC_BASE_URL` and `R2_PUBLIC_BASE_URL` must be absent or
-exactly match an explicitly configured authenticated gateway. A URL called a
-gateway in configuration is not proof that the deployed hostname is protected;
-the activation checks below must verify the actual route.
+Unrelated service credentials cannot substitute for R2 credentials. Retired
+AWS bucket/endpoint settings and public-base aliases are rejected, even when
+an alias happens to equal the Worker URL. All R2 objects remain private.
+Uploads use signed PUT capabilities with server-authorized keys and exact
+content headers. Finalization verifies stored size, content and ownership.
+The SDK uses the S3-compatible protocol supported by R2; its package/command
+names do not enable AWS S3 storage.
 
 `storageObjectUrl` produces a metadata identity URL, never an authorized display
 URL. SDK signatures must remain on the R2 API hostname; do not rewrite a signed

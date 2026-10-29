@@ -5,8 +5,10 @@ import {
   REVIEW_FILE_SELECT,
   REVIEW_PRODUCT_SELECT,
 } from './content-review-prefetch';
+import { lockContentReviewTarget } from './content-review-lock';
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -497,8 +499,9 @@ export class ContentIntegrityService {
   async blockRequiredDesignMediaDeletion(
     collectionId: string,
     mediaId: string,
+    client: Pick<Prisma.TransactionClient, 'collectionMedia'> = this.prisma,
   ) {
-    const media = await (this.prisma as any).collectionMedia.findFirst({
+    const media = await client.collectionMedia.findFirst({
       where: { id: mediaId, collectionId },
       select: {
         id: true,
@@ -682,6 +685,7 @@ export class ContentIntegrityService {
     tx: Prisma.TransactionClient,
     target: SubmissionTarget,
   ) {
+    await lockContentReviewTarget(tx, target);
     // Close out every submission for this target that is still OPEN.
     //
     // This used to match IN_REVIEW only, which left the resubmission case
@@ -780,18 +784,21 @@ export class ContentIntegrityService {
       },
     });
 
-    await this.recordBrandTrustEvent({
-      brandId: target.brandId,
-      actorUserId: target.submittedById,
-      eventType: BrandTrustEventType.CONTENT_SUBMITTED,
-      metadata: {
-        submissionId: submission.id,
-        entityType: target.entityType,
-        productId: target.productId,
-        designId: target.designId,
-        legacyCollectionId: target.legacyCollectionId,
+    await this.recordBrandTrustEvent(
+      {
+        brandId: target.brandId,
+        actorUserId: target.submittedById,
+        eventType: BrandTrustEventType.CONTENT_SUBMITTED,
+        metadata: {
+          submissionId: submission.id,
+          entityType: target.entityType,
+          productId: target.productId,
+          designId: target.designId,
+          legacyCollectionId: target.legacyCollectionId,
+        },
       },
-    });
+      tx,
+    );
 
     return submission;
   }
@@ -2288,7 +2295,7 @@ export class ContentIntegrityService {
     ipAddress?: string | null;
     userAgent?: string | null;
   }) {
-    const submission = await this.getSubmissionRow(args.submissionId);
+    let submission = await this.getSubmissionRow(args.submissionId);
     const now = new Date();
     const nextSubmissionStatus =
       args.action === 'approve'
@@ -2327,162 +2334,264 @@ export class ContentIntegrityService {
       throw new ForbiddenException('Admins cannot review their own content.');
     }
 
-    const reviewTxResult = await this.prisma.$transaction(async (tx) => {
-      await (tx as any).contentSubmission.update({
-        where: { id: submission.id },
-        data: {
-          status: nextSubmissionStatus,
-          reviewedById: args.adminUserId,
-          reviewedAt: now,
-          reasonCode: args.reasonCode ?? null,
-          reasonNote: args.reasonNote?.trim() || null,
-        },
-      });
-
-      let ownerId: string | null = null;
-      let targetTitle: string | null = null;
-      let targetType = String(submission.entityType);
-      let targetId =
-        submission.productId ??
-        submission.designId ??
-        submission.legacyCollectionId ??
-        submission.id;
-
-      if (submission.productId) {
-        const product = await tx.product.update({
-          where: { id: submission.productId },
+    await this.prisma.$transaction(
+      async (tx) => {
+        await lockContentReviewTarget(tx, submission);
+        await tx.$queryRaw(
+          Prisma.sql`SELECT "_id" FROM "ContentSubmission" WHERE "_id"=${args.submissionId}::uuid FOR UPDATE`,
+        );
+        const fresh = await tx.contentSubmission.findUnique({
+          where: { id: args.submissionId },
+        });
+        if (!fresh) throw new NotFoundException('Submission not found');
+        if (
+          fresh.productId !== submission.productId ||
+          fresh.designId !== submission.designId ||
+          fresh.legacyCollectionId !== submission.legacyCollectionId
+        )
+          throw new ConflictException(
+            'The review source changed. Refresh the queue.',
+          );
+        submission = fresh;
+        if (submission.status !== ContentSubmissionStatus.IN_REVIEW)
+          throw new ConflictException(
+            'This submission is no longer awaiting review. Refresh the queue.',
+          );
+        if (submission.submittedById === args.adminUserId)
+          throw new ForbiddenException(
+            'Admins cannot review their own content.',
+          );
+        const collectionId =
+          submission.legacyCollectionId ?? submission.designId;
+        if (submission.productId) {
+          const source = await tx.product.findUnique({
+            where: { id: submission.productId },
+            select: {
+              publicationStatus: true,
+              deletedAt: true,
+              archivedAt: true,
+            },
+          });
+          if (
+            !source ||
+            source.deletedAt ||
+            source.archivedAt ||
+            source.publicationStatus !== CollectionStatus.IN_REVIEW
+          )
+            throw new ConflictException(
+              'This product was withdrawn, changed or already reviewed. Refresh the queue.',
+            );
+        } else {
+          const source = await tx.collection.findUnique({
+            where: { id: collectionId! },
+            select: { status: true, deletedAt: true },
+          });
+          if (
+            !source ||
+            source.deletedAt ||
+            source.status !== CollectionStatus.IN_REVIEW
+          )
+            throw new ConflictException(
+              'This design was withdrawn, changed or already reviewed. Refresh the queue.',
+            );
+        }
+        const snapshot = await this.buildReviewableSnapshot(tx, submission);
+        if (
+          submission.contentFingerprint &&
+          (!snapshot ||
+            fingerprintSnapshot(snapshot) !== submission.contentFingerprint)
+        )
+          throw new ConflictException(
+            'Content changed after submission. The brand must submit the current version for review.',
+          );
+        if (args.action === 'approve') {
+          if (submission.productId)
+            await this.assertProductHasPublishableMedia(
+              tx,
+              submission.productId,
+            );
+          else
+            await this.assertCollectionHasPublishableMedia(tx, collectionId!);
+        }
+        await (tx as any).contentSubmission.update({
+          where: { id: submission.id },
           data: {
-            publicationStatus: nextEntityStatus,
-            isActive: args.action === 'approve',
-          } as any,
-          select: {
-            id: true,
-            name: true,
-            brand: { select: { ownerId: true } },
-          },
-        });
-        targetTitle = product.name ?? null;
-        ownerId = product.brand?.ownerId ?? null;
-        targetType = 'Product';
-        targetId = product.id;
-        await (tx as any).productMedia.updateMany({
-          where: { productId: product.id },
-          data: {
-            reviewStatus: nextMediaStatus,
-            reviewReasonCode: args.reasonCode ?? null,
-            reviewReason: args.reasonNote?.trim() || null,
-          },
-        });
-      }
-
-      if (submission.legacyCollectionId) {
-        const collection = await tx.collection.update({
-          where: { id: submission.legacyCollectionId },
-          data: { status: nextEntityStatus } as any,
-          select: { id: true, ownerId: true, title: true },
-        });
-        targetTitle = targetTitle ?? collection.title ?? null;
-        ownerId = collection.ownerId;
-        targetType = 'Collection';
-        targetId = collection.id;
-        await (tx as any).collectionMedia.updateMany({
-          where: { collectionId: collection.id },
-          data: {
-            reviewStatus: nextMediaStatus,
-            reviewReasonCode: args.reasonCode ?? null,
-            reviewReason: args.reasonNote?.trim() || null,
-          },
-        });
-      }
-
-      await (tx as any).adminAuditLog.create({
-        data: {
-          id: uuidv4(),
-          actorUserId: args.adminUserId,
-          action: 'ADMIN_CONTENT_REVIEW_ACTION',
-          targetType,
-          targetId,
-          previousState: {
-            submissionStatus: submission.status,
-            targetStatus: submission.previousStatus,
-          },
-          newState: {
-            action: args.action,
-            submissionStatus: nextSubmissionStatus,
-            targetStatus: nextEntityStatus,
+            status: nextSubmissionStatus,
+            reviewedById: args.adminUserId,
+            reviewedAt: now,
             reasonCode: args.reasonCode ?? null,
-          },
-          metadata: {
-            submissionId: submission.id,
             reasonNote: args.reasonNote?.trim() || null,
           },
-          ipAddress: args.ipAddress ?? null,
-          userAgent: args.userAgent ?? null,
-        },
-      });
+        });
 
-      return { ownerId, targetTitle };
-    });
-    const notificationOwner = reviewTxResult.ownerId;
-    const reviewedContentTitle = reviewTxResult.targetTitle;
+        let ownerId: string | null = null;
+        let targetTitle: string | null = null;
+        let targetType = String(submission.entityType);
+        let targetId =
+          submission.productId ??
+          submission.designId ??
+          submission.legacyCollectionId ??
+          submission.id;
 
-    await this.recordBrandTrustEvent({
-      brandId: submission.brandId,
-      actorUserId: args.adminUserId,
-      eventType:
-        args.action === 'approve'
-          ? BrandTrustEventType.CONTENT_APPROVED
-          : args.action === 'reject'
-            ? BrandTrustEventType.CONTENT_REJECTED
-            : BrandTrustEventType.CONTENT_CHANGES_REQUESTED,
-      metadata: {
-        submissionId: submission.id,
-        reasonCode: args.reasonCode ?? null,
-      },
-    });
+        if (submission.productId) {
+          const product = await tx.product.update({
+            where: { id: submission.productId },
+            data: {
+              publicationStatus: nextEntityStatus,
+              isActive: args.action === 'approve',
+            } as any,
+            select: {
+              id: true,
+              name: true,
+              brand: { select: { ownerId: true } },
+            },
+          });
+          targetTitle = product.name ?? null;
+          ownerId = product.brand?.ownerId ?? null;
+          targetType = 'Product';
+          targetId = product.id;
+          await (tx as any).productMedia.updateMany({
+            where: { productId: product.id },
+            data: {
+              reviewStatus: nextMediaStatus,
+              reviewReasonCode: args.reasonCode ?? null,
+              reviewReason: args.reasonNote?.trim() || null,
+            },
+          });
+        }
 
-    if (notificationOwner) {
-      const recipient = await this.prisma.user
-        .findUnique({
-          where: { id: notificationOwner },
-          select: {
-            username: true,
-            userProfile: { select: { firstName: true } },
+        if (collectionId) {
+          const collection = await tx.collection.update({
+            where: { id: collectionId },
+            data: { status: nextEntityStatus } as any,
+            select: { id: true, ownerId: true, title: true },
+          });
+          targetTitle = targetTitle ?? collection.title ?? null;
+          ownerId = collection.ownerId;
+          targetType = 'Collection';
+          targetId = collection.id;
+          await (tx as any).collectionMedia.updateMany({
+            where: { collectionId: collection.id },
+            data: {
+              reviewStatus: nextMediaStatus,
+              reviewReasonCode: args.reasonCode ?? null,
+              reviewReason: args.reasonNote?.trim() || null,
+            },
+          });
+        }
+
+        await (tx as any).adminAuditLog.create({
+          data: {
+            id: uuidv4(),
+            actorUserId: args.adminUserId,
+            action: 'ADMIN_CONTENT_REVIEW_ACTION',
+            targetType,
+            targetId,
+            previousState: {
+              submissionStatus: submission.status,
+              targetStatus: submission.previousStatus,
+            },
+            newState: {
+              action: args.action,
+              submissionStatus: nextSubmissionStatus,
+              targetStatus: nextEntityStatus,
+              reasonCode: args.reasonCode ?? null,
+            },
+            metadata: {
+              submissionId: submission.id,
+              reasonNote: args.reasonNote?.trim() || null,
+            },
+            ipAddress: args.ipAddress ?? null,
+            userAgent: args.userAgent ?? null,
           },
-        })
-        .catch(() => null);
-      const recipientName =
-        recipient?.userProfile?.firstName?.trim() ||
-        recipient?.username?.trim() ||
-        null;
-      await this.notifyContentReviewOutcome(notificationOwner, {
-        type:
-          args.action === 'approve'
-            ? NotificationType.CONTENT_REVIEW_APPROVED
-            : args.action === 'reject'
-              ? NotificationType.CONTENT_REVIEW_REJECTED
-              : NotificationType.CONTENT_CHANGES_REQUESTED,
-        message: this.reviewOutcomeMessage(
-          args.action,
-          args.reasonCode,
-          reviewedContentTitle,
-          args.reasonNote,
-          recipientName,
-        ),
-        title: reviewedContentTitle,
-        contentTitle: reviewedContentTitle,
-        submissionId: submission.id,
-        reasonCode: args.reasonCode ?? null,
-        // Full admin note + target identifiers so clients can route the
-        // notification to the exact content (edit screen / status tab) and
-        // render the reviewer feedback banner.
-        reasonNote: args.reasonNote?.trim() || null,
-        entityType: String(submission.entityType ?? ''),
-        productId: submission.productId ?? null,
-        designId: submission.designId ?? null,
-        legacyCollectionId: submission.legacyCollectionId ?? null,
-      });
-    }
+        });
+
+        await this.recordBrandTrustEvent(
+          {
+            brandId: submission.brandId,
+            actorUserId: args.adminUserId,
+            eventType:
+              args.action === 'approve'
+                ? BrandTrustEventType.CONTENT_APPROVED
+                : args.action === 'reject'
+                  ? BrandTrustEventType.CONTENT_REJECTED
+                  : BrandTrustEventType.CONTENT_CHANGES_REQUESTED,
+            metadata: {
+              submissionId: submission.id,
+              reasonCode: args.reasonCode ?? null,
+            },
+          },
+          tx,
+        );
+
+        if (ownerId) {
+          if (!this.notifications)
+            throw new Error('Content review notification service unavailable');
+          const recipient = await tx.user.findUnique({
+            where: { id: ownerId },
+            select: {
+              username: true,
+              type: true,
+              brand: { select: { name: true } },
+              userProfile: { select: { firstName: true } },
+            },
+          });
+          const recipientName =
+            (recipient?.type === 'BRAND'
+              ? recipient.brand?.name?.trim()
+              : recipient?.userProfile?.firstName?.trim()) ||
+            recipient?.username?.trim() ||
+            null;
+          const type =
+            args.action === 'approve'
+              ? NotificationType.CONTENT_REVIEW_APPROVED
+              : args.action === 'reject'
+                ? NotificationType.CONTENT_REVIEW_REJECTED
+                : NotificationType.CONTENT_CHANGES_REQUESTED;
+          await this.notifications.stageContentReviewEvents(tx, [
+            {
+              recipientId: ownerId,
+              type,
+              opts: {
+                notificationId: uuidv5(
+                  `content-reviewed:${submission.id}:${ownerId}`,
+                  uuidv5.URL,
+                ),
+                payload: {
+                  message: this.reviewOutcomeMessage(
+                    args.action,
+                    args.reasonCode,
+                    targetTitle,
+                    args.reasonNote,
+                    recipientName,
+                  ),
+                  title: targetTitle,
+                  contentTitle: targetTitle,
+                  submissionId: submission.id,
+                  reasonCode: args.reasonCode ?? null,
+                  // Full admin note + target identifiers so clients can route the
+                  // notification to the exact content (edit screen / status tab) and
+                  // render the reviewer feedback banner.
+                  reasonNote: args.reasonNote?.trim() || null,
+                  entityType: String(submission.entityType ?? ''),
+                  ...(submission.productId
+                    ? { productId: submission.productId }
+                    : {}),
+                  ...(collectionId
+                    ? { collectionId, designId: collectionId }
+                    : {}),
+                  ...(submission.legacyCollectionId
+                    ? { legacyCollectionId: submission.legacyCollectionId }
+                    : {}),
+                },
+              },
+            },
+          ]);
+        }
+        return { ownerId, targetTitle };
+      },
+      { timeout: 15000 },
+    );
 
     return this.getSubmission(submission.id);
   }
@@ -2683,18 +2792,23 @@ export class ContentIntegrityService {
     };
   }
 
-  async recordBrandTrustEvent(args: {
-    brandId?: string | null;
-    actorUserId?: string | null;
-    eventType: BrandTrustEventType;
-    tier?: BrandTrustTier | null;
-    reviewMode?: BrandContentReviewMode | null;
-    reason?: string | null;
-    metadata?: Record<string, unknown> | null;
-  }) {
+  async recordBrandTrustEvent(
+    args: {
+      brandId?: string | null;
+      actorUserId?: string | null;
+      eventType: BrandTrustEventType;
+      tier?: BrandTrustTier | null;
+      reviewMode?: BrandContentReviewMode | null;
+      reason?: string | null;
+      metadata?: Record<string, unknown> | null;
+    },
+    tx?: Prisma.TransactionClient,
+  ) {
     if (!args.brandId) return null;
+    const client: Pick<Prisma.TransactionClient, 'brandTrustEvent'> =
+      tx ?? this.prisma;
     try {
-      return await (this.prisma as any).brandTrustEvent.create({
+      return await client.brandTrustEvent.create({
         data: {
           id: uuidv4(),
           brandId: args.brandId,
@@ -2703,10 +2817,11 @@ export class ContentIntegrityService {
           tier: args.tier ?? null,
           reviewMode: args.reviewMode ?? null,
           reason: args.reason ?? null,
-          metadata: args.metadata ?? undefined,
+          metadata: (args.metadata as Prisma.InputJsonValue) ?? undefined,
         },
       });
-    } catch {
+    } catch (error) {
+      if (tx) throw error;
       return null;
     }
   }
@@ -2776,6 +2891,7 @@ export class ContentIntegrityService {
     ownerId: string,
     payload: Record<string, unknown>,
     deferredEvents?: NotificationEvent[],
+    tx?: Prisma.TransactionClient,
   ) {
     const title = await this.resolveContentTitleForNotification(payload);
     const when = this.formatUserFacingTime();
@@ -2791,8 +2907,8 @@ export class ContentIntegrityService {
     const message = title
       ? `Your ${entityLabel} "${title}" was submitted for review on ${when} and is pending approval. We'll notify you as soon as the review is complete.`
       : `Your ${entityLabel} was submitted for review on ${when} and is pending approval. We'll notify you as soon as the review is complete.`;
-    if (deferredEvents) {
-      deferredEvents.push({
+    if (deferredEvents || tx) {
+      const event: NotificationEvent = {
         recipientId: ownerId,
         type: NotificationType.CONTENT_SUBMITTED_FOR_REVIEW,
         opts: {
@@ -2802,7 +2918,13 @@ export class ContentIntegrityService {
           ),
           payload: { ...payload, title, contentTitle: title, message },
         },
-      });
+      };
+      if (deferredEvents) deferredEvents.push(event);
+      else {
+        if (!this.notifications)
+          throw new Error('Content review notification service unavailable');
+        await this.notifications.stageContentReviewEvents(tx!, [event]);
+      }
       return;
     }
     await this.notifyContentReviewOutcome(ownerId, {
@@ -2816,28 +2938,37 @@ export class ContentIntegrityService {
 
   /** Import pages retain individual notices while sharing current recipient policy reads. */
   async flushContentSubmittedNotifications(events: NotificationEvent[]) {
+    if (!events.length) return;
+    if (!this.notifications)
+      throw new Error('Content review notification service unavailable');
     const pending = events.splice(0);
-    if (!pending.length || !this.notifications) return;
+    let results: Awaited<ReturnType<NotificationsService['createEvents']>>;
     try {
-      const results = await this.notifications.createEvents(pending);
-      results.forEach((result, index) => {
-        if (result.status === 'rejected')
-          this.emitIntegrityAlert('content_review_notification_failed', {
-            ownerId: pending[index].recipientId,
-            notificationType: pending[index].type,
-            submissionId: pending[index].opts?.payload?.submissionId,
-          });
-      });
-    } catch {
+      results = await this.notifications.createEvents(pending);
+    } catch (error) {
+      events.push(...pending);
       for (const event of pending)
         this.emitIntegrityAlert('content_review_notification_failed', {
           ownerId: event.recipientId,
           notificationType: event.type,
           submissionId: event.opts?.payload?.submissionId,
         });
+      throw error;
     }
+    const failed = pending.filter(
+      (_, index) => results[index]?.status !== 'fulfilled',
+    );
+    if (!failed.length) return;
+    events.push(...failed);
+    for (const event of failed)
+      this.emitIntegrityAlert('content_review_notification_failed', {
+        ownerId: event.recipientId,
+        notificationType: event.type,
+        submissionId: event.opts?.payload?.submissionId,
+      });
+    // Keep import checkpoints retryable until inbox + channel intents are durable.
+    throw new Error('Content review notification handoff incomplete');
   }
-
   private async notifyContentReviewOutcome(
     ownerId: string,
     payload: {

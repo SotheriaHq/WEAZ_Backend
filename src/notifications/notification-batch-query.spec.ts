@@ -9,6 +9,13 @@ jest.mock('./notification-channel-query', () => ({
   reapExhaustedNotificationChannels: jest.fn().mockResolvedValue(0),
   cleanupNotificationChannels: jest.fn().mockResolvedValue(0),
 }));
+jest.mock('./notification-dedupe-query', () => ({
+  loadCurrentNotificationDuplicates: jest.fn(async () => ({
+    observedAt: new Date(),
+    candidates: [],
+    targetDuplicate: undefined,
+  })),
+}));
 
 function fixture(count = 25) {
   const written = new Map<string, any>(),
@@ -128,14 +135,12 @@ function fixture(count = 25) {
   };
   const push = {
     enqueue: jest.fn().mockResolvedValue({}),
-    buildPushPayload: jest
-      .fn()
-      .mockReturnValue({
-        title: 'WIEZ',
-        body: 'Fixture',
-        data: {},
-        sound: true,
-      }),
+    buildPushPayload: jest.fn().mockReturnValue({
+      title: 'WIEZ',
+      body: 'Fixture',
+      data: {},
+      sound: true,
+    }),
   };
   const service = new NotificationsService(
     prisma as any,

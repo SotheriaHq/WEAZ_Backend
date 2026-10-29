@@ -103,7 +103,7 @@ describe('RefundProviderClient', () => {
     });
   });
 
-  it('looks refunds up with documented list parameters only, paging until it finds the note', async () => {
+  it('looks refunds up with documented list parameters, retaining pagination when filtering is ignored', async () => {
     const other = (id: number) => ({
       id,
       status: 'pending',
@@ -146,8 +146,8 @@ describe('RefundProviderClient', () => {
     expect(found?.[0]).toMatchObject({ id: '9', transactionId: '501' });
     const urls = fetchMock.mock.calls.map(([url]) => new URL(url as string));
     expect(urls.map((url) => [...url.searchParams.keys()].sort())).toEqual([
-      ['from', 'page', 'perPage'],
-      ['from', 'page', 'perPage'],
+      ['from', 'page', 'perPage', 'transaction'],
+      ['from', 'page', 'perPage', 'transaction'],
     ]);
     expect(urls.map((url) => url.searchParams.get('page'))).toEqual(['1', '2']);
     expect(Date.parse(urls[0].searchParams.get('from')!)).toBeLessThan(

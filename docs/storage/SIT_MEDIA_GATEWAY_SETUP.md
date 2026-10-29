@@ -1,11 +1,12 @@
 # SIT private-bucket media gateway
 
-The SIT gateway module is prepared locally. The owner created the Worker at
-`https://wiez-sit-media-gateway.sotheria-hq.workers.dev`; its reviewed code,
-binding, secret and variables still require dashboard deployment and verification. The
-private R2 bucket is `wiez-sit-media`; the Worker name is
-`wiez-sit-media-gateway`. Public gateway URLs require an API-issued signature.
-Private evidence, orders and messages continue through authorized SDK delivery.
+The owner deployed the reviewed Worker at
+`https://wiez-sit-media-gateway.sotheria-hq.workers.dev`. Its private bucket
+binding is `MEDIA_BUCKET` → `wiez-sit-media`. All nine live gateway probes pass,
+including SVG415 rejection; see [evidence](evidence/r2-sit-gateway-smoke.json).
+This verifies the Worker, not the backend application cutover. Public media
+requires API-issued capabilities after publication checks; private evidence,
+orders and messages use authorized R2 SDK delivery.
 
 ## Dashboard setup
 

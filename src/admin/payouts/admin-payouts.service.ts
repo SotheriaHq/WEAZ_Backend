@@ -21,6 +21,11 @@ import { v4 as uuidv4 } from 'uuid';
 import { Request } from 'express';
 import { LedgerService } from 'src/finance/ledger.service';
 import { assertBrandPayoutSafe } from 'src/finance/brand-financial-safety';
+import {
+  lockPayoutSource,
+  claimPayoutTransfer,
+  assertPayoutPosition,
+} from './payout-transfer-query';
 import { FinancialDocumentsService } from 'src/finance/financial-documents.service';
 import {
   WebhookEventsQueueService,
@@ -247,26 +252,29 @@ export class AdminPayoutsService {
     actorRole: Role,
     req: Request,
   ) {
-    const payout = await this.prisma.payout.findUnique({
-      where: { id: payoutId },
-      select: {
-        id: true,
-        status: true,
-        assignedAdminId: true,
-      },
-    });
-    if (!payout) throw new NotFoundException('Payout not found');
+    return this.prisma.$transaction(async (tx) => {
+      await this.lockPayoutForUpdate(tx, payoutId);
+      const payout = await tx.payout.findUnique({
+        where: { id: payoutId },
+        select: {
+          id: true,
+          status: true,
+          assignedAdminId: true,
+        },
+      });
+      if (!payout) throw new NotFoundException('Payout not found');
 
-    if (
-      payout.assignedAdminId &&
-      payout.assignedAdminId !== actorId &&
-      actorRole !== Role.SuperAdmin
-    ) {
-      throw new ConflictException('Payout is already claimed by another admin');
-    }
+      if (
+        payout.assignedAdminId &&
+        payout.assignedAdminId !== actorId &&
+        actorRole !== Role.SuperAdmin
+      ) {
+        throw new ConflictException(
+          'Payout is already claimed by another admin',
+        );
+      }
 
-    const now = new Date();
-    const updated = await this.prisma.$transaction(async (tx) => {
+      const now = new Date();
       const result = await tx.payout.update({
         where: { id: payoutId },
         data: {
@@ -297,8 +305,6 @@ export class AdminPayoutsService {
 
       return result;
     });
-
-    return updated;
   }
 
   async release(
@@ -308,19 +314,20 @@ export class AdminPayoutsService {
     req: Request,
     reason?: string,
   ) {
-    const payout = await this.prisma.payout.findUnique({
-      where: { id: payoutId },
-      select: {
-        id: true,
-        assignedAdminId: true,
-      },
-    });
-    if (!payout) throw new NotFoundException('Payout not found');
+    return this.prisma.$transaction(async (tx) => {
+      await this.lockPayoutForUpdate(tx, payoutId);
+      const payout = await tx.payout.findUnique({
+        where: { id: payoutId },
+        select: {
+          id: true,
+          assignedAdminId: true,
+        },
+      });
+      if (!payout) throw new NotFoundException('Payout not found');
 
-    this.assertOwnership(payout.assignedAdminId, actorId, actorRole);
+      this.assertOwnership(payout.assignedAdminId, actorId, actorRole);
 
-    const now = new Date();
-    const updated = await this.prisma.$transaction(async (tx) => {
+      const now = new Date();
       const result = await tx.payout.update({
         where: { id: payoutId },
         data: {
@@ -351,8 +358,6 @@ export class AdminPayoutsService {
 
       return result;
     });
-
-    return updated;
   }
 
   async updateStatus(
@@ -362,59 +367,86 @@ export class AdminPayoutsService {
     actorRole: Role,
     req: Request,
   ) {
-    const payout = await this.prisma.payout.findUnique({
-      where: { id: payoutId },
-    });
-    if (!payout) throw new NotFoundException('Payout not found');
+    return this.prisma.$transaction(async (tx) => {
+      await this.lockPayoutForUpdate(tx, payoutId);
+      const payout = await tx.payout.findUnique({
+        where: { id: payoutId },
+      });
+      if (!payout) throw new NotFoundException('Payout not found');
 
-    this.assertOwnership(payout.assignedAdminId, actorId, actorRole);
+      this.assertOwnership(payout.assignedAdminId, actorId, actorRole);
 
-    const allowed = VALID_TRANSITIONS[payout.status];
-    if (!allowed || !allowed.includes(params.status)) {
-      throw new ConflictException(
-        `Cannot transition payout from ${payout.status} to ${params.status}`,
-      );
-    }
+      if (
+        payout.transferLeaseToken ||
+        ['SUBMITTING', 'FINALIZING', 'OUTCOME_UNKNOWN'].includes(
+          this.normalizeProviderStatus(payout.providerTransferStatus) ?? '',
+        )
+      ) {
+        throw new ConflictException(
+          'Verify the original transfer before changing its payout status.',
+        );
+      }
+      const allowed = VALID_TRANSITIONS[payout.status];
+      if (
+        payout.providerTransferInitiatedAt &&
+        !['FAILED', 'FAILURE', 'ABANDONED', 'REJECTED', 'BLOCKED'].includes(
+          this.normalizeProviderStatus(payout.providerTransferStatus) ?? '',
+        ) &&
+        ![
+          PayoutStatus.ON_HOLD,
+          PayoutStatus.RECONCILIATION_REVIEW,
+          PayoutStatus.PAID,
+        ].includes(params.status as any)
+      ) {
+        throw new ConflictException(
+          'A transfer is still outstanding at the provider. Verify it before changing or releasing its reservation.',
+        );
+      }
+      if (!allowed || !allowed.includes(params.status)) {
+        throw new ConflictException(
+          `Cannot transition payout from ${payout.status} to ${params.status}`,
+        );
+      }
 
-    if (params.status === PayoutStatus.PAID) {
-      this.assertManualPaidTransitionIsProviderConfirmed(payout);
-    }
+      if (params.status === PayoutStatus.PAID) {
+        this.assertManualPaidTransitionIsProviderConfirmed(payout);
+      }
 
-    const now = new Date();
-    const data: Record<string, unknown> = {
-      status: params.status,
-      statusReason: params.reason?.trim() || null,
-    };
+      const now = new Date();
+      const data: Record<string, unknown> = {
+        status: params.status,
+        statusReason: params.reason?.trim() || null,
+      };
 
-    if (params.status === PayoutStatus.APPROVED) {
-      data.approvedById = actorId;
-      data.approvedAt = now;
-    }
-    if (params.status === PayoutStatus.PROCESSING) {
-      data.processedAt = payout.processedAt ?? now;
-    }
-    if (params.status === PayoutStatus.PAID) {
-      data.paidAt = payout.paidAt ?? now;
-      data.providerTransferFinalizedAt =
-        payout.providerTransferFinalizedAt ?? now;
-      data.failureReason = null;
-      data.statusReason = null;
-    }
-    if (params.status === PayoutStatus.FAILED) {
-      data.failureReason = params.reason?.trim() || 'Payout processing failed';
-    }
-    if (params.status === PayoutStatus.RECONCILIATION_REVIEW) {
-      data.providerTransferReversedAt =
-        payout.providerTransferReversedAt ?? now;
-    }
-    if (params.status !== PayoutStatus.FAILED) {
-      data.failureReason =
-        params.status === PayoutStatus.RECONCILIATION_REVIEW
-          ? (payout.failureReason ?? null)
-          : null;
-    }
+      if (params.status === PayoutStatus.APPROVED) {
+        data.approvedById = actorId;
+        data.approvedAt = now;
+      }
+      if (params.status === PayoutStatus.PROCESSING) {
+        data.processedAt = payout.processedAt ?? now;
+      }
+      if (params.status === PayoutStatus.PAID) {
+        data.paidAt = payout.paidAt ?? now;
+        data.providerTransferFinalizedAt =
+          payout.providerTransferFinalizedAt ?? now;
+        data.failureReason = null;
+        data.statusReason = null;
+      }
+      if (params.status === PayoutStatus.FAILED) {
+        data.failureReason =
+          params.reason?.trim() || 'Payout processing failed';
+      }
+      if (params.status === PayoutStatus.RECONCILIATION_REVIEW) {
+        data.providerTransferReversedAt =
+          payout.providerTransferReversedAt ?? now;
+      }
+      if (params.status !== PayoutStatus.FAILED) {
+        data.failureReason =
+          params.status === PayoutStatus.RECONCILIATION_REVIEW
+            ? (payout.failureReason ?? null)
+            : null;
+      }
 
-    const updated = await this.prisma.$transaction(async (tx) => {
       const result = await tx.payout.update({
         where: { id: payoutId },
         data,
@@ -462,8 +494,6 @@ export class AdminPayoutsService {
 
       return result;
     });
-
-    return updated;
   }
 
   async initiateTransfer(
@@ -472,134 +502,123 @@ export class AdminPayoutsService {
     actorRole: Role,
     req: Request,
   ) {
-    if (!this.isPayoutTransferExecutionEnabled()) {
-      throw new BadRequestException(
-        'Paystack payout transfer execution is currently disabled',
-      );
-    }
-    return this.prisma.$transaction(async (tx) => {
+    this.assertTransferExecutionEnabled();
+    const intent = await this.prisma.$transaction(async (tx) => {
       await this.lockPayoutForUpdate(tx, payoutId);
-
       const current = await tx.payout.findUnique({
         where: { id: payoutId },
         include: this.payoutInclude(),
       });
-      if (!current) {
-        throw new NotFoundException('Payout not found');
-      }
-
+      if (!current) throw new NotFoundException('Payout not found');
       this.assertOwnership(current.assignedAdminId, actorId, actorRole);
-
-      const transferableStatuses = new Set<PayoutStatus>([
-        PayoutStatus.APPROVED,
-        PayoutStatus.FAILED,
-        PayoutStatus.RECONCILIATION_REVIEW,
-      ]);
-      if (!transferableStatuses.has(current.status)) {
+      if (
+        ![
+          PayoutStatus.APPROVED,
+          PayoutStatus.FAILED,
+          PayoutStatus.RECONCILIATION_REVIEW,
+        ].includes(current.status as any)
+      ) {
         throw new ConflictException(
           `Cannot initiate a transfer while payout is ${current.status}`,
         );
       }
-
-      if (
-        String(current.currency || '')
-          .trim()
-          .toUpperCase() !== 'NGN'
-      ) {
+      if (current.currency.trim().toUpperCase() !== 'NGN')
         throw new BadRequestException(
           'Paystack payouts are only enabled for NGN in this phase',
         );
-      }
-
-      const paymentAccount = await (tx as any).storePaymentAccount.findUnique({
+      const account = await tx.storePaymentAccount.findUnique({
         where: { brandId: current.brandId },
       });
-
-      if (!paymentAccount || paymentAccount.status !== 'ACTIVE') {
-        throw new BadRequestException(
-          'Brand payout account is not active. Sync the brand payment account before initiating payout.',
-        );
-      }
-
       if (
-        !paymentAccount.transferRecipientCode ||
-        !paymentAccount.transferRecipientActive
+        !account ||
+        account.status !== 'ACTIVE' ||
+        !account.transferRecipientCode ||
+        !account.transferRecipientActive
       ) {
         throw new BadRequestException(
-          'Brand payout account does not have an active transfer recipient.',
+          'Brand payout account must have an active transfer recipient before initiating payout.',
         );
       }
-
-      await this.assertPayoutSourceReservations(
-        tx,
-        current.id,
-        Number(current.amount ?? 0),
+      await this.assertTransferFunds(tx, current);
+      // An earlier ambiguous send is verified, never blindly repeated. A provider-
+      // confirmed failure retains Paystack's original reference when retried.
+      const previousStatus = this.normalizeProviderStatus(
+        current.providerTransferStatus,
       );
-
-      await assertBrandPayoutSafe(tx, current.brandId);
-
-      const transferReference =
+      const lookupOnly = Boolean(
+        current.providerTransferInitiatedAt &&
+          !['FAILED', 'FAILURE', 'ABANDONED', 'REJECTED', 'BLOCKED'].includes(
+            previousStatus ?? '',
+          ),
+      );
+      if (
+        !lookupOnly &&
+        current.providerRecipientCode &&
+        current.providerRecipientCode !== account.transferRecipientCode
+      ) {
+        throw new ConflictException(
+          'The payout recipient changed after its first transfer. Reconcile that transfer before creating a new payout.',
+        );
+      }
+      const token = await claimPayoutTransfer(tx, payoutId);
+      const reference =
         current.providerTransferReference ??
         this.buildTransferReference(current.id);
-
-      const providerPayload = await this.callPaystack('/transfer', {
-        method: 'POST',
-        bodyJson: {
-          source: 'balance',
-          amount: Math.round(
-            this.roundMoney(Number(current.amount ?? 0)) * 100,
-          ),
-          recipient: paymentAccount.transferRecipientCode,
-          reference: transferReference,
-          reason: `WIEZ payout ${current.id.slice(0, 8).toUpperCase()}`,
-          currency: 'NGN',
+      const saved = await tx.payout.update({
+        where: { id: payoutId },
+        data: {
+          status: PayoutStatus.PROCESSING,
+          providerTransferReference: reference,
+          providerRecipientCode:
+            current.providerRecipientCode ?? account.transferRecipientCode,
+          providerTransferInitiatedAt:
+            current.providerTransferInitiatedAt ?? new Date(),
+          providerTransferStatus: lookupOnly
+            ? current.providerTransferStatus
+            : 'SUBMITTING',
+          processedAt: current.processedAt ?? new Date(),
         },
+        include: this.payoutInclude(),
       });
-
-      const updated = await this.applyProviderTransferSync(
+      await this.recordTransferIntent(
         tx,
         current,
-        providerPayload,
-        'provider-initiate',
+        saved,
+        actorId,
+        req,
+        lookupOnly ? 'LOOKUP' : 'INITIATE',
       );
-
-      const otpMode = this.getTransferOtpMode();
-      const providerStatus = this.normalizeProviderStatus(
-        providerPayload?.status,
-      );
-      if (otpMode === 'DISABLED' && providerStatus === 'OTP') {
-        this.logger.warn(
-          `Transfer ${updated.id} returned OTP while PAYSTACK_TRANSFER_OTP_MODE is DISABLED`,
-        );
-      }
-
-      await (tx as any).adminAuditLog.create({
-        data: {
-          id: uuidv4(),
-          actorUserId: actorId,
-          action: AdminAuditAction.ADMIN_PAYOUT_STATUS_UPDATE,
-          targetType: 'Payout',
-          targetId: payoutId,
-          previousState: {
-            status: current.status,
-            providerTransferCode: current.providerTransferCode ?? null,
-            providerTransferReference:
-              current.providerTransferReference ?? null,
-          },
-          newState: {
-            status: updated.status,
-            providerTransferCode: updated.providerTransferCode ?? null,
-            providerTransferReference:
-              updated.providerTransferReference ?? null,
-            providerTransferStatus: updated.providerTransferStatus ?? null,
-          },
-          ipAddress: req.socket?.remoteAddress ?? null,
-          userAgent: req.headers['user-agent'] ?? null,
-        },
-      });
-
-      return updated;
+      return {
+        payout: saved,
+        token,
+        lookupOnly,
+        recipient: account.transferRecipientCode,
+      };
     });
+    const path = intent.lookupOnly
+      ? this.transferLookupPath(intent.payout)
+      : '/transfer';
+    return this.executeTransferIntent(
+      intent.payout.id,
+      intent.token,
+      path,
+      intent.lookupOnly
+        ? { method: 'GET' }
+        : {
+            method: 'POST',
+            bodyJson: {
+              source: 'balance',
+              amount: Math.round(
+                this.roundMoney(Number(intent.payout.amount)) * 100,
+              ),
+              recipient: intent.recipient,
+              reference: intent.payout.providerTransferReference,
+              reason: `WIEZ payout ${intent.payout.id.slice(0, 8).toUpperCase()}`,
+              currency: 'NGN',
+            },
+          },
+      intent.lookupOnly ? 'provider-fetch' : 'provider-initiate',
+    );
   }
 
   async finalizeTransferOtp(
@@ -609,121 +628,214 @@ export class AdminPayoutsService {
     actorRole: Role,
     req: Request,
   ) {
+    this.assertTransferExecutionEnabled();
     const cleanOtp = String(otp || '').trim();
-    if (!cleanOtp) {
+    if (!cleanOtp)
       throw new BadRequestException(
         'OTP is required to finalize this transfer',
       );
-    }
-
-    return this.prisma.$transaction(async (tx) => {
+    const intent = await this.prisma.$transaction(async (tx) => {
       await this.lockPayoutForUpdate(tx, payoutId);
-
       const current = await tx.payout.findUnique({
         where: { id: payoutId },
         include: this.payoutInclude(),
       });
-      if (!current) {
-        throw new NotFoundException('Payout not found');
-      }
-
+      if (!current) throw new NotFoundException('Payout not found');
       this.assertOwnership(current.assignedAdminId, actorId, actorRole);
-
-      if (!current.providerTransferCode) {
-        throw new BadRequestException(
-          'This payout does not have a pending transfer to finalize',
-        );
-      }
-
-      const providerTransferStatus = this.normalizeProviderStatus(
-        current.providerTransferStatus,
-      );
-      if (providerTransferStatus !== 'OTP') {
+      if (
+        !current.providerTransferCode ||
+        current.status !== PayoutStatus.PROCESSING ||
+        this.normalizeProviderStatus(current.providerTransferStatus) !== 'OTP'
+      ) {
         throw new BadRequestException(
           'This payout is not awaiting Paystack OTP finalization',
         );
       }
-
-      await assertBrandPayoutSafe(tx, current.brandId);
-      const providerPayload = await this.callPaystack(
-        '/transfer/finalize_transfer',
-        {
-          method: 'POST',
-          bodyJson: {
-            transfer_code: current.providerTransferCode,
-            otp: cleanOtp,
-          },
-        },
-      );
-
-      const updated = await this.applyProviderTransferSync(
+      await this.assertTransferFunds(tx, current);
+      const token = await claimPayoutTransfer(tx, payoutId);
+      const saved = await tx.payout.update({
+        where: { id: payoutId },
+        data: { providerTransferStatus: 'FINALIZING' },
+        include: this.payoutInclude(),
+      });
+      await this.recordTransferIntent(
         tx,
         current,
-        providerPayload,
-        'provider-finalize',
+        saved,
+        actorId,
+        req,
+        'FINALIZE',
       );
-
-      await (tx as any).adminAuditLog.create({
-        data: {
-          id: uuidv4(),
-          actorUserId: actorId,
-          action: AdminAuditAction.ADMIN_PAYOUT_STATUS_UPDATE,
-          targetType: 'Payout',
-          targetId: payoutId,
-          previousState: {
-            status: current.status,
-            providerTransferStatus: current.providerTransferStatus ?? null,
-          },
-          newState: {
-            status: updated.status,
-            providerTransferStatus: updated.providerTransferStatus ?? null,
-            providerTransferCode: updated.providerTransferCode ?? null,
-          },
-          ipAddress: req.socket?.remoteAddress ?? null,
-          userAgent: req.headers['user-agent'] ?? null,
-        },
-      });
-
-      return updated;
+      return { payout: saved, token };
     });
+    // OTP is transmitted only; never saved to the intent, event or audit log.
+    return this.executeTransferIntent(
+      payoutId,
+      intent.token,
+      '/transfer/finalize_transfer',
+      {
+        method: 'POST',
+        bodyJson: {
+          transfer_code: intent.payout.providerTransferCode,
+          otp: cleanOtp,
+        },
+      },
+      'provider-finalize',
+    );
   }
 
   async getProviderStatus(payoutId: string, actorId: string, actorRole: Role) {
-    const payout = await this.prisma.payout.findUnique({
-      where: { id: payoutId },
-      include: this.payoutInclude(),
-    });
-    if (!payout) throw new NotFoundException('Payout not found');
-
-    this.assertOwnership(payout.assignedAdminId, actorId, actorRole);
-
-    if (!payout.providerTransferCode) {
-      throw new BadRequestException(
-        'This payout does not have a Paystack transfer code yet',
-      );
-    }
-
-    const providerPayload = await this.callPaystack(
-      `/transfer/${encodeURIComponent(payout.providerTransferCode)}`,
-      { method: 'GET' },
-    );
-
-    return this.prisma.$transaction(async (tx) => {
+    const intent = await this.prisma.$transaction(async (tx) => {
+      await this.lockPayoutForUpdate(tx, payoutId);
       const current = await tx.payout.findUnique({
         where: { id: payoutId },
         include: this.payoutInclude(),
       });
-      if (!current) {
-        throw new NotFoundException('Payout not found');
-      }
-
-      return this.applyProviderTransferSync(
-        tx,
-        current,
-        providerPayload,
-        'provider-fetch',
-      );
+      if (!current) throw new NotFoundException('Payout not found');
+      this.assertOwnership(current.assignedAdminId, actorId, actorRole);
+      const path = this.transferLookupPath(current);
+      const token = await claimPayoutTransfer(tx, payoutId);
+      return { token, path };
     });
+    return this.executeTransferIntent(
+      payoutId,
+      intent.token,
+      intent.path,
+      { method: 'GET' },
+      'provider-fetch',
+    );
+  }
+
+  private assertTransferExecutionEnabled() {
+    if (!this.isPayoutTransferExecutionEnabled())
+      throw new BadRequestException(
+        'Paystack payout transfer execution is currently disabled',
+      );
+    this.getRequiredPaystackSecret();
+  }
+
+  private async assertTransferFunds(tx: Prisma.TransactionClient, payout: any) {
+    const amount = new Prisma.Decimal(payout.amount);
+    if (!amount.isFinite() || !amount.isPositive())
+      throw new BadRequestException('Payout amount must be positive');
+    await this.assertPayoutSourceReservations(tx, payout.id, amount.toNumber());
+    await assertBrandPayoutSafe(tx, payout.brandId);
+    await assertPayoutPosition(tx, payout.brandId, payout.currency);
+  }
+
+  private transferLookupPath(payout: any) {
+    if (payout.providerTransferCode)
+      return `/transfer/${encodeURIComponent(payout.providerTransferCode)}`;
+    if (payout.providerTransferReference)
+      return `/transfer/verify/${encodeURIComponent(payout.providerTransferReference)}`;
+    throw new BadRequestException(
+      'This payout has no initiated transfer to verify',
+    );
+  }
+
+  private async recordTransferIntent(
+    tx: any,
+    previous: any,
+    current: any,
+    actorId: string,
+    req: Request,
+    operation: string,
+  ) {
+    await this.createPayoutEvent(tx, {
+      payoutId: current.id,
+      type: `TRANSFER_${operation}_STARTED`,
+      source: 'manual-admin',
+      processedAt: new Date(),
+      payload: { actorId, reference: current.providerTransferReference },
+    });
+    await tx.adminAuditLog.create({
+      data: {
+        id: uuidv4(),
+        actorUserId: actorId,
+        action: AdminAuditAction.ADMIN_PAYOUT_STATUS_UPDATE,
+        targetType: 'Payout',
+        targetId: current.id,
+        previousState: {
+          status: previous.status,
+          providerTransferStatus: previous.providerTransferStatus ?? null,
+        },
+        newState: {
+          status: current.status,
+          operation,
+          providerTransferReference: current.providerTransferReference,
+        },
+        ipAddress: req.socket?.remoteAddress ?? null,
+        userAgent: req.headers['user-agent'] ?? null,
+      },
+    });
+  }
+
+  private async executeTransferIntent(
+    payoutId: string,
+    token: string,
+    path: string,
+    init: RequestInit & { bodyJson?: Record<string, unknown> },
+    source: 'provider-initiate' | 'provider-finalize' | 'provider-fetch',
+  ) {
+    try {
+      // No database transaction, source lock or connection is held over HTTP.
+      const payload = await this.callPaystack(path, init);
+      return await this.prisma.$transaction(async (tx) => {
+        await this.lockPayoutForUpdate(tx, payoutId);
+        const current = await tx.payout.findUnique({
+          where: { id: payoutId },
+          include: this.payoutInclude(),
+        });
+        if (!current) throw new NotFoundException('Payout not found');
+        const owned = await tx.$queryRaw<
+          Array<{ id: string }>
+        >`SELECT "_id" AS id FROM "Payout" WHERE "_id"=${payoutId}::uuid
+          AND "transferLeaseToken"=${token}::uuid AND "transferLockedAt">=clock_timestamp() AT TIME ZONE 'UTC'-INTERVAL '10 minutes'`;
+        if (!owned.length) {
+          await this.createPayoutEvent(tx, {
+            payoutId,
+            type: 'LATE_TRANSFER_RESPONSE',
+            source,
+            processedAt: new Date(),
+            payload,
+          });
+          return current;
+        }
+        const updated = await this.applyProviderTransferSync(
+          tx,
+          current,
+          payload,
+          source,
+        );
+        await tx.payout.update({
+          where: { id: payoutId },
+          data: { transferLeaseToken: null, transferLockedAt: null },
+        });
+        return updated;
+      });
+    } catch (error) {
+      await this.prisma.$transaction(async (tx) => {
+        await this.lockPayoutForUpdate(tx, payoutId);
+        const affected =
+          await tx.$executeRaw`UPDATE "Payout" SET "transferLeaseToken"=NULL, "transferLockedAt"=NULL,
+          "providerTransferStatus"=CASE WHEN ${source}='provider-fetch' THEN "providerTransferStatus" ELSE 'OUTCOME_UNKNOWN' END,
+          "statusReason"='Provider outcome unconfirmed. Verify the original transfer before retrying.'
+          WHERE "_id"=${payoutId}::uuid AND "transferLeaseToken"=${token}::uuid
+            AND "transferLockedAt">=clock_timestamp() AT TIME ZONE 'UTC'-INTERVAL '10 minutes'`;
+        if (affected)
+          await this.createPayoutEvent(tx, {
+            payoutId,
+            type: 'TRANSFER_LOOKUP_REQUIRED',
+            source,
+            processedAt: new Date(),
+            payload: {
+              reason:
+                'Provider outcome unconfirmed; no automatic resubmission.',
+            },
+          });
+      });
+      throw error;
+    }
   }
 
   async handlePaystackWebhook(
@@ -802,6 +914,7 @@ export class AdminPayoutsService {
     const providerPayload = this.asObject(job.payload?.data) ?? job.payload;
 
     await this.prisma.$transaction(async (tx) => {
+      await this.lockPayoutForUpdate(tx, job.payoutId);
       const current = await tx.payout.findUnique({
         where: { id: job.payoutId },
         include: this.payoutInclude(),
@@ -823,6 +936,10 @@ export class AdminPayoutsService {
         job.correlationId ?? null,
       );
 
+      await tx.payout.update({
+        where: { id: current.id },
+        data: { transferLeaseToken: null, transferLockedAt: null },
+      });
       await (tx as any).payoutEvent.updateMany({
         where: { providerEventKey: job.providerEventKey },
         data: { processedAt: new Date() },
@@ -1021,10 +1138,48 @@ export class AdminPayoutsService {
     correlationId?: string | null,
   ) {
     const now = new Date();
+    this.assertTransferMatches(payout, providerPayload);
+    const expectedWebhookStatus: Record<string, string> = {
+      'transfer.success': 'SUCCESS',
+      'transfer.failed': 'FAILED',
+      'transfer.reversed': 'REVERSED',
+    };
+    if (
+      providerEventType &&
+      expectedWebhookStatus[providerEventType] &&
+      expectedWebhookStatus[providerEventType] !==
+        this.normalizeProviderStatus(providerPayload.status)
+    ) {
+      throw new ConflictException(
+        'Provider webhook status contradicts its transfer event.',
+      );
+    }
     const nextStatus = this.mapProviderTransferStatus(
       providerEventType,
       providerPayload?.status,
     );
+    // Signed webhooks and fetch replies may arrive in any order. A terminal
+    // result cannot be undone by a delayed nonterminal/failed response, and a
+    // reversal cannot pay the same payout a second time.
+    if (
+      (payout.providerTransferReversedAt &&
+        nextStatus !== PayoutStatus.RECONCILIATION_REVIEW) ||
+      (payout.status === PayoutStatus.PAID &&
+        ![PayoutStatus.PAID, PayoutStatus.RECONCILIATION_REVIEW].includes(
+          nextStatus as any,
+        )) ||
+      (payout.status === PayoutStatus.FAILED &&
+        nextStatus === PayoutStatus.PROCESSING)
+    ) {
+      await this.createPayoutEvent(tx, {
+        payoutId: payout.id,
+        type: 'STALE_TRANSFER_RESPONSE',
+        source,
+        processedAt: now,
+        payload: providerPayload,
+      });
+      return payout;
+    }
     const failureMessage = this.extractTransferFailureMessage(providerPayload);
     const nextData: Record<string, unknown> = {
       provider: 'PAYSTACK',
@@ -1256,7 +1411,51 @@ export class AdminPayoutsService {
   }
 
   private async lockPayoutForUpdate(tx: any, payoutId: string) {
-    await tx.$queryRaw`SELECT "id" FROM "Payout" WHERE "id" = ${payoutId} FOR UPDATE`;
+    await lockPayoutSource(tx, payoutId);
+  }
+
+  private assertTransferMatches(payout: any, payload: Record<string, any>) {
+    const reference = this.extractTransferReference(payload);
+    const code = this.extractTransferCode(payload);
+    const amount = new Prisma.Decimal(payout.amount).times(100);
+    const returnedAmount = Number(payload.amount);
+    const status = this.normalizeProviderStatus(payload.status);
+    const knownStatuses = [
+      'SUCCESS',
+      'FAILED',
+      'FAILURE',
+      'REVERSED',
+      'REVERSAL',
+      'OTP',
+      'PENDING',
+      'PROCESSING',
+      'RECEIVED',
+      'ABANDONED',
+      'BLOCKED',
+      'REJECTED',
+    ];
+    if (
+      (!reference && !code) ||
+      (reference &&
+        payout.providerTransferReference &&
+        reference !== payout.providerTransferReference) ||
+      (code &&
+        payout.providerTransferCode &&
+        code !== payout.providerTransferCode) ||
+      !Number.isSafeInteger(returnedAmount) ||
+      !amount.equals(returnedAmount) ||
+      String(payload.currency ?? '').toUpperCase() !==
+        payout.currency.toUpperCase() ||
+      !status ||
+      !knownStatuses.includes(status) ||
+      (this.extractRecipientCode(payload) &&
+        payout.providerRecipientCode &&
+        this.extractRecipientCode(payload) !== payout.providerRecipientCode)
+    ) {
+      throw new ConflictException(
+        'Provider transfer details do not match the reserved payout. Reconciliation is required.',
+      );
+    }
   }
 
   private buildTransferReference(payoutId: string) {
@@ -1352,6 +1551,8 @@ export class AdminPayoutsService {
 
     const response = await fetch(`https://api.paystack.co${path}`, {
       ...rest,
+      redirect: 'error',
+      signal: AbortSignal.timeout(15000),
       headers: requestHeaders,
       body: bodyJson ? JSON.stringify(bodyJson) : rest.body,
     });
@@ -1612,6 +1813,9 @@ export class AdminPayoutsService {
       case 'failed':
       case 'failure':
       case 'error':
+      case 'abandoned':
+      case 'blocked':
+      case 'rejected':
         return PayoutStatus.FAILED;
       case 'reversed':
       case 'reversal':

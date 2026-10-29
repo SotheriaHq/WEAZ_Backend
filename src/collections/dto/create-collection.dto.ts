@@ -95,6 +95,10 @@ export class CreateCollectionDto {
   @IsUUID('4')
   categoryId?: string;
 
+  @IsOptional()
+  @IsUUID('4')
+  pendingCategorySuggestionId?: string | null;
+
   // Sub-category (required for publish flows)
   @IsOptional()
   @IsUUID('4')
@@ -230,6 +234,10 @@ export class CollectionMetadataDto {
   @IsOptional()
   @IsUUID('4')
   categoryId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  pendingCategorySuggestionId?: string | null;
 
   @IsOptional()
   @IsUUID('4')

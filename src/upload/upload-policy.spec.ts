@@ -29,6 +29,49 @@ const runFileFilter = async (
   });
 
 describe('upload multer policy', () => {
+  it.each([
+    '../look.jpg',
+    'folder/look.jpg',
+    'folder\\look.jpg',
+    'look.php.jpg',
+    'look.jpg\u0000.php.jpg',
+    'look%00.jpg',
+    'look.jpg:payload.jpg',
+    '.hidden.jpg',
+    'look\u202Egnp.jpg',
+    `${'a'.repeat(256)}.jpg`,
+  ])(
+    'rejects unsafe upload names before buffering: %s',
+    async (originalname) => {
+      const result = await runFileFilter(
+        multerOptionsForFileType(FileType.POST_IMAGE),
+        makeFile({ originalname, mimetype: 'image/jpeg' }),
+      );
+      expect(result.error).toBeInstanceOf(BadRequestException);
+      expect(result.accepted).toBe(false);
+    },
+  );
+
+  it('rejects an allowed extension paired with a different allowed MIME', async () => {
+    const result = await runFileFilter(
+      multerOptionsForFileType(FileType.POST_IMAGE),
+      makeFile({ originalname: 'look.png', mimetype: 'image/jpeg' }),
+    );
+    expect(result.error).toBeInstanceOf(BadRequestException);
+    expect(result.accepted).toBe(false);
+  });
+
+  it('preserves human display names containing accents, spaces and version dots', async () => {
+    const result = await runFileFilter(
+      multerOptionsForFileType(FileType.POST_IMAGE),
+      makeFile({
+        originalname: 'Adiré summer look.v2.JPG',
+        mimetype: 'image/jpeg',
+      }),
+    );
+    expect(result.error).toBeNull();
+    expect(result.accepted).toBe(true);
+  });
   it('adds pre-buffer size and single-file limits for profile uploads', () => {
     const options = multerOptionsForFileType(FileType.PROFILE_IMAGE);
 

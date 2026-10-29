@@ -8,6 +8,7 @@ import {
   IsBoolean,
   Min,
   IsIn,
+  IsUUID,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { CollectionType, CollectionVisibility } from '@prisma/client';
@@ -35,6 +36,10 @@ export class UpdateCollectionDto {
   @IsOptional()
   @IsString()
   categoryId?: string | null;
+
+  @IsOptional()
+  @IsUUID('4')
+  pendingCategorySuggestionId?: string | null;
 
   @IsOptional()
   @IsString()

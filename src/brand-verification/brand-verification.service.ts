@@ -149,7 +149,7 @@ export class BrandVerificationService {
 
   async presignUpload(ownerId: string, dto: PresignVerificationUploadDto) {
     const normalizedName = `${dto.documentType}-${dto.fileName}`;
-    const presign = await this.uploadService.createPresignedPost(
+    const presign = await this.uploadService.createPresignedUpload(
       ownerId,
       normalizedName,
       FileType.BRAND_VERIFICATION,
@@ -161,7 +161,7 @@ export class BrandVerificationService {
       expectedKey: presign.key,
       uploadUrl: presign.url,
       uploadFields: presign.fields ?? null,
-      method: presign.method ?? 'POST',
+      method: presign.method,
       uploadHeaders: presign.uploadHeaders ?? null,
       expiresIn: presign.expiresIn,
     };

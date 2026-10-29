@@ -18,4 +18,9 @@ export class ModerateCategorySuggestionDto {
   @IsString()
   @MaxLength(500)
   approvalDescription?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  approvalGarmentTypeDescription?: string;
 }

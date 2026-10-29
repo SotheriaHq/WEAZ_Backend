@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 type Db = Prisma.TransactionClient;
 type Scope =
   | { kind: 'OWNED'; fileId: string; userId: string; required: boolean }
+  | { kind: 'DETACHED'; files: ReadonlyArray<{ id: string; userId: string }> }
   | { kind: 'ORPHAN_MESSAGE'; cutoff: Date; take: number };
 
 // Includes nullable/implicit relations whose ON DELETE behavior would otherwise
@@ -22,6 +23,8 @@ const processingIdle = Prisma.sql`(f."processingLeaseUntil" IS NULL
   OR f."processingLeaseUntil" <= (clock_timestamp() AT TIME ZONE 'UTC'))`;
 
 function eligible(scope: Scope) {
+  if (scope.kind === 'DETACHED')
+    return Prisma.sql`(f."_id",f."userId") IN (VALUES ${Prisma.join(scope.files.map((file) => Prisma.sql`(${file.id}::uuid,${file.userId}::uuid)`))})`;
   return scope.kind === 'OWNED'
     ? Prisma.sql`f."_id" = ${scope.fileId}::uuid AND f."userId" = ${scope.userId}::uuid`
     : Prisma.sql`f."fileType" IN ('MESSAGE_IMAGE', 'MESSAGE_DOCUMENT')
@@ -31,11 +34,13 @@ function eligible(scope: Scope) {
 /** File locks and fresh reference guards precede joined storage-key queueing. No storage I/O. */
 async function deleteFiles(tx: Db, scope: Scope) {
   const owned = scope.kind === 'OWNED';
+  const serial = scope.kind !== 'ORPHAN_MESSAGE';
   const claimed = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT f."_id" AS id FROM "FileUpload" f WHERE ${eligible(scope)}
-      ${owned ? Prisma.empty : Prisma.sql`AND NOT EXISTS (${references})`}
-    ORDER BY f."createdAt", f."_id" LIMIT ${owned ? 1 : scope.take}
-    FOR UPDATE OF f ${owned ? Prisma.empty : Prisma.sql`SKIP LOCKED`}
+      ${serial ? Prisma.empty : Prisma.sql`AND NOT EXISTS (${references})`}
+    ORDER BY ${scope.kind === 'DETACHED' ? Prisma.sql`f."_id"` : Prisma.sql`f."createdAt", f."_id"`}
+    LIMIT ${scope.kind === 'OWNED' ? 1 : scope.kind === 'DETACHED' ? scope.files.length : scope.take}
+    FOR UPDATE OF f ${serial ? Prisma.empty : Prisma.sql`SKIP LOCKED`}
   `);
   if (!claimed.length) {
     if (owned && scope.required)
@@ -90,6 +95,17 @@ export async function deleteOwnedFile(
   required = true,
 ) {
   return deleteFiles(tx, { kind: 'OWNED', fileId, userId, required });
+}
+
+/** Internal callers first authorize and detach the source under its row lock. */
+export async function deleteDetachedContentFiles(
+  tx: Db,
+  files: ReadonlyArray<{ id: string; userId: string }>,
+) {
+  if (!files.length) return 0;
+  if (files.length > 500)
+    throw new Error('Detached file cleanup exceeds 500 identities');
+  return deleteFiles(tx, { kind: 'DETACHED', files });
 }
 
 export async function deleteOrphanedMessageFiles(

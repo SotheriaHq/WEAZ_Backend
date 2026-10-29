@@ -1,6 +1,8 @@
 import { BadRequestException } from '@nestjs/common';
 import type sharpTypes from 'sharp';
-const sharp: typeof sharpTypes = require('sharp');
+import { createRequire } from 'node:module';
+const runtimeRequire = createRequire(__filename);
+const sharp = runtimeRequire('sharp') as typeof sharpTypes;
 import { MediaProcessingService } from './media-processing.service';
 
 describe('MediaProcessingService', () => {
@@ -40,9 +42,11 @@ describe('MediaProcessingService', () => {
 
   it('encodes decodable AVIF and WebP variants without enlarging the source', async () => {
     const source = await makeNoisyJpeg(48, 32);
-    const variants = await service.generateVariants(source, { mimeType: 'image/jpeg' });
-    expect(variants.some(variant => variant.format === 'AVIF')).toBe(true);
-    expect(variants.some(variant => variant.format === 'WEBP')).toBe(true);
+    const variants = await service.generateVariants(source, {
+      mimeType: 'image/jpeg',
+    });
+    expect(variants.some((variant) => variant.format === 'AVIF')).toBe(true);
+    expect(variants.some((variant) => variant.format === 'WEBP')).toBe(true);
     for (const variant of variants) {
       const metadata = await sharp(variant.buffer).metadata();
       expect(metadata.width).toBe(variant.width);
@@ -53,34 +57,58 @@ describe('MediaProcessingService', () => {
   }, 30_000);
 
   it('retains fine coloured fabric detail in the actual display variants', async () => {
-    const { fixture, metrics } = require('../../scripts/benchmark-image-quality.cjs');
+    const { fixture, metrics } = runtimeRequire(
+      '../../scripts/benchmark-image-quality.cjs',
+    );
     const input = fixture('weave', 256, 384);
     const source = await sharp(input.pixels, { raw: input })
-      .jpeg({ quality: 100, chromaSubsampling: '4:4:4' }).toBuffer();
+      .jpeg({ quality: 100, chromaSubsampling: '4:4:4' })
+      .toBuffer();
     const reference = await sharp(source).raw().toBuffer();
-    const variants = await service.generateVariants(source, { mimeType: 'image/jpeg' });
+    const variants = await service.generateVariants(source, {
+      mimeType: 'image/jpeg',
+    });
     for (const format of ['WEBP', 'AVIF']) {
-      const detail = variants.find((variant) => variant.kind === 'DETAIL' && variant.format === format)!;
+      const detail = variants.find(
+        (variant) => variant.kind === 'DETAIL' && variant.format === format,
+      )!;
       const decoded = await sharp(detail.buffer).removeAlpha().raw().toBuffer();
-      expect(metrics(reference, decoded, 256, 384, 3).rgbSsim8x8).toBeGreaterThan(0.95);
+      expect(
+        metrics(reference, decoded, 256, 384, 3).rgbSsim8x8,
+      ).toBeGreaterThan(0.95);
     }
   }, 30_000);
 
   it('preserves every RGBA value in transparent display images', async () => {
-    const { fixture } = require('../../scripts/benchmark-image-quality.cjs');
+    const { fixture } = runtimeRequire(
+      '../../scripts/benchmark-image-quality.cjs',
+    );
     const input = fixture('alpha', 48, 64);
     const source = await sharp(input.pixels, { raw: input }).png().toBuffer();
-    const variants = await service.generateVariants(source, { mimeType: 'image/png' });
-    const detail = variants.find((variant) => variant.kind === 'DETAIL' && variant.format === 'WEBP')!;
+    const variants = await service.generateVariants(source, {
+      mimeType: 'image/png',
+    });
+    const detail = variants.find(
+      (variant) => variant.kind === 'DETAIL' && variant.format === 'WEBP',
+    )!;
     const decoded = await sharp(detail.buffer).ensureAlpha().raw().toBuffer();
     expect(decoded).toEqual(input.pixels);
   }, 30_000);
 
   it('uses oriented dimensions and strips EXIF while keeping the colour profile', async () => {
-    const source = await sharp({ create: { width: 48, height: 32, channels: 3, background: '#bb3344' } })
-      .jpeg().withMetadata({ orientation: 6 }).toBuffer();
-    expect(await service.probeImage(source)).toMatchObject({ width: 32, height: 48 });
-    const variants = await service.generateVariants(source, { mimeType: 'image/jpeg' });
+    const source = await sharp({
+      create: { width: 48, height: 32, channels: 3, background: '#bb3344' },
+    })
+      .jpeg()
+      .withMetadata({ orientation: 6 })
+      .toBuffer();
+    expect(await service.probeImage(source)).toMatchObject({
+      width: 32,
+      height: 48,
+    });
+    const variants = await service.generateVariants(source, {
+      mimeType: 'image/jpeg',
+    });
     for (const variant of variants) {
       const metadata = await sharp(variant.buffer).metadata();
       expect(metadata).toMatchObject({ width: 32, height: 48 });
@@ -113,7 +141,7 @@ describe('MediaProcessingService', () => {
       await expect(service.toDecodableImageBuffer(jpeg)).resolves.toBe(jpeg);
     });
 
-    it('converts HEIC-branded buffers before sharp metadata can short-circuit', async () => {
+    it('converts HEIC-branded buffers after bounded container metadata validation', async () => {
       // Real phone HEIC often passes sharp.metadata() (container read) but fails
       // later at jpeg().toBuffer() — conversion must run on ftyp sniff, not on
       // metadata() throwing.
@@ -130,18 +158,26 @@ describe('MediaProcessingService', () => {
           'convertHeicToPng',
         )
         .mockResolvedValue(jpegArrayBuffer);
-
-      await expect(
-        service.toDecodableImageBuffer(makeFakeHeicBuffer()),
-      ).resolves.toEqual(jpeg);
-
-      expect(convertSpy).toHaveBeenCalledTimes(1);
-      convertSpy.mockRestore();
+      const metadataSpy = jest
+        .spyOn(sharp.prototype, 'metadata')
+        .mockResolvedValueOnce({
+          format: 'heif',
+          width: 32,
+          height: 32,
+        } as any);
+      try {
+        await expect(
+          service.toDecodableImageBuffer(makeFakeHeicBuffer()),
+        ).resolves.toEqual(jpeg);
+        expect(convertSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        convertSpy.mockRestore();
+        metadataSpy.mockRestore();
+      }
     });
 
     it('rejects malformed HEIC-branded buffers as bad input', async () => {
-      // A bare ftyp box is not a decodable HEIC, but the error must come from
-      // the HEIC decoder — proving conversion is attempted up front.
+      // A bare ftyp box is refused before allocating the WASM decoder.
       await expect(
         service.toDecodableImageBuffer(makeFakeHeicBuffer()),
       ).rejects.toThrow(BadRequestException);

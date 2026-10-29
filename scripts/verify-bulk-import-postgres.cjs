@@ -13,6 +13,7 @@ require('tsconfig-paths/register');
 const { StoreService } = require('../src/store/store.service');
 const { ContentIntegrityService } = require('../src/content-integrity/content-integrity.service');
 const { NotificationsService } = require('../src/notifications/notifications.service');
+const { PushNotificationsService } = require('../src/notifications/push-notifications.service');
 const {
   CollectionsService,
 } = require('../src/collections/collections.service');
@@ -600,7 +601,10 @@ async function main() {
     assert.equal(await loadBulkProductSlug(prisma, slugBase), `${slugBase}-1002`);
     assert.equal(await loadBulkProductSlug(prisma, slugBase + '-absent'), slugBase + '-absent');
     evidence.cases.push('scalar bulk slug probe preserves earliest suffix gaps over 1,000 matches, leading-zero/text/large suffixes and the unused base without transferring matching rows');
-    const notifications = new NotificationsService(prisma, {}, { del: async () => {} }, { getConfig: () => undefined }, { getAppName: () => 'WIEZ', send: async () => {} }, {}, { enqueue: async () => {} }, { publishOrEmit: async () => true });
+    const registry = { getConfig: () => undefined };
+    const notifications = new NotificationsService(prisma, {}, { del: async () => {} }, registry, { getAppName: () => 'WIEZ', send: async () => {} }, {}, new PushNotificationsService(prisma, registry), { publishOrEmit: async () => true });
+    // This proof measures producers. Durable channel recovery has its own real PG/Redis scenarios.
+    notifications.dispatchNotificationChannelsForIds = async () => {};
     notifications.logger = logger;
     const integrity = Object.assign(Object.create(ContentIntegrityService.prototype), { prisma, notifications, emitIntegrityAlert: () => {} });
     store.contentIntegrity = integrity;
@@ -610,6 +614,15 @@ async function main() {
     await prisma.product.update({ where: { id: savedRows[0].createdProductId }, data: { name: 'Owner-renamed product before retry' } });
     await prisma.product.updateMany({ where: { id: { in: savedRows.map(row => row.createdProductId) } }, data: { isActive: true, publicationStatus: 'PUBLISHED' } });
     await prisma.collectionBulkUploadRow.updateMany({ where: { jobId: batch.jobId }, data: { status: 'FAILED' } });
+    const blockedNotice = require('uuid').v5(`content-submitted:${reviewSubmissionIds[0]}:${ownerId}`, require('uuid').v5.URL);
+    await prisma.$executeRawUnsafe(`ALTER TABLE "NotificationChannelOutbox" ADD CONSTRAINT fixture_bulk_review_handoff CHECK (id <> '${blockedNotice}'::uuid)`);
+    try {
+      await assert.rejects(collections.processBulkUploadRetry(batch.jobId, ownerId, []), /notification handoff incomplete/);
+      assert.notEqual((await prisma.collectionBulkUploadRow.findUniqueOrThrow({ where: { id: savedRows[0].id } })).status, 'SUCCESS');
+      assert.equal(await prisma.notification.count({ where: { id: blockedNotice } }), 0);
+      assert.equal(await prisma.notificationChannelOutbox.count({ where: { id: blockedNotice } }), 0);
+    } finally { await prisma.$executeRawUnsafe('ALTER TABLE "NotificationChannelOutbox" DROP CONSTRAINT fixture_bulk_review_handoff'); }
+    evidence.cases.push('a real channel-intent constraint failure rolls back its review inbox and leaves the import checkpoint retryable while retaining successful sibling notices');
     queries.length = 0;
     assert.equal((await collections.processBulkUploadRetry(batch.jobId, ownerId, [])).successRows, 26);
     evidence.recoveredReviewPolicySelectsFor26 = queries.filter(query => /FROM "User" u LEFT JOIN "UserEmailPreference"/.test(query)).length;
@@ -617,10 +630,11 @@ async function main() {
     evidence.bulkPublicationMetadataReadsFor26 = queries.filter(query => /COALESCE\(NULLIF\(b.name/.test(query)).length;
     evidence.bulkPublicationAudienceReadsFor26 = queries.filter(query => /FROM "PatchConnection" pc/.test(query)).length;
     assert.equal(evidence.bulkPublicationMetadataReadsFor26, 2);
-    assert.equal(evidence.bulkPublicationAudienceReadsFor26, 2);
+    assert(evidence.bulkPublicationAudienceReadsFor26 <= 2, 'At most one audience read per page; publication handoffs committed before the interrupted review flush are reused');
     assert.equal(await prisma.product.count({ where: { id: { in: savedRows.map(row => row.createdProductId) }, publishNotifiedAt: { not: null } } }), 26);
     const reviewNotices = await prisma.notification.findMany({ where: { type: 'CONTENT_SUBMITTED_FOR_REVIEW' } });
     assert.equal(reviewNotices.length, 26);
+    assert.equal(await prisma.notificationChannelOutbox.count({ where: { notification: { type: 'CONTENT_SUBMITTED_FOR_REVIEW' } } }), 26);
     assert(reviewNotices.some(row => row.payload.title === 'Owner-renamed product before retry'));
     assert.deepEqual(reviewNotices.map(row => row.payload.submissionId).sort(), reviewSubmissionIds.sort());
     await prisma.collectionBulkUploadRow.updateMany({ where: { jobId: batch.jobId }, data: { status: 'FAILED' } });
@@ -661,7 +675,11 @@ async function main() {
     console.log(JSON.stringify(evidence));
   }
 }
-main().catch((error) => {
+main().catch(async (error) => {
+  await fs.mkdir(path.resolve(__dirname, '../.tmp'), { recursive: true });
+  await fs.writeFile(path.resolve(__dirname, '../.tmp/bulk-import-failure.json'),
+    JSON.stringify({ code: error.code, name: error.name, message: error.message, meta: error.meta, stack: error.stack }, null, 2)
+      .replace(/postgres(?:ql)?:\/\/\S+/g, '[database-url-redacted]'));
   console.error(
     error instanceof assert.AssertionError
       ? error.message

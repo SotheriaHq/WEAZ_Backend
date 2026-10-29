@@ -1,8 +1,14 @@
 import { loadActiveDisplayVariants } from './variant-display.util';
-import { deleteOwnedFile, deleteOrphanedMessageFiles } from './file-deletion-query';
+import { assertCompleteRasterImage } from '../media-processing/image-content-security';
 import {
-  resolveStorageProviderSettings, storageObjectUrl, isRawStorageUrl,
-  signPublicGatewayUrl, type StorageProviderSettings,
+  deleteOwnedFile,
+  deleteOrphanedMessageFiles,
+} from './file-deletion-query';
+import {
+  resolveStorageProviderSettings,
+  storageObjectUrl,
+  signPublicGatewayUrl,
+  type StorageProviderSettings,
 } from './storage-provider.config';
 import {
   Injectable,
@@ -28,18 +34,20 @@ import {
 import { NodeHttpHandler } from '@smithy/node-http-handler';
 import { Agent as HttpsAgent } from 'https';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { v4 as uuidv4 } from 'uuid';
 import { GetFilesDto } from './dto/get-files.dto';
 import { PaginatedResult } from './dto/pagination.dto';
 import { ConfigService } from '@nestjs/config';
 import { FileType } from './upload.enums';
 import { createHash } from 'crypto';
+import { createRequire } from 'node:module';
 import { ImageProcessingQueueService } from 'src/queue/image-processing.queue.service';
 import { SystemConfigService } from 'src/admin/system-config/system-config.service';
 import {
   assertAllowedUploadExtension,
   assertAllowedUploadMimeType,
+  assertAllowedUploadType,
+  DIRECT_UPLOAD_HARD_LIMIT_BYTES,
   formatUploadLimitMB,
   getUploadFileExtension,
   inferUploadContentType,
@@ -104,7 +112,6 @@ export class UploadService {
   private readonly logger = new Logger(UploadService.name);
   private readonly s3: S3Client;
   private readonly bucketName: string;
-  private readonly region: string;
   private readonly storageSettings: StorageProviderSettings;
 
   /**
@@ -158,20 +165,18 @@ export class UploadService {
   ) {
     this.storageSettings = resolveStorageProviderSettings(this.configService);
     this.bucketName = this.storageSettings.bucket;
-    this.region = this.storageSettings.region;
     const s3Config: any = {
-      region: this.region,
+      region: this.storageSettings.region,
       endpoint: this.storageSettings.endpoint,
       forcePathStyle: this.storageSettings.forcePathStyle,
-      ...(this.storageSettings.provider === 'R2' ? {
-        requestChecksumCalculation: 'WHEN_REQUIRED',
-        responseChecksumValidation: 'WHEN_REQUIRED',
-      } : {}),
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
+      credentials: this.storageSettings.credentials,
       /*
         Two defaults are wrong for this workload, and both were measured rather
         than assumed.
 
-        1. NO SOCKET TIMEOUT. A stalled S3 call blocks forever. That matters far
+        1. NO SOCKET TIMEOUT. A stalled R2 call blocks forever. That matters far
            more than it looks: the image-processing worker runs jobs one at a
            time, so a single wedged request stops image processing for every
            user until the process is restarted. `socketTimeout` is an INACTIVITY
@@ -195,24 +200,11 @@ export class UploadService {
       }),
     };
 
-    if (this.storageSettings.credentials) s3Config.credentials = this.storageSettings.credentials;
-
     this.s3 = new S3Client(s3Config);
-  }
-
-  private encodeS3KeyForUrl(key: string): string {
-    return String(key)
-      .split('/')
-      .map((segment) => encodeURIComponent(segment))
-      .join('/');
   }
 
   private buildS3ObjectUrl(key: string): string {
     return storageObjectUrl(this.storageSettings, key);
-  }
-
-  private buildS3BucketUrl(): string {
-    return `https://${this.bucketName}.s3.${this.region}.amazonaws.com`;
   }
 
   private getFileExtension(fileName: string): string {
@@ -251,47 +243,20 @@ export class UploadService {
       ? this.systemConfigService.getMaxFileSize(configKey)
       : Promise.resolve(2 * 1024 * 1024);
     const maxSize = await configuredMaxSize;
-    const hardMaxSize = options.hardMaxSizeBytes;
-    return typeof hardMaxSize === 'number' && Number.isFinite(hardMaxSize)
-      ? Math.min(maxSize, hardMaxSize)
-      : maxSize;
-  }
-
-  private isTruthyConfig(value?: string | null): boolean {
-    return ['1', 'true', 'yes', 'on', 'public'].includes(
-      String(value ?? '')
-        .trim()
-        .toLowerCase(),
-    );
-  }
-
-  private isRawS3ObjectUrl(value: string): boolean {
-    return isRawStorageUrl(this.storageSettings, value);
-  }
-
-  private isBucketPublicForDisplay(): boolean {
-    return (
-      this.isTruthyConfig(
-        this.configService.get<string>('MEDIA_BUCKET_PUBLIC'),
-      ) ||
-      this.isTruthyConfig(this.configService.get<string>('S3_BUCKET_PUBLIC')) ||
-      this.isTruthyConfig(
-        this.configService.get<string>('AWS_S3_BUCKET_PUBLIC'),
-      ) ||
-      this.isTruthyConfig(this.configService.get<string>('S3_PUBLIC_READ')) ||
-      this.isTruthyConfig(
-        this.configService.get<string>('MEDIA_OBJECTS_PUBLIC'),
-      )
-    );
-  }
-
-  private getConfiguredPublicBaseUrl(): string | null {
-    const configuredBase =
-      this.configService.get<string>('MEDIA_PUBLIC_BASE_URL') ??
-      this.configService.get<string>('CDN_PUBLIC_BASE_URL') ??
-      this.configService.get<string>('CLOUDFRONT_PUBLIC_BASE_URL') ??
-      this.configService.get<string>('CLOUDFRONT_URL');
-    return configuredBase?.trim().replace(/\/+$/, '') || null;
+    const hardMaxSize = DIRECT_UPLOAD_HARD_LIMIT_BYTES[fileType];
+    const requestedHardMax = options.hardMaxSizeBytes ?? hardMaxSize;
+    if (
+      !hardMaxSize ||
+      !Number.isFinite(maxSize) ||
+      maxSize <= 0 ||
+      !Number.isFinite(requestedHardMax) ||
+      requestedHardMax <= 0
+    ) {
+      throw new ServiceUnavailableException(
+        'Upload size policy is unavailable',
+      );
+    }
+    return Math.min(maxSize, hardMaxSize, requestedHardMax);
   }
 
   private getStablePublicDisplayUrl(file: {
@@ -299,51 +264,18 @@ export class UploadService {
     s3Key?: string | null;
   }): string | null {
     const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
-    if (this.storageSettings.provider === 'R2') {
-      return key && this.storageSettings.publicGateway
-        ? signPublicGatewayUrl(this.storageSettings.publicGateway, key)
-        : null;
-    }
-    const publicBase = this.getConfiguredPublicBaseUrl();
-
-    if (publicBase && key) {
-      return `${publicBase}/${this.encodeS3KeyForUrl(key)}`;
-    }
-
-    const directUrl = typeof file.s3Url === 'string' ? file.s3Url.trim() : '';
-    if (directUrl && !this.isRawS3ObjectUrl(directUrl)) {
-      return directUrl;
-    }
-
-    return null;
+    return key && this.storageSettings.publicGateway
+      ? signPublicGatewayUrl(this.storageSettings.publicGateway, key)
+      : null;
   }
 
-  getPublicDisplayUrl(file: {
+  getPublicDisplayUrl(_file: {
     s3Url?: string | null;
     s3Key?: string | null;
     isPublic?: boolean | null;
   }): string | null {
-    // Generic callers include private previews. Only publication-checked paths
-    // may mint a public gateway token.
-    if (this.storageSettings.provider === 'R2') return null;
-    const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
-    const publicBase = this.getConfiguredPublicBaseUrl();
-
-    if (publicBase && key) {
-      return `${publicBase}/${this.encodeS3KeyForUrl(key)}`;
-    }
-
-    const directUrl = typeof file.s3Url === 'string' ? file.s3Url.trim() : '';
-    if (!directUrl) return null;
-
-    if (!this.isRawS3ObjectUrl(directUrl)) {
-      return directUrl;
-    }
-
-    if (file.isPublic || this.isBucketPublicForDisplay()) {
-      return key ? this.buildS3ObjectUrl(key) : directUrl;
-    }
-
+    // A supplied URL/public flag cannot replace current parent authorization.
+    void _file;
     return null;
   }
 
@@ -353,15 +285,6 @@ export class UploadService {
   ): Promise<string | null> {
     const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
     if (!key) return null;
-
-    const nodeEnv = String(
-      this.configService.get<string>('NODE_ENV') ?? '',
-    ).toLowerCase();
-    if (nodeEnv !== 'production') {
-      this.logger.warn(
-        `[media] temporary signed display URL fallback used fileId=${file.id ?? 'unknown'} expiresIn=${expiresIn}; configure MEDIA_PUBLIC_BASE_URL/CDN_PUBLIC_BASE_URL/CLOUDFRONT_URL for production public feed media.`,
-      );
-    }
 
     const command = new GetObjectCommand({
       Bucket: this.bucketName,
@@ -539,6 +462,15 @@ export class UploadService {
 
   private canReturnPublicFileUrl(file: any): boolean {
     if (!this.isDisplayableStoredFile(file)) return false;
+    if (
+      [
+        'DOCUMENT',
+        'BRAND_VERIFICATION',
+        'MESSAGE_IMAGE',
+        'MESSAGE_DOCUMENT',
+      ].includes(file.fileType)
+    )
+      return false;
     // Intentionally no bare POST_IMAGE/POST_VIDEO prefix bypass: that allowed
     // draft/in-review media to be signed anonymously when a key/fileId leaked.
     return Boolean(
@@ -556,52 +488,108 @@ export class UploadService {
     fileType: FileType,
     validationOptions: UploadValidationOptions = {},
   ): Promise<FileUploadResult> {
-    const record = await this.storeServerUpload(file, userId, fileType, validationOptions);
+    const record = await this.storeServerUpload(
+      file,
+      userId,
+      fileType,
+      validationOptions,
+    );
     return {
-      id: record.id, url: record.s3Url, key: record.s3Key, fileName: record.fileName,
-      originalName: record.originalName, size: record.size, mimeType: record.mimeType,
-      fileType: record.fileType as FileType, processingStatus: record.processingStatus,
-      createdAt: record.createdAt.toISOString(), updatedAt: record.updatedAt.toISOString(),
+      id: record.id,
+      url: record.s3Url,
+      key: record.s3Key,
+      fileName: record.fileName,
+      originalName: record.originalName,
+      size: record.size,
+      mimeType: record.mimeType,
+      fileType: record.fileType as FileType,
+      processingStatus: record.processingStatus,
+      createdAt: record.createdAt.toISOString(),
+      updatedAt: record.updatedAt.toISOString(),
     };
   }
 
   private async storeServerUpload(
-    file: Express.Multer.File, userId: string, fileType: FileType,
+    file: Express.Multer.File,
+    userId: string,
+    fileType: FileType,
     validationOptions: UploadValidationOptions = {},
   ): Promise<FileUpload> {
     await this.validateFile(file, fileType, validationOptions);
-    if (!Buffer.isBuffer(file.buffer) || !file.buffer.length || file.buffer.length !== file.size) {
+    if (
+      !Buffer.isBuffer(file.buffer) ||
+      !file.buffer.length ||
+      file.buffer.length !== file.size
+    ) {
       throw new BadRequestException('Uploaded file is empty or incomplete');
     }
     const mimeType = this.normalizeContentType(file.mimetype)!;
-    const intent = await this.createUploadIntent(userId, file.originalname, fileType, mimeType);
+    const intent = await this.createUploadIntent(
+      userId,
+      file.originalname,
+      fileType,
+      mimeType,
+    );
     try {
-      await this.s3.send(new PutObjectCommand({
-        Bucket: this.bucketName, Key: intent.s3Key, Body: file.buffer,
-        ContentType: mimeType, ContentDisposition: 'inline', CacheControl: 'private, max-age=0, no-store',
-      }));
+      await this.s3.send(
+        new PutObjectCommand({
+          Bucket: this.bucketName,
+          Key: intent.s3Key,
+          Body: file.buffer,
+          ContentType: mimeType,
+          ContentDisposition: 'inline',
+          CacheControl: 'private, max-age=0, no-store',
+        }),
+      );
       return await this.createFileRecordFromPresign(
-        intent.id, userId, intent.s3Key, mimeType, file.size, undefined, validationOptions,
+        intent.id,
+        userId,
+        intent.s3Key,
+        mimeType,
+        file.size,
+        undefined,
+        validationOptions,
       );
     } catch (error) {
       if (error instanceof HttpException) throw error;
       const details = this.summarizeAwsError(error);
-      this.logger.error('Media upload could not complete', { name: details.name, httpStatusCode: details.httpStatusCode });
-      throw new ServiceUnavailableException('Upload could not complete. Please retry.');
+      this.logger.error('Media upload could not complete', {
+        name: details.name,
+        httpStatusCode: details.httpStatusCode,
+      });
+      throw new ServiceUnavailableException(
+        'Upload could not complete. Please retry.',
+      );
     }
   }
 
   private async createUploadIntent(
-    userId: string, originalName: string, fileType: FileType, contentType: string,
-    options?: { collectionId?: string; orderIndex?: number; viewSlot?: string | null },
+    userId: string,
+    originalName: string,
+    fileType: FileType,
+    contentType: string,
+    options?: {
+      collectionId?: string;
+      orderIndex?: number;
+      viewSlot?: string | null;
+    },
   ) {
     const id = uuidv4();
     const generatedKey = this.generateS3Key(fileType, userId, id, originalName);
-    const s3Key = generatedKey.replace(`${fileType}/${userId}/`, `${fileType}/${userId}/pending/`);
+    const s3Key = generatedKey.replace(
+      `${fileType}/${userId}/`,
+      `${fileType}/${userId}/pending/`,
+    );
     const data = {
-      id, userId, originalName, contentType, fileType, s3Key,
+      id,
+      userId,
+      originalName,
+      contentType,
+      fileType,
+      s3Key,
       collectionId: options?.collectionId,
-      orderIndex: typeof options?.orderIndex === 'number' ? options.orderIndex : null,
+      orderIndex:
+        typeof options?.orderIndex === 'number' ? options.orderIndex : null,
       viewSlot: options?.viewSlot ?? null,
       expiresAt: new Date(Date.now() + 600_000),
     };
@@ -611,7 +599,7 @@ export class UploadService {
   }
 
   // Generate presigned POST data for client direct-to-S3 uploads
-  async createPresignedPost(
+  async createPresignedUpload(
     userId: string,
     originalName: string,
     fileType: FileType,
@@ -622,50 +610,47 @@ export class UploadService {
       viewSlot?: string | null;
     },
   ) {
-    // create presigned post and persist a pending PresignedUpload record
+    // Persist staging intent before issuing an R2 PUT capability.
     this.assertAllowedExtension(originalName, fileType);
     const trustedContentType =
       this.normalizeContentType(contentType) ??
       this.inferContentType(originalName);
     this.assertAllowedMimeType(trustedContentType, fileType);
-    const maxSize = await this.getMaxFileSize(fileType);
+    assertAllowedUploadType(originalName, trustedContentType, fileType);
+    await this.getMaxFileSize(fileType);
 
-    const intent = await this.createUploadIntent(userId, originalName, fileType, trustedContentType, options);
+    const intent = await this.createUploadIntent(
+      userId,
+      originalName,
+      fileType,
+      trustedContentType,
+      options,
+    );
     const fileId = intent.id;
     const key = intent.s3Key;
-    const baseConditions: any[] = [
-      ['eq', '$Content-Type', trustedContentType], ['content-length-range', 1, maxSize],
-    ];
-    const fields = { key, 'Content-Type': trustedContentType };
-
-    if (this.storageSettings?.provider === 'R2') {
-      const uploadHeaders = { 'Content-Type': trustedContentType, 'Cache-Control': 'private, max-age=0, no-store' };
-      const url = await getSignedUrl(this.s3, new PutObjectCommand({
-        Bucket: this.bucketName, Key: key, ContentType: trustedContentType,
+    const uploadHeaders = {
+      'Content-Type': trustedContentType,
+      'Cache-Control': 'private, max-age=0, no-store',
+    };
+    const url = await getSignedUrl(
+      this.s3,
+      new PutObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+        ContentType: trustedContentType,
         CacheControl: 'private, max-age=0, no-store',
-      }), { expiresIn: 600, signableHeaders: new Set(['content-type']) });
-      return { url, key, fileId, fields: {}, method: 'PUT', uploadHeaders, expiresIn: 600 };
-    }
-
-    const presigned = await createPresignedPost(this.s3, {
-      Bucket: this.bucketName,
-      Key: key,
-      Fields: fields,
-      Conditions: baseConditions,
-      Expires: 600, // seconds
-    });
-
-    // Build a region-specific upload URL to avoid region-signature mismatches
-    const uploadUrl = this.buildS3BucketUrl();
-
+      }),
+      { expiresIn: 600, signableHeaders: new Set(['content-type']) },
+    );
     return {
-      ...presigned,
-      url: uploadUrl,
+      url,
       key,
       fileId,
-        method: 'POST',
+      fields: {},
+      method: 'PUT',
+      uploadHeaders,
       expiresIn: 600,
-    } as any;
+    };
   }
 
   async updateUserProfileImage(
@@ -824,8 +809,13 @@ export class UploadService {
     const normalizedRole = String(role ?? '');
     const isAdmin =
       normalizedRole === 'Admin' || normalizedRole === 'SuperAdmin';
-    if (!isOwner && !isAdmin && !this.canReturnPublicFileUrl(file) &&
-      (!userId || !(await this.loadSharedViewerFileIds([file.id], userId)).has(file.id))) {
+    if (
+      !isOwner &&
+      !isAdmin &&
+      !this.canReturnPublicFileUrl(file) &&
+      (!userId ||
+        !(await this.loadSharedViewerFileIds([file.id], userId)).has(file.id))
+    ) {
       throw new BadRequestException('File not found');
     }
 
@@ -868,8 +858,8 @@ export class UploadService {
   }
 
   /**
-   * Get signed URL by raw S3 key.
-   * Used when the frontend only has a raw S3 URL / storage key and needs a
+   * Get signed URL by stored object key.
+   * Used when the frontend has a stored R2 URL / storage key and needs a
    * signed version (market rails, content-review previews, catalog cards).
    */
   /** Resolve only stored aliases or configured media origins. Never fetch caller URLs. */
@@ -877,23 +867,44 @@ export class UploadService {
     return (await this.resolveMediaSourceKeys([source])).get(source) ?? null;
   }
 
-  private async resolveMediaSourceKeys(sources: string[]): Promise<Map<string, string>> {
+  private async resolveMediaSourceKeys(
+    sources: string[],
+  ): Promise<Map<string, string>> {
     const result = new Map<string, string>();
     const aliases = new Map<string, string[]>();
-    const bases = [this.storageSettings?.publicGateway?.baseUrl, this.getConfiguredPublicBaseUrl()]
-      .filter((value): value is string => Boolean(value)).map((value) => new URL(value));
+    const bases = [this.storageSettings?.publicGateway?.baseUrl]
+      .filter((value): value is string => Boolean(value))
+      .map((value) => new URL(value));
     for (const source of sources) {
       if (typeof source !== 'string' || source.length > 8192) continue;
       let url: URL;
-      try { url = new URL(source); } catch { continue; }
-      if (url.username || url.password || !['https:', 'http:'].includes(url.protocol)) continue;
+      try {
+        url = new URL(source);
+      } catch {
+        continue;
+      }
+      if (
+        url.username ||
+        url.password ||
+        !['https:', 'http:'].includes(url.protocol)
+      )
+        continue;
       for (const base of bases) {
         const prefix = `${base.pathname.replace(/\/+$/, '')}/`;
-        if (url.origin !== base.origin || !url.pathname.startsWith(prefix)) continue;
+        if (url.origin !== base.origin || !url.pathname.startsWith(prefix))
+          continue;
         try {
           const key = decodeURIComponent(url.pathname.slice(prefix.length));
-          if (key && !key.includes('..') && !key.includes('\\') && !key.startsWith('/')) result.set(source, key);
-        } catch { /* Invalid escaping cannot identify a media object. */ }
+          if (
+            key &&
+            !key.includes('..') &&
+            !key.includes('\\') &&
+            !key.startsWith('/')
+          )
+            result.set(source, key);
+        } catch {
+          /* Invalid escaping cannot identify a media object. */
+        }
       }
       if (result.has(source)) continue;
       const identity = `${url.origin}${url.pathname}`;
@@ -902,52 +913,119 @@ export class UploadService {
     if (aliases.size) {
       const identities = [...aliases.keys()];
       const [files, variants] = await Promise.all([
-        this.prisma.fileUpload.findMany({ where: { s3Url: { in: identities } }, select: { s3Url: true, s3Key: true } }),
-        this.prisma.fileVariant.findMany({ where: { s3Url: { in: identities } }, select: { s3Url: true, s3Key: true } }),
+        this.prisma.fileUpload.findMany({
+          where: { s3Url: { in: identities } },
+          select: { s3Url: true, s3Key: true },
+        }),
+        this.prisma.fileVariant.findMany({
+          where: { s3Url: { in: identities } },
+          select: { s3Url: true, s3Key: true },
+        }),
       ]);
-      for (const row of [...files, ...variants]) for (const source of aliases.get(row.s3Url) ?? []) result.set(source, row.s3Key);
+      for (const row of [...files, ...variants])
+        for (const source of aliases.get(row.s3Url) ?? [])
+          result.set(source, row.s3Key);
     }
     return result;
   }
 
-  async getBatchSignedUrlsBySource(sources: string[], user?: { id?: string; role?: string }): Promise<Array<{ source: string; url: string | null }>> {
-    if (sources.length > 50) throw new BadRequestException('At most 50 media sources are allowed');
+  async getBatchSignedUrlsBySource(
+    sources: string[],
+    user?: { id?: string; role?: string },
+  ): Promise<Array<{ source: string; url: string | null }>> {
+    if (sources.length > 50)
+      throw new BadRequestException('At most 50 media sources are allowed');
     const keys = await this.resolveMediaSourceKeys(sources);
     const uniqueKeys = [...new Set(keys.values())];
-    if (!uniqueKeys.length) return sources.map((source) => ({ source, url: null }));
-    const variants = await this.prisma.fileVariant.findMany({ where: { s3Key: { in: uniqueKeys } } });
+    if (!uniqueKeys.length)
+      return sources.map((source) => ({ source, url: null }));
+    const variants = await this.prisma.fileVariant.findMany({
+      where: { s3Key: { in: uniqueKeys } },
+    });
     const files = await this.prisma.fileUpload.findMany({
-      where: { OR: [{ s3Key: { in: uniqueKeys } }, { id: { in: [...new Set(variants.map((row) => row.fileUploadId))] } }] },
+      where: {
+        OR: [
+          { s3Key: { in: uniqueKeys } },
+          { id: { in: [...new Set(variants.map((row) => row.fileUploadId))] } },
+        ],
+      },
       include: this.publicFileAccessInclude(),
     });
     const filesById = new Map(files.map((file) => [file.id, file]));
     const filesByKey = new Map(files.map((file) => [file.s3Key, file]));
-    const variantsByKey = new Map(variants.map((variant) => [variant.s3Key, variant]));
-    const sharedIds = user?.id && !['Admin', 'SuperAdmin'].includes(user.role ?? '')
-      ? await this.loadSharedViewerFileIds(files.filter((file) => file.userId !== user.id && !this.canReturnPublicFileUrl(file)).map((file) => file.id), user.id)
-      : new Set<string>();
+    const variantsByKey = new Map(
+      variants.map((variant) => [variant.s3Key, variant]),
+    );
+    const sharedIds =
+      user?.id && !['Admin', 'SuperAdmin'].includes(user.role ?? '')
+        ? await this.loadSharedViewerFileIds(
+            files
+              .filter(
+                (file) =>
+                  file.userId !== user.id && !this.canReturnPublicFileUrl(file),
+              )
+              .map((file) => file.id),
+            user.id,
+          )
+        : new Set<string>();
     const urls = new Map<string, string>();
-    await Promise.all(uniqueKeys.map(async (key) => {
-      const variant = variantsByKey.get(key);
-      const file = filesByKey.get(key) ?? (variant ? filesById.get(variant.fileUploadId) : undefined);
-      if (!file || !this.isDisplayableStoredFile(file)) return;
-      if (variant && variant.assetVersion !== file.assetVersion) return;
-      const isPublic = this.canReturnPublicFileUrl(file);
-      const isOwnerOrAdmin = user?.id && (file.userId === user.id || ['Admin', 'SuperAdmin'].includes(user.role ?? ''));
-      if (!isPublic && !isOwnerOrAdmin && !sharedIds.has(file.id)) return;
-      const gatewayUrl = isPublic ? this.getStablePublicDisplayUrl({ s3Key: key }) : null;
-      urls.set(key, gatewayUrl ?? await getSignedUrl(this.s3, new GetObjectCommand({ Bucket: this.bucketName, Key: key }),
-        { expiresIn: isPublic ? UploadService.PUBLIC_DISPLAY_SIGNED_URL_TTL_SECONDS : 3600 }));
+    await Promise.all(
+      uniqueKeys.map(async (key) => {
+        const variant = variantsByKey.get(key);
+        const file =
+          filesByKey.get(key) ??
+          (variant ? filesById.get(variant.fileUploadId) : undefined);
+        if (!file || !this.isDisplayableStoredFile(file)) return;
+        if (variant && variant.assetVersion !== file.assetVersion) return;
+        const isPublic = this.canReturnPublicFileUrl(file);
+        const isOwnerOrAdmin =
+          user?.id &&
+          (file.userId === user.id ||
+            ['Admin', 'SuperAdmin'].includes(user.role ?? ''));
+        if (!isPublic && !isOwnerOrAdmin && !sharedIds.has(file.id)) return;
+        const gatewayUrl = isPublic
+          ? this.getStablePublicDisplayUrl({ s3Key: key })
+          : null;
+        urls.set(
+          key,
+          gatewayUrl ??
+            (await getSignedUrl(
+              this.s3,
+              new GetObjectCommand({ Bucket: this.bucketName, Key: key }),
+              {
+                expiresIn: isPublic
+                  ? UploadService.PUBLIC_DISPLAY_SIGNED_URL_TTL_SECONDS
+                  : 3600,
+              },
+            )),
+        );
+      }),
+    );
+    return sources.map((source) => ({
+      source,
+      url: urls.get(keys.get(source) ?? '') ?? null,
     }));
-    return sources.map((source) => ({ source, url: urls.get(keys.get(source) ?? '') ?? null }));
   }
 
-  private async loadSharedViewerFileIds(fileIds: string[], viewerId: string): Promise<Set<string>> {
-    const ids = [...new Set(fileIds)].filter((id) => /^[0-9a-f-]{36}$/i.test(id));
+  private async loadSharedViewerFileIds(
+    fileIds: string[],
+    viewerId: string,
+  ): Promise<Set<string>> {
+    const ids = [...new Set(fileIds)].filter((id) =>
+      /^[0-9a-f-]{36}$/i.test(id),
+    );
     if (!ids.length) return new Set();
-    const privateCollectionsEnabled = String(this.configService.get('FEATURE_PRIVATE_COLLECTIONS') ?? 'true') !== 'false';
-    const brandRead = this.brandPermissions?.buildPermissionPredicate(viewerId, BRAND_PERMISSIONS.MESSAGES_READ,
-      Prisma.sql`resolved_brand."_id"`, Prisma.sql`resolved_brand."ownerId"`) ?? Prisma.sql`FALSE`;
+    const privateCollectionsEnabled =
+      String(
+        this.configService.get('FEATURE_PRIVATE_COLLECTIONS') ?? 'true',
+      ) !== 'false';
+    const brandRead =
+      this.brandPermissions?.buildPermissionPredicate(
+        viewerId,
+        BRAND_PERMISSIONS.MESSAGES_READ,
+        Prisma.sql`resolved_brand."_id"`,
+        Prisma.sql`resolved_brand."ownerId"`,
+      ) ?? Prisma.sql`FALSE`;
     const rows = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       SELECT file."_id" AS id FROM "FileUpload" file
       WHERE file."_id" IN (${Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`))})
@@ -1011,7 +1089,10 @@ export class UploadService {
     }
 
     // A URL for a superseded variant must not bypass the active asset version.
-    if (variant && Number(variant.assetVersion) !== Number(sourceFile.assetVersion ?? 1)) {
+    if (
+      variant &&
+      Number(variant.assetVersion) !== Number(sourceFile.assetVersion ?? 1)
+    ) {
       return null;
     }
 
@@ -1062,28 +1143,53 @@ export class UploadService {
 
     const file = await this.prisma.fileUpload.findUnique({
       where: { s3Key: normalizedKey },
-      select: { s3Key: true, fileType: true, processingStatus: true, originalDeletedAt: true },
+      select: {
+        s3Key: true,
+        fileType: true,
+        processingStatus: true,
+        originalDeletedAt: true,
+      },
     });
     return this.signVerificationReviewFile(file);
   }
 
-  async getVerificationReviewSignedUrlsByKey(keys: string[]): Promise<Map<string, string>> {
-    const valid = [...new Set(keys.map((key) => key.trim()).filter((key) => key && !key.includes('..')))];
+  async getVerificationReviewSignedUrlsByKey(
+    keys: string[],
+  ): Promise<Map<string, string>> {
+    const valid = [
+      ...new Set(
+        keys
+          .map((key) => key.trim())
+          .filter((key) => key && !key.includes('..')),
+      ),
+    ];
     const urls = new Map<string, string>();
     for (let offset = 0; offset < valid.length; offset += 50) {
       const files = await this.prisma.fileUpload.findMany({
         where: { s3Key: { in: valid.slice(offset, offset + 50) } },
-        select: { s3Key: true, fileType: true, processingStatus: true, originalDeletedAt: true },
+        select: {
+          s3Key: true,
+          fileType: true,
+          processingStatus: true,
+          originalDeletedAt: true,
+        },
       });
-      await Promise.all(files.map(async (file) => {
-        const signed = await this.signVerificationReviewFile(file);
-        if (signed) urls.set(file.s3Key, signed);
-      }));
+      await Promise.all(
+        files.map(async (file) => {
+          const signed = await this.signVerificationReviewFile(file);
+          if (signed) urls.set(file.s3Key, signed);
+        }),
+      );
     }
     return urls;
   }
 
-  private async signVerificationReviewFile(file: Pick<FileUpload, 's3Key' | 'fileType' | 'processingStatus' | 'originalDeletedAt'> | null): Promise<string | null> {
+  private async signVerificationReviewFile(
+    file: Pick<
+      FileUpload,
+      's3Key' | 'fileType' | 'processingStatus' | 'originalDeletedAt'
+    > | null,
+  ): Promise<string | null> {
     if (!file || !this.isDisplayableStoredFile(file)) return null;
     if (String(file.fileType) !== String(FileType.BRAND_VERIFICATION)) {
       this.logger.warn(
@@ -1118,9 +1224,12 @@ export class UploadService {
       where: { s3Key: normalizedKey },
       include: accessInclude as any,
     });
-    const variant = directFile ? null : await this.prisma.fileVariant.findFirst({
-      where: { s3Key: normalizedKey }, include: { file: { include: accessInclude } },
-    });
+    const variant = directFile
+      ? null
+      : await this.prisma.fileVariant.findFirst({
+          where: { s3Key: normalizedKey },
+          include: { file: { include: accessInclude } },
+        });
     const file = directFile ?? variant?.file;
     if (!file || !this.isDisplayableStoredFile(file)) {
       return null;
@@ -1130,13 +1239,19 @@ export class UploadService {
     const role = String(user.role ?? '');
     const isAdmin = role === 'Admin' || role === 'SuperAdmin';
     const isOwner = file.userId === user.id;
-    if (!isAdmin && !isOwner && !this.canReturnPublicFileUrl(file) &&
-      !(await this.loadSharedViewerFileIds([file.id], user.id)).has(file.id)) {
+    if (
+      !isAdmin &&
+      !isOwner &&
+      !this.canReturnPublicFileUrl(file) &&
+      !(await this.loadSharedViewerFileIds([file.id], user.id)).has(file.id)
+    ) {
       return null;
     }
 
     const signKey =
-      variant?.s3Key || (typeof file.s3Key === 'string' && file.s3Key.trim()) || normalizedKey;
+      variant?.s3Key ||
+      (typeof file.s3Key === 'string' && file.s3Key.trim()) ||
+      normalizedKey;
     const command = new GetObjectCommand({
       Bucket: this.bucketName,
       Key: signKey,
@@ -1267,7 +1382,11 @@ export class UploadService {
       return new Map<string, string>();
     }
 
-    const rows = await loadActiveDisplayVariants(this.prisma, fileIds, variantKind);
+    const rows = await loadActiveDisplayVariants(
+      this.prisma,
+      fileIds,
+      variantKind,
+    );
 
     const formatRank = (format: unknown): number => {
       const value = String(format ?? '').toUpperCase();
@@ -1306,9 +1425,12 @@ export class UploadService {
   }
 
   async deleteFile(fileId: string, userId: string): Promise<void> {
-    await this.prisma.$transaction((tx) => deleteOwnedFile(tx, fileId, userId), {
-      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
-    });
+    await this.prisma.$transaction(
+      (tx) => deleteOwnedFile(tx, fileId, userId),
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+      },
+    );
   }
 
   async cleanupOrphanedMessageFiles(
@@ -1441,12 +1563,19 @@ export class UploadService {
     validationOptions: UploadValidationOptions = {},
   ) {
     // Look up presign record to get originalName and fileType
-    if (validationOptions.presignSnapshot && validationOptions.presignSnapshot.id !== id) {
-      throw new BadRequestException('Presign snapshot does not match the requested upload');
+    if (
+      validationOptions.presignSnapshot &&
+      validationOptions.presignSnapshot.id !== id
+    ) {
+      throw new BadRequestException(
+        'Presign snapshot does not match the requested upload',
+      );
     }
-    const presign = validationOptions.presignSnapshot ?? await this.prisma.presignedUpload.findUnique({
-      where: { id },
-    });
+    const presign =
+      validationOptions.presignSnapshot ??
+      (await this.prisma.presignedUpload.findUnique({
+        where: { id },
+      }));
     if (!presign) {
       throw new BadRequestException('Presign record not found');
     }
@@ -1513,8 +1642,16 @@ export class UploadService {
       this.normalizeContentType(presign.contentType) ??
       this.inferContentType(sourceName);
     this.assertAllowedMimeType(expectedMimeType, presign.fileType as FileType);
+    assertAllowedUploadType(
+      sourceName,
+      expectedMimeType,
+      presign.fileType as FileType,
+    );
 
-    const maxSize = await this.getMaxFileSize(presign.fileType as FileType, validationOptions);
+    const maxSize = await this.getMaxFileSize(
+      presign.fileType as FileType,
+      validationOptions,
+    );
     const actualMetadata = await this.headObjectMetadata(key);
     if (!actualMetadata.exists) {
       throw new BadRequestException('Uploaded object was not found in storage');
@@ -1586,42 +1723,85 @@ export class UploadService {
       );
     }
 
-    return this.finalizeStoredUpload(presign, userId, actualMetadata, actualContentType, originalId);
+    return this.finalizeStoredUpload(
+      presign,
+      userId,
+      actualMetadata,
+      actualContentType,
+      originalId,
+    );
   }
 
   private async finalizeStoredUpload(
-    presign: any, userId: string, metadata: S3ObjectMetadata, mimeType: string, originalId?: string,
+    presign: any,
+    userId: string,
+    metadata: S3ObjectMetadata,
+    mimeType: string,
+    originalId?: string,
   ): Promise<FileUpload> {
-    if (!metadata.etag) throw new BadRequestException('Storage returned no object version identifier');
+    if (!metadata.etag)
+      throw new BadRequestException(
+        'Storage returned no object version identifier',
+      );
     const token = uuidv4();
     const targetKey = `${presign.fileType}/${userId}/final/${presign.id}/${token}.${getUploadFileExtension(presign.originalName)}`;
     const now = new Date();
     const claimed = await this.prisma.presignedUpload.updateMany({
       where: {
-        id: presign.id, userId, status: { in: ['PENDING', 'READY'] }, expiresAt: { gt: now },
-        OR: [{ finalizeLeaseUntil: null }, { finalizeLeaseUntil: { lte: now } }],
+        id: presign.id,
+        userId,
+        status: { in: ['PENDING', 'READY'] },
+        expiresAt: { gt: now },
+        OR: [
+          { finalizeLeaseUntil: null },
+          { finalizeLeaseUntil: { lte: now } },
+        ],
       },
-      data: { finalizeLeaseToken: token, finalizeLeaseUntil: new Date(now.getTime() + 300_000), finalizeTargetKey: targetKey },
+      data: {
+        finalizeLeaseToken: token,
+        finalizeLeaseUntil: new Date(now.getTime() + 300_000),
+        finalizeTargetKey: targetKey,
+      },
     });
     if (!claimed.count) {
-      const existing = await this.prisma.fileUpload.findUnique({ where: { id: presign.id } });
+      const existing = await this.prisma.fileUpload.findUnique({
+        where: { id: presign.id },
+      });
       if (existing?.userId === userId) return existing;
-      throw new ConflictException({ code: 'UPLOAD_FINALIZING', message: 'Upload completion is in progress. Please retry shortly.' });
+      throw new ConflictException({
+        code: 'UPLOAD_FINALIZING',
+        message: 'Upload completion is in progress. Please retry shortly.',
+      });
     }
     // Register cleanup before external I/O: a crash after COPY cannot strand the object.
     // The dispatcher also excludes actively leased targets before deleting anything.
     try {
       await this.prisma.storageObjectDeletion.createMany({
-        data: [{ s3Key: targetKey, nextAttemptAt: new Date(Date.now() + 86_400_000) }], skipDuplicates: true,
+        data: [
+          {
+            s3Key: targetKey,
+            nextAttemptAt: new Date(Date.now() + 86_400_000),
+          },
+        ],
+        skipDuplicates: true,
       });
-      await this.assertStoredUploadSignature(presign.s3Key, metadata.etag, mimeType, metadata.contentLength);
-      await this.s3.send(new CopyObjectCommand({
-        Bucket: this.bucketName, Key: targetKey,
-        CopySource: `${encodeURIComponent(this.bucketName)}/${presign.s3Key.split('/').map(encodeURIComponent).join('/')}`,
-        CopySourceIfMatch: metadata.etag,
-        MetadataDirective: 'REPLACE', ContentType: mimeType,
-        CacheControl: 'private, max-age=300',
-      }));
+      await this.assertStoredUploadSignature(
+        presign.s3Key,
+        metadata.etag,
+        mimeType,
+        metadata.contentLength,
+      );
+      await this.s3.send(
+        new CopyObjectCommand({
+          Bucket: this.bucketName,
+          Key: targetKey,
+          CopySource: `${encodeURIComponent(this.bucketName)}/${presign.s3Key.split('/').map(encodeURIComponent).join('/')}`,
+          CopySourceIfMatch: metadata.etag,
+          MetadataDirective: 'REPLACE',
+          ContentType: mimeType,
+          CacheControl: 'private, max-age=300',
+        }),
+      );
       const record = await this.prisma.$transaction(async (tx) => {
         await tx.$queryRaw`
           SELECT "_id" FROM "PresignedUpload"
@@ -1634,54 +1814,147 @@ export class UploadService {
             AND "finalizeLeaseToken" = ${token}::uuid AND "finalizeLeaseUntil" > (clock_timestamp() AT TIME ZONE 'UTC')
             AND status IN ('PENDING', 'READY')
         `;
-        if (!owned.length) throw new ConflictException({ code: 'UPLOAD_FINALIZING', message: 'Upload completion lease expired. Please retry.' });
+        if (!owned.length)
+          throw new ConflictException({
+            code: 'UPLOAD_FINALIZING',
+            message: 'Upload completion lease expired. Please retry.',
+          });
         const fileName = targetKey.split('/').pop()!;
-        const created = await tx.fileUpload.create({ data: {
-          id: presign.id, userId, originalName: presign.originalName || originalId || fileName, fileName,
-          s3Key: targetKey, s3Url: this.buildS3ObjectUrl(targetKey), fileType: presign.fileType,
-          mimeType, size: metadata.contentLength, processingStatus: 'READY',
-        } });
-        await tx.presignedUpload.update({ where: { id: presign.id }, data: {
-          status: 'USED', finalizedAt: new Date(), processingRequestedAt: mimeType.startsWith('image/') ? new Date() : null,
-          finalizeLeaseToken: null, finalizeLeaseUntil: null, finalizeTargetKey: null,
-        } });
-        await tx.storageObjectDeletion.deleteMany({ where: { s3Key: targetKey } });
-        await tx.storageObjectDeletion.createMany({ data: [{
-          s3Key: presign.s3Key, nextAttemptAt: new Date(Math.max(Date.now(), new Date(presign.expiresAt).getTime()) + 60_000),
-        }], skipDuplicates: true });
+        const created = await tx.fileUpload.create({
+          data: {
+            id: presign.id,
+            userId,
+            originalName: presign.originalName || originalId || fileName,
+            fileName,
+            s3Key: targetKey,
+            s3Url: this.buildS3ObjectUrl(targetKey),
+            fileType: presign.fileType,
+            mimeType,
+            size: metadata.contentLength,
+            processingStatus: 'READY',
+          },
+        });
+        await tx.presignedUpload.update({
+          where: { id: presign.id },
+          data: {
+            status: 'USED',
+            finalizedAt: new Date(),
+            processingRequestedAt: mimeType.startsWith('image/')
+              ? new Date()
+              : null,
+            finalizeLeaseToken: null,
+            finalizeLeaseUntil: null,
+            finalizeTargetKey: null,
+          },
+        });
+        await tx.storageObjectDeletion.deleteMany({
+          where: { s3Key: targetKey },
+        });
+        await tx.storageObjectDeletion.createMany({
+          data: [
+            {
+              s3Key: presign.s3Key,
+              nextAttemptAt: new Date(
+                Math.max(Date.now(), new Date(presign.expiresAt).getTime()) +
+                  60_000,
+              ),
+            },
+          ],
+          skipDuplicates: true,
+        });
         return created;
       });
-      if (mimeType.startsWith('image/')) await this.dispatchPresignedImageProcessing(record.id);
+      if (mimeType.startsWith('image/'))
+        await this.dispatchPresignedImageProcessing(record.id);
       return record;
     } catch (error: any) {
       if (Number(error?.$metadata?.httpStatusCode) === 412) {
-        throw new ConflictException({ code: 'UPLOAD_CHANGED', message: 'The uploaded file changed during validation. Please retry completion.' });
+        throw new ConflictException({
+          code: 'UPLOAD_CHANGED',
+          message:
+            'The uploaded file changed during validation. Please retry completion.',
+        });
       }
       throw error;
     } finally {
-      await this.prisma.presignedUpload.updateMany({ where: { id: presign.id, finalizeLeaseToken: token },
-        data: { finalizeLeaseToken: null, finalizeLeaseUntil: null, finalizeTargetKey: null } })
-        .catch(() => this.logger.warn(`Upload completion lease will expire naturally fileId=${presign.id}`));
+      await this.prisma.presignedUpload
+        .updateMany({
+          where: { id: presign.id, finalizeLeaseToken: token },
+          data: {
+            finalizeLeaseToken: null,
+            finalizeLeaseUntil: null,
+            finalizeTargetKey: null,
+          },
+        })
+        .catch(() =>
+          this.logger.warn(
+            `Upload completion lease will expire naturally fileId=${presign.id}`,
+          ),
+        );
     }
   }
 
-  private async assertStoredUploadSignature(key: string, etag: string, expectedMime: string, size: number): Promise<void> {
-    // Stream the signature rather than downloading the full image/video into RAM.
-    // DOCX identification may inspect later ZIP entries; other formats need only a prefix.
-    const length = expectedMime.includes('wordprocessingml') ? size : Math.min(size, 65_536);
-    const response = await this.s3.send(new GetObjectCommand({
-      Bucket: this.bucketName, Key: key, IfMatch: etag, Range: `bytes=0-${length - 1}`,
-    }));
+  private async assertStoredUploadSignature(
+    key: string,
+    etag: string,
+    expectedMime: string,
+    size: number,
+  ): Promise<void> {
+    // Image headers alone do not prove a decodable image. Image bytes have already
+    // passed the endpoint's hard byte cap; video inspection remains prefix-bound.
+    const isImage = expectedMime.startsWith('image/');
+    const length =
+      isImage || expectedMime.includes('wordprocessingml')
+        ? size
+        : Math.min(size, 65_536);
+    const response = await this.s3.send(
+      new GetObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+        IfMatch: etag,
+        Range: `bytes=0-${length - 1}`,
+      }),
+    );
     const body = response.Body as Readable | undefined;
-    if (!body) throw new BadRequestException('Uploaded object has no readable content');
+    if (!body)
+      throw new BadRequestException('Uploaded object has no readable content');
     try {
       // Node 22 loads this ESM package through require; keep it off non-upload paths.
-      const { fileTypeFromStream } = require('file-type') as typeof import('file-type');
-      const detected = await fileTypeFromStream(body);
-      const compoundWord = expectedMime === 'application/msword' && detected?.mime === 'application/x-cfb';
-      if (!detected || (!compoundWord && normalizeUploadContentType(detected.mime) !== expectedMime)) {
-        throw new BadRequestException('Uploaded bytes do not match the selected file type');
+      const { fileTypeFromStream, fileTypeFromBuffer } = createRequire(
+        __filename,
+      )('file-type') as typeof import('file-type');
+      let imageBytes: Buffer | undefined;
+      if (isImage) {
+        const chunks: Buffer[] = [];
+        let received = 0;
+        for await (const chunk of body) {
+          received += chunk.length;
+          if (received > size)
+            throw new BadRequestException(
+              'Uploaded image exceeds its validated size',
+            );
+          chunks.push(Buffer.from(chunk));
+        }
+        if (received !== size)
+          throw new BadRequestException('Uploaded image is incomplete');
+        imageBytes = Buffer.concat(chunks, received);
       }
+      const detected = imageBytes
+        ? await fileTypeFromBuffer(imageBytes)
+        : await fileTypeFromStream(body);
+      const compoundWord =
+        expectedMime === 'application/msword' &&
+        detected?.mime === 'application/x-cfb';
+      if (
+        !detected ||
+        (!compoundWord &&
+          normalizeUploadContentType(detected.mime) !== expectedMime)
+      ) {
+        throw new BadRequestException(
+          'Uploaded bytes do not match the selected file type',
+        );
+      }
+      if (imageBytes) await assertCompleteRasterImage(imageBytes);
     } finally {
       body.destroy();
     }
@@ -1689,8 +1962,11 @@ export class UploadService {
 
   async dispatchPresignedImageProcessing(fileId: string): Promise<void> {
     const sent = await this.enqueueImageProcessing(fileId, true);
-    if (sent) await this.prisma.presignedUpload.updateMany({ where: { id: fileId, status: 'USED', processingEnqueuedAt: null },
-      data: { processingEnqueuedAt: new Date() } });
+    if (sent)
+      await this.prisma.presignedUpload.updateMany({
+        where: { id: fileId, status: 'USED', processingEnqueuedAt: null },
+        data: { processingEnqueuedAt: new Date() },
+      });
   }
 
   private emitUploadAlert(
@@ -1727,8 +2003,16 @@ export class UploadService {
     mimeType: string,
     fileType: FileType,
   ) {
-    return this.storeServerUpload({ originalname: originalName, buffer, size: buffer.length, mimetype: mimeType } as Express.Multer.File,
-      userId, fileType);
+    return this.storeServerUpload(
+      {
+        originalname: originalName,
+        buffer,
+        size: buffer.length,
+        mimetype: mimeType,
+      } as Express.Multer.File,
+      userId,
+      fileType,
+    );
   }
 
   async getFileVariants(fileId: string, userId: string) {
@@ -1740,10 +2024,15 @@ export class UploadService {
       throw new BadRequestException('File not found');
     }
 
-    if (!this.isDisplayableStoredFile(file)) return {
-      fileId: file.id, processingStatus: file.processingStatus, version: file.assetVersion,
-      variants: {}, fallbackUrl: null, s3Url: null,
-    };
+    if (!this.isDisplayableStoredFile(file))
+      return {
+        fileId: file.id,
+        processingStatus: file.processingStatus,
+        version: file.assetVersion,
+        variants: {},
+        fallbackUrl: null,
+        s3Url: null,
+      };
     const variantRows = await (this.prisma as any).fileVariant.findMany({
       where: {
         fileUploadId: fileId,
@@ -1767,7 +2056,10 @@ export class UploadService {
       if (!mapped) continue;
       if ((variants as any)[mapped]) continue;
       (variants as any)[mapped] = {
-        url: await this.getTemporarySignedDisplayUrl({ s3Key: row.s3Key }, 3600),
+        url: await this.getTemporarySignedDisplayUrl(
+          { s3Key: row.s3Key },
+          3600,
+        ),
         width: row.width,
         height: row.height,
         format: row.format,
@@ -1795,13 +2087,18 @@ export class UploadService {
     }
 
     // Keep a published version readable while the replacement is encoded.
-    if (!await this.enqueueImageProcessing(fileId, true)) {
-      throw new ServiceUnavailableException('Image processing is temporarily unavailable. Please retry.');
+    if (!(await this.enqueueImageProcessing(fileId, true))) {
+      throw new ServiceUnavailableException(
+        'Image processing is temporarily unavailable. Please retry.',
+      );
     }
     return { fileId, processingStatus: 'PENDING' };
   }
 
-  async enqueueImageProcessing(fileId: string, force = false): Promise<boolean> {
+  async enqueueImageProcessing(
+    fileId: string,
+    force = false,
+  ): Promise<boolean> {
     if (!fileId || !this.imageQueue || !this.isImageOptimizationEnabled()) {
       return false;
     }
@@ -1832,29 +2129,15 @@ export class UploadService {
     contentType: string;
     isPublic?: boolean;
   }): Promise<{ key: string; url: string }> {
-    const buildCommand = (withAcl: boolean) =>
+    await this.s3.send(
       new PutObjectCommand({
         Bucket: this.bucketName,
         Key: params.key,
         Body: params.body,
         ContentType: params.contentType,
-        CacheControl: this.storageSettings?.provider === 'R2'
-          ? 'private, max-age=300' : 'public, max-age=31536000, immutable',
-        ...(withAcl && params.isPublic && this.storageSettings?.provider !== 'R2' ? { ACL: 'public-read' } : {}),
-      } as any);
-    try {
-      await this.s3.send(buildCommand(true));
-    } catch (error: any) {
-      // Buckets with Object Ownership "bucket owner enforced" (modern S3
-      // default) reject any ACL. Public access there comes from bucket
-      // policy/CDN, so retry without the ACL instead of failing the upload.
-      const code = String(error?.name ?? error?.Code ?? '');
-      if (params.isPublic && code === 'AccessControlListNotSupported') {
-        await this.s3.send(buildCommand(false));
-      } else {
-        throw error;
-      }
-    }
+        CacheControl: 'private, max-age=300',
+      }),
+    );
     return {
       key: params.key,
       url: this.buildS3ObjectUrl(params.key),
@@ -1934,6 +2217,7 @@ export class UploadService {
     this.assertAllowedExtension(file.originalname, fileType);
     const trustedMimeType = this.normalizeContentType(file.mimetype);
     this.assertAllowedMimeType(trustedMimeType, fileType);
+    assertAllowedUploadType(file.originalname, trustedMimeType, fileType);
 
     if (file.size > maxSize) {
       const limitMB = formatUploadLimitMB(maxSize);

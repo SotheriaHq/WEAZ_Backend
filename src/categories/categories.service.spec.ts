@@ -3,7 +3,7 @@ import { CategoriesService } from './categories.service';
 
 describe('CategoriesService entity filters', () => {
   const createService = (prisma: any) => {
-    prisma.$queryRaw = jest.fn().mockResolvedValue([]);
+    prisma.$executeRaw = jest.fn().mockResolvedValue(0);
     prisma.$transaction = jest.fn(async (callback: any) => callback(prisma));
     return new CategoriesService(prisma, {} as any);
   };

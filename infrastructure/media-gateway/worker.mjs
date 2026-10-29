@@ -96,7 +96,7 @@ function objectHeaders(object) {
   object.writeHttpMetadata?.(headers);
   const contentType = String(object.httpMetadata?.contentType ?? headers.get('Content-Type') ?? '').trim();
   // HTML and documents do not belong on the public fashion-media gateway.
-  if (!/^(?:image|video)\/[a-z0-9.+-]+(?:\s*;.*)?$/i.test(contentType)) return null;
+  if (!/^(?:image\/(?:jpeg|png|webp|gif|avif)|video\/(?:mp4|webm|quicktime))$/i.test(contentType)) return null;
   headers.set('Content-Type', contentType);
   headers.set('Content-Length', String(object.size));
   headers.set('Accept-Ranges', 'bytes');

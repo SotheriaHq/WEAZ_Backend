@@ -15,45 +15,17 @@ function parseArgs(argv) {
   return parseResetArgs(argv);
 }
 
-function getBucketName() {
-  if (process.env.STORAGE_PROVIDER === 'R2') return process.env.R2_BUCKET || '';
-  return process.env.AWS_S3_BUCKET || process.env.S3_BUCKET || '';
-}
-
-function getRegion() {
-  return process.env.AWS_REGION || process.env.REGION || 'eu-north-1';
-}
-
-function createS3Client(region) {
-  if (process.env.STORAGE_PROVIDER === 'R2') {
-    if (!process.env.R2_ENDPOINT || !process.env.R2_ACCESS_KEY_ID || !process.env.R2_SECRET_ACCESS_KEY) throw new Error('R2 reset requires its endpoint and dedicated credentials');
-    return new S3Client({ region: 'auto', endpoint: process.env.R2_ENDPOINT, forcePathStyle: true,
-      credentials: { accessKeyId: process.env.R2_ACCESS_KEY_ID, secretAccessKey: process.env.R2_SECRET_ACCESS_KEY } });
-  }
-  const accessKeyId =
-    process.env.AWS_ACCESS_KEY_ID || process.env.ACCESS_KEY_ID || undefined;
-  const secretAccessKey =
-    process.env.AWS_SECRET_ACCESS_KEY || process.env.SECRET_ACCESS_KEY || undefined;
-
-  const config = { region };
-  if (accessKeyId && secretAccessKey) {
-    config.credentials = { accessKeyId, secretAccessKey };
-  }
-
-  return new S3Client(config);
-}
-
-async function emptyBucket(bucketName, region) {
-  if (!bucketName) {
-    throw new Error('AWS_S3_BUCKET (or S3_BUCKET) must be configured to wipe S3.');
-  }
-
-  const s3 = createS3Client(region);
+async function emptyBucket(bucketName) {
+  require('ts-node/register/transpile-only');
+  const { resolveStorageProviderSettings } = require('../src/upload/storage-provider.config');
+  const settings = resolveStorageProviderSettings({ get: name => process.env[name] });
+  if (settings.bucket !== bucketName) throw new Error('R2 bucket identity mismatch');
+  const storage = new S3Client({ region: settings.region, endpoint: settings.endpoint, forcePathStyle: true, credentials: settings.credentials, requestChecksumCalculation: 'WHEN_REQUIRED', responseChecksumValidation: 'WHEN_REQUIRED' });
   let continuationToken = undefined;
   let deletedCount = 0;
 
   do {
-    const listResponse = await s3.send(
+    const listResponse = await storage.send(
       new ListObjectsV2Command({
         Bucket: bucketName,
         ContinuationToken: continuationToken,
@@ -66,7 +38,7 @@ async function emptyBucket(bucketName, region) {
       .map((Key) => ({ Key }));
 
     if (objects.length > 0) {
-      const deleteResponse = await s3.send(
+      const deleteResponse = await storage.send(
         new DeleteObjectsCommand({
           Bucket: bucketName,
           Delete: {
@@ -80,7 +52,7 @@ async function emptyBucket(bucketName, region) {
         const sample = deleteResponse.Errors.slice(0, 3)
           .map((item) => `${item.Key || 'unknown'}:${item.Code || 'ERR'}`)
           .join(', ');
-        throw new Error(`S3 deleteObjects reported errors: ${sample}`);
+        throw new Error(`R2 deleteObjects reported errors: ${sample}`);
       }
 
       deletedCount += objects.length;
@@ -206,8 +178,7 @@ function verifySeededAdmin() {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const bucketName = getBucketName();
-  const region = getRegion();
+  const bucketName = process.env.R2_BUCKET || '';
   const databaseUrl = process.env.DATABASE_URL || '';
 
   if (!options.confirm) {
@@ -240,8 +211,8 @@ async function main() {
   );
 
   if (!options.skipBucket) {
-    const deletedCount = await emptyBucket(bucketName, region);
-    console.log(`Emptied S3 bucket ${bucketName}. Deleted ${deletedCount} object(s).`);
+    const deletedCount = await emptyBucket(bucketName);
+    console.log(`Emptied R2 bucket ${bucketName}. Deleted ${deletedCount} object(s).`);
   }
 
   if (!options.skipLocalUploads) {

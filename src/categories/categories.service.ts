@@ -908,7 +908,7 @@ export class CategoriesService {
 
     await retryDatabaseTransaction(() =>
       this.prisma.$transaction(async (tx) => {
-        await tx.$queryRaw`SELECT pg_advisory_xact_lock(180216, hashtext(${entityType + ':' + entityId}))`;
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(180216, hashtext(${entityType + ':' + entityId}))`;
         await tx.entityFilter.deleteMany({
           where: { entityType, entityId },
         });

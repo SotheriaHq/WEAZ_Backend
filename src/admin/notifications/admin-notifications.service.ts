@@ -130,32 +130,40 @@ export class AdminNotificationsService {
         },
       });
 
+      // Persist the requested email alongside its audit and optional inbox entry.
+      if (dto.channel === 'email' || dto.channel === 'both') {
+        const targetUser = await tx.user.findUnique({
+          where: { id: dto.targetUserId },
+          select: { email: true },
+        });
+        if (targetUser?.email) {
+          const companyName = normalizeCompanyName(
+            this.emailService.getAppName(),
+          );
+          const html = renderEmailShell({
+            appName: companyName,
+            title: subject,
+            headerSubtitle: 'Admin account update',
+            bodyHtml: `<p style="margin:0;color:#374151;font-size:15px;line-height:1.7">${escapeEmailHtml(body)}</p>`,
+            footerContextText: `This email was sent because a ${companyName} administrator sent an account update.`,
+          });
+
+          await this.emailService.send(
+            targetUser.email,
+            subject,
+            html,
+            body,
+            {
+              recipientUserId: dto.targetUserId,
+              idempotencyKey: `admin-notification:${notif.id}`,
+            },
+            tx,
+          );
+        }
+      }
+
       return notif;
     });
-
-    // Send email if channel includes email
-    if (dto.channel === 'email' || dto.channel === 'both') {
-      const targetUser = await this.prisma.user.findUnique({
-        where: { id: dto.targetUserId },
-        select: { email: true },
-      });
-      if (targetUser?.email) {
-        const companyName = normalizeCompanyName(
-          this.emailService.getAppName(),
-        );
-        const html = renderEmailShell({
-          appName: companyName,
-          title: subject,
-          headerSubtitle: 'Admin account update',
-          bodyHtml: `<p style="margin:0;color:#374151;font-size:15px;line-height:1.7">${escapeEmailHtml(body)}</p>`,
-          footerContextText: `This email was sent because a ${companyName} administrator sent an account update.`,
-        });
-
-        void this.emailService
-          .send(targetUser.email, subject, html, body)
-          .catch(() => undefined);
-      }
-    }
 
     return notification;
   }
