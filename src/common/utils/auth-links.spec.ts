@@ -4,6 +4,7 @@ import {
   buildEmailChangeConfirmationLink,
   buildEmailVerificationLink,
   buildPasswordResetLink,
+  resolveMobileAppBridgeBaseUrl,
   sanitizeAuthNextPath,
 } from './auth-links';
 
@@ -212,5 +213,68 @@ describe('auth link builders', () => {
     expect(sanitizeAuthNextPath('//evil.com')).toBeNull();
     expect(sanitizeAuthNextPath('https://evil.com/profile')).toBeNull();
     expect(sanitizeAuthNextPath('http://evil.com/profile')).toBeNull();
+  });
+
+  it('rejects next paths a browser would read as another site', () => {
+    // Browsers treat `\` as `/` and strip tabs/newlines inside URLs.
+    for (const attack of [
+      '/\\evil.com',
+      '/\\/evil.com',
+      '/\t/evil.com',
+      '/\n/evil.com',
+      '/\r/evil.com',
+      '///evil.com',
+      'javascript:alert(1)',
+    ]) {
+      expect(sanitizeAuthNextPath(attack)).toBeNull();
+    }
+  });
+
+  it('keeps a same-site next path as the parser reads it', () => {
+    expect(sanitizeAuthNextPath('/orders/abc?tab=open#top')).toBe(
+      '/orders/abc?tab=open#top',
+    );
+    expect(sanitizeAuthNextPath('/a/../profile')).toBe('/profile');
+    // Encoded characters stay encoded: still a path on this site.
+    expect(sanitizeAuthNextPath('/%2F%2Fevil.com')).toBe('/%2F%2Fevil.com');
+    expect(sanitizeAuthNextPath('/%00/evil.com')).toBe('/%00/evil.com');
+  });
+
+  describe('bridge base never comes from request headers outside local dev', () => {
+    const forged = {
+      host: 'evil.example',
+      protocol: 'https',
+      forwardedProto: 'https',
+    };
+
+    it('ignores a forged host on SIT and production', () => {
+      for (const APP_ENV of ['sit', 'production']) {
+        resetEnv({ APP_ENV, APP_PUBLIC_URL: undefined });
+        expect(resolveMobileAppBridgeBaseUrl(forged)).toBe('');
+      }
+    });
+
+    it('uses the configured public URL whatever the request says', () => {
+      resetEnv({ APP_ENV: 'sit', APP_PUBLIC_URL: 'https://api.wiez.test' });
+      expect(resolveMobileAppBridgeBaseUrl(forged)).toBe(
+        'https://api.wiez.test',
+      );
+    });
+
+    it('sends a forged-host mobile reset to the web link, not the forged host', () => {
+      resetEnv({ APP_ENV: 'sit', APP_PUBLIC_URL: undefined });
+      const link = buildPasswordResetLink('tok', {
+        mobile: true,
+        bridgeBaseUrl: resolveMobileAppBridgeBaseUrl(forged),
+      });
+      expect(link).toBe('https://app.wiez.test/reset-password?token=tok');
+    });
+
+    it('still derives the LAN host in local development', () => {
+      resetEnv({ APP_PUBLIC_URL: undefined });
+      expect(resolveMobileAppBridgeBaseUrl({ host: '192.168.1.5:3040' })).toBe(
+        'http://192.168.1.5:3040',
+      );
+    });
   });
 });

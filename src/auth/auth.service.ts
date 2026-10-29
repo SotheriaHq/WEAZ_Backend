@@ -1061,6 +1061,27 @@ export class AuthService {
             },
           });
 
+          if (!existingUser.isEmailVerified) {
+            // Pre-account takeover guard. Nobody ever proved they own this
+            // email, so its password may have been set by someone else who
+            // signed up first and is waiting for the real owner to arrive.
+            // Google just proved the owner; whatever was set before that proof
+            // stops working, exactly as a password reset would.
+            await tx.refreshToken.deleteMany({
+              where: { userId: existingUser.id },
+            });
+            return tx.user.update({
+              where: { id: existingUser.id },
+              data: {
+                password: null,
+                passwordCredentialStatus: PasswordCredentialStatus.NOT_SET,
+                mustResetPassword: false,
+                authVersion: { increment: 1 },
+              },
+              select: authUserSelect,
+            });
+          }
+
           return existingUser;
         }
 

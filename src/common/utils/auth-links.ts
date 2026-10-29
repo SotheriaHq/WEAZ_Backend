@@ -1,4 +1,4 @@
-import { resolveWebAppBaseUrl } from './web-app-url';
+import { isNonLocalEnvironment, resolveWebAppBaseUrl } from './web-app-url';
 
 function resolveAuthLinkBaseUrl(): string {
   return resolveWebAppBaseUrl().replace(/\/+$/, '');
@@ -80,6 +80,12 @@ export function resolveMobileAppBridgeBaseUrl(req?: {
   );
   if (configured) return configured;
 
+  // The request's Host and X-Forwarded-* headers are client input. A reset or
+  // verification link built from them sends the token to whatever host the
+  // caller named, so outside local development the callers fall back to the
+  // configured web link instead.
+  if (isNonLocalEnvironment()) return '';
+
   const host = String(req?.host ?? '').trim();
   if (!host) return '';
 
@@ -124,21 +130,27 @@ export function buildMobileSchemeAuthLink(
   return `${base}${route}?${query}`;
 }
 
+const SAME_ORIGIN_PROBE = 'https://wiez.invalid';
+
+/**
+ * A path on this site, or null. Prefix checks are not enough: browsers read
+ * `\` as `/` and drop tabs and newlines, so `/\evil.com` and `/\t/evil.com`
+ * both open `//evil.com`. The URL parser decides instead, against a probe
+ * origin, and only a result on that origin is kept.
+ */
 export function sanitizeAuthNextPath(nextPath?: string | null): string | null {
   const candidate = String(nextPath ?? '').trim();
-  if (!candidate) {
+  if (!candidate.startsWith('/') || /[\\\u0000-\u001f\u007f]/.test(candidate)) {
     return null;
   }
 
-  if (!candidate.startsWith('/')) {
+  try {
+    const parsed = new URL(candidate, SAME_ORIGIN_PROBE);
+    if (parsed.origin !== SAME_ORIGIN_PROBE) return null;
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
     return null;
   }
-
-  if (candidate.startsWith('//')) {
-    return null;
-  }
-
-  return candidate;
 }
 
 export function buildPasswordResetLink(
