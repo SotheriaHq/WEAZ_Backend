@@ -82,6 +82,19 @@ export function resolveAppUrl(path: string): string {
 }
 
 /**
+ * The href an email carries. A path on the web app ("/orders/1") becomes an
+ * absolute https link on its host: a mail client cannot follow a relative
+ * href, and an absolute link on that host is what lets Android open the
+ * installed app instead (App Links). Anything else is returned as given.
+ */
+export function toEmailHref(href: string | null | undefined): string {
+  const value = String(href ?? '').trim();
+  return value.startsWith('/') && !value.startsWith('//')
+    ? resolveAppUrl(value)
+    : value;
+}
+
+/**
  * The header mark.
  *
  * This drew the company's first letter in a rounded violet tile — a fourth
@@ -108,7 +121,7 @@ function renderCompanyLogoMarkup(): string {
  * from a payload without remembering to.
  */
 export function renderEmailLink(href: string, label: string): string {
-  const safeHref = escapeHtml(String(href ?? '').trim());
+  const safeHref = escapeHtml(toEmailHref(href));
   const safeLabel = escapeHtml(String(label ?? '').trim());
   return `<a href="${safeHref}" style="color:${EMAIL_COLORS.brandPrimary};font-weight:700;text-decoration:underline;text-underline-offset:2px">${safeLabel}</a>`;
 }
@@ -121,7 +134,7 @@ export function renderEmailButton(
     borderRadius?: string;
   },
 ): string {
-  const safeHref = escapeHtml(String(href ?? '').trim());
+  const safeHref = escapeHtml(toEmailHref(href));
   const safeLabel = escapeHtml(String(label ?? '').trim());
 
   return `<a href="${safeHref}" style="display:inline-block;background:${EMAIL_COLORS.brandPrimary};border:1px solid ${EMAIL_COLORS.brandPrimaryStrong};color:#ffffff;padding:${options?.padding ?? '13px 24px'};border-radius:${options?.borderRadius ?? '12px'};text-decoration:none;font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;font-size:14px;font-weight:800;letter-spacing:0.2px;box-shadow:0 12px 24px rgba(96,21,226,0.24)">${safeLabel}</a>`;

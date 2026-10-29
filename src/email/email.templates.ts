@@ -6,6 +6,7 @@ import {
   renderEmailButton,
   renderEmailShell,
   resolveAppUrl,
+  toEmailHref,
 } from './email.branding';
 
 const BRAND_PRIMARY = EMAIL_COLORS.brandPrimary;
@@ -61,7 +62,7 @@ const muted = (text: string) =>
  */
 const linkFallback = (url: string, label: string) =>
   `<p style="color:${TEXT_MUTED};font-size:12px;line-height:1.6;margin:14px 0 0">Button not working?
-      <a href="${escapeHtml(url)}" style="color:${BRAND_PRIMARY};font-weight:700;text-decoration:underline">${escapeHtml(label)}</a></p>`;
+      <a href="${escapeHtml(toEmailHref(url))}" style="color:${BRAND_PRIMARY};font-weight:700;text-decoration:underline">${escapeHtml(label)}</a></p>`;
 
 const VERIFICATION_WORKSPACE_URL = resolveAppUrl('/studio/verification');
 
@@ -645,7 +646,7 @@ export function collectionPublishedEmail(
       companyName,
       `This notification was sent because you published a design on your ${companyName} brand account.`,
     ),
-    text: `"${designTitle}" is now live on ${companyName}!\n\nGreat work, ${brandName}. View your design here:\n${designUrl}`,
+    text: `"${designTitle}" is now live on ${companyName}!\n\nGreat work, ${brandName}. View your design here:\n${toEmailHref(designUrl)}`,
   };
 }
 
