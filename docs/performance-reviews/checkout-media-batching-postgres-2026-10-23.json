@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-10-28T13:12:05.315Z",
+  "checkedAt": "2026-10-29T04:25:45.170Z",
   "passed": true,
   "cleanupPassed": true,
   "cases": [
@@ -247,5 +247,11 @@
   "contentReviewProof": {
     "cases": 20,
     "providerCalls": 0
+  },
+  "verificationEnvironment": {
+    "kind": "GitHub Actions",
+    "runId": 40817416497,
+    "jobId": 123261646544,
+    "commit": "52c01dea510ac1e315ac07c2d3af2048df18126f"
   }
 }

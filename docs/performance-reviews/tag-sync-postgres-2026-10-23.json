@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-10-27T18:21:20.939Z",
+  "checkedAt": "2026-10-29T04:28:36.215Z",
   "passed": true,
   "cleanupPassed": true,
   "cases": [
@@ -36,5 +36,6 @@
   "reindexSourceReads": 12,
   "reindexEligibilityScans": 1,
   "reindexEntitiesPerType": 501,
-  "reindexBindings": 2004
+  "reindexBindings": 2004,
+  "connectionsBeforeDrop": 0
 }

@@ -40,7 +40,7 @@ async function main() {
     pool = new Pool({ connectionString: testUrl.toString() });
     pool.on('error', (error) => { console.error('Disposable database pool error:', error.code); process.exitCode = 1; });
     const queries = [];
-    prisma = new PrismaClient({ adapter: new PrismaPg(pool), log: [{ emit: 'event', level: 'query' }] });
+    prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: testUrl.toString() }), log: [{ emit: 'event', level: 'query' }] });
     prisma.$on('query', event => queries.push(event.query));
     const index = new TagIndexService(prisma);
     // Bindings reference real rows: typed TagBinding foreign keys refuse missing targets.
@@ -156,7 +156,22 @@ async function main() {
     if (pool) await pool.end();
     if (created) {
       assert(/^wiez_tag_sync_[a-f0-9]{32}$/.test(database));
-      await admin.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()', [database]);
+      // Pool.end() can resolve before idle sockets finish closing. Wait for
+      // PostgreSQL to observe both pools disconnected before deleting the DB.
+      let remaining = 0;
+      const deadline = Date.now() + 5000;
+      do {
+        const result = await admin.query('SELECT count(*)::integer AS count FROM pg_stat_activity WHERE datname=$1', [database]);
+        remaining = result.rows[0].count;
+        if (!remaining || Date.now() >= deadline) break;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      } while (true);
+      evidence.connectionsBeforeDrop = remaining;
+      if (remaining) {
+        evidence.passed = false;
+        process.exitCode = 1;
+        await admin.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()', [database]);
+      }
       await admin.query(`DROP DATABASE "${database}"`); evidence.cleanupPassed = true;
     }
     await admin.end();
