@@ -694,7 +694,21 @@ async function main() {
       { id: failedDispatchId, customOrderId: outboxOrder.id, recipientId: buyerId, notificationType: 'CUSTOM_ORDER_PROGRESS_UPDATED', status: 'FAILED', attempts: 7, payloadJson: { fail: true }, availableAt: new Date(Date.now() - 1000) },
     ] });
     const handoffs = [];
-    const dispatcher = new CustomOrderSideEffectsService(prisma, { enqueueFanout: async event => {
+    const claimBatches = [];
+    // Observe actual PostgreSQL results without replacing the claim query.
+    const dispatchPrisma = {
+      $executeRaw: query => prisma.$executeRaw(query),
+      $queryRaw: async query => {
+        const rows = await prisma.$queryRaw(query);
+        if (/FROM candidates, moment WHERE event.id = candidates.id RETURNING event\.\*/.test(query.strings.join(' '))) {
+          claimBatches.push({ requested: query.values[1], ids: rows.map(row => row.id) });
+        }
+        return rows;
+      },
+      customOrderNotificationOutbox: prisma.customOrderNotificationOutbox,
+      customOrder: prisma.customOrder,
+    };
+    const dispatcher = new CustomOrderSideEffectsService(dispatchPrisma, { enqueueFanout: async event => {
       handoffs.push(event);
       if (event.payload.fail) throw new Error('fixture queue unavailable');
     } });
@@ -704,7 +718,18 @@ async function main() {
     evidence.customOutboxDispatchSelects = queries.filter(query => /^\s*SELECT\b/i.test(query)).length;
     assert.equal(evidence.customOutboxDispatchSelects, 0, 'Atomic bounded claim commands return current event payloads without separate scan or per-event metadata SELECTs');
     evidence.customOutboxClaimCommands=queries.filter(query=>/FROM candidates, moment WHERE event.id = candidates.id RETURNING event\.\*/.test(query)).length;
-    assert(evidence.customOutboxClaimCommands>=3&&evidence.customOutboxClaimCommands<=5);
+    evidence.customOutboxClaimBatchSizes = claimBatches.map(batch => batch.ids.length);
+    assert.equal(evidence.customOutboxClaimCommands, claimBatches.length);
+    assert(claimBatches.every(batch => batch.requested === 10 && batch.ids.length <= batch.requested));
+    const claimedIds = claimBatches.flatMap(batch => batch.ids);
+    assert.deepEqual([...claimedIds].sort(), [...dispatchedIds, failedDispatchId].sort(), 'Every due event is claimed exactly once across competing workers');
+    assert.equal(new Set(claimedIds).size, claimedIds.length);
+    assert(claimBatches.filter(batch => !batch.ids.length).length <= 2, 'Each dispatcher stops after its first empty claim');
+    // SKIP LOCKED may fragment batches under contention. Each nonempty claim
+    // must make progress; allow at most one claim per event plus one empty
+    // terminal claim per dispatcher, instead of assuming full batches.
+    assert(evidence.customOutboxClaimCommands >= Math.ceil(claimedIds.length / 10));
+    assert(evidence.customOutboxClaimCommands <= claimedIds.length + 2);
     assert.equal(dispatchCounts.reduce((sum, value) => sum + value, 0), 25);
     assert.equal(handoffs.length, 26);
     assert.equal(new Set(handoffs.filter(event => !event.payload.fail).map(event => event.payload.eventId)).size, 25);
