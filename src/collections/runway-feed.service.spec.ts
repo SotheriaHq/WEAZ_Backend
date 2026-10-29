@@ -1,6 +1,14 @@
 import { RunwayFeedService } from './runway-feed.service';
 import { emptyRunwayAffinity } from './runway-ranking.util';
 describe('Runway session pagination and privacy', () => {
+  it('does not persist an empty snapshot when no eligible content exists', async () => {
+    const { service, prisma } = setup();
+    (service as any).candidateIds.mockResolvedValue([]);
+    await expect(
+      service.page({}, undefined, 'explore', undefined, 3),
+    ).resolves.toEqual({ ids: [], hasNextPage: false, nextCursor: null });
+    expect(prisma.runwayFeedSession.create).not.toHaveBeenCalled();
+  });
   it('shares public metadata reads while keeping viewer profiles and snapshots separate', async () => {
     const { service, prisma } = setup();
     const [first, second] = await Promise.all([

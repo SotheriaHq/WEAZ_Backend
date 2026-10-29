@@ -228,23 +228,32 @@ async function main() {
       : [1, 5, 20]) {
       const durations = [];
       const pages = [];
+      let busyResponses = 0;
       for (let batch = 0; batch < 3; batch++)
         await Promise.all(
           Array.from({ length: concurrency }, async (_, index) => {
             const started = performance.now();
             const viewer = concurrency === 1 ? shopper : shoppers[index];
-            const first = await service.page(
-              where,
-              viewer,
-              'for-you',
-              undefined,
-              20,
-            );
+            let first;
+            try {
+              first = await service.page(
+                where,
+                viewer,
+                'for-you',
+                undefined,
+                20,
+              );
+            } catch (error) {
+              if (error.getStatus?.() !== 503) throw error;
+              busyResponses++;
+              return;
+            }
             durations.push(performance.now() - started);
             pages.push({ ...first, viewer });
           }),
         );
       const first = pages[0];
+      if (!first) throw new Error('No benchmark requests were admitted');
       const nextStart = performance.now();
       const second = await service.page(
         where,
@@ -263,6 +272,8 @@ async function main() {
             ? 'one-returning-shopper'
             : 'distinct-shoppers-with-saves',
         samples: durations.length,
+        requests: concurrency * 3,
+        busyResponses,
         p50Ms: percentile(durations, 0.5),
         p95Ms: percentile(durations, 0.95),
         nextPageMs: performance.now() - nextStart,
