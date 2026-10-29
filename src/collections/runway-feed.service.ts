@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Prisma } from '@prisma/client';
 import { createHash, randomUUID } from 'crypto';
@@ -18,6 +23,8 @@ const isUuid = (value: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 const WINDOW_MS = 90 * 86400000;
 const SESSION_MS = 30 * 60000;
+const EXPIRY_BATCH_SIZE = 500;
+const MAX_ACTIVE_PAGES = 16;
 const AFRICAN_COUNTRIES = new Set([
   'ng',
   'nigeria',
@@ -139,6 +146,9 @@ const normalized = (value: string) =>
 @Injectable()
 export class RunwayFeedService {
   private readonly logger = new Logger(RunwayFeedService.name);
+  private activePages = 0;
+  private expiring = false;
+  private readonly affinityLoads = new Map<string, Promise<RunwayAffinity>>();
   private readonly candidateCache = new Map<
     string,
     { expiresAt: number; promise: Promise<unknown> }
@@ -239,16 +249,47 @@ export class RunwayFeedService {
     return promise;
   }
 
-  @Cron(CronExpression.EVERY_HOUR)
+  @Cron(CronExpression.EVERY_MINUTE)
   async expireSessions() {
-    await Promise.all([
-      this.prisma.runwayFeedSession.deleteMany({
-        where: { expiresAt: { lt: new Date() } },
-      }),
-      this.prisma.runwayAffinityCache.deleteMany({
-        where: { expiresAt: { lt: new Date() } },
-      }),
-    ]);
+    if (this.expiring) return;
+    this.expiring = true;
+    try {
+      // Separate short statements keep locks and transaction work bounded.
+      // Multiple instances skip each other's rows rather than waiting.
+      const sessions = await this.prisma.$executeRaw(Prisma.sql`
+        WITH expired AS (
+          SELECT id FROM "RunwayFeedSession"
+          WHERE "expiresAt" < CURRENT_TIMESTAMP
+          ORDER BY "expiresAt", id LIMIT ${EXPIRY_BATCH_SIZE}
+          FOR UPDATE SKIP LOCKED
+        )
+        DELETE FROM "RunwayFeedSession" s USING expired
+        WHERE s.id = expired.id
+      `);
+      const affinities = await this.prisma.$executeRaw(Prisma.sql`
+        WITH expired AS (
+          SELECT "userId" FROM "RunwayAffinityCache"
+          WHERE "expiresAt" < CURRENT_TIMESTAMP
+          ORDER BY "expiresAt", "userId" LIMIT ${EXPIRY_BATCH_SIZE}
+          FOR UPDATE SKIP LOCKED
+        )
+        DELETE FROM "RunwayAffinityCache" a USING expired
+        WHERE a."userId" = expired."userId"
+      `);
+      const event = JSON.stringify({
+        event: 'runway.expiry',
+        sessions,
+        affinities,
+        batchLimit: EXPIRY_BATCH_SIZE,
+        batchFull:
+          sessions === EXPIRY_BATCH_SIZE || affinities === EXPIRY_BATCH_SIZE,
+      });
+      if (sessions === EXPIRY_BATCH_SIZE || affinities === EXPIRY_BATCH_SIZE)
+        this.logger.warn(event);
+      else this.logger.log(event);
+    } finally {
+      this.expiring = false;
+    }
   }
 
   private async affinity(
@@ -278,8 +319,23 @@ export class RunwayFeedService {
       result.negative = new Set(payload.negative as string[]);
       return result;
     }
+    const loadKey = `${userId}:${reset?.resetAt.toISOString() ?? 'initial'}`;
+    const existing = this.affinityLoads.get(loadKey);
+    if (existing) return existing;
+    const pending = this.buildAffinity(userId, now, reset?.resetAt);
+    this.affinityLoads.set(loadKey, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.affinityLoads.get(loadKey) === pending)
+        this.affinityLoads.delete(loadKey);
+    }
+  }
+
+  private async buildAffinity(userId: string, now: Date, resetAt?: Date) {
+    const result = emptyRunwayAffinity();
     const since = new Date(
-      Math.max(now.getTime() - WINDOW_MS, reset?.resetAt.getTime() ?? 0),
+      Math.max(now.getTime() - WINDOW_MS, resetAt?.getTime() ?? 0),
     );
     const [
       reactions,
@@ -542,6 +598,27 @@ export class RunwayFeedService {
     cursor: string | undefined,
     take: number,
   ) {
+    if (this.activePages >= MAX_ACTIVE_PAGES) {
+      this.logger.warn(
+        JSON.stringify({ event: 'runway.busy', limit: MAX_ACTIVE_PAGES }),
+      );
+      throw new ServiceUnavailableException('Runway is busy. Please retry.');
+    }
+    this.activePages++;
+    try {
+      return await this.buildPage(where, userId, category, cursor, take);
+    } finally {
+      this.activePages--;
+    }
+  }
+
+  private async buildPage(
+    where: Prisma.CollectionWhereInput,
+    userId: string | undefined,
+    category: string | undefined,
+    cursor: string | undefined,
+    take: number,
+  ) {
     const startedAt = performance.now();
     const key = runwayKey(category);
     const now = new Date();
@@ -760,16 +837,17 @@ export class RunwayFeedService {
         affinity,
         now.getTime(),
       ).map((row) => row.id);
-      await this.prisma.runwayFeedSession.create({
-        data: {
-          id: sessionId,
-          userId: userId ?? null,
-          categoryKey: scope,
-          designIds: ids,
-          createdAt: now,
-          expiresAt: new Date(now.getTime() + SESSION_MS),
-        },
-      });
+      if (ids.length)
+        await this.prisma.runwayFeedSession.create({
+          data: {
+            id: sessionId,
+            userId: userId ?? null,
+            categoryKey: scope,
+            designIds: ids,
+            createdAt: now,
+            expiresAt: new Date(now.getTime() + SESSION_MS),
+          },
+        });
     }
     const hidden =
       userId && ids.length
