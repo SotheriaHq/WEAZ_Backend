@@ -57,7 +57,6 @@ const HEIC_FTYP_BRANDS = new Set([
 ]);
 const AVIF_ENCODER_EFFORT = 4;
 const WEBP_ENCODER_EFFORT = 4;
-const PNG_ENCODER_EFFORT = 9;
 
 @Injectable()
 export class MediaProcessingService {
@@ -307,7 +306,9 @@ export class MediaProcessingService {
           .png({
             compressionLevel: 9,
             adaptiveFiltering: true,
-            effort: PNG_ENCODER_EFFORT,
+            // Sharp's PNG effort option enables palette quantisation. Keep
+            // full-colour pixels and alpha; zlib compression is lossless.
+            palette: false,
           })
           .toBuffer({ resolveWithObject: true });
         yield {
