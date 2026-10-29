@@ -197,6 +197,13 @@ describe('custom-order capture admission transaction', () => {
         resolveAttemptVerification: jest
           .fn()
           .mockResolvedValue({ nextStatus: 'PAID' }),
+        rememberVerifiedCheckoutCard: jest.fn(async () => {
+          expect(h.state()).toMatchObject({
+            attemptStatus: 'PAID',
+            lane: 'PENDING',
+          });
+          return null;
+        }),
       },
       customOrderFinanceSyncService: { applyPaidSettlement: jest.fn() },
       financialDocumentsService: { issueBuyerReceipt: jest.fn() },
@@ -265,6 +272,9 @@ describe('custom-order capture admission transaction', () => {
         expect(
           service.financialDocumentsService.issueBuyerReceipt,
         ).not.toHaveBeenCalled();
+        expect(
+          service.paymentService.rememberVerifiedCheckoutCard,
+        ).not.toHaveBeenCalled();
       } else {
         await call;
         expect(h.state()).toMatchObject({
@@ -275,6 +285,9 @@ describe('custom-order capture admission transaction', () => {
         expect(
           service.financialDocumentsService.issueBuyerReceipt,
         ).toHaveBeenCalledWith(h.tx, expect.anything());
+        expect(
+          service.paymentService.rememberVerifiedCheckoutCard,
+        ).toHaveBeenCalledTimes(1);
       }
       expect(h.queue.admitPaid).toHaveBeenCalledTimes(1);
     },

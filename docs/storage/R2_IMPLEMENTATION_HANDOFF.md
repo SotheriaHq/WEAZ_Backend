@@ -23,19 +23,25 @@ private-origin denial. Temporary probe objects were deleted and absence checked.
 See [gateway evidence](evidence/r2-sit-gateway-smoke.json).
 
 Focused R2-only backend tests pass 87 checks and backend typechecking passes.
-The earlier real application probe passed nine scenarios, generated 12 variants
-and cleaned 32 objects; rerun it for the exclusive-provider release before
-claiming current full application acceptance.
+The exclusive-provider real application probe passed nine scenarios on 29 October,
+generated 12 variants and cleaned all 32 objects. It exercised the actual upload
+HTTP/JWT controller and processing worker with disposable PostgreSQL and isolated
+Redis. It does not replace browser/device acceptance.
 
 ## Release boundary
 
-The last read-only SIT inspection still found the older backend release using
-AWS S3. Worker readiness is not application cutover. Do not mark this complete
-until the exclusive-provider changes pass CI, the backend environment contains
-R2 settings with retired storage keys removed, and the deployed upload, image
-processing, delivery, renewal and deletion flows are verified. Drain API/worker
-writes before environment/schema changes. Preserve the two current accounts;
-do not repeat the database reset. Apply pending migrations through deployment.
+SIT switched to the exclusive R2 backend release `8a6f336` through GitHub deployment
+`40851472678` on 29 October. Runtime configuration resolves the private
+`wiez-sit-media` bucket and authenticated gateway in `sit`; retired AWS storage
+configuration names are absent. API liveness and database/Redis/worker readiness
+passed. All 162 migrations are applied with no failures or pending migrations;
+reference seeds and both existing users were preserved. No database reset was run.
+The live website returns R2/gateway CSP entries and no AWS/CloudFront policy.
+
+Local normal migrations and reseeding also passed without replacing the admin.
+Native APK and interactive browser/device regression remain separate release gates.
+For subsequent cutovers, drain writers before dependency/schema replacement, retain
+private backups and apply migrations through the normal deployment pipeline.
 
 Private evidence and draft previews require current API authorization. The
 optional gateway must never expose private files or unsigned bucket access.
