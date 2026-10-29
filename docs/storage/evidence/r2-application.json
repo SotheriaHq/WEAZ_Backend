@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-10-28T13:02:16.753Z",
+  "checkedAt": "2026-10-29T09:10:31.543Z",
   "passed": true,
   "cleanupPassed": true,
   "scope": "Actual upload HTTP/JWT boundary, services, R2/Worker and local Redis; no full app, browser or device certification",

@@ -2727,7 +2727,7 @@ export class CollectionsService {
           );
           await this.helperservice.validateFileSpec(fileSpec, fileType);
 
-          const presign = await this.uploadService.createPresignedPost(
+          const presign = await this.uploadService.createPresignedUpload(
             userId,
             fileSpec.name,
             fileType as any,
@@ -2742,7 +2742,7 @@ export class CollectionsService {
             expectedKey: (presign as any).key,
             uploadUrl: (presign as any).url,
             uploadFields: (presign as any).fields,
-            method: (presign as any).method ?? 'POST',
+            method: (presign as any).method,
             uploadHeaders: (presign as any).uploadHeaders,
             expiresIn: (presign as any).expiresIn || 600,
           };
@@ -2891,7 +2891,7 @@ export class CollectionsService {
         await this.helperservice.validateFileSpec(fileSpec, fileType);
 
         // Use UploadService to create presigned POST and presign DB record
-        const presign = await this.uploadService.createPresignedPost(
+        const presign = await this.uploadService.createPresignedUpload(
           userId,
           fileSpec.name,
           fileType as any,
@@ -2906,7 +2906,7 @@ export class CollectionsService {
           expectedKey: (presign as any).key,
           uploadUrl: (presign as any).url,
           uploadFields: (presign as any).fields,
-          method: (presign as any).method ?? 'POST',
+          method: (presign as any).method,
           uploadHeaders: (presign as any).uploadHeaders,
           expiresIn: (presign as any).expiresIn || 600, // default 10 minutes
         };
@@ -2972,7 +2972,7 @@ export class CollectionsService {
         );
         await this.helperservice.validateFileSpec(fileSpec, fileType);
 
-        const presign = await this.uploadService.createPresignedPost(
+        const presign = await this.uploadService.createPresignedUpload(
           userId,
           fileSpec.name,
           fileType as any,
@@ -2987,7 +2987,7 @@ export class CollectionsService {
           expectedKey: (presign as any).key,
           uploadUrl: (presign as any).url,
           uploadFields: (presign as any).fields,
-          method: (presign as any).method ?? 'POST',
+          method: (presign as any).method,
           uploadHeaders: (presign as any).uploadHeaders,
           expiresIn: (presign as any).expiresIn || 600,
         };

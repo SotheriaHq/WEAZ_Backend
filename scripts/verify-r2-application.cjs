@@ -125,7 +125,7 @@ async function main() {
     pass('public profile media is authorized by its current profile relation and delivered by the real Worker');
 
     phase = 'private-presigned-put';
-    const intent = await upload.createPresignedPost(owner, 'collection-look.png', FileType.POST_IMAGE, 'image/png');
+    const intent = await upload.createPresignedUpload(owner, 'collection-look.png', FileType.POST_IMAGE, 'image/png');
     objectKeys.add(intent.key);
     assert.equal(intent.method, 'PUT'); assert.deepEqual(intent.fields, {});
     assert.equal((await request(intent.url, { method: 'PUT', headers: intent.uploadHeaders, body: bytes })).status, 200);
@@ -180,7 +180,7 @@ async function main() {
       ['script.png', 'image/png', Buffer.from('<html><script>alert(1)</script></html>')],
       ['truncated.png', 'image/png', bytes.subarray(0, Math.floor(bytes.length / 2))],
     ]) {
-      const bad = await upload.createPresignedPost(owner, name, FileType.POST_IMAGE, contentType);
+      const bad = await upload.createPresignedUpload(owner, name, FileType.POST_IMAGE, contentType);
       objectKeys.add(bad.key);
       assert.equal((await request(bad.url, { method: 'PUT', headers: bad.uploadHeaders, body: badBytes })).status, 200);
       await assert.rejects(() => upload.createFileRecordFromPresign(bad.fileId, owner, bad.key, contentType, badBytes.length));
@@ -188,7 +188,7 @@ async function main() {
     }
     const beforeUnsafe = await prisma.presignedUpload.count();
     for (const [name, mime] of [['../file.png', 'image/png'], ['file.php.png', 'image/png'], ['file.png', 'image/jpeg'], ['file.svg', 'image/svg+xml']]) {
-      await assert.rejects(() => upload.createPresignedPost(owner, name, FileType.POST_IMAGE, mime));
+      await assert.rejects(() => upload.createPresignedUpload(owner, name, FileType.POST_IMAGE, mime));
     }
     assert.equal(await prisma.presignedUpload.count(), beforeUnsafe);
     pass('HTML disguised as an image and truncated image bytes cannot become files; unsafe names/types cannot create upload capabilities');

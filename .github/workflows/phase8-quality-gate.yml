@@ -61,7 +61,7 @@ jobs:
       - name: Refund, debt and integrity regressions
         run: npm test -- src/custom-orders/custom-order-refund.service.spec.ts src/order/order.service.spec.ts src/common/payments/order-payment-reconciliation.util.spec.ts src/custom-order-admin/custom-order-admin.service.spec.ts src/payout/payout.service.spec.ts src/finance/refund-provider.client.spec.ts src/payment/currency-policy.spec.ts src/locations/locations.service.spec.ts src/admin/payouts/admin-payouts.service.spec.ts src/admin/payouts/admin-payouts-webhook.controller.spec.ts src/collections/collections.service.spec.ts src/categories/categories.service.spec.ts src/tags/tag-index.service.spec.ts --runInBand
       - name: Focused upload and design mapper tests
-        run: npm test -- src/upload/upload.service.spec.ts src/upload/file-deletion-query.spec.ts src/collections/collection-cleanup-concurrency.spec.ts src/queue/image-processing.processor.spec.ts src/designs/mappers/design-response.mapper.spec.ts --runInBand
+        run: npm test -- src/upload/upload.service.spec.ts src/upload/upload.controller.spec.ts src/upload/storage-provider.config.spec.ts src/upload/file-deletion-query.spec.ts src/collections/collection-cleanup-concurrency.spec.ts src/queue/image-processing.processor.spec.ts src/designs/mappers/design-response.mapper.spec.ts --runInBand
       - name: Provider protocol and upload-content boundaries
         run: |
           node scripts/test-refund-provider-contract.cjs

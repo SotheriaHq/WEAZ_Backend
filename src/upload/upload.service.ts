@@ -7,7 +7,6 @@ import {
 import {
   resolveStorageProviderSettings,
   storageObjectUrl,
-  isRawStorageUrl,
   signPublicGatewayUrl,
   type StorageProviderSettings,
 } from './storage-provider.config';
@@ -35,7 +34,6 @@ import {
 import { NodeHttpHandler } from '@smithy/node-http-handler';
 import { Agent as HttpsAgent } from 'https';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { v4 as uuidv4 } from 'uuid';
 import { GetFilesDto } from './dto/get-files.dto';
 import { PaginatedResult } from './dto/pagination.dto';
@@ -114,7 +112,6 @@ export class UploadService {
   private readonly logger = new Logger(UploadService.name);
   private readonly s3: S3Client;
   private readonly bucketName: string;
-  private readonly region: string;
   private readonly storageSettings: StorageProviderSettings;
 
   /**
@@ -168,22 +165,18 @@ export class UploadService {
   ) {
     this.storageSettings = resolveStorageProviderSettings(this.configService);
     this.bucketName = this.storageSettings.bucket;
-    this.region = this.storageSettings.region;
     const s3Config: any = {
-      region: this.region,
+      region: this.storageSettings.region,
       endpoint: this.storageSettings.endpoint,
       forcePathStyle: this.storageSettings.forcePathStyle,
-      ...(this.storageSettings.provider === 'R2'
-        ? {
-            requestChecksumCalculation: 'WHEN_REQUIRED',
-            responseChecksumValidation: 'WHEN_REQUIRED',
-          }
-        : {}),
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
+      credentials: this.storageSettings.credentials,
       /*
         Two defaults are wrong for this workload, and both were measured rather
         than assumed.
 
-        1. NO SOCKET TIMEOUT. A stalled S3 call blocks forever. That matters far
+        1. NO SOCKET TIMEOUT. A stalled R2 call blocks forever. That matters far
            more than it looks: the image-processing worker runs jobs one at a
            time, so a single wedged request stops image processing for every
            user until the process is restarted. `socketTimeout` is an INACTIVITY
@@ -207,25 +200,11 @@ export class UploadService {
       }),
     };
 
-    if (this.storageSettings.credentials)
-      s3Config.credentials = this.storageSettings.credentials;
-
     this.s3 = new S3Client(s3Config);
-  }
-
-  private encodeS3KeyForUrl(key: string): string {
-    return String(key)
-      .split('/')
-      .map((segment) => encodeURIComponent(segment))
-      .join('/');
   }
 
   private buildS3ObjectUrl(key: string): string {
     return storageObjectUrl(this.storageSettings, key);
-  }
-
-  private buildS3BucketUrl(): string {
-    return `https://${this.bucketName}.s3.${this.region}.amazonaws.com`;
   }
 
   private getFileExtension(fileName: string): string {
@@ -280,93 +259,23 @@ export class UploadService {
     return Math.min(maxSize, hardMaxSize, requestedHardMax);
   }
 
-  private isTruthyConfig(value?: string | null): boolean {
-    return ['1', 'true', 'yes', 'on', 'public'].includes(
-      String(value ?? '')
-        .trim()
-        .toLowerCase(),
-    );
-  }
-
-  private isRawS3ObjectUrl(value: string): boolean {
-    return isRawStorageUrl(this.storageSettings, value);
-  }
-
-  private isBucketPublicForDisplay(): boolean {
-    return (
-      this.isTruthyConfig(
-        this.configService.get<string>('MEDIA_BUCKET_PUBLIC'),
-      ) ||
-      this.isTruthyConfig(this.configService.get<string>('S3_BUCKET_PUBLIC')) ||
-      this.isTruthyConfig(
-        this.configService.get<string>('AWS_S3_BUCKET_PUBLIC'),
-      ) ||
-      this.isTruthyConfig(this.configService.get<string>('S3_PUBLIC_READ')) ||
-      this.isTruthyConfig(
-        this.configService.get<string>('MEDIA_OBJECTS_PUBLIC'),
-      )
-    );
-  }
-
-  private getConfiguredPublicBaseUrl(): string | null {
-    const configuredBase =
-      this.configService.get<string>('MEDIA_PUBLIC_BASE_URL') ??
-      this.configService.get<string>('CDN_PUBLIC_BASE_URL') ??
-      this.configService.get<string>('CLOUDFRONT_PUBLIC_BASE_URL') ??
-      this.configService.get<string>('CLOUDFRONT_URL');
-    return configuredBase?.trim().replace(/\/+$/, '') || null;
-  }
-
   private getStablePublicDisplayUrl(file: {
     s3Url?: string | null;
     s3Key?: string | null;
   }): string | null {
     const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
-    if (this.storageSettings.provider === 'R2') {
-      return key && this.storageSettings.publicGateway
-        ? signPublicGatewayUrl(this.storageSettings.publicGateway, key)
-        : null;
-    }
-    const publicBase = this.getConfiguredPublicBaseUrl();
-
-    if (publicBase && key) {
-      return `${publicBase}/${this.encodeS3KeyForUrl(key)}`;
-    }
-
-    const directUrl = typeof file.s3Url === 'string' ? file.s3Url.trim() : '';
-    if (directUrl && !this.isRawS3ObjectUrl(directUrl)) {
-      return directUrl;
-    }
-
-    return null;
+    return key && this.storageSettings.publicGateway
+      ? signPublicGatewayUrl(this.storageSettings.publicGateway, key)
+      : null;
   }
 
-  getPublicDisplayUrl(file: {
+  getPublicDisplayUrl(_file: {
     s3Url?: string | null;
     s3Key?: string | null;
     isPublic?: boolean | null;
   }): string | null {
-    // Generic callers include private previews. Only publication-checked paths
-    // may mint a public gateway token.
-    if (this.storageSettings.provider === 'R2') return null;
-    const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
-    const publicBase = this.getConfiguredPublicBaseUrl();
-
-    if (publicBase && key) {
-      return `${publicBase}/${this.encodeS3KeyForUrl(key)}`;
-    }
-
-    const directUrl = typeof file.s3Url === 'string' ? file.s3Url.trim() : '';
-    if (!directUrl) return null;
-
-    if (!this.isRawS3ObjectUrl(directUrl)) {
-      return directUrl;
-    }
-
-    if (file.isPublic || this.isBucketPublicForDisplay()) {
-      return key ? this.buildS3ObjectUrl(key) : directUrl;
-    }
-
+    // A supplied URL/public flag cannot replace current parent authorization.
+    void _file;
     return null;
   }
 
@@ -376,15 +285,6 @@ export class UploadService {
   ): Promise<string | null> {
     const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
     if (!key) return null;
-
-    const nodeEnv = String(
-      this.configService.get<string>('NODE_ENV') ?? '',
-    ).toLowerCase();
-    if (nodeEnv !== 'production') {
-      this.logger.warn(
-        `[media] temporary signed display URL fallback used fileId=${file.id ?? 'unknown'} expiresIn=${expiresIn}; configure MEDIA_PUBLIC_BASE_URL/CDN_PUBLIC_BASE_URL/CLOUDFRONT_URL for production public feed media.`,
-      );
-    }
 
     const command = new GetObjectCommand({
       Bucket: this.bucketName,
@@ -699,7 +599,7 @@ export class UploadService {
   }
 
   // Generate presigned POST data for client direct-to-S3 uploads
-  async createPresignedPost(
+  async createPresignedUpload(
     userId: string,
     originalName: string,
     fileType: FileType,
@@ -710,14 +610,14 @@ export class UploadService {
       viewSlot?: string | null;
     },
   ) {
-    // create presigned post and persist a pending PresignedUpload record
+    // Persist staging intent before issuing an R2 PUT capability.
     this.assertAllowedExtension(originalName, fileType);
     const trustedContentType =
       this.normalizeContentType(contentType) ??
       this.inferContentType(originalName);
     this.assertAllowedMimeType(trustedContentType, fileType);
     assertAllowedUploadType(originalName, trustedContentType, fileType);
-    const maxSize = await this.getMaxFileSize(fileType);
+    await this.getMaxFileSize(fileType);
 
     const intent = await this.createUploadIntent(
       userId,
@@ -728,57 +628,29 @@ export class UploadService {
     );
     const fileId = intent.id;
     const key = intent.s3Key;
-    const baseConditions: any[] = [
-      ['eq', '$Content-Type', trustedContentType],
-      ['content-length-range', 1, maxSize],
-    ];
-    const fields = { key, 'Content-Type': trustedContentType };
-
-    if (this.storageSettings?.provider === 'R2') {
-      const uploadHeaders = {
-        'Content-Type': trustedContentType,
-        'Cache-Control': 'private, max-age=0, no-store',
-      };
-      const url = await getSignedUrl(
-        this.s3,
-        new PutObjectCommand({
-          Bucket: this.bucketName,
-          Key: key,
-          ContentType: trustedContentType,
-          CacheControl: 'private, max-age=0, no-store',
-        }),
-        { expiresIn: 600, signableHeaders: new Set(['content-type']) },
-      );
-      return {
-        url,
-        key,
-        fileId,
-        fields: {},
-        method: 'PUT',
-        uploadHeaders,
-        expiresIn: 600,
-      };
-    }
-
-    const presigned = await createPresignedPost(this.s3, {
-      Bucket: this.bucketName,
-      Key: key,
-      Fields: fields,
-      Conditions: baseConditions,
-      Expires: 600, // seconds
-    });
-
-    // Build a region-specific upload URL to avoid region-signature mismatches
-    const uploadUrl = this.buildS3BucketUrl();
-
+    const uploadHeaders = {
+      'Content-Type': trustedContentType,
+      'Cache-Control': 'private, max-age=0, no-store',
+    };
+    const url = await getSignedUrl(
+      this.s3,
+      new PutObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+        ContentType: trustedContentType,
+        CacheControl: 'private, max-age=0, no-store',
+      }),
+      { expiresIn: 600, signableHeaders: new Set(['content-type']) },
+    );
     return {
-      ...presigned,
-      url: uploadUrl,
+      url,
       key,
       fileId,
-      method: 'POST',
+      fields: {},
+      method: 'PUT',
+      uploadHeaders,
       expiresIn: 600,
-    } as any;
+    };
   }
 
   async updateUserProfileImage(
@@ -986,8 +858,8 @@ export class UploadService {
   }
 
   /**
-   * Get signed URL by raw S3 key.
-   * Used when the frontend only has a raw S3 URL / storage key and needs a
+   * Get signed URL by stored object key.
+   * Used when the frontend has a stored R2 URL / storage key and needs a
    * signed version (market rails, content-review previews, catalog cards).
    */
   /** Resolve only stored aliases or configured media origins. Never fetch caller URLs. */
@@ -1000,10 +872,7 @@ export class UploadService {
   ): Promise<Map<string, string>> {
     const result = new Map<string, string>();
     const aliases = new Map<string, string[]>();
-    const bases = [
-      this.storageSettings?.publicGateway?.baseUrl,
-      this.getConfiguredPublicBaseUrl(),
-    ]
+    const bases = [this.storageSettings?.publicGateway?.baseUrl]
       .filter((value): value is string => Boolean(value))
       .map((value) => new URL(value));
     for (const source of sources) {
@@ -2260,35 +2129,15 @@ export class UploadService {
     contentType: string;
     isPublic?: boolean;
   }): Promise<{ key: string; url: string }> {
-    const buildCommand = (withAcl: boolean) =>
+    await this.s3.send(
       new PutObjectCommand({
         Bucket: this.bucketName,
         Key: params.key,
         Body: params.body,
         ContentType: params.contentType,
-        CacheControl:
-          this.storageSettings?.provider === 'R2'
-            ? 'private, max-age=300'
-            : 'public, max-age=31536000, immutable',
-        ...(withAcl &&
-        params.isPublic &&
-        this.storageSettings?.provider !== 'R2'
-          ? { ACL: 'public-read' }
-          : {}),
-      } as any);
-    try {
-      await this.s3.send(buildCommand(true));
-    } catch (error: any) {
-      // Buckets with Object Ownership "bucket owner enforced" (modern S3
-      // default) reject any ACL. Public access there comes from bucket
-      // policy/CDN, so retry without the ACL instead of failing the upload.
-      const code = String(error?.name ?? error?.Code ?? '');
-      if (params.isPublic && code === 'AccessControlListNotSupported') {
-        await this.s3.send(buildCommand(false));
-      } else {
-        throw error;
-      }
-    }
+        CacheControl: 'private, max-age=300',
+      }),
+    );
     return {
       key: params.key,
       url: this.buildS3ObjectUrl(params.key),

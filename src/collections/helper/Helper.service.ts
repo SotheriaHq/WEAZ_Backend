@@ -105,7 +105,7 @@ export class HelperService {
 
   /**
    * Delegate presign creation to UploadService.
-   * Returns the same shape as UploadService.createPresignedPost
+   * Returns the same shape as UploadService.createPresignedUpload
    */
   public async createPresignedUrl(
     userId: string,
@@ -114,7 +114,7 @@ export class HelperService {
     options?: { collectionId?: string; orderIndex?: number },
   ) {
     // UploadService will create a presigned DB entry and return url/fields
-    return this.uploadService.createPresignedPost(
+    return this.uploadService.createPresignedUpload(
       userId,
       originalName,
       fileType as any,

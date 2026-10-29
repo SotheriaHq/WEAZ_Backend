@@ -7,19 +7,11 @@ import { ConfigService } from '@nestjs/config';
 import { SystemConfigService } from 'src/admin/system-config/system-config.service';
 import { ImageProcessingQueueService } from 'src/queue/image-processing.queue.service';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { FileType } from './upload.enums';
 import { MonitoringService } from 'src/monitoring/monitoring.service';
 
 jest.mock('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: jest.fn().mockResolvedValue('signed-url'),
-}));
-
-jest.mock('@aws-sdk/s3-presigned-post', () => ({
-  createPresignedPost: jest.fn().mockResolvedValue({
-    url: 'https://s3-upload.example',
-    fields: {},
-  }),
 }));
 
 describe('ImageService', () => {
@@ -28,7 +20,6 @@ describe('ImageService', () => {
 
   beforeEach(async () => {
     (getSignedUrl as jest.Mock).mockClear();
-    (createPresignedPost as jest.Mock).mockClear();
     monitoring = { emitAlert: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -42,16 +33,13 @@ describe('ImageService', () => {
           provide: ConfigService,
           useValue: {
             get: jest.fn((key: string) => {
-              if (key === 'AWS_S3_BUCKET' || key === 'S3_BUCKET')
-                return 'test-bucket';
-              if (key === 'AWS_REGION' || key === 'REGION') return 'us-east-1';
-              if (key === 'AWS_ACCESS_KEY_ID' || key === 'ACCESS_KEY_ID')
-                return 'dummy';
-              if (
-                key === 'AWS_SECRET_ACCESS_KEY' ||
-                key === 'SECRET_ACCESS_KEY'
-              )
-                return 'dummy';
+              const values: Record<string, string> = {
+                R2_BUCKET: 'test-bucket',
+                R2_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+                R2_ACCESS_KEY_ID: 'dummy',
+                R2_SECRET_ACCESS_KEY: 'dummy',
+              };
+              if (values[key]) return values[key];
               return undefined;
             }),
           },
@@ -339,7 +327,7 @@ describe('ImageService', () => {
     expect(getSignedUrl).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps production signed media on the S3 presigned URL path', async () => {
+  it('keeps production signed media on the R2 presigned URL path', async () => {
     const existingConfigService = (service as any).configService;
     (service as any).configService = {
       get: jest.fn((key: string) => {
@@ -417,7 +405,7 @@ describe('ImageService', () => {
     );
   });
 
-  it('returns stable external public URLs without signing missing S3 fixture keys', async () => {
+  it('ignores persisted external public URLs and signs the current R2 object key', async () => {
     (service as any).prisma = {
       fileUpload: {
         findUnique: jest.fn().mockResolvedValue({
@@ -442,9 +430,9 @@ describe('ImageService', () => {
     };
 
     await expect(service.getPublicSignedUrl('file_1')).resolves.toBe(
-      'https://images.example/look.jpg',
+      'signed-url',
     );
-    expect(getSignedUrl).not.toHaveBeenCalled();
+    expect(getSignedUrl).toHaveBeenCalledTimes(1);
   });
 
   it('allows public URL fallback for ready profile identity media', async () => {
@@ -597,7 +585,7 @@ describe('ImageService', () => {
     expect(getSignedUrl).not.toHaveBeenCalled();
   });
 
-  it('batch public URL resolution skips non-public files and prefers stable external URLs', async () => {
+  it('batch public URL resolution skips non-public files and signs current R2 object keys', async () => {
     (service as any).prisma = {
       fileUpload: {
         findMany: jest.fn().mockResolvedValue([
@@ -632,9 +620,9 @@ describe('ImageService', () => {
 
     const result = await service.getBatchPublicSignedUrls(['file_1', 'file_2']);
 
-    expect(result.get('file_1')).toBe('https://images.example/look.jpg');
+    expect(result.get('file_1')).toBe('signed-url');
     expect(result.has('file_2')).toBe(false);
-    expect(getSignedUrl).not.toHaveBeenCalled();
+    expect(getSignedUrl).toHaveBeenCalledTimes(1);
   });
 
   describe('getBatchAuthorizedDisplayUrls', () => {
@@ -813,34 +801,26 @@ describe('ImageService', () => {
     expect(enqueueSingle).toHaveBeenCalledWith('file_1', true);
   });
 
-  it('adds content-length-range and exact content type to presigned POST policies', async () => {
-    (service as any).prisma = {
-      presignedUpload: { create: jest.fn().mockResolvedValue({}) },
-    };
-
-    await service.createPresignedPost(
-      'user_1',
-      'look.jpg',
-      FileType.POST_IMAGE,
-      'image/jpeg',
-    );
-
-    expect(createPresignedPost).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        Fields: expect.objectContaining({ 'Content-Type': 'image/jpeg' }),
-        Conditions: expect.arrayContaining([
-          ['eq', '$Content-Type', 'image/jpeg'],
-          ['content-length-range', 1, 2 * 1024 * 1024],
-        ]),
-      }),
-    );
+  it('fails presigning when the endpoint size policy is unavailable', async () => {
+    (service as any).prisma = { presignedUpload: { create: jest.fn() } };
+    (service as any).systemConfigService.getMaxFileSize.mockResolvedValue(0);
+    await expect(
+      service.createPresignedUpload(
+        'user_1',
+        'look.jpg',
+        FileType.POST_IMAGE,
+        'image/jpeg',
+      ),
+    ).rejects.toThrow('Upload size policy is unavailable');
+    expect(getSignedUrl).not.toHaveBeenCalled();
+    expect(
+      (service as any).prisma.presignedUpload.create,
+    ).not.toHaveBeenCalled();
   });
 
   it('uses a private signed PUT with exact headers for R2', async () => {
-    (service as any).storageSettings = { provider: 'R2' };
     (service as any).prisma = { presignedUpload: { create: jest.fn() } };
-    const result = await service.createPresignedPost(
+    const result = await service.createPresignedUpload(
       'user_1',
       'look.jpg',
       FileType.POST_IMAGE,
@@ -852,7 +832,6 @@ describe('ImageService', () => {
       'Content-Type': 'image/jpeg',
       'Cache-Control': 'private, max-age=0, no-store',
     });
-    expect(createPresignedPost).not.toHaveBeenCalled();
     expect(getSignedUrl).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
