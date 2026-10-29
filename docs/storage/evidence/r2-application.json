@@ -1,0 +1,20 @@
+{
+  "checkedAt": "2026-10-29T09:10:31.543Z",
+  "passed": true,
+  "cleanupPassed": true,
+  "scope": "Actual upload HTTP/JWT boundary, services, R2/Worker and local Redis; no full app, browser or device certification",
+  "cases": [
+    "actual HTTP multipart upload requires JWT, uses a generated immutable private key and preserves original bytes",
+    "public profile media is authorized by its current profile relation and delivered by the real Worker",
+    "direct R2 PUT uses the exact signed headers and finalization rejects another user or key",
+    "eight finalizers commit one file; retries work after intent expiry and reused PUTs cannot overwrite finalized bytes",
+    "the actual image worker consumes a uniquely isolated Redis queue and publishes decodable R2 variants",
+    "actual HTTP private original and variant access deny anonymous and other-account requests",
+    "HTTP batch renewal retains the selected variant, enforces parent ownership and refuses arbitrary origins",
+    "HTML disguised as an image and truncated image bytes cannot become files; unsafe names/types cannot create upload capabilities",
+    "failed content cannot renew, revoked sessions are refused and removed profile relations stop new public capabilities"
+  ],
+  "antivirus": "Deferred explicitly by product owner; no malware-free claim",
+  "generatedVariants": 12,
+  "cleanedObjects": 32
+}

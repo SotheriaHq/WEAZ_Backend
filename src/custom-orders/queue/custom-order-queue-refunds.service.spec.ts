@@ -1,5 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { CustomOrderQueueRefundsService } from './custom-order-queue-refunds.service';
+import { RefundProviderClient } from 'src/finance/refund-provider.client';
+import * as leases from 'src/finance/refund-lease-query';
 
 const decimal = (amount: number) => new Prisma.Decimal(amount);
 const makeRow = (override: Record<string, unknown> = {}) => ({
@@ -12,7 +14,8 @@ const makeRow = (override: Record<string, unknown> = {}) => ({
   providerRefundId: null,
   attempts: 0,
   lastError: null,
-  lockedAt: null,
+  lockedAt: null as Date | null,
+  leaseToken: null as string | null,
   nextAttemptAt: new Date(0),
   breakdownJson: {
     captureAmount: 132500,
@@ -44,6 +47,81 @@ const makeRow = (override: Record<string, unknown> = {}) => ({
 
 function harness(override: Record<string, unknown> = {}) {
   const row = makeRow(override);
+  // Unit doubles model the shared lease boundary. The real SQL, locks, clock,
+  // identity registry and rollback behavior are verified in the PostgreSQL suite.
+  const claim = (owner: string) => {
+    Object.assign(row, { leaseToken: owner, lockedAt: new Date() });
+    return 1;
+  };
+  jest
+    .spyOn(leases, 'claimRefundSubmission')
+    .mockImplementation(async (_db, id, owner) => {
+      if (
+        id !== row.id ||
+        !['REQUESTED', 'FAILED'].includes(row.status) ||
+        row.providerRefundId
+      )
+        return 0;
+      row.status = 'SUBMITTING';
+      row.attempts++;
+      return claim(owner);
+    });
+  jest
+    .spyOn(leases, 'claimRefundPoll')
+    .mockImplementation(async (_db, _id, owner) =>
+      row.status === 'PROCESSING' && !row.leaseToken ? claim(owner) : 0,
+    );
+  jest
+    .spyOn(leases, 'claimRefundResolution')
+    .mockImplementation(async (_db, _id, previous, owner) =>
+      row.status === 'SUBMITTING' && !!previous && row.leaseToken === previous
+        ? claim(owner)
+        : 0,
+    );
+  jest
+    .spyOn(leases, 'claimRefundReconciliation')
+    .mockImplementation(async (_db, _id, owner) => {
+      if (!['FAILED', 'NEEDS_ATTENTION'].includes(row.status) || row.leaseToken)
+        return 0;
+      row.status = 'NEEDS_ATTENTION';
+      return claim(owner);
+    });
+  jest
+    .spyOn(leases, 'ownsRefundLease')
+    .mockImplementation(
+      async (_db, _id, owner, statuses) =>
+        statuses.includes(row.status) && row.leaseToken === owner,
+    );
+  jest
+    .spyOn(leases, 'linkRefundProvider')
+    .mockImplementation(async (_db, _id, providerId) => {
+      Object.assign(row, {
+        status: 'PROCESSING',
+        providerRefundId: providerId,
+      });
+      return 1;
+    });
+  jest
+    .spyOn(leases, 'scheduleRefundRetry')
+    .mockImplementation(async (_db, _id, status, code) => {
+      Object.assign(row, {
+        status,
+        lastError: code,
+        leaseToken: null,
+        lockedAt: null,
+      });
+      return 1;
+    });
+  jest
+    .spyOn(leases, 'loadStaleRefunds')
+    .mockImplementation(async () =>
+      row.status === 'SUBMITTING' &&
+      row.lockedAt &&
+      row.lockedAt < new Date(Date.now() - 10 * 60_000)
+        ? [{ id: row.id, leaseToken: row.leaseToken }]
+        : [],
+    );
+  jest.spyOn(leases, 'loadDueRefunds').mockResolvedValue([]);
   let depth = 0;
   const entries = new Map<string, any>();
   const updateMany = jest.fn(async ({ where, data }) => {
@@ -123,6 +201,28 @@ function harness(override: Record<string, unknown> = {}) {
           ]
         : [{ id: row.id }];
     }),
+    $executeRaw: jest.fn(
+      async (
+        query: Prisma.Sql | TemplateStringsArray,
+        ...values: unknown[]
+      ) => {
+        const sql = 'sql' in query ? query.sql : query.join('?');
+        if (sql.includes("SET status='NEEDS_ATTENTION'"))
+          Object.assign(row, {
+            status: 'NEEDS_ATTENTION',
+            lastError: 'values' in query ? query.values[0] : values[0],
+            leaseToken: null,
+            lockedAt: null,
+          });
+        if (sql.includes("SET status='SETTLED'"))
+          Object.assign(row, {
+            status: 'SETTLED',
+            leaseToken: null,
+            lockedAt: null,
+          });
+        return 1;
+      },
+    ),
   };
   const prisma = {
     ...tx,
@@ -149,12 +249,14 @@ function harness(override: Record<string, unknown> = {}) {
       return entries.get(params.idempotencyKey);
     }),
   };
+  const provider = new RefundProviderClient();
   const service = new CustomOrderQueueRefundsService(
     prisma as any,
     ledger as any,
+    provider,
   );
   const verification = jest
-    .spyOn(service as any, 'verifyCapture')
+    .spyOn(provider, 'verifyCapture')
     .mockResolvedValue(undefined);
   return {
     row,
@@ -210,6 +312,7 @@ describe('durable per-order queued refunds', () => {
         .next()
         .value.lines.map((line) => line.amount),
     ).toEqual([132500, 113000, 7500, 12000]);
+    global.fetch = jest.fn(async () => response(paystackData('processed')));
     await h.service.handleWebhook('PAYSTACK', {
       event: 'refund.processed',
       data: paystackData('processed'),
@@ -235,6 +338,7 @@ describe('durable per-order queued refunds', () => {
   it('verifies the capture using real API mode even with test merchant credentials', async () => {
     const h = harness();
     h.verification.mockRestore();
+    h.row.paymentAttempt.providerMode = 'test';
     process.env.PAYSTACK_SECRET_KEY = 'sk_test_fixture';
     global.fetch = jest.fn(async (url) =>
       String(url).includes('/transaction/verify/')
@@ -279,7 +383,7 @@ describe('durable per-order queued refunds', () => {
     ).toBe(false);
   });
 
-  it('submits and verifies the stored provider currency while keeping the financial ledger in the original currency', async () => {
+  it('submits and verifies the charged currency while leaving settlement accounting separate', async () => {
     const h = harness();
     h.row.currency = 'USD';
     h.row.paymentAttempt.currency = 'USD';
@@ -298,10 +402,12 @@ describe('durable per-order queued refunds', () => {
     });
     global.fetch = jest.fn(async (_url, options) => {
       expect(JSON.parse(String(options?.body))).toMatchObject({
-        currency: 'NGN',
-        amount: 22600000000,
+        currency: 'USD',
+        amount: 11300000,
       });
-      return response(paystackData('processed', { amount: 22600000000 }));
+      return response(
+        paystackData('processed', { amount: 11300000, currency: 'USD' }),
+      );
     });
     await (h.service as any).processOne(h.row.id);
     expect(h.row.status).toBe('SETTLED');
@@ -318,13 +424,21 @@ describe('durable per-order queued refunds', () => {
     await (h.service as any).processOne(h.row.id);
     expect(h.row.status).toBe('NEEDS_ATTENTION');
     await (h.service as any).processOne(h.row.id);
-    expect(global.fetch).toHaveBeenCalledTimes(1);
+    // The POST may have succeeded, so the additional request is a safe lookup.
+    expect(
+      (global.fetch as jest.Mock).mock.calls.filter(
+        ([, options]) => options?.method === 'POST',
+      ),
+    ).toHaveLength(1);
     expect(h.tx.operationalAlert.upsert).toHaveBeenCalledTimes(1);
     expect(h.tx.customOrderNotificationOutbox.create).toHaveBeenCalledTimes(1);
   });
 
   it('rejects mismatched amounts in signed events without changing sibling or order payment state', async () => {
     const h = harness({ status: 'PROCESSING', providerRefundId: '77' });
+    global.fetch = jest.fn(async () =>
+      response(paystackData('processed', { amount: 11300100 })),
+    );
     await h.service.handleWebhook('PAYSTACK', {
       event: 'refund.processed',
       data: paystackData('processed', { amount: 11300100 }),
@@ -336,6 +450,7 @@ describe('durable per-order queued refunds', () => {
 
   it('makes duplicate processed webhooks financially idempotent', async () => {
     const h = harness({ status: 'PROCESSING', providerRefundId: '77' });
+    global.fetch = jest.fn(async () => response(paystackData('processed')));
     const event = {
       event: 'refund.processed',
       data: paystackData('processed'),
@@ -349,9 +464,6 @@ describe('durable per-order queued refunds', () => {
 
   it('polls stored refund IDs when Paystack omits an ID rather than matching equal-priced siblings', async () => {
     const h = harness({ status: 'PROCESSING', providerRefundId: '77' });
-    h.tx.customOrderQueueRefund.findMany.mockResolvedValueOnce([
-      { ...h.row },
-    ] as never);
     global.fetch = jest.fn(async () => response(paystackData('processed')));
     await h.service.handleWebhook('PAYSTACK', {
       event: 'refund.processed',
@@ -394,6 +506,18 @@ describe('durable per-order queued refunds', () => {
       expect.objectContaining({ method: 'POST' }),
     );
     expect(h.row.status).toBe('PROCESSING');
+    global.fetch = jest.fn(async () =>
+      response(
+        {
+          id: 77,
+          tx_id: 456,
+          amount_refunded: 113000,
+          currency: 'NGN',
+          status: 'completed-bank-transfer',
+        },
+        'success',
+      ),
+    );
     await h.service.handleWebhook('FLUTTERWAVE', {
       id: 77,
       TransactionId: 456,
@@ -442,11 +566,7 @@ describe('durable per-order queued refunds', () => {
     expect(
       h.tx.customOrderQueueRefund.findUniqueOrThrow,
     ).not.toHaveBeenCalled();
-    expect(
-      h.tx.$queryRaw.mock.calls.filter(([query]) =>
-        query.sql?.includes('SELECT r.*'),
-      ),
-    ).toHaveLength(2);
+    expect(h.entries.size).toBe(0);
     expect(h.tx.customOrderNotificationOutbox.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -499,7 +619,14 @@ describe('durable per-order queued refunds', () => {
     h.row.paymentAttempt.provider = 'FLUTTERWAVE';
     global.fetch = jest.fn(async () =>
       response(
-        { id: 456, tx_ref: 'mixed-capture', currency: 'NGN' },
+        {
+          id: 77,
+          tx_id: 456,
+          amount_refunded: 113000,
+          currency: 'NGN',
+          status: 'completed',
+          meta: { disburse_status: 'failed' },
+        },
         'success',
       ),
     );
@@ -515,29 +642,35 @@ describe('durable per-order queued refunds', () => {
   });
 
   it('recovers stale submissions into attention without starting a second provider refund', async () => {
-    const h = harness({ status: 'SUBMITTING' });
-    h.tx.customOrderQueueRefund.findMany
-      .mockResolvedValueOnce([{ id: h.row.id }] as never)
-      .mockResolvedValueOnce([]);
-    global.fetch = jest.fn();
+    const h = harness({
+      status: 'SUBMITTING',
+      leaseToken: 'old-owner',
+      lockedAt: new Date(Date.now() - 11 * 60_000),
+    });
+    global.fetch = jest.fn(async () => response([]));
     const result = await h.service.processPending();
     expect(result.attention).toBe(1);
     expect(h.row.status).toBe('NEEDS_ATTENTION');
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(
+      (global.fetch as jest.Mock).mock.calls.some(
+        ([, options]) => options?.method === 'POST',
+      ),
+    ).toBe(false);
     expect(
       h.tx.customOrderQueueRefund.findUniqueOrThrow,
     ).not.toHaveBeenCalled();
   });
 
   it('reports no attention transition when another worker already won the claim', async () => {
-    const h = harness({ status: 'SUBMITTING' });
-    h.tx.customOrderQueueRefund.findMany
-      .mockResolvedValueOnce([{ id: h.row.id }] as never)
-      .mockResolvedValueOnce([]);
-    h.tx.customOrderQueueRefund.updateMany.mockResolvedValueOnce({ count: 0 });
+    const h = harness({
+      status: 'SUBMITTING',
+      leaseToken: 'old-owner',
+      lockedAt: new Date(Date.now() - 11 * 60_000),
+    });
+    jest.mocked(leases.claimRefundResolution).mockResolvedValueOnce(0);
     const result = await h.service.processPending();
     expect(result.attention).toBe(0);
-    expect(h.tx.$queryRaw).not.toHaveBeenCalled();
+    expect(h.row.leaseToken).toBe('old-owner');
     expect(h.tx.customOrderNotificationOutbox.create).not.toHaveBeenCalled();
   });
 });

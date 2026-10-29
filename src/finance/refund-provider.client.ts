@@ -10,10 +10,6 @@ const DEFAULT_BASE_URLS: Record<RefundGateway, string> = {
   FLUTTERWAVE: 'https://api.flutterwave.com',
 };
 const TIMEOUT_MS = 15000;
-const LIST_PAGE_SIZE = 100;
-const LIST_MAX_PAGES = 10;
-/** Provider clocks and our row timestamp can differ by a little. */
-const LIST_FROM_MARGIN_MS = 10 * 60 * 1000;
 
 const object = (value: unknown): JsonObject =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -133,11 +129,7 @@ export class RefundProviderClient {
     return secret;
   }
 
-  /**
-   * The currency and amount the capture was actually charged in. Settlement
-   * (NGN accounting at the original rate) is a separate figure and is never
-   * what the provider collected or refunds.
-   */
+  /** The currency and amount the capture was actually charged in. */
   chargedAmount(capture: RefundCapture): RefundTarget {
     return {
       currency: capture.currency.toUpperCase(),
@@ -248,22 +240,20 @@ export class RefundProviderClient {
     const { ok, payload } = await this.request(url, secret);
     if (!ok || (payload.status !== true && payload.status !== 'success'))
       throw new RefundProviderError('REFUND_STATUS_LOOKUP_UNAVAILABLE', false);
-    return this.normalize(gateway, capture, {
-      ...object(payload.data),
-      id: providerRefundId,
-    });
+    const data = object(payload.data);
+    if (text(data.id) !== providerRefundId)
+      throw new RefundProviderError('REFUND_STATUS_IDENTITY_MISMATCH', false);
+    return this.normalize(gateway, capture, data);
   }
 
   /**
    * Refunds the provider holds for this capture whose note carries `marker`.
    * Used after an uncertain submission to find the refund that was created,
    * instead of creating another. Paystack only; others return null (unknown).
-   *
-   * Paystack's List Refunds documents only `page`, `perPage`, `from` and `to`
-   * (PaystackOSS/openapi `paths/refund.yaml`); it has no transaction filter.
-   * So refunds created since `since` are paged through, and the note marker
-   * and `matches()` decide. More pages than the bound, or any failed page,
-   * returns null: a refund not found goes to a person, never resent.
+   * Use the current documented transaction-id filter and inspect every reported
+   * page, even when a provider ignores that optional filter. The ten-page budget
+   * and creation-time lower bound also preserve recovery on older provider APIs. A failed/incomplete search is unknown, never a
+   * partial match. Missing transaction ids require manual reconciliation.
    */
   async findByNote(
     capture: RefundCapture,
@@ -272,21 +262,51 @@ export class RefundProviderClient {
   ): Promise<ProviderRefund[] | null> {
     const gateway = this.gateway(capture.provider);
     if (gateway !== 'PAYSTACK') return null;
+    const transaction = capture.providerTransactionId;
+    if (!transaction || !/^\d+$/.test(transaction)) return null;
     const secret = this.secret(gateway, capture.providerMode);
-    const from = since
-      ? `&from=${encodeURIComponent(new Date(since.getTime() - LIST_FROM_MARGIN_MS).toISOString())}`
-      : '';
     const matches: ProviderRefund[] = [];
-    for (let page = 1; page <= LIST_MAX_PAGES; page += 1) {
-      const url = `${this.baseUrls.PAYSTACK}/refund?perPage=${LIST_PAGE_SIZE}&page=${page}${from}`;
-      const { ok, payload } = await this.request(url, secret);
-      if (!ok || payload.status !== true || !Array.isArray(payload.data))
+    const ids = new Set<string>();
+    for (let page = 1; page <= 10; page++) {
+      const query = new URLSearchParams({
+        transaction,
+        perPage: '100',
+        page: String(page),
+        ...(since
+          ? { from: new Date(since.getTime() - 10 * 60 * 1000).toISOString() }
+          : {}),
+      });
+      const { ok, payload } = await this.request(
+        `${this.baseUrls.PAYSTACK}/refund?${query}`,
+        secret,
+      );
+      if (
+        !ok ||
+        payload.status !== true ||
+        !Array.isArray(payload.data) ||
+        payload.data.length > 100
+      )
         return null;
       for (const item of payload.data) {
         const refund = await this.normalize(gateway, capture, object(item));
-        if (refund.note.includes(marker)) matches.push(refund);
+        if (refund.note.trim() !== marker) continue;
+        if (!refund.id || ids.has(refund.id)) return null;
+        ids.add(refund.id);
+        matches.push(refund);
       }
-      if (payload.data.length < LIST_PAGE_SIZE) return matches;
+      const meta = object(payload.meta);
+      if (meta.page != null && Number(meta.page) !== page) return null;
+      if (meta.pageCount != null) {
+        const pageCount = Number(meta.pageCount);
+        if (
+          !Number.isSafeInteger(pageCount) ||
+          pageCount < 0 ||
+          pageCount > 10 ||
+          (pageCount < page && payload.data.length !== 0)
+        )
+          return null;
+        if (page >= pageCount) return matches;
+      } else if (payload.data.length < 100) return matches;
     }
     return null;
   }
@@ -298,10 +318,15 @@ export class RefundProviderClient {
     refund: ProviderRefund,
   ): boolean {
     const sameTransaction =
-      refund.transactionReference === capture.reference ||
+      (!refund.transactionReference ||
+        refund.transactionReference === capture.reference) &&
+      (!refund.transactionId ||
+        !capture.providerTransactionId ||
+        refund.transactionId === capture.providerTransactionId) &&
       Boolean(
-        capture.providerTransactionId &&
-          refund.transactionId === capture.providerTransactionId,
+        refund.transactionReference === capture.reference ||
+          (capture.providerTransactionId &&
+            refund.transactionId === capture.providerTransactionId),
       );
     return (
       sameTransaction &&
@@ -435,6 +460,7 @@ export class RefundProviderClient {
 
   private async request(url: string, secret: string, body?: unknown) {
     const response = await fetch(url, {
+      redirect: 'error',
       method: body ? 'POST' : 'GET',
       headers: {
         Authorization: `Bearer ${secret}`,

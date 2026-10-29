@@ -1,0 +1,31 @@
+{
+  "checkedAt": "2026-10-27T18:03:17.623Z",
+  "passed": true,
+  "cleanupPassed": true,
+  "cases": [
+    "26 competing approve/reject decisions yield one current source/submission decision, one audit, one trust event and one durable inbox/channel intent",
+    "a saved draft cannot be published by a still-open old submission",
+    "a changed review fingerprint refuses an old approval until the current source is resubmitted",
+    "approval rechecks required media readiness and rolls back without notification when processing is incomplete",
+    "self-review and a deleted source cannot produce a decision or review audit",
+    "a real channel-intent CHECK failure atomically rolls back decision, media, audit, trust event and inbox; retry commits one complete outcome",
+    "a real lock waiter reads a committed withdrawal and preserves the saved draft",
+    "a real lock waiter sees the superseding submission and refuses its stale decision while the current review can be approved",
+    "26 concurrent resubmissions share the source lock and retain exactly one current submission without provider calls",
+    "competing product approval and required-media deletion serialize; an approved product retains all required slots, otherwise deletion wins and approval is refused",
+    "clear-all media and product approval cannot commit a published product with an empty media list",
+    "two concurrent product removals retain both changes and keep a file still referenced by other content",
+    "primary selection uses the current locked image list and cannot overwrite a concurrent upload",
+    "a stale reorder cannot silently drop a concurrent upload; a complete reorder that wins first remains valid",
+    "both collection deletion entry points preserve required published-design media and perform no storage I/O",
+    "draft design removal reassigns its cover atomically while preserving media shared with another source",
+    "a storage-queue CHECK failure preserves design, cover, file and media; retry queues the key exactly once and soft-deletes the now-empty design without a storage request",
+    "permanent design deletion rolls back on storage-queue failure; six competitors produce one deletion, preserve shared files and queue the unused original plus its variant once",
+    "a real design deletion lock waiter observes a committed restore and refuses permanent deletion",
+    "a real store-collection deletion lock waiter observes a committed restore and refuses permanent deletion"
+  ],
+  "contentReviewProof": {
+    "cases": 20,
+    "providerCalls": 0
+  }
+}

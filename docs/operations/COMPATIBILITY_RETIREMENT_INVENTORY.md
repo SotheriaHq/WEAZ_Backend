@@ -63,11 +63,15 @@ because shipped web clients read the field (`fthreadly/src/api/PaymentApi.ts:58`
 | `brands/brand-access.service.ts:213` owner membership fallback | `Brand.ownerId` is still canonical ownership |
 | `brands/brands.service.ts:239,267` banner fallback | Brands without a banner asset row still render |
 
+### R2 integration update — 29 October
+
+SIT integration now includes private R2-only provider resolution, mandatory signed PUT uploads and no AWS/IAM/public-bucket/CDN fallback. The protocol SDK remains necessary for R2. Retired public URL environment names are rejected by configuration validation, rather than read as a compatibility path. Real R2 application verification passed nine scenarios and cleaned all 32 temporary objects. Server activation is tracked separately from this source-level evidence.
+
 ### Blocked or out of scope
 
 | Path | Reason |
 |---|---|
-| `upload/storage-provider.config.ts:25,115` `LEGACY_PUBLIC_BASE_KEYS`, media WebP for older clients, image batch reprocess (`queue/image-processing.processor.ts:80,132`) | R2 activation is not verified on SIT, so upload adapters and fallbacks stay |
+| Current WebP delivery and image batch reprocessing (`queue/image-processing.processor.ts`) | Current media processing capabilities; AWS provider/credential/public-URL and POST fallbacks have been removed. Retired configuration names are denial guards only. |
 | `prisma/schema.prisma:542` `RTW_PLUS_CUSTOM` enum value | 0 rows, but removal needs a forward migration that drops an enum value; low value, deferred |
 | `categories/categories.service.ts:991,1058,1150` legacy taxonomy deactivation | Idempotent taxonomy reconciler in the design-taxonomy area, which another workstream owns |
 | `notifications/notifications.service.ts:547` old preference keys (`engagement`, `security.login`, `social.comments`, `orders.updates`) | 0 stored settings on SIT and local, but `security.login` is still a current default key and `custom-orders.service.ts:3295` writes the same JSON directly. Needs a settings-schema owner before removal |

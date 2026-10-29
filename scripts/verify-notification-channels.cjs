@@ -40,7 +40,16 @@ async function main() {
     prisma.$on('query', event => queries.push(event.query));
     require('ts-node').register({ transpileOnly: true }); require('tsconfig-paths/register');
     const proof = await require('./notification-channel-concurrency-scenarios.cjs')({ prisma, queries });
-    evidence.cases.push(...proof.cases); evidence.providerCalls = proof.providerCalls; evidence.policyBatchProof = proof.policyBatchProof; evidence.passed = true;
+    evidence.cases.push(...proof.cases); evidence.providerCalls = proof.providerCalls; evidence.policyBatchProof = proof.policyBatchProof;
+    const dedupeProof = await require('./notification-dedupe-concurrency-scenarios.cjs')({ prisma, queries });
+    evidence.cases.push(...dedupeProof.cases); evidence.dedupeProof = { ...dedupeProof, cases: dedupeProof.cases.length };
+    const authProof = await require('./auth-notification-concurrency-scenarios.cjs')({ prisma, queries });
+    evidence.cases.push(...authProof.cases); evidence.authProof = { ...authProof, cases: authProof.cases.length };
+    const productProof = await require('./product-creation-concurrency-scenarios.cjs')({ prisma });
+    evidence.cases.push(...productProof.cases); evidence.productCreationProof = { ...productProof, cases: productProof.cases.length };
+    const categoryProof = await require('./category-approval-concurrency-scenarios.cjs')({ prisma, queries });
+    evidence.cases.push(...categoryProof.cases); evidence.categoryApprovalProof = { ...categoryProof, cases: categoryProof.cases.length };
+    evidence.passed = true;
   } finally {
     if (prisma) await prisma.$disconnect();
     if (created) {
@@ -53,4 +62,12 @@ async function main() {
     console.log(JSON.stringify(evidence));
   }
 }
-main().catch(error => { console.error(error instanceof assert.AssertionError ? error.message : error.code || error.name); process.exitCode = 1; });
+main().catch(async error => {
+  process.exitCode = 1;
+  try {
+    await fs.mkdir(path.resolve(__dirname, '../.tmp'), { recursive: true });
+    const diagnostic = JSON.stringify({ name: error.name, code: error.code, meta: error.meta, message: error.message }, null, 2).replace(/postgres(?:ql)?:\/\/\S+/g, '[database-url-redacted]');
+    await fs.writeFile(path.resolve(__dirname, '../.tmp/notification-channel-fixture-failure.json'), diagnostic);
+  } catch { /* Preserve the original fixture failure if diagnostics cannot be saved. */ }
+  console.error(error instanceof assert.AssertionError ? error.message : error.code || error.name);
+});

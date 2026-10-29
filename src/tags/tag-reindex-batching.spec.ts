@@ -27,12 +27,7 @@ describe('bounded tag rebuild', () => {
           .mockResolvedValue([]),
       },
       tag: {
-        findMany: jest
-          .fn()
-          .mockResolvedValue([
-            { normalizedName: 'blocked' },
-            { normalizedName: 'rejected' },
-          ]),
+        findMany: pages([]),
         updateMany: jest.fn(),
         count: jest.fn().mockResolvedValue(15),
       },
@@ -52,7 +47,16 @@ describe('bounded tag rebuild', () => {
     const service = new TagIndexService(prisma as any);
     const sync = jest
       .spyOn(service, 'syncEntitiesTags')
-      .mockResolvedValue(undefined);
+      .mockImplementation(async (entries) =>
+        entries.reduce(
+          (sum, entry) =>
+            sum +
+            entry.nextTags.filter(
+              (name) => !['blocked', 'rejected'].includes(String(name)),
+            ).length,
+          0,
+        ),
+      );
     const single = jest.spyOn(service, 'syncEntityTags');
     return { prisma, service, sync, single };
   }
@@ -71,15 +75,15 @@ describe('bounded tag rebuild', () => {
       {
         entityType: 'COLLECTION',
         entityId: 'design',
-        previousTags: ['old-tag'],
-        nextTags: ['casual'],
-        options: { maxCount: 1000, notifyMentions: false },
+        previousTags: [],
+        nextTags: ['casual', 'blocked', 'rejected'],
+        options: { maxCount: 30, notifyMentions: false, skipModerated: true },
       },
     ]);
     expect(sync.mock.calls[3][0][0]).toMatchObject({
       entityType: 'USER_BRAND',
       entityId: 'owner',
-      options: { maxCount: 1000, notifyMentions: false },
+      options: { maxCount: 10, notifyMentions: false, skipModerated: true },
     });
     expect(sync.mock.calls[3][0][0].nextTags).toHaveLength(10);
     expect(prisma.collection.findMany.mock.calls[0][0]).toMatchObject({
@@ -123,6 +127,11 @@ describe('bounded tag rebuild', () => {
       bindingsCreated: 0,
     });
     expect(sync).not.toHaveBeenCalled();
-    expect(prisma.tag.findMany).not.toHaveBeenCalled();
+    expect(prisma.tag.findMany).toHaveBeenCalledWith({
+      where: {},
+      select: { id: true },
+      orderBy: { id: 'asc' },
+      take: 500,
+    });
   });
 });

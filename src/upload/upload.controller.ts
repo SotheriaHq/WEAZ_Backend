@@ -34,6 +34,8 @@ import type { Response } from 'express';
 
 @ApiTags('uploads')
 @ApiBearerAuth()
+@UseGuards(ThrottlerGuard)
+@Throttle({ default: { limit: 60, ttl: 60000 } })
 @Controller('uploads')
 export class UploadController {
   private readonly logger = new Logger(UploadController.name);
@@ -91,7 +93,9 @@ export class UploadController {
       throw new BadRequestException('fileIds is required');
     }
     const validIds = ids.filter((id) =>
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id),
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        id,
+      ),
     );
     let urls = new Map<string, string>();
     if (validIds.length) {
@@ -101,14 +105,23 @@ export class UploadController {
         this.logger.warn('[media] public URL batch could not be resolved');
       }
     }
-    const items = ids.map((fileId) => ({ fileId, url: urls.get(fileId) ?? null }));
+    const items = ids.map((fileId) => ({
+      fileId,
+      url: urls.get(fileId) ?? null,
+    }));
     return { items };
   }
 
   private validateMediaSources(body: { urls?: unknown }): string[] {
-    if (!Array.isArray(body?.urls) || body.urls.length === 0 || body.urls.length > 50 ||
-      body.urls.some((url) => typeof url !== 'string' || url.length > 8192)) {
-      throw new BadRequestException('urls must contain between 1 and 50 media source strings');
+    if (
+      !Array.isArray(body?.urls) ||
+      body.urls.length === 0 ||
+      body.urls.length > 50 ||
+      body.urls.some((url) => typeof url !== 'string' || url.length > 8192)
+    ) {
+      throw new BadRequestException(
+        'urls must contain between 1 and 50 media source strings',
+      );
     }
     return body.urls as string[];
   }
@@ -117,18 +130,34 @@ export class UploadController {
   @HttpCode(200)
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 60, ttl: 60000 } })
-  async getPublicSignedUrlsBySource(@Body() body: { urls?: unknown }, @Res({ passthrough: true }) response: Response) {
+  async getPublicSignedUrlsBySource(
+    @Body() body: { urls?: unknown },
+    @Res({ passthrough: true }) response: Response,
+  ) {
     response.setHeader('Cache-Control', 'private, no-store');
-    return { items: await this.uploadService.getBatchSignedUrlsBySource(this.validateMediaSources(body)) };
+    return {
+      items: await this.uploadService.getBatchSignedUrlsBySource(
+        this.validateMediaSources(body),
+      ),
+    };
   }
 
   @Post('signed-urls-by-source')
   @HttpCode(200)
   @UseGuards(JwtAuthGuard, ThrottlerGuard)
   @Throttle({ default: { limit: 60, ttl: 60000 } })
-  async getSignedUrlsBySource(@Body() body: { urls?: unknown }, @Req() req: any, @Res({ passthrough: true }) response: Response) {
+  async getSignedUrlsBySource(
+    @Body() body: { urls?: unknown },
+    @Req() req: any,
+    @Res({ passthrough: true }) response: Response,
+  ) {
     response.setHeader('Cache-Control', 'private, no-store');
-    return { items: await this.uploadService.getBatchSignedUrlsBySource(this.validateMediaSources(body), req.user) };
+    return {
+      items: await this.uploadService.getBatchSignedUrlsBySource(
+        this.validateMediaSources(body),
+        req.user,
+      ),
+    };
   }
 
   @Get('public-url-by-key')
@@ -139,9 +168,15 @@ export class UploadController {
     description:
       'Returns signed URL for publicly displayable S3 objects by key (market rails, published designs/products).',
   })
-    async getPublicSignedUrlByKey(@Query('key') key?: string, @Query('url') sourceUrl?: string) {
-      if (sourceUrl) key = await this.uploadService.resolveMediaSourceKey(sourceUrl) ?? undefined;
-      if (!key || typeof key !== 'string' || key.includes('..')) {
+  async getPublicSignedUrlByKey(
+    @Query('key') key?: string,
+    @Query('url') sourceUrl?: string,
+  ) {
+    if (sourceUrl)
+      key =
+        (await this.uploadService.resolveMediaSourceKey(sourceUrl)) ??
+        undefined;
+    if (!key || typeof key !== 'string' || key.includes('..')) {
       throw new BadRequestException('Invalid S3 key');
     }
     const url = await this.uploadService.getPublicSignedUrlByKey(key);
@@ -160,12 +195,22 @@ export class UploadController {
     description:
       'Owner/admin signing for raw S3 keys (content review, private drafts). Falls back path when public-url-by-key is denied.',
   })
-    async getSignedUrlByKey(@Query('key') key: string | undefined, @Req() req: any, @Query('url') sourceUrl?: string) {
-      if (sourceUrl) key = await this.uploadService.resolveMediaSourceKey(sourceUrl) ?? undefined;
+  async getSignedUrlByKey(
+    @Query('key') key: string | undefined,
+    @Req() req: any,
+    @Query('url') sourceUrl?: string,
+  ) {
+    if (sourceUrl)
+      key =
+        (await this.uploadService.resolveMediaSourceKey(sourceUrl)) ??
+        undefined;
     if (!key || typeof key !== 'string' || key.includes('..')) {
       throw new BadRequestException('Invalid S3 key');
     }
-    const url = await this.uploadService.getSignedUrlByKeyForUser(key, req.user);
+    const url = await this.uploadService.getSignedUrlByKeyForUser(
+      key,
+      req.user,
+    );
     if (!url) {
       throw new NotFoundException('File not found');
     }

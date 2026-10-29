@@ -13,6 +13,13 @@ jest.mock('./notification-channel-query', () => ({
   claimNotificationChannels: jest.fn(),
   reapExhaustedNotificationChannels: jest.fn(),
 }));
+jest.mock('./notification-dedupe-query', () => ({
+  loadCurrentNotificationDuplicates: jest.fn(async () => ({
+    observedAt: new Date(),
+    candidates: [],
+    targetDuplicate: undefined,
+  })),
+}));
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { NotificationRegistry } from './notifications.registry';
 import { EmailService } from 'src/email/email.service';
@@ -422,6 +429,7 @@ describe('NotificationsService', () => {
         id: 'existing',
         type: NotificationType.THREAD,
         payload: { target: { id: 'target-id' } },
+        createdAt: new Date(),
       });
 
       const result = await service.create(

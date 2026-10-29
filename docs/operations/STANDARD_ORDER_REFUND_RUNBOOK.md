@@ -60,7 +60,11 @@ Each one opens an `OperationalAlert` with
   `REFUND_GATEWAY_HTTP_5xx`: the answer was lost, and the provider search by
   note was unavailable or found nothing.
 - `REFUND_SUBMISSION_LEASE_LOST`: the provider answered after the lease
-  expired. Its refund id is already stored on the row.
+  expired or was replaced. Its refund id is retained in a
+  `STANDARD_ORDER_REFUND_LATE_PROVIDER_RESULT` payment event and the alert's
+  metadata. A late response does not change a newer worker's claim or overwrite
+  its provider id. Let the active owner finish; an expired submission is looked
+  up without resubmitting. Reconcile only if automatic recovery cannot link it.
 - `REFUND_PROVIDER_FAILED`, `REFUND_PROVIDER_NEEDS_ATTENTION`: the provider
   reports the refund failed.
 - `REFUND_STATUS_RESPONSE_MISMATCH`: a status answer did not match the
@@ -81,7 +85,9 @@ To reconcile:
    currency before linking it. It never sends a refund. If the refund is
    already processed, it settles immediately; otherwise the webhook or poll
    finishes it.
-4. If no refund exists, or the provider failed it, create the refund in the
+4. Verify every provider refund and the remaining refundable balance before any
+   manual submission. Never send another refund while any outcome is uncertain.
+   If no refund exists, or the provider definitively failed it, create the refund in the
    Paystack dashboard for the exact amount and currency on the row, with the
    same merchant note. Then reconcile it with its new id, as in step 3.
 5. Errors from the reconcile route:

@@ -1,0 +1,25 @@
+{
+  "checkedAt": "2026-10-28T12:35:45.517Z",
+  "passed": true,
+  "cleanupPassed": true,
+  "cases": [
+    "a pending category is absent from the actual public taxonomy and category-based content lookup",
+    "real design approval publishes the design while leaving its proposed category pending and absent from public category lookup",
+    "26 opposing reviewer requests commit one decision and one audit; bounded retry finishes 29 linked rows exactly once without publishing drafts or overwriting a later category choice",
+    "real constraint failure leaves a committed category decision and a durable unprocessed link; retry atomically saves metadata, one inbox and its channel intent",
+    "26 concurrent distinct requests from one user respect the five-per-day database-serialized quota without provider calls",
+    "26 competing category/garment-type proposals create one pair identity, with no public category or garment type",
+    "the actual design facade initializes, edits and saves a draft with its pending pair, keeps both public taxonomy keys empty and refuses another brand attaching that private proposal",
+    "a real inbox CHECK failure rolls back design publication and submission; retry atomically saves one review submission, one inbox and one channel intent",
+    "content approval publishes the design independently while the proposed category/type remains absent from public taxonomy and category-filtered content",
+    "separate taxonomy approval resolves both related keys atomically, leaves a published design published and never publishes a linked draft",
+    "an existing category can receive a new pending garment-type proposal, an approved pair is refused as a duplicate, and root-only proposals remain supported but cannot satisfy design publish taxonomy",
+    "the direct design submit facade retains required-media checks and accepts a complete pending pair; rejecting that garment type never unpublishes approved content or disables its existing category",
+    "proposal DTOs accept real punctuation and international garment names, preserve an existing category’s stable slug, avoid non-Latin identity collisions and refuse directional-control injection",
+    "an actual publish lock waiter cannot overwrite a concurrently approved taxonomy pair or publish a stale draft; the losing request returns 409 with no review submission or false notice"
+  ],
+  "categoryApprovalProof": {
+    "cases": 14,
+    "providerCalls": 0
+  }
+}

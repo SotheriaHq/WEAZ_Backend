@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-10-25T19:08:18.381Z",
+  "checkedAt": "2026-10-29T04:30:11.696Z",
   "passed": true,
   "cleanupPassed": true,
   "cases": [
@@ -14,6 +14,7 @@
     "lease expiry during an actual row-lock wait is refused using a fresh statement and UTC database clock",
     "collection/category/type JOIN is reused without extra reads and observes category deactivation committed during an actual collection-lock wait",
     "scalar bulk slug probe preserves earliest suffix gaps over 1,000 matches, leading-zero/text/large suffixes and the unused base without transferring matching rows",
+    "a real channel-intent constraint failure rolls back its review inbox and leaves the import checkpoint retryable while retaining successful sibling notices",
     "26 recovered review submissions use two recipient policy pages, preserve current titles and stable submission identities across repeated retries",
     "an interruption before review-notification page flush leaves checkpoints unfinished and safely recoverable",
     "actual bulk26 archives plus duplicate/missing selection use one native current product-owner JOIN per command and one current collection/wishlist JOIN per success, zero response-only variant reads/signing; fresh notification identity file reads retained;60day expiry, real tag removal/price recomputation/wishlist notices and repeat refusal retained",
@@ -31,7 +32,7 @@
   "bulkSlugProbeSelects": 1,
   "recoveredReviewPolicySelectsFor26": 2,
   "bulkPublicationMetadataReadsFor26": 2,
-  "bulkPublicationAudienceReadsFor26": 2,
+  "bulkPublicationAudienceReadsFor26": 1,
   "productBulkActions": {
     "archiveContextReadsFor27": 27,
     "archiveEffectReadsFor26": 26,

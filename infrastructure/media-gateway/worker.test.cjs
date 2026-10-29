@@ -76,6 +76,15 @@ test('Node API signer and Worker agree on UTF-8, escaped names, audience and rou
   assert(!f.calls.putUrls[0].includes('sig='));
 });
 
+test('gateway serves only inert supported media MIME types, never SVG, HTML or documents', async () => {
+  for (const contentType of ['image/svg+xml', 'image/x-icon', 'image/html', 'video/html', 'text/html', 'application/pdf']) {
+    const f = fixture({ contentType });
+    const response = await f.run();
+    assert.equal(response.status, 415, contentType);
+    assert.equal(f.calls.cachePut, 0);
+  }
+});
+
 test('invalid/expired requests never reach even a warm edge cache', async () => {
   const f = fixture();
   await f.run();

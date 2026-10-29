@@ -26,16 +26,13 @@ describe('ImageController', () => {
           provide: ConfigService,
           useValue: {
             get: jest.fn((key: string) => {
-              if (key === 'AWS_S3_BUCKET' || key === 'S3_BUCKET')
-                return 'test-bucket';
-              if (key === 'AWS_REGION' || key === 'REGION') return 'us-east-1';
-              if (key === 'AWS_ACCESS_KEY_ID' || key === 'ACCESS_KEY_ID')
-                return 'dummy';
-              if (
-                key === 'AWS_SECRET_ACCESS_KEY' ||
-                key === 'SECRET_ACCESS_KEY'
-              )
-                return 'dummy';
+              const values: Record<string, string> = {
+                R2_BUCKET: 'test-bucket',
+                R2_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+                R2_ACCESS_KEY_ID: 'dummy',
+                R2_SECRET_ACCESS_KEY: 'dummy',
+              };
+              if (values[key]) return values[key];
               return undefined;
             }),
           },

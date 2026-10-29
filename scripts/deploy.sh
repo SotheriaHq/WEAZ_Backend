@@ -24,13 +24,10 @@
 #     handles every exit path, and it distinguishes the two cases that need
 #     genuinely different responses:
 #
-#       failed BEFORE the restart -> processes are untouched and healthy.
-#                                    Put the source and dist back. Do NOT restart:
-#                                    restarting is the only thing that could turn
-#                                    a failed deploy into an outage.
-#       failed AFTER the restart  -> the new release is live and unhealthy.
-#                                    Full rollback: previous SHA, reinstall,
-#                                    rebuild, restart, and verify it came back.
+#       failed before draining   -> restore source/dist; leave runtime untouched.
+#       drained, no schema change -> restore the verified release and runtime.
+#       schema change attempted  -> stop writers and repair forward; old binaries
+#                                   are not assumed compatible with the new DB.
 #
 set -euo pipefail
 
@@ -71,6 +68,8 @@ ECOSYSTEM_FILE="$APP_DIR/ecosystem.config.js"
 # Set once the PM2 restart has happened, which is the moment a failure stops
 # being "the deploy did not land" and becomes "the deploy landed and is broken".
 RESTART_ATTEMPTED=0
+RUNTIME_DRAINED=0
+SCHEMA_CHANGE_ATTEMPTED=0
 DEPLOY_OK=0
 
 # The SHA to roll back TO. Read before anything is touched, and only overwritten
@@ -112,10 +111,9 @@ restore_previous_dist() {
   fi
 }
 
-# Full rollback: only ever called once the new release is actually live.
-# Migrations are deliberately NOT reverted — a `prisma migrate deploy` that has
-# already applied cannot be safely undone by a script, and the previous release
-# is expected to tolerate an additive schema. Anything else is a human decision.
+# Restore a verified runtime only when no new schema migration was attempted.
+# Migration failures require forward repair; an old binary is not presumed safe
+# against a changed database and migrations are never automatically reversed.
 rollback_deploy() {
   if [ -z "$PREVIOUS_GOOD_SHA" ]; then
     echo "!!! No previously-verified SHA on disk — manual rollback required" >&2
@@ -155,8 +153,15 @@ on_exit() {
   fi
 
   echo "!!! Deploy failed (exit $code)" >&2
-  if [ "$RESTART_ATTEMPTED" -eq 1 ]; then
-    echo "!!! Failure occurred AFTER the PM2 restart — rolling back" >&2
+  if [ "$SCHEMA_CHANGE_ATTEMPTED" -eq 1 ]; then
+    # A partially applied migration can make the old money writers unsafe.
+    # Retain the last-good artifacts for inspection, but repair forward before
+    # exposing an API again; never claim an old binary is schema-compatible.
+    echo "!!! Schema changes were attempted. API and worker remain stopped for forward repair." >&2
+    pm2 stop weaz-api weaz-worker || true
+    restore_previous_dist
+  elif [ "$RESTART_ATTEMPTED" -eq 1 ] || [ "$RUNTIME_DRAINED" -eq 1 ]; then
+    echo "!!! Restoring the verified runtime; no schema changes were attempted" >&2
     rollback_deploy || true
   else
     echo "==> Failure occurred BEFORE the PM2 restart." >&2
@@ -190,6 +195,15 @@ export GIT_SHA="$deployed_sha"
 echo "==> Deploying $deployed_sha as $release_tag"
 
 echo "==> [3/11] Installing dependencies (npm ci)"
+# Stop old writers before dependency replacement, schema changes and owner-token
+# cutovers. PM2 sends the configured graceful shutdown signal and waits for the
+# existing kill_timeout. This also frees the small host's memory for npm/build.
+RUNTIME_DRAINED=1
+for app in weaz-api weaz-worker; do
+  if pm2 describe "$app" >/dev/null 2>&1; then
+    pm2 stop "$app"
+  fi
+done
 # SKIP_PRISMA_POSTINSTALL: the postinstall hook's `prisma generate` runs as a
 # CHILD of npm ci, stacking its peak on top of npm's own. On this box (1.9GB,
 # no headroom) that combination is what got the deploy OOM-killed:
@@ -214,6 +228,14 @@ echo "==> [5/11] Checking for undeferred NestJS module cycles"
 node scripts/check-module-cycles.js
 
 echo "==> [6/11] Applying database migrations"
+pending_migrations="$(node scripts/pending-migrations.cjs)"
+if ! [[ "$pending_migrations" =~ ^[0-9]+$ ]]; then
+  echo "!!! Invalid migration preflight result" >&2
+  exit 1
+fi
+if [ "$pending_migrations" -gt 0 ]; then
+  SCHEMA_CHANGE_ATTEMPTED=1
+fi
 npx prisma migrate deploy
 
 echo "==> [7/11] Seeding platform data (idempotent)"

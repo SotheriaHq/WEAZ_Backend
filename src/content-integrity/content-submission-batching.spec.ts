@@ -68,7 +68,7 @@ it('uses the same identity for a retried submission and a different identity for
   expect(events[2].opts.notificationId).not.toBe(events[0].opts.notificationId);
 });
 
-it('preserves ordinary notification delivery and logs independent batch failures without failing the import', async () => {
+it('preserves ordinary delivery but keeps an unsuccessful deferred handoff retryable', async () => {
   const { service, notifications } = fixture();
   await service.notifyContentSubmitted('owner', {
     productName: 'Ordinary',
@@ -96,10 +96,68 @@ it('preserves ordinary notification delivery and logs independent batch failures
   ]);
   await expect(
     service.flushContentSubmittedNotifications(events),
-  ).resolves.toBeUndefined();
+  ).rejects.toThrow('Content review notification handoff incomplete');
   expect(service.emitIntegrityAlert).toHaveBeenCalledWith(
     'content_review_notification_failed',
     expect.objectContaining({ ownerId: 'owner' }),
   );
+  expect(events).toHaveLength(1);
+  const id = events[0].opts.notificationId;
+  await service.flushContentSubmittedNotifications(events);
   expect(events).toHaveLength(0);
+  expect(
+    notifications.createEvents.mock.calls[1][0][0].opts.notificationId,
+  ).toBe(id);
+});
+
+it('retains only failed events after partial success and all events after an unavailable policy read', async () => {
+  const { service, notifications } = fixture();
+  const events: any[] = [];
+  for (const name of ['First', 'Second'])
+    await service.notifyContentSubmitted(
+      'owner',
+      {
+        submissionId: randomUUID(),
+        productName: name,
+        entityType: 'PRODUCT',
+      },
+      events,
+    );
+  const failedId = events[1].opts.notificationId;
+  notifications.createEvents.mockResolvedValueOnce([
+    { status: 'fulfilled', value: null },
+    { status: 'rejected', reason: new Error('durable insert failed') },
+  ]);
+  await expect(
+    service.flushContentSubmittedNotifications(events),
+  ).rejects.toThrow('handoff incomplete');
+  expect(events).toHaveLength(1);
+  expect(events[0].opts.notificationId).toBe(failedId);
+  notifications.createEvents.mockRejectedValueOnce(
+    new Error('policy unavailable'),
+  );
+  await expect(
+    service.flushContentSubmittedNotifications(events),
+  ).rejects.toThrow('policy unavailable');
+  expect(events).toHaveLength(1);
+  expect(events[0].opts.notificationId).toBe(failedId);
+});
+
+it('does not discard pending notices when the optional service is missing', async () => {
+  const { service } = fixture();
+  const events: any[] = [];
+  await service.notifyContentSubmitted(
+    'owner',
+    {
+      submissionId: randomUUID(),
+      productName: 'Pending',
+      entityType: 'PRODUCT',
+    },
+    events,
+  );
+  service.notifications = undefined;
+  await expect(
+    service.flushContentSubmittedNotifications(events),
+  ).rejects.toThrow('service unavailable');
+  expect(events).toHaveLength(1);
 });

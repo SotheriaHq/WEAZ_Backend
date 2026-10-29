@@ -1,4 +1,5 @@
-import { lockTagRows, refreshTagUsageCounts } from './tag-usage-query';
+import { refreshTagUsageCounts } from './tag-usage-query';
+import { retryDatabaseTransaction } from '../common/transaction-retry.util';
 import {
   BadRequestException,
   Injectable,
@@ -10,6 +11,7 @@ import {
   CollectionStatus,
   CollectionVisibility,
   TagStatus,
+  Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TagIndexService } from './tag-index.service';
@@ -1476,43 +1478,109 @@ export class TagsService {
     if (source === target)
       throw new BadRequestException('Source and target tags must differ');
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.tag.createMany({
-        data: [source, target].sort().map((name) => ({ id: crypto.randomUUID(), normalizedName: name, displayName: name })),
-        skipDuplicates: true,
-      });
-      const tags = await tx.tag.findMany({ where: { normalizedName: { in: [source, target] } }, select: { id: true, normalizedName: true } });
-      await lockTagRows(tx, tags.map((row) => row.id));
-      const sourceTag = tags.find((row) => row.normalizedName === source)!;
-      const targetTag = tags.find((row) => row.normalizedName === target)!;
+    await retryDatabaseTransaction(() =>
+      this.prisma.$transaction(
+        async (tx) => {
+          // Alias changes are rare administrative commands. Serialize the graph
+          // before locking tag rows so two inverse merges cannot create a cycle.
+          await tx.$executeRaw(
+            Prisma.sql`SELECT pg_advisory_xact_lock(734981221)`,
+          );
+          await tx.tag.createMany({
+            data: [source, target].sort().map((name) => ({
+              id: crypto.randomUUID(),
+              normalizedName: name,
+              displayName: name,
+            })),
+            skipDuplicates: true,
+          });
+          const tags = await tx.tag.findMany({
+            where: { normalizedName: { in: [source, target] } },
+            select: { id: true, normalizedName: true },
+          });
+          const sourceTag = tags.find((row) => row.normalizedName === source)!;
+          const requestedTarget = tags.find(
+            (row) => row.normalizedName === target,
+          )!;
+          const chain = await tx.$queryRaw<
+            Array<{
+              id: string;
+              aliasOfTagId: string | null;
+              depth: number;
+              cycle: boolean;
+            }>
+          >(Prisma.sql`
+        /* tag-alias-merge-closure */ WITH RECURSIVE chain AS (
+          SELECT "_id" AS id,"aliasOfTagId",0 AS depth,ARRAY["_id"] AS path,FALSE AS cycle
+          FROM "Tag" WHERE "_id"=${requestedTarget.id}::uuid
+          UNION ALL
+          SELECT tag."_id",tag."aliasOfTagId",chain.depth+1,chain.path||tag."_id",tag."_id"=ANY(chain.path)
+          FROM "Tag" tag JOIN chain ON tag."_id"=chain."aliasOfTagId"
+          WHERE chain.depth<16 AND NOT chain.cycle
+        ) SELECT id,"aliasOfTagId",depth,cycle FROM chain
+      `);
+          if (chain.some((row) => row.id === sourceTag.id || row.cycle))
+            throw new BadRequestException(
+              'This tag merge would create an alias cycle.',
+            );
+          const targetTag = chain.find((row) => !row.aliasOfTagId);
+          if (!targetTag)
+            throw new BadRequestException(
+              'The target tag alias chain is invalid or too deep.',
+            );
+          // The graph lock keeps this set stable. Lock in UUID order without
+          // returning an unbounded list of inbound aliases to the application.
+          await tx.$queryRaw(Prisma.sql`
+            SELECT COUNT(*)::integer AS count FROM (
+              SELECT "_id" FROM "Tag" WHERE "_id"=${sourceTag.id}::uuid
+                OR "_id"=ANY(${chain.map((row) => row.id)}::uuid[]) OR "aliasOfTagId"=${sourceTag.id}::uuid
+              ORDER BY "_id" FOR UPDATE
+            ) locked
+          `);
 
-      const sourceBindings = await (tx as any).tagBinding.findMany({
-        where: { tagId: sourceTag.id },
-        select: { entityType: true, entityId: true },
-      });
+          for (;;) {
+            const sourceBindings = await tx.tagBinding.findMany({
+              where: { tagId: sourceTag.id },
+              select: { id: true, entityType: true, entityId: true },
+              orderBy: { id: 'asc' },
+              take: 500,
+            });
+            if (!sourceBindings.length) break;
+            await tx.tagBinding.createMany({
+              data: sourceBindings.map((b) => ({
+                id: crypto.randomUUID(),
+                tagId: targetTag.id,
+                entityType: b.entityType,
+                entityId: b.entityId,
+              })),
+              skipDuplicates: true,
+            });
+            await tx.tagBinding.deleteMany({
+              where: { id: { in: sourceBindings.map((row) => row.id) } },
+            });
+          }
 
-      if (sourceBindings.length > 0) {
-        await (tx as any).tagBinding.createMany({
-          data: sourceBindings.map((b: any) => ({
-            id: crypto.randomUUID(),
-            tagId: targetTag.id,
-            entityType: b.entityType,
-            entityId: b.entityId,
-          })),
-          skipDuplicates: true,
-        });
-      }
-
-      await (tx as any).tagBinding.deleteMany({
-        where: { tagId: sourceTag.id },
-      });
-
-      await refreshTagUsageCounts(tx, [sourceTag.id, targetTag.id], new Date());
-      await tx.tag.update({ where: { id: targetTag.id }, data: { isBanned: false } });
-      await tx.tag.update({ where: { id: sourceTag.id }, data: { aliasOfTagId: targetTag.id } });
-
-      // Note: systemTag table not in schema, skipping systemTag operations
-    });
+          await refreshTagUsageCounts(
+            tx,
+            [sourceTag.id, targetTag.id],
+            new Date(),
+          );
+          await tx.tag.update({
+            where: { id: targetTag.id },
+            data: { isBanned: false },
+          });
+          await tx.tag.updateMany({
+            where: { aliasOfTagId: sourceTag.id },
+            data: { aliasOfTagId: targetTag.id },
+          });
+          await tx.tag.update({
+            where: { id: sourceTag.id },
+            data: { aliasOfTagId: targetTag.id },
+          });
+        },
+        { timeout: 30000 },
+      ),
+    );
     await this.recordTagAudit({
       actorUserId,
       operation: 'hashtag_merged',

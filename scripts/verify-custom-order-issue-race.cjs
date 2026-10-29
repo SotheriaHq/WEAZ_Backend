@@ -5,7 +5,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { Client } = require('pg');
-const { PrismaClient } = require('@prisma/client');
+const { PrismaClient, Prisma } = require('@prisma/client');
 const { PrismaPg } = require('@prisma/adapter-pg');
 require('dotenv').config({ quiet: true });
 require('ts-node').register({ transpileOnly: true });
@@ -48,6 +48,7 @@ const { BrandBalanceService } = require('../src/finance/brand-balance.service');
 const { CustomOrderAdminService } = require('../src/custom-order-admin/custom-order-admin.service');
 const { loadQueueRefundContexts } = require('../src/custom-orders/queue/queue-refund-query');
 const { loadBrandPosition } = require('../src/finance/brand-position-query');
+const { RefundProviderClient } = require('../src/finance/refund-provider.client');
 
 async function main() {
   const source = new URL(process.env.DATABASE_URL || '');
@@ -320,17 +321,24 @@ async function main() {
         currency: 'NGN',
         breakdownJson: {},
         status: 'SUBMITTING',
+        leaseToken: randomUUID(),
         lockedAt: new Date(Date.now() - 11 * 60000),
         nextAttemptAt: new Date(0),
       })),
     });
     let financialCalls = 0;
+    let reconciliationLookups = 0;
+    const recoveryProvider = new RefundProviderClient();
+    recoveryProvider.findByNote = async () => { reconciliationLookups++; return null; };
+    for (const method of ['verifyCapture', 'submit', 'fetch']) {
+      recoveryProvider[method] = async () => { throw Error('Unexpected provider transport'); };
+    }
     const refunds = new CustomOrderQueueRefundsService(prisma, {
       postTransaction: async () => {
         financialCalls++;
         throw Error('Attention must not post money');
       },
-    });
+    }, recoveryProvider);
     queries.length = 0;
     const results = [
       await refunds.processPending(),
@@ -349,9 +357,13 @@ async function main() {
     evidence.refundAttentionPaymentHydrationReadsFor26 = selectQueries.filter(
       (query) => /FROM "public"\."PaymentAttempt"/.test(query),
     ).length;
-    assert.equal(evidence.refundAttentionContextJoinsFor26, 26);
+    // One scalar context before claiming and one fresh context under the owned
+    // refund lock. Parent/owner locks are concurrency guards, not ORM hydration.
+    assert.equal(evidence.refundAttentionContextJoinsFor26, 2 * 26);
     assert.equal(evidence.refundAttentionPaymentHydrationReadsFor26, 0);
-    assert.equal(selectQueries.length, 30);
+    evidence.refundAttentionTotalSelectsFor26 = selectQueries.length;
+    assert.equal(selectQueries.length, 2 * 26 + 4 * 26 + 2);
+    assert.equal(reconciliationLookups, 26);
     const refundNotices = await prisma.customOrderNotificationOutbox.findMany({
       where: { customOrderId: { in: refundOrders.map((row) => row.id) } },
     });
@@ -384,23 +396,20 @@ async function main() {
     );
     assert.equal(financialCalls, 0);
     evidence.cases.push(
-      '26 stale refunds in two bounded sweeps retain fresh guarded transactions and use26 scalar context JOINs/zero payment hydration reads, correct buyer-isolated notices and durable alerts/events without financial/provider actions',
+      '26 stale refunds in two bounded sweeps retain fresh guarded transactions and use52 scalar context JOINs/zero payment hydration reads, correct buyer-isolated notices and durable alerts/events without financial/provider actions',
     );
     const completedRefund =
       await prisma.customOrderQueueRefund.findFirstOrThrow({
         where: { customOrderId: refundOrders[0].id },
       });
+    const [completedContext] = await loadQueueRefundContexts(prisma, { id: completedRefund.id });
     queries.length = 0;
     assert.equal(
-      await refunds.attention(completedRefund.id, 'fixture-replay', [
-        'SUBMITTING',
-      ]),
-      false,
+      await refunds.attention(completedContext, randomUUID(), 'fixture-replay', ['SUBMITTING']),
+      null,
     );
-    assert.equal(
-      queries.filter((query) => /^\s*SELECT\b/i.test(query)).length,
-      0,
-    );
+    assert.equal(queries.filter(query => /JOIN "CustomOrder"/.test(query)).length, 0);
+    assert.equal(queries.filter(query => /^\s*SELECT\b/i.test(query)).length, 4);
     assert.equal(
       await prisma.customOrderNotificationOutbox.count({
         where: { customOrderId: refundOrders[0].id },
@@ -419,6 +428,8 @@ async function main() {
         currency: 'NGN',
         breakdownJson: {},
         status: 'SUBMITTING',
+        leaseToken: randomUUID(),
+        lockedAt: new Date(),
       },
     });
     await prisma.$executeRawUnsafe(
@@ -428,7 +439,7 @@ async function main() {
       'CREATE TRIGGER refuse_attention_fixture BEFORE INSERT ON "PaymentEvent" FOR EACH ROW EXECUTE FUNCTION refuse_attention_fixture()',
     );
     await assert.rejects(
-      refunds.attention(rollbackRefund.id, 'fixture-failure', ['SUBMITTING']),
+      refunds.attention((await loadQueueRefundContexts(prisma, {id:rollbackRefund.id}))[0], rollbackRefund.leaseToken, 'fixture-failure', ['SUBMITTING']),
       /Attention fixture rollback/,
     );
     assert.equal(
@@ -1041,23 +1052,50 @@ async function main() {
         const rows = await Promise.all(Array.from({ length: 26 }, () => createOrder()));
         const capture = await prisma.paymentAttempt.create({ data: { buyerId: buyer.id, provider: 'PAYSTACK', providerMode: mode, paymentMethod: 'PAYSTACK', reference: `context-refund-${randomUUID()}`, amount: 2600, settlementAmount: 2600, settlementCurrency: 'NGN', currency: 'NGN', status: 'PAID', orderIds: [] } });
         await prisma.customOrder.updateMany({ where: { id: { in: rows.map(row => row.id) } }, data: { paymentReference: capture.reference, lane: 'TERMINAL', status: 'REFUND_IN_PROGRESS', cancelledAt: new Date(), buyerAcceptanceWindowEndsAt: null } });
-        await prisma.customOrderQueueRefund.createMany({ data: rows.map((row,index) => ({ customOrderId: row.id, paymentAttemptId: capture.id, status, amount: 97, currency: 'NGN', providerRefundId: status === 'PROCESSING' ? `fixture-provider-${index}-${randomUUID()}` : null, lockedAt: status === 'PROCESSING' ? new Date() : null, nextAttemptAt: new Date(0), breakdownJson: { currency: 'NGN', captureAmount: 100, vatAmount: 0, garmentCharge: 3, jumpCharge: 0, refundAmount: 97, settlement: { status: 'RECORDED', amount: 97, currency: 'NGN', rate: '1', exchangeRateSnapshotId: null, rounding: 'CUMULATIVE_HALF_UP' } } })) });
+        await prisma.customOrderQueueRefund.createMany({ data: rows.map((row,index) => ({ customOrderId: row.id, paymentAttemptId: capture.id, status, amount: 97, currency: 'NGN', leaseToken: status === 'PROCESSING' ? randomUUID() : null, providerRefundId: status === 'PROCESSING' ? `fixture-provider-${index}-${randomUUID()}` : null, lockedAt: status === 'PROCESSING' ? new Date() : null, nextAttemptAt: new Date(0), breakdownJson: { currency: 'NGN', captureAmount: 100, vatAmount: 0, garmentCharge: 3, jumpCharge: 0, refundAmount: 97, settlement: { status: 'RECORDED', amount: 97, currency: 'NGN', rate: '1', exchangeRateSnapshotId: null, rounding: 'CUMULATIVE_HALF_UP' } } })) });
         return { capture, orders: rows, refunds: await prisma.customOrderQueueRefund.findMany({ where: { paymentAttemptId: capture.id }, orderBy: { createdAt: 'asc' } }) };
       };
       const mockRefunds = await makeRefundPage('mock', 'REQUESTED');
       await prisma.customOrderQueueRefund.updateMany({ where: { paymentAttemptId: { not: mockRefunds.capture.id } }, data: { nextAttemptAt: new Date(Date.now() + 86400000) } });
-      const processor = new CustomOrderQueueRefundsService(prisma, ledger);
       let unexpectedTransport = 0;
-      processor.secret = () => { unexpectedTransport++; throw Error('Transport must not run in DB-only guarded scenarios'); };
+      let verifiedProviderLookups = 0;
+      const verifiedRefunds = new Map();
+      const provider = new RefundProviderClient();
+      for (const method of ['verifyCapture', 'submit', 'findByNote']) {
+        provider[method] = async () => { unexpectedTransport++; throw Error('Transport must not run in DB-only guarded scenarios'); };
+      }
+      provider.fetch = async (capture, id) => {
+        const verified = verifiedRefunds.get(id);
+        if (!verified) { unexpectedTransport++; throw Error('Unconfigured synthetic provider lookup'); }
+        assert.equal(verified.transactionReference, capture.reference);
+        verifiedProviderLookups++;
+        return verified;
+      };
+      const processor = new CustomOrderQueueRefundsService(prisma, ledger, provider);
       const mockConfig = { NODE_ENV: process.env.NODE_ENV, CUSTOM_ORDER_QUEUE_REFUND_SIMULATION_ENABLED: process.env.CUSTOM_ORDER_QUEUE_REFUND_SIMULATION_ENABLED };
       process.env.NODE_ENV = 'test'; process.env.CUSTOM_ORDER_QUEUE_REFUND_SIMULATION_ENABLED = 'true';
       try {
         queries.length = 0;
-        assert.deepEqual(await processor.processPending(20), { processed: 20, attention: 0 });
-        assert.deepEqual(await processor.processPending(20), { processed: 6, attention: 0 });
+        // These siblings share one capture. SKIP LOCKED intentionally yields
+        // busy siblings; subsequent bounded sweeps must finish every refund.
+        let processAttempts = 0;
+        const processOne = processor.processOne.bind(processor);
+        processor.processOne = async id => { processAttempts++; return processOne(id); };
+        let totalProcessed = 0;
+        evidence.mockRefundSweeps = [];
+        for (let sweep = 0; sweep < 26 && totalProcessed < 26; sweep++) {
+          const result = await processor.processPending(20);
+          assert.equal(result.attention, 0);
+          assert(result.processed > 0 && result.processed <= 20);
+          totalProcessed += result.processed;
+          evidence.mockRefundSweeps.push(result.processed);
+        }
+        assert.equal(totalProcessed, 26);
+        assert(processAttempts <= 20 * 26);
+        evidence.mockRefundProcessingAttempts = processAttempts;
         evidence.refundJoinedContextReadsFor26 = queries.filter(query => /^\s*SELECT r\.\*/.test(query) && /JOIN "PaymentAttempt"/.test(query) && /JOIN "CustomOrder"/.test(query)).length;
         evidence.refundRelatedHydrationReadsFor26 = queries.filter(query => /^\s*SELECT\b/i.test(query) && /FROM "public"\."(?:PaymentAttempt|CustomOrder)"/.test(query)).length;
-        assert.equal(evidence.refundJoinedContextReadsFor26, 78);
+        assert.equal(evidence.refundJoinedContextReadsFor26, processAttempts + 3 * 26);
         assert.equal(evidence.refundRelatedHydrationReadsFor26, 0);
         assert.equal(await prisma.customOrderQueueRefund.count({ where: { paymentAttemptId: mockRefunds.capture.id, status: 'SETTLED' } }), 26);
         assert.equal((await prisma.paymentAttempt.findUniqueOrThrow({ where: { id: mockRefunds.capture.id } })).status, 'PAID');
@@ -1069,7 +1107,7 @@ async function main() {
         assert.equal(await prisma.ledgerTransaction.count({ where: { referenceType: 'CustomOrderQueueRefund', type: 'REFUND_ISSUED', referenceId: { in: mockRefunds.refunds.map(row => row.id) } } }), completedJournals);
       } finally { for(const [key,value] of Object.entries(mockConfig)){if(value===undefined)delete process.env[key];else process.env[key]=value;} }
       assert.equal(unexpectedTransport, 0);
-      evidence.cases.push('26 explicit internal-simulation refunds execute real claims/reservations/ledger/completion with78scalar context JOINs/zero eager payment-order hydration, leave parent capture paid, notify correct buyers and replay safely; no provider transport is reached');
+      evidence.cases.push('26 explicit internal-simulation refunds execute real claims/reservations/ledger/completion with one scalar context per attempt plus three owned-transition contexts per successful refund/zero eager payment-order hydration, leave parent capture paid, notify correct buyers and replay safely; no provider transport is reached');
       const callbackRefunds = await makeRefundPage('test', 'PROCESSING');
       queries.length = 0;
       const accepted = await processor.handleWebhook('PAYSTACK', { event: 'refund.processed', data: { transaction_reference: callbackRefunds.capture.reference } });
@@ -1087,18 +1125,30 @@ async function main() {
       assert.equal(callbackContext.customOrder.buyerId, buyer.id);
       evidence.cases.push('reference-only webhook loads its bounded20equal-price siblings in one JOIN, respects existing poll leases without transport, excludes the wrong gateway and preserves native capture/refund values and missing-ID behavior');
       const callbackRow = callbackRefunds.refunds[0];
+      await prisma.customOrderQueueRefund.update({ where: { id: callbackRow.id }, data: { leaseToken: null, lockedAt: null } });
+      verifiedRefunds.set(callbackRow.providerRefundId, {
+        id: callbackRow.providerRefundId, state: 'PROCESSED', rawStatus: 'processed',
+        amount: new Prisma.Decimal(97), currency: 'NGN',
+        transactionReference: callbackRefunds.capture.reference, transactionId: '', note: '',
+      });
       await prisma.$transaction(tx => processor.reserve(tx, callbackContext));
-      const callbackPayload = { event: 'refund.processed', data: { id: callbackRow.providerRefundId, status: 'processed', amount: 9700, currency: 'NGN', transaction: { reference: callbackRefunds.capture.reference } } };
+      const callbackPayload = { event: 'refund.processed', data: { id: callbackRow.providerRefundId, status: 'processed', amount: 1, currency: 'NGN', transaction: { reference: callbackRefunds.capture.reference } } };
       await processor.handleWebhook('PAYSTACK', callbackPayload);
       assert.equal((await prisma.customOrderQueueRefund.findUniqueOrThrow({ where: { id: callbackRow.id } })).status, 'SETTLED');
       await processor.handleWebhook('PAYSTACK', callbackPayload);
       assert.equal(await prisma.ledgerTransaction.count({ where: { referenceType: 'CustomOrderQueueRefund', type: 'REFUND_ISSUED', referenceId: callbackRow.id } }), 1);
       const mismatched = callbackRefunds.refunds[1];
-      await processor.handleWebhook('PAYSTACK', { event: 'refund.processed', data: { ...callbackPayload.data, id: mismatched.providerRefundId, amount: 1 } });
+      await prisma.customOrderQueueRefund.update({ where: { id: mismatched.id }, data: { leaseToken: null, lockedAt: null } });
+      verifiedRefunds.set(mismatched.providerRefundId, {
+        ...verifiedRefunds.get(callbackRow.providerRefundId), id: mismatched.providerRefundId,
+        amount: new Prisma.Decimal(1),
+      });
+      await processor.handleWebhook('PAYSTACK', { event: 'refund.processed', data: { ...callbackPayload.data, id: mismatched.providerRefundId, amount: 9700 } });
       assert.equal((await prisma.customOrderQueueRefund.findUniqueOrThrow({ where: { id: mismatched.id } })).status, 'NEEDS_ATTENTION');
       assert.equal(await prisma.ledgerTransaction.count({ where: { referenceType: 'CustomOrderQueueRefund', type: 'REFUND_ISSUED', referenceId: mismatched.id } }), 0);
       assert.equal(unexpectedTransport, 0);
-      evidence.cases.push('trusted provider-ID callback uses current joined identity, settles only its reserved sibling once, preserves parent paid state and escalates a wrong amount without refund journal; central signature and live polling remain separate gates');
+      assert.equal(verifiedProviderLookups, 2);
+      evidence.cases.push('provider-ID callback verifies the synthetic provider response against current joined identity, settles only its reserved sibling once, preserves parent paid state and escalates a wrong amount without refund journal; central signature and live polling remain separate gates');
     }
     if (process.env.CUSTOM_PAYMENT_PROVIDER_SIM_URL) {
       const proof = await require('./custom-payment-provider-scenarios.cjs')({ prisma, queries, simulationUrl: process.env.CUSTOM_PAYMENT_PROVIDER_SIM_URL, buyer, owner, brand, agreement, finance, queue: actualQueue, createOrder });

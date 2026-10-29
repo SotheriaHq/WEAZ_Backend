@@ -78,6 +78,66 @@ describe('OrderService', () => {
     expect(prisma.order.updateMany).not.toHaveBeenCalled();
   });
 
+  it.each([
+    'REQUESTED',
+    'SUBMITTING',
+    'PROCESSING',
+    'FAILED',
+    'NEEDS_ATTENTION',
+    'SETTLED',
+  ])(
+    'projects the current %s refund without inventing settlement or exposing provider errors',
+    async (status) => {
+      const requestedAt = new Date('2026-10-28T10:00:00Z');
+      const settledAt =
+        status === 'SETTLED' ? new Date('2026-10-28T11:00:00Z') : null;
+      prisma.escrowHold = {
+        findUnique: jest.fn().mockResolvedValue({
+          status: status === 'SETTLED' ? 'REFUNDED' : 'REFUND_PENDING',
+          refund: {
+            status,
+            amount: 15000,
+            currency: 'NGN',
+            createdAt: requestedAt,
+            settledAt,
+          },
+        }),
+      };
+      prisma.financialDocument = {
+        findFirst: jest.fn().mockResolvedValue(null),
+      };
+      prisma.ledgerTransaction = { findMany: jest.fn().mockResolvedValue([]) };
+      const result = await (service as any).buildStandardOrderFinanceSnapshot({
+        id: 'order_1',
+        totalAmount: 15000,
+        currency: 'NGN',
+      });
+      expect(result.breakdown.refund).toEqual({
+        status,
+        amount: 15000,
+        currency: 'NGN',
+        requestedAt,
+        processedAt: settledAt,
+      });
+      expect(prisma.escrowHold.findUnique).toHaveBeenCalledTimes(1);
+      expect(prisma.escrowHold.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({
+          select: expect.objectContaining({
+            refund: {
+              select: {
+                status: true,
+                amount: true,
+                currency: true,
+                createdAt: true,
+                settledAt: true,
+              },
+            },
+          }),
+        }),
+      );
+    },
+  );
+
   it('refuses a transition when a concurrent command already moved the order', async () => {
     prisma.brand.findFirst.mockResolvedValue({ id: 'brand_1' });
     prisma.order.findFirst.mockResolvedValue({

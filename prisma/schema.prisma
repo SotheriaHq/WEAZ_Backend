@@ -1793,8 +1793,10 @@ model CollectionCategoryType {
   collections      Collection[]
   storeCollections StoreCollection[]
   products         Product[]
+  approvedSuggestions CollectionCategorySuggestion[]
 
   @@unique([categoryId, slug])
+  @@unique([id, categoryId], map: "CollectionCategoryType_id_categoryId_key")
   @@index([categoryId, isActive, order])
 }
 
@@ -1809,7 +1811,9 @@ enum CategorySuggestionStatus {
 model CollectionCategorySuggestion {
   id                 String                   @id @map("_id") @db.Uuid
   name               String
-  slug               String                   @unique
+  slug               String
+  garmentTypeName    String?
+  garmentTypeSlug    String                   @default("")
   description        String?
   status             CategorySuggestionStatus @default(PENDING)
   proposedByUserId   String                   @db.Uuid
@@ -1819,6 +1823,8 @@ model CollectionCategorySuggestion {
   rejectionReason    String?
   approvedCategoryId String?                  @db.Uuid
   approvedCategory   CollectionCategory?      @relation(fields: [approvedCategoryId], references: [id])
+  approvedCategoryTypeId String?               @db.Uuid
+  approvedCategoryType CollectionCategoryType? @relation(fields: [approvedCategoryTypeId, approvedCategoryId], references: [id, categoryId], onDelete: Restrict, onUpdate: Restrict, map: "CollectionCategorySuggestion_approved_type_fkey")
   decidedAt          DateTime?
   createdAt          DateTime                 @default(now())
   updatedAt          DateTime                 @updatedAt
@@ -1828,6 +1834,7 @@ model CollectionCategorySuggestion {
   @@index([status, createdAt])
   @@index([proposedByUserId, createdAt])
   @@index([slug, status]) // PHASE 1: Duplicate detection and fast lookup
+  @@unique([slug, garmentTypeSlug], map: "CollectionCategorySuggestion_slug_garmentTypeSlug_key")
 }
 
 model CollectionAccess {
@@ -1982,6 +1989,7 @@ model Notification {
   @@index([recipientId])
   @@index([recipientId, isRead])
   @@index([recipientId, createdAt])
+  @@index([recipientId, type, createdAt])
 }
 
 model NotificationChannelOutbox {
@@ -3188,6 +3196,7 @@ model BrandSubscriptionPaymentCapture {
 }
 
 model CustomOrderQueueRefund {
+  providerIdentities ProviderRefundIdentity[]
   id String @id @default(uuid()) @db.Uuid
   customOrderId String @db.Uuid
   requestKey String @unique @default(uuid())
@@ -3202,6 +3211,7 @@ model CustomOrderQueueRefund {
   providerRefundId String?
   attempts Int @default(0)
   lockedAt DateTime?
+  leaseToken String? @db.Uuid
   nextAttemptAt DateTime @default(now())
   lastError String?
   settledAt DateTime?
@@ -3210,6 +3220,7 @@ model CustomOrderQueueRefund {
   @@index([status, nextAttemptAt])
   @@index([paymentAttemptId])
   @@index([customOrderId, createdAt])
+  @@index([status, lockedAt, id], map: "CustomOrderQueueRefund_status_lockedAt_idx")
 }
 
 /// Generic Runway notice for brands. Seasonal bonuses and free-order periods
@@ -3496,6 +3507,7 @@ model Tag {
   @@index([isBanned, usageCount(sort: Desc)])
   @@index([status, usageCount(sort: Desc)])
   @@index([createdById, status])
+  @@index([aliasOfTagId])
 }
 
 model TagBinding {
@@ -3510,6 +3522,43 @@ model TagBinding {
   @@unique([tagId, entityType, entityId])
   @@index([entityType, entityId])
   @@index([tagId, createdAt(sort: Desc)])
+}
+
+// Durable coalesced projections retain deletion instructions after a source disappears.
+model TagProjectionOutbox {
+  entityType TagEntityType
+  entityId String @db.Uuid
+  generation String @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  status String @default("PENDING")
+  attempts Int @default(0)
+  availableAt DateTime @default(now())
+  lockedAt DateTime?
+  lockOwner String? @db.Uuid
+  lockExpiresAt DateTime?
+  lastError String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@id([entityType, entityId])
+  @@index([status, availableAt])
+  @@index([status, lockExpiresAt])
+}
+
+model TagUsageOutbox {
+  tagId String @id @db.Uuid
+  generation String @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  status String @default("PENDING")
+  attempts Int @default(0)
+  availableAt DateTime @default(now())
+  lockedAt DateTime?
+  lockOwner String? @db.Uuid
+  lockExpiresAt DateTime?
+  lastError String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, availableAt])
+  @@index([status, lockExpiresAt])
 }
 
 model Order {
@@ -3568,6 +3617,7 @@ model Order {
 /// REQUESTED → SUBMITTING → PROCESSING → SETTLED, plus FAILED (definitely not
 /// submitted) and NEEDS_ATTENTION (uncertain; never resubmitted automatically).
 model StandardOrderRefund {
+  providerIdentities ProviderRefundIdentity[]
   id                 String         @id @default(uuid()) @db.Uuid
   requestKey         String         @unique
   orderId            String         @unique @db.Uuid
@@ -3601,6 +3651,24 @@ model StandardOrderRefund {
   @@unique([provider, providerRefundId])
   @@index([status, nextAttemptAt])
   @@index([paymentAttemptId])
+}
+
+/// One provider refund has exactly one typed owner across both refund domains.
+/// Retained identity history cannot be assigned to another logical refund.
+model ProviderRefundIdentity {
+  provider String
+  providerRefundId String
+  paymentAttemptId String @db.Uuid
+  paymentAttempt PaymentAttempt @relation(fields: [paymentAttemptId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  standardRefundId String? @db.Uuid
+  standardRefund StandardOrderRefund? @relation(fields: [standardRefundId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  customRefundId String? @db.Uuid
+  customRefund CustomOrderQueueRefund? @relation(fields: [customRefundId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  createdAt DateTime @default(now())
+  @@id([provider, providerRefundId])
+  @@index([paymentAttemptId])
+  @@index([standardRefundId])
+  @@index([customRefundId])
 }
 
 model EscrowHold {
@@ -4492,6 +4560,7 @@ model CustomOrderLedgerAllocation {
 }
 
 model PaymentAttempt {
+  refundProviderIdentities ProviderRefundIdentity[]
   id                             String                             @id @default(uuid()) @db.Uuid
   buyerId                        String?                            @db.Uuid
   subjectType                    PaymentSubjectType                 @default(STANDARD_ORDER)
@@ -4814,6 +4883,8 @@ model Payout {
   providerTransferInitiatedAt    DateTime?
   providerTransferFinalizedAt    DateTime?
   providerTransferReversedAt     DateTime?
+  transferLeaseToken             String?      @db.Uuid
+  transferLockedAt               DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

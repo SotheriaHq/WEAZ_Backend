@@ -33,3 +33,37 @@ export function loadPendingCategoryCollections(
     ORDER BY c."_id" LIMIT ${CATEGORY_MODERATION_PAGE_SIZE}
   `);
 }
+
+/** A decision changes taxonomy metadata only. Content publication is a separate approval. */
+export function applyCategoryDecisionPage(
+  tx: Prisma.TransactionClient,
+  suggestionId: string,
+): Promise<
+  Array<{
+    id: string;
+    ownerId: string;
+    title: string | null;
+    status: string;
+    decision: string;
+    name: string;
+    rejectionReason: string | null;
+  }>
+> {
+  return tx.$queryRaw(Prisma.sql`
+    WITH due AS (
+      SELECT c."_id", s.status AS decision, s."approvedCategoryId", s."approvedCategoryTypeId", s.name, s."rejectionReason"
+      FROM "Collection" c JOIN "CollectionCategorySuggestion" s ON s."_id"=c."pendingCategorySuggestionId"
+      WHERE s."_id"=${suggestionId}::uuid AND s.status IN ('APPROVED','REJECTED') AND c."deletedAt" IS NULL
+      ORDER BY c."_id" LIMIT ${CATEGORY_MODERATION_PAGE_SIZE} FOR UPDATE OF c SKIP LOCKED
+    )
+    UPDATE "Collection" c SET
+      "categoryId"=CASE WHEN due.decision='APPROVED' THEN COALESCE(c."categoryId",due."approvedCategoryId") ELSE c."categoryId" END,
+      "categoryTypeId"=CASE WHEN due.decision='APPROVED' AND c."categoryId" IS NULL THEN due."approvedCategoryTypeId" ELSE c."categoryTypeId" END,
+      "originalSuggestionId"=${suggestionId}::uuid,
+      "pendingCategorySuggestionId"=NULL,"pendingCategoryName"=NULL,
+      "draftReason"=CASE WHEN c.status='DRAFT' THEN CASE WHEN due.decision='REJECTED' THEN 'CATEGORY_REJECTED' ELSE 'USER_SAVED' END ELSE c."draftReason" END,
+      "draftVersion"=c."draftVersion"+1,"updatedAt"=clock_timestamp() AT TIME ZONE 'UTC'
+    FROM due WHERE c."_id"=due."_id" AND c."pendingCategorySuggestionId"=${suggestionId}::uuid
+    RETURNING c."_id" AS id,c."ownerId",c.title,c.status,due.decision,due.name,due."rejectionReason"
+  `);
+}

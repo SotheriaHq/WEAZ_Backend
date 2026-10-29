@@ -1,4 +1,13 @@
-import { Controller, Post, Body, UseGuards, Get, Req } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  UseGuards,
+  Get,
+  Req,
+  Query,
+} from '@nestjs/common';
+import { CategorySuggestionListQueryDto } from './dto/category-suggestion-list-query.dto';
 import { JwtAuthGuard } from '../../auth/guard/jwt-auth.guard';
 import { CategorySuggestionsService } from './category-suggestions.service';
 import { SubmitCategorySuggestionDto } from './dto/submit-category-suggestion.dto';
@@ -22,7 +31,10 @@ export class CategorySuggestionsController {
 
   @Get('mine')
   @ApiOperation({ summary: 'List suggestions submitted by current user' })
-  async mine(@Req() req: any): Promise<any> {
-    return this.suggestions.listMine(req.user.id);
+  async mine(
+    @Req() req: any,
+    @Query() query: CategorySuggestionListQueryDto,
+  ): Promise<any> {
+    return this.suggestions.listMine(req.user.id, query.cursor, query.limit);
   }
 }
