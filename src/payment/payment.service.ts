@@ -132,6 +132,9 @@ type AttemptStatusUpdatePayload = {
   providerAccessCode?: string | null;
   providerChannel?: string | null;
   correlationId?: string | null;
+  // Carries the reusable code, so it travels beside the snapshot and is only
+  // ever stored encrypted on the saved card.
+  providerAuthorization?: PaystackAuthorizationSnapshot | null;
 };
 
 type WebhookProcessSource =
@@ -156,17 +159,20 @@ type ResolvedAttemptVerification = {
   providerTransactionId?: string | null;
   providerAccessCode?: string | null;
   providerChannel?: string | null;
+  providerAuthorization?: PaystackAuthorizationSnapshot | null;
 };
 
-type ExtractedPaystackCard = {
+/** A Paystack authorization from a verified capture, normalized. */
+type PaystackAuthorizationSnapshot = {
   brand: string | null;
   bank: string | null;
   last4: string;
   expMonth: string | null;
   expYear: string | null;
   reusable: boolean;
+  signature: string | null;
+  channel: string | null;
   authorizationCode: string | null;
-  identityKey: string;
 };
 
 type PaymentGatewayContext = {
@@ -288,14 +294,7 @@ const CARD_VALIDATION_SESSION_METHOD = 'POST';
 const CARD_VALIDATION_SESSION_PATH = '/payment/cards/validate';
 const CARD_VALIDATION_SESSION_KEY_PREFIX = 'payment:card-validation:';
 const DEFAULT_CARD_VALIDATION_TTL_MINUTES = 20;
-const PAYMENT_SAVED_METHODS_FLAG = 'PAYMENT_CANONICAL_SAVED_METHODS_ENABLED';
-const PAYMENT_SAVED_METHODS_CANARY_PERCENT =
-  'PAYMENT_CANONICAL_SAVED_METHODS_CANARY_PERCENT';
 const PAYMENT_VALIDATION_GATE_FLAG = 'PAYMENT_VALIDATION_GATE_ENABLED';
-const PAYMENT_SAVED_METHODS_BACKFILL_FLAG =
-  'PAYMENT_CANONICAL_SAVED_METHODS_BACKFILL_ENABLED';
-const PAYMENT_SAVED_METHODS_BACKFILL_LEGACY_FLAG =
-  'PAYMENT_CANONICAL_SAVED_METHODS_BACKFILL_ON_READ';
 const PAYMENT_SAVED_METHODS_SECRET = 'PAYMENT_SAVED_METHODS_SECRET';
 
 const TERMINAL_ATTEMPT_STATUSES = new Set<PaymentAttemptStatus>([
@@ -1096,29 +1095,11 @@ export class PaymentService implements OnModuleInit {
   async listSavedPaymentCards(
     userId: string,
   ): Promise<SavedPaymentCardSummary[]> {
-    if (this.isCanonicalSavedMethodsEnabledForUser(userId)) {
-      const canonicalCards = await this.listCanonicalSavedPaymentCards(userId);
-      if (canonicalCards.length > 0) {
-        return canonicalCards;
-      }
-      const deletedMethod = await this.getSavedPaymentMethodModel()?.findFirst({
-        where: { buyerId: userId, status: 'DISABLED' },
-        select: { id: true },
-      });
-      if (deletedMethod) return [];
-
-      if (this.isSavedPaymentMethodBackfillEnabled()) {
-        await this.backfillSavedPaymentMethodsFromAttempts(userId);
-        return this.listCanonicalSavedPaymentCards(userId);
-      }
-    }
-
-    return this.listSavedPaymentCardsFromAttemptHistory(userId);
+    return this.listCanonicalSavedPaymentCards(userId);
   }
 
   /** Server-only bridge: caller must obtain recurring consent before charging. */
   async getSubscriptionSavedCard(userId: string, savedCardId: string) {
-    await this.backfillSavedPaymentMethodsFromAttempts(userId);
     const authorization = await this.resolveSavedPaystackAuthorization(
       userId,
       savedCardId,
@@ -1156,19 +1137,90 @@ export class PaymentService implements OnModuleInit {
     authorization: Record<string, any>,
     email: string,
   ) {
-    const last4 = String(authorization.last4 ?? '');
-    const code = String(authorization.authorization_code ?? '');
-    if (authorization.reusable !== true || !code || !/^[0-9]{4}$/.test(last4))
+    const card = this.extractPaystackAuthorizationSnapshot(authorization);
+    return card
+      ? this.upsertVerifiedPaystackCard(tx, userId, card, {
+          authorizationEmail: email,
+        })
+      : null;
+  }
+
+  /**
+   * Saves the card a buyer just paid with so their next checkout offers it.
+   *
+   * Runs after the payment has committed and never fails it: a card that is
+   * not remembered costs the buyer one re-entry, while a rolled-back PAID
+   * transition would lose track of a real capture.
+   */
+  async rememberVerifiedCheckoutCard(
+    attempt: {
+      id: string;
+      buyerId: string | null;
+      provider: string;
+      channel?: string | null;
+      providerChannel?: string | null;
+      requestSnapshot?: Prisma.JsonValue | null;
+    },
+    authorization: PaystackAuthorizationSnapshot | null | undefined,
+  ) {
+    if (
+      !authorization ||
+      !attempt.buyerId ||
+      String(attempt.provider).toUpperCase() !== 'PAYSTACK'
+    ) {
       return null;
+    }
+    const requestSnapshot = this.asObject(attempt.requestSnapshot);
+    if (requestSnapshot?.saveNewCard === false) {
+      return null;
+    }
+    const channel = String(
+      authorization.channel ?? attempt.providerChannel ?? attempt.channel ?? '',
+    )
+      .trim()
+      .toUpperCase();
+    if (channel !== 'CARD') {
+      return null;
+    }
+
+    const buyerId = attempt.buyerId;
+    try {
+      return await this.prisma.$transaction((tx) =>
+        this.upsertVerifiedPaystackCard(tx, buyerId, authorization, {
+          // The attempt's payer email is the one Paystack bound the
+          // authorization to, and the only email it can be charged under.
+          authorizationEmail: this.normalizeCardText(requestSnapshot?.email),
+          sourcePaymentAttemptId: attempt.id,
+        }),
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Card from payment attempt ${attempt.id} was not saved: ${this.extractErrorMessage(error)}`,
+      );
+      return null;
+    }
+  }
+
+  /** The only writer of chargeable saved cards; the code is stored encrypted. */
+  private async upsertVerifiedPaystackCard(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    card: PaystackAuthorizationSnapshot,
+    source: {
+      authorizationEmail: string | null;
+      sourcePaymentAttemptId?: string;
+    },
+  ) {
+    const code = card.authorizationCode;
+    if (!card.reusable || !code) return null;
     const encrypted = this.encryptSavedPaymentMethodAuthorizationCode(code);
     if (!encrypted)
       throw new InternalServerErrorException(
         'Secure payment-method storage is unavailable.',
       );
-    const signature =
-      typeof authorization.signature === 'string' && authorization.signature
-        ? `sig:${authorization.signature}`
-        : `auth-sha256:${createHash('sha256').update(code).digest('hex')}`;
+    const signature = card.signature
+      ? `sig:${card.signature}`
+      : `auth-sha256:${createHash('sha256').update(code).digest('hex')}`;
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'wiez-payment-methods-' + userId}))`;
     const existingDefault = await tx.savedPaymentMethod.findFirst({
       where: { buyerId: userId, status: 'ACTIVE', isDefault: true },
@@ -1176,17 +1228,18 @@ export class PaymentService implements OnModuleInit {
     });
     const fields = {
       status: 'ACTIVE',
-      last4,
-      brand:
-        String(authorization.brand ?? authorization.card_type ?? '').slice(
-          0,
-          32,
-        ) || null,
-      bank: String(authorization.bank ?? '').slice(0, 64) || null,
-      expMonth: String(authorization.exp_month ?? '').slice(0, 2) || null,
-      expYear: String(authorization.exp_year ?? '').slice(0, 4) || null,
+      last4: card.last4,
+      brand: card.brand?.slice(0, 32) || null,
+      bank: card.bank?.slice(0, 64) || null,
+      expMonth: card.expMonth?.slice(0, 2) || null,
+      expYear: card.expYear?.slice(0, 4) || null,
       providerAuthorizationCodeEncrypted: encrypted,
-      providerAuthorizationMeta: { reusable: true, authorizationEmail: email },
+      providerAuthorizationMeta: source.authorizationEmail
+        ? { reusable: true, authorizationEmail: source.authorizationEmail }
+        : { reusable: true },
+      ...(source.sourcePaymentAttemptId
+        ? { sourcePaymentAttemptId: source.sourcePaymentAttemptId }
+        : {}),
       lastUsedAt: new Date(),
     };
     return tx.savedPaymentMethod.upsert({
@@ -1230,131 +1283,7 @@ export class PaymentService implements OnModuleInit {
   }
 
   async listSubscriptionPaymentCards(userId: string) {
-    await this.backfillSavedPaymentMethodsFromAttempts(userId);
     return this.listCanonicalSavedPaymentCards(userId);
-  }
-
-  private async listSavedPaymentCardsFromAttemptHistory(
-    userId: string,
-  ): Promise<SavedPaymentCardSummary[]> {
-    const attempts = await this.prisma.paymentAttempt.findMany({
-      where: {
-        buyerId: userId,
-        provider: 'PAYSTACK',
-        status: 'PAID',
-      },
-      select: {
-        id: true,
-        reference: true,
-        channel: true,
-        providerChannel: true,
-        requestSnapshot: true,
-        responseSnapshot: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-      orderBy: { updatedAt: 'desc' },
-      take: 120,
-    });
-
-    if (attempts.length === 0) {
-      return [];
-    }
-
-    const attemptIds = attempts.map((attempt) => attempt.id);
-    const events = await this.prisma.paymentEvent.findMany({
-      where: {
-        paymentAttemptId: { in: attemptIds },
-        source: 'webhook',
-      },
-      select: {
-        paymentAttemptId: true,
-        payload: true,
-        createdAt: true,
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 400,
-    });
-
-    const webhookPayloadByAttemptId = new Map<string, Record<string, any>>();
-    for (const event of events) {
-      if (webhookPayloadByAttemptId.has(event.paymentAttemptId)) {
-        continue;
-      }
-      const payload = this.asObject(event.payload);
-      if (payload) {
-        webhookPayloadByAttemptId.set(event.paymentAttemptId, payload);
-      }
-    }
-
-    const summariesByIdentity = new Map<string, SavedPaymentCardSummary>();
-    for (const attempt of attempts) {
-      const requestSnapshot = this.asObject(attempt.requestSnapshot);
-      const responseSnapshot = this.asObject(attempt.responseSnapshot);
-      if (requestSnapshot?.saveNewCard === false) {
-        continue;
-      }
-      const channelCandidates = [
-        attempt.channel,
-        attempt.providerChannel,
-        responseSnapshot?.providerVerificationChannel,
-        responseSnapshot?.providerWebhookChannel,
-        requestSnapshot?.channel,
-      ];
-      const isCardAttempt = channelCandidates.some(
-        (value) =>
-          String(value ?? '')
-            .trim()
-            .toUpperCase() === 'CARD',
-      );
-      if (!isCardAttempt) {
-        continue;
-      }
-
-      const extracted = this.extractSavedPaystackCard(
-        responseSnapshot,
-        webhookPayloadByAttemptId.get(attempt.id) ?? null,
-      );
-      if (!extracted) {
-        continue;
-      }
-
-      const existing = summariesByIdentity.get(extracted.identityKey);
-      const addedAt = attempt.createdAt.toISOString();
-      const lastUsedAt = attempt.updatedAt.toISOString();
-
-      if (!existing) {
-        summariesByIdentity.set(extracted.identityKey, {
-          id: `paystack-${attempt.id}`,
-          gateway: 'PAYSTACK',
-          brand: extracted.brand,
-          bank: extracted.bank,
-          last4: extracted.last4,
-          expMonth: extracted.expMonth,
-          expYear: extracted.expYear,
-          reusable: extracted.reusable,
-          addedAt,
-          lastUsedAt,
-        });
-        continue;
-      }
-
-      summariesByIdentity.set(extracted.identityKey, {
-        ...existing,
-        brand: existing.brand || extracted.brand,
-        bank: existing.bank || extracted.bank,
-        expMonth: existing.expMonth || extracted.expMonth,
-        expYear: existing.expYear || extracted.expYear,
-        reusable: existing.reusable || extracted.reusable,
-        addedAt: existing.addedAt < addedAt ? existing.addedAt : addedAt,
-        lastUsedAt:
-          existing.lastUsedAt > lastUsedAt ? existing.lastUsedAt : lastUsedAt,
-      });
-    }
-
-    return Array.from(summariesByIdentity.values()).sort((a, b) =>
-      a.lastUsedAt < b.lastUsedAt ? 1 : -1,
-    );
   }
 
   async validatePaymentCardSelection(
@@ -1480,8 +1409,9 @@ export class PaymentService implements OnModuleInit {
         cardholderNameMatchMode: this.resolvePaystackCardholderNameMatchMode(),
         validationSessionRequired: this.isValidationGateEnabledForUser(userId),
       },
+      // Always true; kept because shipped web clients read the field.
       savedMethods: {
-        canonicalEnabled: this.isCanonicalSavedMethodsEnabledForUser(userId),
+        canonicalEnabled: true,
       },
     };
   }
@@ -1606,12 +1536,6 @@ export class PaymentService implements OnModuleInit {
   }
 
   async removeSavedPaymentCard(savedCardId: string, userId: string) {
-    if (!this.isCanonicalSavedMethodsEnabledForUser(userId)) {
-      throw new BadRequestException(
-        'Saved card management is not enabled yet for this environment.',
-      );
-    }
-
     const savedPaymentMethodModel = this.getSavedPaymentMethodModel();
     if (!savedPaymentMethodModel) {
       throw new InternalServerErrorException(
@@ -1719,12 +1643,6 @@ export class PaymentService implements OnModuleInit {
   }
 
   async setDefaultSavedPaymentCard(savedCardId: string, userId: string) {
-    if (!this.isCanonicalSavedMethodsEnabledForUser(userId)) {
-      throw new BadRequestException(
-        'Saved card management is not enabled yet for this environment.',
-      );
-    }
-
     const savedPaymentMethodModel = this.getSavedPaymentMethodModel();
     if (!savedPaymentMethodModel) {
       throw new InternalServerErrorException(
@@ -2315,11 +2233,14 @@ export class PaymentService implements OnModuleInit {
           recoveryMessage: awaitingProviderConfirmation
             ? 'Payment is still awaiting provider callback or settlement confirmation.'
             : null,
-          providerVerificationAuthorization: verification.authorization,
+          providerVerificationCard: this.toStoredCardSummary(
+            verification.authorization,
+          ),
         },
         providerReference: verification.reference,
         providerTransactionId: verification.transactionId,
         providerChannel: verification.channel,
+        providerAuthorization: verification.authorization,
       };
     }
 
@@ -2929,9 +2850,13 @@ export class PaymentService implements OnModuleInit {
             providerWebhookVerified: true,
             providerWebhookCorrelationId: correlationId,
             ...(webhookAuthorization
-              ? { providerWebhookAuthorization: webhookAuthorization }
+              ? {
+                  providerWebhookCard:
+                    this.toStoredCardSummary(webhookAuthorization),
+                }
               : {}),
           },
+          providerAuthorization: webhookAuthorization,
           providerReference: this.extractWebhookReference(
             normalizedGateway,
             payload,
@@ -4331,6 +4256,13 @@ export class PaymentService implements OnModuleInit {
       this.telegramEvents?.record(paymentOutcome(updatedAttempt, source));
     }
 
+    if (transitionResult.transitionedToPaid) {
+      await this.rememberVerifiedCheckoutCard(
+        updatedAttempt,
+        payload?.providerAuthorization,
+      );
+    }
+
     if (updatedAttempt.subjectType === PaymentSubjectType.UNIFIED_CHECKOUT) {
       if (transitionResult.transitionedToPaid) {
         await this.finalizeUnifiedCheckoutAttempt(
@@ -5443,56 +5375,6 @@ export class PaymentService implements OnModuleInit {
     return defaultValue;
   }
 
-  private parseBooleanEnvOptional(name: string): boolean | null {
-    const raw = String(process.env[name] ?? '')
-      .trim()
-      .toLowerCase();
-    if (!raw) {
-      return null;
-    }
-    if (['1', 'true', 'yes', 'on'].includes(raw)) {
-      return true;
-    }
-    if (['0', 'false', 'no', 'off'].includes(raw)) {
-      return false;
-    }
-    return null;
-  }
-
-  private parsePercentEnv(name: string, defaultValue: number) {
-    const parsed = Number.parseInt(String(process.env[name] ?? ''), 10);
-    if (!Number.isFinite(parsed)) {
-      return defaultValue;
-    }
-    return Math.min(100, Math.max(0, parsed));
-  }
-
-  private getUserCanaryBucket(userId: string) {
-    const digest = createHash('sha256')
-      .update(String(userId ?? ''))
-      .digest('hex');
-    return Number.parseInt(digest.slice(0, 8), 16) % 100;
-  }
-
-  private isCanonicalSavedMethodsEnabledForUser(userId: string) {
-    if (!this.parseBooleanEnv(PAYMENT_SAVED_METHODS_FLAG, true)) {
-      return false;
-    }
-
-    const percent = this.parsePercentEnv(
-      PAYMENT_SAVED_METHODS_CANARY_PERCENT,
-      100,
-    );
-    if (percent >= 100) {
-      return true;
-    }
-    if (percent <= 0) {
-      return false;
-    }
-
-    return this.getUserCanaryBucket(userId) < percent;
-  }
-
   private isValidationGateEnabledForUser(_userId: string) {
     void _userId;
     if (!this.parseBooleanEnv(PAYMENT_VALIDATION_GATE_FLAG, true)) {
@@ -5503,32 +5385,8 @@ export class PaymentService implements OnModuleInit {
     return true;
   }
 
-  private isSavedPaymentMethodBackfillEnabled() {
-    const configured = this.parseBooleanEnvOptional(
-      PAYMENT_SAVED_METHODS_BACKFILL_FLAG,
-    );
-    if (configured != null) {
-      return configured;
-    }
-
-    const legacyConfigured = this.parseBooleanEnvOptional(
-      PAYMENT_SAVED_METHODS_BACKFILL_LEGACY_FLAG,
-    );
-    if (legacyConfigured != null) {
-      return legacyConfigured;
-    }
-
-    return true;
-  }
-
   private normalizeSavedCardIdentifier(value: string) {
-    const normalized = String(value ?? '').trim();
-    if (!normalized) {
-      return '';
-    }
-    return normalized.startsWith('paystack-')
-      ? normalized.slice('paystack-'.length)
-      : normalized;
+    return String(value ?? '').trim();
   }
 
   private mapSavedPaymentMethodToSummary(
@@ -5599,7 +5457,7 @@ export class PaymentService implements OnModuleInit {
     savedCardId: string,
   ): Promise<string | null> {
     const normalizedId = this.normalizeSavedCardIdentifier(savedCardId);
-    if (!normalizedId || !this.isCanonicalSavedMethodsEnabledForUser(userId)) {
+    if (!normalizedId) {
       return null;
     }
 
@@ -5643,7 +5501,7 @@ export class PaymentService implements OnModuleInit {
     const key = this.getSavedPaymentMethodEncryptionKey();
     if (!key) {
       this.logger.warn(
-        `${PAYMENT_SAVED_METHODS_SECRET} is not configured. Skipping authorization-code encryption for saved method migration.`,
+        `${PAYMENT_SAVED_METHODS_SECRET} is not configured. Cards cannot be saved for reuse.`,
       );
       return null;
     }
@@ -5691,227 +5549,6 @@ export class PaymentService implements OnModuleInit {
     } catch {
       return null;
     }
-  }
-
-  private async collectLegacySavedPaystackCardsWithAuthorization(
-    userId: string,
-  ) {
-    const attempts = await this.prisma.paymentAttempt.findMany({
-      where: {
-        buyerId: userId,
-        provider: 'PAYSTACK',
-        status: 'PAID',
-      },
-      select: {
-        id: true,
-        channel: true,
-        providerChannel: true,
-        requestSnapshot: true,
-        responseSnapshot: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-      orderBy: { updatedAt: 'desc' },
-      take: 240,
-    });
-
-    if (attempts.length === 0) {
-      return [] as Array<{
-        summary: SavedPaymentCardSummary;
-        sourcePaymentAttemptId: string;
-        authorizationCode: string | null;
-        identityKey: string;
-      }>;
-    }
-
-    const events = await this.prisma.paymentEvent.findMany({
-      where: {
-        paymentAttemptId: { in: attempts.map((attempt) => attempt.id) },
-        source: 'webhook',
-      },
-      select: {
-        paymentAttemptId: true,
-        payload: true,
-        createdAt: true,
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 600,
-    });
-
-    const webhookPayloadByAttemptId = new Map<string, Record<string, any>>();
-    for (const event of events) {
-      if (webhookPayloadByAttemptId.has(event.paymentAttemptId)) {
-        continue;
-      }
-      const payload = this.asObject(event.payload);
-      if (payload) {
-        webhookPayloadByAttemptId.set(event.paymentAttemptId, payload);
-      }
-    }
-
-    const results: Array<{
-      summary: SavedPaymentCardSummary;
-      sourcePaymentAttemptId: string;
-      authorizationCode: string | null;
-      identityKey: string;
-    }> = [];
-    const seenIdentityKeys = new Set<string>();
-
-    for (const attempt of attempts) {
-      const requestSnapshot = this.asObject(attempt.requestSnapshot);
-      const responseSnapshot = this.asObject(attempt.responseSnapshot);
-      if (requestSnapshot?.saveNewCard === false) {
-        continue;
-      }
-
-      const channelCandidates = [
-        attempt.channel,
-        attempt.providerChannel,
-        responseSnapshot?.providerVerificationChannel,
-        responseSnapshot?.providerWebhookChannel,
-        requestSnapshot?.channel,
-      ];
-      const isCardAttempt = channelCandidates.some(
-        (value) =>
-          String(value ?? '')
-            .trim()
-            .toUpperCase() === 'CARD',
-      );
-      if (!isCardAttempt) {
-        continue;
-      }
-
-      const extracted = this.extractSavedPaystackCard(
-        responseSnapshot,
-        webhookPayloadByAttemptId.get(attempt.id) ?? null,
-      );
-      if (!extracted || seenIdentityKeys.has(extracted.identityKey)) {
-        continue;
-      }
-
-      seenIdentityKeys.add(extracted.identityKey);
-      results.push({
-        sourcePaymentAttemptId: attempt.id,
-        authorizationCode: extracted.authorizationCode,
-        identityKey: extracted.identityKey,
-        summary: {
-          id: attempt.id,
-          gateway: 'PAYSTACK',
-          brand: extracted.brand,
-          bank: extracted.bank,
-          last4: extracted.last4,
-          expMonth: extracted.expMonth,
-          expYear: extracted.expYear,
-          reusable: extracted.reusable,
-          addedAt: attempt.createdAt.toISOString(),
-          lastUsedAt: attempt.updatedAt.toISOString(),
-        },
-      });
-    }
-
-    return results;
-  }
-
-  private async backfillSavedPaymentMethodsFromAttempts(userId: string) {
-    const savedPaymentMethodModel = this.getSavedPaymentMethodModel();
-    if (!savedPaymentMethodModel) {
-      return 0;
-    }
-
-    const inferredCards =
-      await this.collectLegacySavedPaystackCardsWithAuthorization(userId);
-    if (inferredCards.length === 0) {
-      return 0;
-    }
-
-    return this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'wiez-payment-methods-' + userId}))`;
-      const savedPaymentMethodModel = tx.savedPaymentMethod;
-      let hasDefault = Boolean(
-        await savedPaymentMethodModel.findFirst({
-          where: {
-            buyerId: userId,
-            status: 'ACTIVE',
-            isDefault: true,
-          },
-          select: { id: true },
-        }),
-      );
-
-      let processed = 0;
-      for (const card of inferredCards) {
-        const existing = await savedPaymentMethodModel.findUnique({
-          where: {
-            buyerId_providerAuthorizationSignature: {
-              buyerId: userId,
-              providerAuthorizationSignature: card.identityKey,
-            },
-          },
-          select: { status: true, providerAuthorizationMeta: true },
-        });
-        if (existing?.status === 'DISABLED') continue;
-        const encryptedAuthorizationCode =
-          this.encryptSavedPaymentMethodAuthorizationCode(
-            card.authorizationCode,
-          );
-
-        const upserted = await savedPaymentMethodModel.upsert({
-          where: {
-            buyerId_providerAuthorizationSignature: {
-              buyerId: userId,
-              providerAuthorizationSignature: card.identityKey,
-            },
-          },
-          update: {
-            status: 'ACTIVE',
-            brand: card.summary.brand,
-            bank: card.summary.bank,
-            last4: card.summary.last4,
-            expMonth: card.summary.expMonth,
-            expYear: card.summary.expYear,
-            lastUsedAt: new Date(card.summary.lastUsedAt),
-            providerAuthorizationCodeEncrypted:
-              encryptedAuthorizationCode ?? undefined,
-            providerAuthorizationMeta: {
-              ...this.asObject(existing?.providerAuthorizationMeta),
-              reusable: card.summary.reusable,
-              migratedFromAttemptId: card.sourcePaymentAttemptId,
-            },
-            sourcePaymentAttemptId: card.sourcePaymentAttemptId,
-          },
-          create: {
-            id: uuidv4(),
-            buyerId: userId,
-            provider: 'PAYSTACK',
-            paymentMethod: PaymentMethod.PAYSTACK,
-            status: 'ACTIVE',
-            isDefault: !hasDefault,
-            brand: card.summary.brand,
-            bank: card.summary.bank,
-            last4: card.summary.last4,
-            expMonth: card.summary.expMonth,
-            expYear: card.summary.expYear,
-            holderName: null,
-            providerAuthorizationCodeEncrypted:
-              encryptedAuthorizationCode ?? undefined,
-            providerAuthorizationSignature: card.identityKey,
-            providerAuthorizationMeta: {
-              reusable: card.summary.reusable,
-              migratedFromAttemptId: card.sourcePaymentAttemptId,
-            },
-            sourcePaymentAttemptId: card.sourcePaymentAttemptId,
-            lastUsedAt: new Date(card.summary.lastUsedAt),
-          },
-        });
-
-        if (!hasDefault && upserted) {
-          hasDefault = true;
-        }
-        processed += 1;
-      }
-
-      return processed;
-    });
   }
 
   private extractErrorMessage(error: any): string {
@@ -7383,9 +7020,8 @@ export class PaymentService implements OnModuleInit {
    * email used to create an authorization can be used to charge it" — so the
    * payer email typed at checkout is the wrong thing to send. The buyer can
    * edit that field, and a saved card charged under a different email is
-   * rejected. The authorizing email is recovered from the attempt that minted
-   * the authorization, which every saved card records, so this needs no
-   * migration and no backfill.
+   * rejected. The authorizing email is stored on the card when the verified
+   * payment saves it, with the source attempt's payer email as the fallback.
    */
   private async resolveSavedPaystackAuthorization(
     buyerId: string,
@@ -7402,10 +7038,9 @@ export class PaymentService implements OnModuleInit {
       );
     }
 
-    if (this.isCanonicalSavedMethodsEnabledForUser(buyerId)) {
-      const savedPaymentMethodModel = this.getSavedPaymentMethodModel();
-      if (savedPaymentMethodModel) {
-        const canonicalMethod = await savedPaymentMethodModel.findFirst({
+    const savedPaymentMethodModel = this.getSavedPaymentMethodModel();
+    const savedMethod = savedPaymentMethodModel
+      ? await savedPaymentMethodModel.findFirst({
           where: {
             id: normalizedSavedCardId,
             buyerId,
@@ -7419,119 +7054,43 @@ export class PaymentService implements OnModuleInit {
             providerAuthorizationMeta: true,
             sourcePaymentAttemptId: true,
           },
-        });
-
-        if (canonicalMethod) {
-          const authorizationCode =
-            this.decryptSavedPaymentMethodAuthorizationCode(
-              canonicalMethod.providerAuthorizationCodeEncrypted,
-            );
-          if (!authorizationCode) {
-            throw new BadRequestException(
-              'This saved card can no longer be used. Remove it and add a new reusable card.',
-            );
-          }
-
-          const meta = this.asObject(canonicalMethod.providerAuthorizationMeta);
-          // Only an EXPLICIT false is a refusal. The meta is written by the
-          // migration path, so a card saved before it existed has no flag at
-          // all — refusing those would lock buyers out of cards that work.
-          if (meta.reusable === false) {
-            throw new BadRequestException(
-              'This saved card is not reusable. Pay with a new card and WIEZ will save it for next time.',
-            );
-          }
-
-          await savedPaymentMethodModel.update({
-            where: { id: canonicalMethod.id },
-            data: { lastUsedAt: new Date() },
-          });
-
-          return {
-            authorizationCode,
-            authorizationEmail:
-              this.normalizeCardText(meta.authorizationEmail) ??
-              (await this.resolveAttemptPayerEmail(
-                canonicalMethod.sourcePaymentAttemptId,
-                buyerId,
-              )),
-          };
-        }
-      }
-    }
-
-    const attemptId = normalizedSavedCardId;
-
-    // Legacy migration fallback: infer reusable authorization from historical paid attempts.
-
-    const attempt = await this.prisma.paymentAttempt.findFirst({
-      where: {
-        id: attemptId,
-        buyerId,
-        provider: 'PAYSTACK',
-        status: 'PAID',
-      },
-      select: {
-        id: true,
-        requestSnapshot: true,
-        responseSnapshot: true,
-      },
-    });
-
-    if (!attempt) {
+        })
+      : null;
+    if (!savedMethod) {
       throw new BadRequestException(
         'The selected saved card is no longer available',
       );
     }
 
-    const requestSnapshot = this.asObject(attempt.requestSnapshot);
-    if (requestSnapshot?.saveNewCard === false) {
-      throw new BadRequestException('This card was not saved for reuse');
-    }
-
-    const event = await this.prisma.paymentEvent.findFirst({
-      where: {
-        paymentAttemptId: attempt.id,
-        source: 'webhook',
-      },
-      select: { payload: true },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    const extracted = this.extractSavedPaystackCard(
-      this.asObject(attempt.responseSnapshot),
-      this.asObject(event?.payload),
+    const authorizationCode = this.decryptSavedPaymentMethodAuthorizationCode(
+      savedMethod.providerAuthorizationCodeEncrypted,
     );
-
-    if (!extracted?.reusable || !extracted.authorizationCode) {
+    if (!authorizationCode) {
       throw new BadRequestException(
-        'This saved card is not reusable yet. Complete a fresh card payment first.',
+        'This saved card can no longer be used. Remove it and add a new reusable card.',
       );
     }
 
-    const deletedMethod = await this.getSavedPaymentMethodModel()?.findFirst({
-      where: {
-        buyerId,
-        status: 'DISABLED',
-        OR: [
-          { sourcePaymentAttemptId: attempt.id },
-          { providerAuthorizationSignature: extracted.identityKey },
-        ],
-      },
-      select: { id: true },
-    });
-    if (deletedMethod)
+    const meta = this.asObject(savedMethod.providerAuthorizationMeta);
+    if (meta.reusable === false) {
       throw new BadRequestException(
-        'This saved card was deleted. Complete a new secure payment to add it again.',
+        'This saved card is not reusable. Pay with a new card and WIEZ will save it for next time.',
       );
+    }
+
+    await savedPaymentMethodModel.update({
+      where: { id: savedMethod.id },
+      data: { lastUsedAt: new Date() },
+    });
 
     return {
-      authorizationCode: extracted.authorizationCode,
-      // This attempt IS the one that created the authorization, so its payer
-      // email is the authorizing email by definition.
+      authorizationCode,
       authorizationEmail:
-        this.normalizeCardText(requestSnapshot?.email) ??
-        (await this.resolveBuyerAccountEmail(buyerId)),
+        this.normalizeCardText(meta.authorizationEmail) ??
+        (await this.resolveAttemptPayerEmail(
+          savedMethod.sourcePaymentAttemptId,
+          buyerId,
+        )),
     };
   }
 
@@ -7613,7 +7172,7 @@ export class PaymentService implements OnModuleInit {
 
   private extractPaystackAuthorizationSnapshot(
     raw: unknown,
-  ): Record<string, any> | null {
+  ): PaystackAuthorizationSnapshot | null {
     const authorization = this.asObject(raw);
     if (!authorization) {
       return null;
@@ -7640,79 +7199,32 @@ export class PaymentService implements OnModuleInit {
       expYear: this.normalizeCardText(
         authorization.exp_year ?? authorization.expYear,
       ),
-      reusable: Boolean(authorization.reusable),
+      reusable: authorization.reusable === true,
       signature: this.normalizeCardText(authorization.signature),
+      channel: this.normalizeCardText(authorization.channel),
       authorizationCode: this.normalizeCardText(
         authorization.authorization_code ?? authorization.authorizationCode,
       ),
     };
   }
 
-  private buildPaystackCardIdentityKey(snapshot: Record<string, any>): string {
-    const signature = this.normalizeCardText(snapshot.signature);
-    if (signature) {
-      return `sig:${signature}`;
-    }
-
-    const authorizationCode = this.normalizeCardText(
-      snapshot.authorizationCode,
-    );
-    if (authorizationCode) {
-      return `auth:${authorizationCode}`;
-    }
-
-    const brand = this.normalizeCardText(snapshot.brand) ?? 'CARD';
-    const bank = this.normalizeCardText(snapshot.bank) ?? 'BANK';
-    const last4 = this.normalizeCardLast4(snapshot.last4) ?? '0000';
-    const expMonth = this.normalizeCardText(snapshot.expMonth) ?? '--';
-    const expYear = this.normalizeCardText(snapshot.expYear) ?? '----';
-
-    return `${brand}|${bank}|${last4}|${expMonth}|${expYear}`.toUpperCase();
-  }
-
-  private extractSavedPaystackCard(
-    responseSnapshot: Record<string, any> | null,
-    webhookPayload: Record<string, any> | null,
-  ): ExtractedPaystackCard | null {
-    const webhookData = this.asObject(webhookPayload?.data);
-    const verificationPayload = this.asObject(
-      responseSnapshot?.providerVerificationPayload,
-    );
-
-    const candidates: unknown[] = [
-      responseSnapshot?.providerAuthorization,
-      responseSnapshot?.providerVerificationAuthorization,
-      responseSnapshot?.providerWebhookAuthorization,
-      responseSnapshot?.authorization,
-      verificationPayload?.authorization,
-      webhookData?.authorization,
-      webhookPayload?.authorization,
-    ];
-
-    for (const candidate of candidates) {
-      const snapshot = this.extractPaystackAuthorizationSnapshot(candidate);
-      if (!snapshot) {
-        continue;
-      }
-
-      const last4 = this.normalizeCardLast4(snapshot.last4);
-      if (!last4) {
-        continue;
-      }
-
-      return {
-        brand: this.normalizeCardText(snapshot.brand),
-        bank: this.normalizeCardText(snapshot.bank),
-        last4,
-        expMonth: this.normalizeCardText(snapshot.expMonth),
-        expYear: this.normalizeCardText(snapshot.expYear),
-        reusable: Boolean(snapshot.reusable),
-        authorizationCode: this.normalizeCardText(snapshot.authorizationCode),
-        identityKey: this.buildPaystackCardIdentityKey(snapshot),
-      };
-    }
-
-    return null;
+  /**
+   * What a payment record may keep about the card that paid: enough for an
+   * admin to recognise it, nothing that can charge or fingerprint it.
+   */
+  private toStoredCardSummary(
+    authorization: PaystackAuthorizationSnapshot | null,
+  ) {
+    return authorization
+      ? {
+          brand: authorization.brand,
+          bank: authorization.bank,
+          last4: authorization.last4,
+          expMonth: authorization.expMonth,
+          expYear: authorization.expYear,
+          reusable: authorization.reusable,
+        }
+      : null;
   }
 
   private async verifyPaystackAttempt(
@@ -7727,7 +7239,7 @@ export class PaymentService implements OnModuleInit {
     channel: string | null;
     paidAt: string | null;
     message: string | null;
-    authorization: Record<string, any> | null;
+    authorization: PaystackAuthorizationSnapshot | null;
   }> {
     const secret = this.getRequiredPaystackSecret(
       'Paystack payment verification',
