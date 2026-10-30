@@ -8,6 +8,7 @@ import {
   renderEmailLink,
   renderEmailShell,
   resolveAppUrl,
+  toEmailHref,
 } from '../email/email.branding';
 import { collectionPublishedEmail } from '../email/email.templates';
 
@@ -537,7 +538,7 @@ function renderNotificationCta(
     </div>`;
 }
 
-export function renderNotificationEmail(args: {
+export function renderNotificationEmail(input: {
   appName: string;
   heading: string;
   message: string;
@@ -545,6 +546,12 @@ export function renderNotificationEmail(args: {
   notificationType?: NotificationType;
   payload?: Record<string, unknown> | null;
 }): { subject: string; html: string; text: string } {
+  // A notification's target is often a web path ("/profile?tab=orders"). One
+  // absolute link is used for the button, the fallback line and the text part.
+  const args = {
+    ...input,
+    targetUrl: input.targetUrl ? toEmailHref(input.targetUrl) : undefined,
+  };
   const companyName = normalizeCompanyName(args.appName);
   const action = asTrimmedString(args.payload?.action);
 
