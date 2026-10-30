@@ -5,6 +5,7 @@ import {
   BadRequestException,
   ForbiddenException,
 } from '@nestjs/common';
+import { isUUID } from 'class-validator';
 import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -341,6 +342,16 @@ export class SavedItemsService {
     targetType: SavedItemTypeDto,
     targetId: string,
   ) {
+    // The controller reads these straight from the query string, so nothing has
+    // validated them. Prisma throws on an unknown enum or a malformed UUID, and
+    // a bad client request must not read as a server fault.
+    if (!Object.values(SavedItemTypeDto).includes(targetType)) {
+      throw new BadRequestException('targetType cannot be saved');
+    }
+    if (!isUUID(targetId)) {
+      throw new BadRequestException('targetId must be a UUID');
+    }
+
     const savedItem = await this.prisma.savedItem.findUnique({
       where: {
         userId_targetType_targetId: {
