@@ -50,6 +50,8 @@ jobs:
 
       - name: NestJS module cycle guard
         run: npm run check:module-cycles
+      - name: Telemetry privacy regressions
+        run: npm test -- src/common/observability/sentry-scrub.spec.ts --runInBand
       - name: Shared deployment lock regression
         run: |
           bash scripts/verify-deploy-lock.sh

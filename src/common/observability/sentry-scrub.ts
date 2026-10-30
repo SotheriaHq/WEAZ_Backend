@@ -38,31 +38,38 @@ function isSensitiveKey(key: string): boolean {
 
 /** Free text with credentials, tokens, keys, signed URLs and emails removed. */
 export function redactSensitiveText(value: string): string {
-  return value
-    .replace(
-      /([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi,
-      '$1<credentials>@',
-    )
-    .replace(/(https?:\/\/[^\s?#"'<>]+)\?[^\s"'<>]*/gi, '$1?<query>')
-    .replace(/\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}/g, '<jwt>')
-    .replace(/\b(sk|rk)_(live|test)_[A-Za-z0-9]+/g, '<provider-secret>')
-    .replace(/\bAUTH_[A-Za-z0-9]{6,}\b/g, '<authorization-code>')
-    .replace(
-      /X-Amz-(Signature|Credential|Security-Token)=[^&\s"']+/gi,
-      'X-Amz-$1=<redacted>',
-    )
-    .replace(/[^\s@"'<>(),;:]+@[^\s@"'<>(),;:]+\.[a-z]{2,}/gi, '<email>')
-    .replace(/\b(bearer)\s+[\w.~+/-]+=*/gi, '$1 <redacted>')
-    .replace(
-      /\b(token|secret|password|authorization|api[_-]?key)\b(\s*[:=]\s*)[^\s,;&"']+/gi,
-      '$1$2<redacted>',
-    )
-    .replace(/\b[A-Za-z0-9_-]{40,}\b/g, '<redacted>');
+  return (
+    value
+      // These segments are checkout recovery credentials, not resource IDs.
+      .replace(
+        /(\/custom-orders\/(?:checkout-sessions\/)?resume\/)[^\s/?#"'<>),;]+/gi,
+        '$1<token>',
+      )
+      .replace(
+        /([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi,
+        '$1<credentials>@',
+      )
+      .replace(/(https?:\/\/[^\s?#"'<>]+)\?[^\s"'<>]*/gi, '$1?<query>')
+      .replace(/\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}/g, '<jwt>')
+      .replace(/\b(sk|rk)_(live|test)_[A-Za-z0-9]+/g, '<provider-secret>')
+      .replace(/\bAUTH_[A-Za-z0-9]{6,}\b/g, '<authorization-code>')
+      .replace(
+        /X-Amz-(Signature|Credential|Security-Token)=[^&\s"']+/gi,
+        'X-Amz-$1=<redacted>',
+      )
+      .replace(/[^\s@"'<>(),;:]+@[^\s@"'<>(),;:]+\.[a-z]{2,}/gi, '<email>')
+      .replace(/\b(bearer)\s+[\w.~+/-]+=*/gi, '$1 <redacted>')
+      .replace(
+        /\b(token|secret|password|authorization|api[_-]?key)\b(\s*[:=]\s*)[^\s,;&"']+/gi,
+        '$1$2<redacted>',
+      )
+      .replace(/\b[A-Za-z0-9_-]{40,}\b/g, '<redacted>')
+  );
 }
 
 /** A URL without its query string or fragment: those routinely carry tokens. */
 export function stripQuery(url: string): string {
-  return url.replace(/[?#].*$/, '');
+  return redactSensitiveText(url.replace(/[?#].*$/, ''));
 }
 
 function scrubValue(value: unknown, depth = 0): unknown {

@@ -72,6 +72,11 @@ Before anything leaves the server, website or app it is scrubbed (server:
 - signed media links (the part that grants access);
 - email addresses, cookies, request bodies and query strings.
 
+Checkout recovery credentials inside `/custom-orders/resume/<token>` and
+`/custom-orders/checkout-sessions/resume/<token>` are also removed from request
+URLs, endpoint tags, errors, breadcrumbs, spans and logs. Ordinary order IDs
+remain available for diagnosis. CI and deployment both test this distinction.
+
 Kept: the page or endpoint path, the error message (scrubbed), the code
 location, the release, and an opaque user ID for signed-in people. On the
 website and app, performance tracing starts only after the visitor allows

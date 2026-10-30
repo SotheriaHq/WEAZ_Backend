@@ -24,6 +24,59 @@ function expectNoLeaks(value: unknown) {
 }
 
 describe('sentry scrubbing', () => {
+  it('removes recovery credentials in paths across every telemetry channel', () => {
+    const token = '123e4567-e89b-12d3-a456-426614174000';
+    for (const route of ['checkout-sessions/resume', 'resume']) {
+      const url = `https://api.weaz.me/custom-orders/${route}/${token}?view=checkout`;
+      const event = scrubEvent({
+        request: { url },
+        message: `GET ${url}`,
+        transaction: `GET /custom-orders/${route}/${token}`,
+        exception: { values: [{ value: `Failed ${url}` }] },
+        tags: { 'http.path': `/custom-orders/${route}/${token}` },
+        extra: { nested: { route: url } },
+        contexts: { trace: { description: url } },
+        breadcrumbs: [{ message: url, data: { url } }],
+        spans: [
+          {
+            span_id: 'a',
+            trace_id: 'b',
+            start_timestamp: 0,
+            description: url,
+            data: { 'http.url': url },
+          },
+        ],
+      } as unknown as ErrorEvent);
+      expect(JSON.stringify(event)).not.toContain(token);
+      expect(event.request?.url).toBe(
+        `https://api.weaz.me/custom-orders/${route}/<token>`,
+      );
+      expect(
+        JSON.stringify(
+          scrubLog({
+            message: url,
+            attributes: { path: url },
+          } as unknown as Log),
+        ),
+      ).not.toContain(token);
+      expect(
+        stripQuery(
+          `/custom-orders/${route}/${encodeURIComponent('secret/segment')}`,
+        ),
+      ).toBe(`/custom-orders/${route}/<token>`);
+    }
+    // Ordinary order IDs are useful for diagnosis and are not bearer secrets.
+    expect(stripQuery(`/custom-orders/${token}?tab=items`)).toBe(
+      `/custom-orders/${token}`,
+    );
+  });
+
+  it('does not restore credentials when scrubbing URL fields', () => {
+    const result = scrubBreadcrumb({
+      data: { url: 'https://user:secret@api.weaz.me/orders/1?token=x' },
+    });
+    expect(result.data?.url).toBe('https://<credentials>@api.weaz.me/orders/1');
+  });
   it('removes tokens, keys, codes, signed URLs and emails from free text', () => {
     const text = [
       'Reset failed for https://weaz.me/reset-password?token=tok_reset_abc123',
