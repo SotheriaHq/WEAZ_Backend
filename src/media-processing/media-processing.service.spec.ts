@@ -88,11 +88,39 @@ describe('MediaProcessingService', () => {
     const variants = await service.generateVariants(source, {
       mimeType: 'image/png',
     });
-    const detail = variants.find(
-      (variant) => variant.kind === 'DETAIL' && variant.format === 'WEBP',
-    )!;
-    const decoded = await sharp(detail.buffer).ensureAlpha().raw().toBuffer();
-    expect(decoded).toEqual(input.pixels);
+    for (const format of ['PNG', 'WEBP']) {
+      const detail = variants.find(
+        (variant) => variant.kind === 'DETAIL' && variant.format === format,
+      )!;
+      const decoded = await sharp(detail.buffer).ensureAlpha().raw().toBuffer();
+      expect(decoded).toEqual(input.pixels);
+    }
+  }, 30_000);
+
+  it('keeps resized PNG full-colour rather than quantising it to a palette', async () => {
+    const { fixture } = runtimeRequire(
+      '../../scripts/benchmark-image-quality.cjs',
+    );
+    const input = fixture('alpha', 512, 768);
+    const source = await sharp(input.pixels, { raw: input }).png().toBuffer();
+    const expected = await sharp(source)
+      .rotate()
+      .withIccProfile('srgb')
+      .resize({ width: 256, withoutEnlargement: true })
+      .ensureAlpha()
+      .raw()
+      .toBuffer();
+    for await (const variant of service.generateVariantsIter(source, {
+      mimeType: 'image/png',
+    })) {
+      expect(variant.kind).toBe('AVATAR');
+      expect(variant.format).toBe('PNG');
+      expect((await sharp(variant.buffer).metadata()).isPalette).toBe(false);
+      expect(
+        await sharp(variant.buffer).ensureAlpha().raw().toBuffer(),
+      ).toEqual(expected);
+      break;
+    }
   }, 30_000);
 
   it('uses oriented dimensions and strips EXIF while keeping the colour profile', async () => {
