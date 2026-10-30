@@ -1,39 +1,124 @@
-# WIEZ: reading Sentry without reading the whole stack trace
+# WIEZ: reading Sentry, in plain language
 
-An **issue** groups similar errors. An **event** is one occurrence. Start with the environment, time window, last-seen date, affected release, title and first **In App** frame. Library frames usually are not useful for initial triage.
+Sentry collects errors from the WIEZ server, website and app. This guide
+explains what you are looking at and what to do about it.
 
-## Daily workflow
+## The words that matter
 
-1. Open Issues. Choose the environment you intend to check; avoid mixing SIT and production.
-2. Choose the last 24 hours and Unresolved. If an older issue is absent, widen the window.
-3. Prioritize failed checkout/payment, account access, data loss and widespread crashes. Compare recent event volume and affected users; counts alone do not establish business impact.
-4. Open the issue. Check Last seen and release. Read the title and first In App stack frame.
-5. Use breadcrumbs as context, not proof of causation. Match request ID, transaction and timestamps before connecting separate errors.
-6. Copy the issue link and Copy as → Markdown. Share: what the shopper was doing, platform/app version, expected result and observed result. Do not include passwords, tokens or private customer records.
-7. Verify the fix in the deployed release and affected journey, then resolve the issue. Resolve changes tracking status; it does not change the application. Recurrence can become Regressed.
+| Sentry word | What it means |
+|---|---|
+| **Event** | One error, once: one person, one moment. |
+| **Issue** | A group of events Sentry thinks are the same problem. One issue can hold thousands of events. |
+| **Environment** | Where it happened: `sit` (test) or `production` (real customers). Never mix them when judging how bad something is. |
+| **Release** | Which version of WIEZ was running, e.g. `v2026.10.05-014717-047fb03`. The last part is the code version. |
+| **Last seen** | When it last happened. An issue last seen before the latest release may already be fixed. |
+| **Users** | How many signed-in people Sentry could identify. Guests and failures before sign-in count as zero, so "0 users" does not mean "nobody was affected". |
+| **Handled** | "Yes" means the code caught the error and reported it. It does **not** mean the person's action succeeded. |
 
-## The supplied example: NODE-NESTJS-A / 134599405
+## Reading one issue, top to bottom
 
-The exported event is 2026-10-11 02:03:05 UTC, environment sit, release v2026.10.05-014717-047fb03. GET https://api.weaz.me/ failed with HTTP 500. The server rejected the Origin https://api.weaz.me in its CORS callback. This proves that request failed; it does not establish that shopper checkout failed, or that the issue remains active on 21 October.
+1. **Check the environment and release first.** A production issue on the
+   current release matters most. A `sit` issue on an old release may be history.
+2. **Read the title.** It is the error's own message, e.g. "Origin is not
+   allowed by CORS" or "column X does not exist".
+3. **Find the first "In App" line in the stack trace.** The stack trace lists
+   every function that was running when it failed, deepest first. Lines marked
+   *In App* are WIEZ code; the rest are libraries. The first In App line is
+   where to start (e.g. `src/main.ts`, the CORS check).
+4. **Look at the breadcrumbs.** They are the trail of things that happened just
+   before the error: requests, database queries, page changes. They give
+   context; they do not prove what caused what.
+5. **Match the request ID** when two errors might be related. The same request
+   ID means the same request.
 
-- Handled: yes means caught/reported, not repaired. This event still returned 500.
-- Users: 0 does not establish zero affected people; an event may lack an identified user. The current backend sets an opaque user ID only when authenticated request context exists.
-- The screenshot's 1.5K total and one event in the selected view are different counters/scopes. Compare the same date/environment/release before interpreting a trend.
-- Client Mobile Safari/iOS describes the request's reported client; Linux/Node describes the backend. A user-agent string is not proof of a real shopper.
-- The first relevant frame is src/main.ts, the CORS callback. Do not edit node_modules/cors.
-- The actual browser/server origin and deployed allowlist need verification. Do not fix this by allowing every origin with credentials or suppressing all CORS reports.
-- Breadcrumbs include a physical-verification cron query reporting a missing column. A migration already defines reminderDayBeforeAt, reminderHourBeforeAt and awaitingReplyNudgedAt. Confirm the affected database's migration status and exact missing column before repair. This is separate from the demonstrated CORS exception.
+## Is it a bug, an old deployment, a missing database change, or a setting?
 
-## Current configuration, confirmed in source
+| What you see | Most likely | How to check |
+|---|---|---|
+| "column … does not exist", "relation … does not exist", Prisma `P2021`/`P2022` | A database change (migration) has not been applied where this ran | The deploy log or the migration list for that database |
+| The issue's release is older than what is running now, and it has not been seen since the deploy | Already fixed by a later deployment | Compare **Last seen** with the deploy time; the running version is in the release name |
+| "is not configured", "Origin is not allowed", missing key, wrong URL | A setting (environment variable) | The server's `.env` for that environment |
+| Same error on the **current** release, with real user steps in the breadcrumbs | A real defect in the app | Hand it to engineering (format below) |
 
-Backend Sentry uses SENTRY_ENVIRONMENT/APP_ENV, SENTRY_RELEASE/GIT_SHA, a default trace sample rate of 0.1, and sendDefaultPii: false. The exception filter adds requestId, HTTP method/path/status, and the authenticated opaque user ID when available. It explicitly captures server errors (status >=500). That filter is not a complete inventory of every SDK capture path or client failure.
+Never make an error disappear by ignoring it or turning reporting off. An
+issue is resolved when the cause is fixed, not when the dashboard is quiet.
 
-Backend: src/common/observability/sentry.instrument.ts and src/filters/All-exception.filter.ts. Web/mobile: src/observability/sentry.ts in each app. Deployed values, current Sentry settings, source-map upload health and alert recipients have not been independently verified in the live dashboard during this review.
+## What to look at first
 
-## Recommended saved views and alerts
+1. Payments, checkout, refunds and payouts.
+2. Signing up and signing in.
+3. Anything that loses or corrupts data.
+4. Crashes many people hit, then **New** and **Regressed** issues.
+5. Everything else, by how often it happens **and** who it affects. A loud
+   issue on one test account is less urgent than a quiet one in checkout.
 
-Keep separate environment views for backend, web and mobile. Start with new/regressed errors and unusually increasing failure frequency; use payment/auth business context for priority. Review the release after each deployment. Alert thresholds must follow observed traffic rather than invented user counts. No notification recipients or live dashboard settings were changed by this guide.
+## Resolve, reopen, ignore
 
-Ask for an engineering explanation in this format: **What failed / Who may be affected / Confirmed evidence / What remains unknown / Fix / Verification**.
+- **Resolve** only after the fix is deployed and you have checked the same
+  journey works. "Resolve in next release" is the safest choice.
+- **Regressed** means a resolved issue came back. Treat it as new.
+- **Ignore / archive** only for confirmed noise (for example a bot hitting a
+  page that does not exist). Write down why.
+- Resolving changes Sentry's bookkeeping. It does not change WIEZ.
 
-Sources: [Sentry Issue Details](https://docs.sentry.io/product/issues/issue-details/), [Issue Status](https://docs.sentry.io/product/issues/states-triage/), [Breadcrumbs](https://docs.sentry.io/platforms/javascript/guides/svelte/enriching-events/breadcrumbs/).
+## What Sentry never receives
+
+Before anything leaves the server, website or app it is scrubbed (server:
+`src/common/observability/sentry-scrub.ts`; web and app:
+`src/observability/sentry.ts`). Removed:
+
+- passwords, sign-in tokens, reset and verification links' tokens;
+- payment keys and saved-card authorization codes;
+- signed media links (the part that grants access);
+- email addresses, cookies, request bodies and query strings.
+
+Checkout recovery credentials inside `/custom-orders/resume/<token>` and
+`/custom-orders/checkout-sessions/resume/<token>` are also removed from request
+URLs, endpoint tags, errors, breadcrumbs, spans and logs. Ordinary order IDs
+remain available for diagnosis. CI and deployment both test this distinction.
+
+Kept: the page or endpoint path, the error message (scrubbed), the code
+location, the release, and an opaque user ID for signed-in people. On the
+website and app, performance tracing starts only after the visitor allows
+analytics; error reports do not need it.
+
+## Telegram alerts
+
+Sentry alerts are summarised into the WIEZ Telegram channel (see
+`TELEGRAM_MONITORING.md`). The summary is scrubbed the same way and links
+back to the issue. On SIT, `TELEGRAM_INCLUDE_USER_IDENTITY=true` (your
+decision) adds usernames and emails to user-activity alerts; turn it off
+before production, because Telegram keeps message history on its servers.
+
+## Asking engineering about an issue
+
+Send the issue link and say:
+**What failed / Who may be affected / Confirmed evidence / What remains
+unknown / Fix / How it was verified.** Never paste passwords, tokens or
+customer records into the request.
+
+## Worked example: NODE-NESTJS-A / 134599405
+
+2026-10-11 02:03:05 UTC, environment `sit`, release
+`v2026.10.05-014717-047fb03`. `GET https://api.weaz.me/` returned 500 because
+the server's CORS check refused the origin `https://api.weaz.me`.
+
+- It proves that request failed. It does not show checkout failed, or that the
+  issue still happens (check Last seen against later releases).
+- "Handled: yes" and "Users: 0" do not mean harmless; see the table above.
+- Start at `src/main.ts` (the CORS check). Do not fix it by allowing every
+  origin or by silencing CORS reports.
+- A breadcrumb in the same event shows a missing database column in a cron
+  query: a separate, migration-type problem (first row of the table).
+
+## Configuration (checked 2026-10-29)
+
+SIT: Sentry DSN set, `SENTRY_ENVIRONMENT=sit`, release stamped by
+`scripts/deploy.sh` (`SENTRY_RELEASE`, `GIT_SHA`), running `bd7aefe`. Trace
+sample rate defaults to 0.1. Source-map upload health, alert recipients and
+current dashboard issues were not reviewed: that needs a Sentry login or API
+token, which this review did not have.
+
+Sources: [Issue details](https://docs.sentry.io/product/issues/issue-details/),
+[Issue states](https://docs.sentry.io/product/issues/states-triage/),
+[Breadcrumbs](https://docs.sentry.io/platforms/javascript/enriching-events/breadcrumbs/).

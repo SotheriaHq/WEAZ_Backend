@@ -262,6 +262,53 @@ describe('AuthService Google auth foundation', () => {
       },
     });
     expect(mockPrisma.user.create).not.toHaveBeenCalled();
+    // A verified owner keeps their password and sessions.
+    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+    expect(mockPrisma.refreshToken.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('strips an unproven password and its sessions when Google proves the email owner', async () => {
+    // Someone signed up with this email and a password but never confirmed
+    // it. The real owner now arrives through Google.
+    const squatted = {
+      ...baseAuthUser,
+      isEmailVerified: false,
+      passwordCredentialStatus: PasswordCredentialStatus.ENABLED,
+      authVersion: 3,
+    };
+    const cleaned = {
+      ...squatted,
+      passwordCredentialStatus: PasswordCredentialStatus.NOT_SET,
+      authVersion: 4,
+    };
+    mockPrisma.authIdentity.findUnique.mockResolvedValue(null);
+    mockPrisma.user.findUnique.mockResolvedValue(squatted);
+    mockPrisma.user.update.mockResolvedValue(cleaned);
+    mockPrisma.refreshToken.deleteMany.mockResolvedValue({ count: 2 });
+
+    await service.googleAuth({ idToken: 'id-token' }, {} as any, {} as any);
+
+    expect(mockPrisma.authIdentity.create).toHaveBeenCalled();
+    expect(mockPrisma.refreshToken.deleteMany).toHaveBeenCalledWith({
+      where: { userId: 'user-1' },
+    });
+    expect(mockPrisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'user-1' },
+        data: expect.objectContaining({
+          password: null,
+          passwordCredentialStatus: PasswordCredentialStatus.NOT_SET,
+          authVersion: { increment: 1 },
+        }),
+      }),
+    );
+    // The new session is minted for the cleaned account, so it carries the
+    // bumped authVersion rather than one the bump just invalidated.
+    expect(mockTokenService.generateTokens).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'user-1', authVersion: 4 }),
+      expect.anything(),
+      expect.anything(),
+    );
   });
 
   it('blocks a Google SIGNUP when the email already has a linked Google account', async () => {
