@@ -96,6 +96,8 @@ jobs:
           node --test scripts/test-upload-content-security.cjs infrastructure/media-gateway/worker.test.cjs
       - name: Telemetry privacy regressions
         run: npm test -- src/common/observability/sentry-scrub.spec.ts --runInBand
+      - name: Design upload preflight regression
+        run: npm test -- src/collections/design-upload-preflight.spec.ts src/admin/system-config/system-config.service.spec.ts --runInBand
       - name: Sign-in and email-link security
         run: npm test -- src/auth/auth-google-foundation.spec.ts src/common/utils/auth-links.spec.ts src/email/email-links.spec.ts --runInBand
 

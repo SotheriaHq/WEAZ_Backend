@@ -1,6 +1,7 @@
 import { FileUpload, Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { DESIGN_MAX_MEDIA_COUNT } from './dto/create-collection.dto';
 
 type FinalizedMedia = {
   file: Pick<FileUpload, 'id' | 'fileType'>;
@@ -29,10 +30,7 @@ export async function attachFinalizedMedia(
   if (!locked.length) throw new NotFoundException('Collection not found');
   const [existing, brand] = await Promise.all([
     tx.collectionMedia.findMany({
-      where: {
-        collectionId: collection.id,
-        fileUploadId: { in: entries.map((entry) => entry.file.id) },
-      },
+      where: { collectionId: collection.id },
       select: { fileUploadId: true },
     }),
     tx.brand.findUnique({
@@ -63,6 +61,14 @@ export async function attachFinalizedMedia(
       brandId: brand?.id,
     });
   }
+  if (!data.length) return;
+  // Issuing upload slots only reads this count, so two saves can both pass that
+  // check. Under this row lock the count is final.
+  if (existing.length + data.length > DESIGN_MAX_MEDIA_COUNT) {
+    throw new BadRequestException(
+      `Maximum ${DESIGN_MAX_MEDIA_COUNT} files per design`,
+    );
+  }
   // Do not skip slot conflicts: they are a real content-integrity failure.
-  if (data.length) await tx.collectionMedia.createMany({ data });
+  await tx.collectionMedia.createMany({ data });
 }

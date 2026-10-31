@@ -252,6 +252,59 @@ describe('MediaProcessingService', () => {
       expect(preview.buffer.length).toBeLessThanOrEqual(capBytes);
     }, 30_000);
 
+    it('keeps every pixel when the JPEG will be the upload, whatever maxWidth says', async () => {
+      const jpeg = await makeNoisyJpeg(1600, 1200);
+      const upload = await service.generatePreviewJpeg(jpeg, {
+        maxWidth: 800,
+        quality: 99,
+        maxBytes: 2 * 1024 * 1024,
+        targetBytes: 1024 * 1024,
+      });
+      expect(upload.width).toBe(1600);
+      expect(upload.height).toBe(1200);
+      expect(upload.buffer.length).toBeLessThanOrEqual(1024 * 1024);
+    }, 30_000);
+
+    it('lowers quality rather than dimensions to reach a tight upload budget', async () => {
+      const jpeg = await makeNoisyJpeg(1600, 1200);
+      const generous = await service.generatePreviewJpeg(jpeg, {
+        maxBytes: 8 * 1024 * 1024,
+        targetBytes: 8 * 1024 * 1024,
+      });
+      const tight = await service.generatePreviewJpeg(jpeg, {
+        maxBytes: Math.floor(generous.buffer.length * 0.6),
+        targetBytes: Math.floor(generous.buffer.length * 0.6),
+      });
+      expect(tight.buffer.length).toBeLessThan(generous.buffer.length * 0.6);
+      expect([tight.width, tight.height]).toEqual([1600, 1200]);
+    }, 60_000);
+
+    it('refuses an upload it cannot fit instead of resizing it', async () => {
+      const jpeg = await makeNoisyJpeg(1600, 1200);
+      await expect(
+        service.generatePreviewJpeg(jpeg, {
+          maxBytes: 100 * 1024,
+          targetBytes: 100 * 1024,
+        }),
+      ).rejects.toThrow('too detailed');
+    }, 60_000);
+
+    it('holds concurrent upload encodes to two and frees a slot on failure', async () => {
+      const svc = new MediaProcessingService() as any;
+      await svc.acquireUploadEncode();
+      await svc.acquireUploadEncode();
+      let thirdStarted = false;
+      const third = svc.acquireUploadEncode().then(() => {
+        thirdStarted = true;
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(thirdStarted).toBe(false);
+      svc.releaseUploadEncode();
+      await third;
+      expect(thirdStarted).toBe(true);
+      expect(svc.activeUploadEncodes).toBe(2);
+    });
+
     it('rejects undecodable input', async () => {
       await expect(
         service.generatePreviewJpeg(Buffer.alloc(64, 0x41)),

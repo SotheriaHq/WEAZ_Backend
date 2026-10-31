@@ -75,9 +75,23 @@ describe('ImageController', () => {
       } as Express.Multer.File,
       response,
       { requestId: 'req-123' },
-      { maxWidth: '2048', quality: '82', maxBytes: '2097152' },
+      {
+        maxWidth: '2048',
+        quality: '82',
+        maxBytes: '2097152',
+        targetBytes: '1048576',
+      },
     );
 
+    expect(mediaProcessingService.generatePreviewJpeg).toHaveBeenCalledWith(
+      inputBuffer,
+      {
+        maxWidth: 2048,
+        quality: 82,
+        maxBytes: 2097152,
+        targetBytes: 1048576,
+      },
+    );
     const eventCall = logSpy.mock.calls.find(([message]) =>
       String(message).includes('upload.preview_image.transcoded'),
     );

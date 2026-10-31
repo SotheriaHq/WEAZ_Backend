@@ -252,6 +252,7 @@ export class UploadController {
     const requestedMaxWidth = parseOption(body?.maxWidth) ?? 1200;
     const requestedQuality = parseOption(body?.quality) ?? 99;
     const requestedMaxBytes = parseOption(body?.maxBytes);
+    const requestedTargetBytes = parseOption(body?.targetBytes);
     const originalSizeBytes = file.buffer.length;
     const startedAt = Date.now();
 
@@ -261,6 +262,7 @@ export class UploadController {
         maxWidth: requestedMaxWidth,
         quality: requestedQuality,
         maxBytes: requestedMaxBytes,
+        targetBytes: requestedTargetBytes,
       },
     );
     const outputSizeBytes = preview.buffer.length;
@@ -287,6 +289,7 @@ export class UploadController {
         requestedMaxWidth,
         requestedQuality,
         requestedMaxBytes,
+        requestedTargetBytes,
         durationMs: Date.now() - startedAt,
       }),
     );
