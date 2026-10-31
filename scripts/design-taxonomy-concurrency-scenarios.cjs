@@ -35,7 +35,7 @@ module.exports=async function verifyDesignTaxonomy({prisma,suggestions,categorie
   };
   const created=await draft(),id=created.designId;
   assert(id);let current=await prisma.collection.findUniqueOrThrow({where:{id}});
-  assert.equal(current.categoryId,null);assert.equal(current.categoryTypeId,null);assert.equal(current.pendingCategorySuggestionId,proposal.id);assert.equal(current.status,'DRAFT');
+  assert.equal(current.visibility,'PUBLIC');assert.equal(current.categoryId,null);assert.equal(current.categoryTypeId,null);assert.equal(current.pendingCategorySuggestionId,proposal.id);assert.equal(current.status,'DRAFT');
   await designs.updateDesign(id,owner,{description:'A relaxed jacket for everyday wear.'});
   current=await prisma.collection.findUniqueOrThrow({where:{id}});
   await designs.finalizeDesignUpload(id,owner,{action:'draft',completions:[],draftVersion:current.draftVersion,designMetadata:{title:'Everyday jacket'}});

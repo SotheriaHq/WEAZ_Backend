@@ -2428,6 +2428,7 @@ export class ContentIntegrityService {
 
         let ownerId: string | null = null;
         let targetTitle: string | null = null;
+        let targetIsPrivate = false;
         let targetType = String(submission.entityType);
         let targetId =
           submission.productId ??
@@ -2466,9 +2467,10 @@ export class ContentIntegrityService {
           const collection = await tx.collection.update({
             where: { id: collectionId },
             data: { status: nextEntityStatus } as any,
-            select: { id: true, ownerId: true, title: true },
+            select: { id: true, ownerId: true, title: true, visibility: true },
           });
           targetTitle = targetTitle ?? collection.title ?? null;
+          targetIsPrivate = collection.visibility === 'PRIVATE';
           ownerId = collection.ownerId;
           targetType = 'Collection';
           targetId = collection.id;
@@ -2566,6 +2568,7 @@ export class ContentIntegrityService {
                     targetTitle,
                     args.reasonNote,
                     recipientName,
+                    targetIsPrivate,
                   ),
                   title: targetTitle,
                   contentTitle: targetTitle,
@@ -3002,12 +3005,16 @@ export class ContentIntegrityService {
     title?: string | null,
     reasonNote?: string | null,
     recipientName?: string | null,
+    isPrivate = false,
   ) {
     const contentRef = title?.trim() ? `"${title.trim()}"` : 'your content';
     const when = this.formatUserFacingTime();
     const greeting = recipientName?.trim()
       ? `Hi ${recipientName.trim()} — `
       : '';
+    if (action === 'approve' && isPrivate) {
+      return `${greeting}great news! ${contentRef} was approved on ${when}. It is set to Private, so it stays off the Runway and your Public tab. Edit it and choose Public when you are ready for shoppers to see it.`;
+    }
     if (action === 'approve') {
       return `${greeting}great news! ${contentRef} was approved on ${when} and is now live. Shoppers can discover it on the Runway and place orders right away. Share it with your customers and friends to get more eyes on it.`;
     }
