@@ -844,6 +844,56 @@ describe('ImageService', () => {
     );
   });
 
+  it('issues a whole design with one write, in the requested order', async () => {
+    const create = jest.fn();
+    const createMany = jest.fn();
+    (service as any).prisma = { presignedUpload: { create, createMany } };
+    const requests = ['front.jpg', 'back.jpg', 'left.jpg'].map(
+      (originalName, index) => ({
+        originalName,
+        fileType: FileType.POST_IMAGE,
+        contentType: 'image/jpeg',
+        collectionId: 'design_1',
+        orderIndex: index + 2,
+      }),
+    );
+
+    const issued = await service.createPresignedUploads('user_1', requests);
+
+    expect(create).not.toHaveBeenCalled();
+    expect(createMany).toHaveBeenCalledTimes(1);
+    const rows = createMany.mock.calls[0][0].data;
+    expect(rows.map((row: any) => row.orderIndex)).toEqual([2, 3, 4]);
+    expect(rows.every((row: any) => row.collectionId === 'design_1')).toBe(
+      true,
+    );
+    expect(issued.map((upload) => upload.fileId)).toEqual(
+      rows.map((row: any) => row.id),
+    );
+    expect(issued.every((upload) => upload.method === 'PUT')).toBe(true);
+  });
+
+  it('writes nothing when any file in a set is refused', async () => {
+    const createMany = jest.fn();
+    (service as any).prisma = { presignedUpload: { createMany } };
+    await expect(
+      service.createPresignedUploads('user_1', [
+        {
+          originalName: 'look.jpg',
+          fileType: FileType.POST_IMAGE,
+          contentType: 'image/jpeg',
+        },
+        {
+          originalName: 'script.exe',
+          fileType: FileType.POST_IMAGE,
+          contentType: 'application/x-msdownload',
+        },
+      ]),
+    ).rejects.toThrow();
+    expect(createMany).not.toHaveBeenCalled();
+    expect(getSignedUrl).not.toHaveBeenCalled();
+  });
+
   it('retains a recoverable staging intent and fails visibly when server storage is unavailable', async () => {
     const intents: unknown[] = [];
     const createFile = jest.fn();

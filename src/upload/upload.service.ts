@@ -524,12 +524,13 @@ export class UploadService {
       throw new BadRequestException('Uploaded file is empty or incomplete');
     }
     const mimeType = this.normalizeContentType(file.mimetype)!;
-    const intent = await this.createUploadIntent(
+    const intent = this.buildUploadIntent(
       userId,
       file.originalname,
       fileType,
       mimeType,
     );
+    await this.prisma.presignedUpload.create({ data: intent as any });
     try {
       await this.s3.send(
         new PutObjectCommand({
@@ -563,7 +564,7 @@ export class UploadService {
     }
   }
 
-  private async createUploadIntent(
+  private buildUploadIntent(
     userId: string,
     originalName: string,
     fileType: FileType,
@@ -580,7 +581,7 @@ export class UploadService {
       `${fileType}/${userId}/`,
       `${fileType}/${userId}/pending/`,
     );
-    const data = {
+    return {
       id,
       userId,
       originalName,
@@ -593,9 +594,51 @@ export class UploadService {
       viewSlot: options?.viewSlot ?? null,
       expiresAt: new Date(Date.now() + 600_000),
     };
-    // The intent is durable before any external storage write; expired staging is recoverable.
-    await this.prisma.presignedUpload.create({ data: data as any });
-    return data;
+  }
+
+  private async assertUploadRequest(
+    originalName: string,
+    fileType: FileType,
+    contentType?: string,
+  ): Promise<string> {
+    this.assertAllowedExtension(originalName, fileType);
+    const trustedContentType =
+      this.normalizeContentType(contentType) ??
+      this.inferContentType(originalName);
+    this.assertAllowedMimeType(trustedContentType, fileType);
+    assertAllowedUploadType(originalName, trustedContentType, fileType);
+    await this.getMaxFileSize(fileType);
+    return trustedContentType;
+  }
+
+  private async signUploadIntent(intent: {
+    id: string;
+    s3Key: string;
+    contentType: string;
+  }) {
+    const uploadHeaders = {
+      'Content-Type': intent.contentType,
+      'Cache-Control': 'private, max-age=0, no-store',
+    };
+    const url = await getSignedUrl(
+      this.s3,
+      new PutObjectCommand({
+        Bucket: this.bucketName,
+        Key: intent.s3Key,
+        ContentType: intent.contentType,
+        CacheControl: 'private, max-age=0, no-store',
+      }),
+      { expiresIn: 600, signableHeaders: new Set(['content-type']) },
+    );
+    return {
+      url,
+      key: intent.s3Key,
+      fileId: intent.id,
+      fields: {},
+      method: 'PUT',
+      uploadHeaders,
+      expiresIn: 600,
+    };
   }
 
   // Generate presigned POST data for client direct-to-S3 uploads
@@ -610,47 +653,55 @@ export class UploadService {
       viewSlot?: string | null;
     },
   ) {
-    // Persist staging intent before issuing an R2 PUT capability.
-    this.assertAllowedExtension(originalName, fileType);
-    const trustedContentType =
-      this.normalizeContentType(contentType) ??
-      this.inferContentType(originalName);
-    this.assertAllowedMimeType(trustedContentType, fileType);
-    assertAllowedUploadType(originalName, trustedContentType, fileType);
-    await this.getMaxFileSize(fileType);
-
-    const intent = await this.createUploadIntent(
+    const trustedContentType = await this.assertUploadRequest(
+      originalName,
+      fileType,
+      contentType,
+    );
+    const intent = this.buildUploadIntent(
       userId,
       originalName,
       fileType,
       trustedContentType,
       options,
     );
-    const fileId = intent.id;
-    const key = intent.s3Key;
-    const uploadHeaders = {
-      'Content-Type': trustedContentType,
-      'Cache-Control': 'private, max-age=0, no-store',
-    };
-    const url = await getSignedUrl(
-      this.s3,
-      new PutObjectCommand({
-        Bucket: this.bucketName,
-        Key: key,
-        ContentType: trustedContentType,
-        CacheControl: 'private, max-age=0, no-store',
-      }),
-      { expiresIn: 600, signableHeaders: new Set(['content-type']) },
+    // The intent is durable before any external storage write; expired staging is recoverable.
+    await this.prisma.presignedUpload.create({ data: intent as any });
+    return this.signUploadIntent(intent);
+  }
+
+  /**
+   * One write for a whole set of files. Issuing these one at a time cost a
+   * design a query per photo and could leave part of a set behind on failure.
+   */
+  async createPresignedUploads(
+    userId: string,
+    requests: Array<{
+      originalName: string;
+      fileType: FileType;
+      contentType?: string;
+      collectionId?: string;
+      orderIndex?: number;
+      viewSlot?: string | null;
+    }>,
+  ) {
+    const intents = await Promise.all(
+      requests.map(async (request) =>
+        this.buildUploadIntent(
+          userId,
+          request.originalName,
+          request.fileType,
+          await this.assertUploadRequest(
+            request.originalName,
+            request.fileType,
+            request.contentType,
+          ),
+          request,
+        ),
+      ),
     );
-    return {
-      url,
-      key,
-      fileId,
-      fields: {},
-      method: 'PUT',
-      uploadHeaders,
-      expiresIn: 600,
-    };
+    await this.prisma.presignedUpload.createMany({ data: intents as any });
+    return Promise.all(intents.map((intent) => this.signUploadIntent(intent)));
   }
 
   async updateUserProfileImage(

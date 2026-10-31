@@ -5,6 +5,7 @@ import {
   BadRequestException,
   ForbiddenException,
 } from '@nestjs/common';
+import { isUUID } from 'class-validator';
 import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -107,17 +108,20 @@ export class SavedItemsService {
       throw new NotFoundException(`${createSavedItemDto.targetType} not found`);
     }
 
-    // Create the saved item
-    const savedItem = await this.prisma.savedItem.create({
-      data: {
-        id: uuidv4(),
-        user: { connect: { id: userId } },
-        targetType: createSavedItemDto.targetType,
-        targetId: createSavedItemDto.targetId,
-      },
+    // A double tap reaches here twice. The second insert is a no-op, not a 500.
+    const key = {
+      userId,
+      targetType: createSavedItemDto.targetType,
+      targetId: createSavedItemDto.targetId,
+    };
+    await this.prisma.savedItem.createMany({
+      data: [{ id: uuidv4(), ...key }],
+      skipDuplicates: true,
     });
 
-    return savedItem;
+    return this.prisma.savedItem.findUniqueOrThrow({
+      where: { userId_targetType_targetId: key },
+    });
   }
 
   async unsaveItem(userId: string, createSavedItemDto: CreateSavedItemDto) {
@@ -341,6 +345,16 @@ export class SavedItemsService {
     targetType: SavedItemTypeDto,
     targetId: string,
   ) {
+    // The controller reads these straight from the query string, so nothing has
+    // validated them. Prisma throws on an unknown enum or a malformed UUID, and
+    // a bad client request must not read as a server fault.
+    if (!Object.values(SavedItemTypeDto).includes(targetType)) {
+      throw new BadRequestException('targetType cannot be saved');
+    }
+    if (!isUUID(targetId)) {
+      throw new BadRequestException('targetId must be a UUID');
+    }
+
     const savedItem = await this.prisma.savedItem.findUnique({
       where: {
         userId_targetType_targetId: {

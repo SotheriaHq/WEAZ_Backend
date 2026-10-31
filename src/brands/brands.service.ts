@@ -1140,14 +1140,20 @@ export class BrandsService {
 
     // Create new request
     const patchId = uuidv4();
-    await this.prisma.brandPatch.create({
-      data: {
-        id: patchId,
-        requesterId,
-        receiverId,
-        status: PatchStatus.PENDING,
-      },
+    const { count: created } = await this.prisma.brandPatch.createMany({
+      data: [
+        {
+          id: patchId,
+          requesterId,
+          receiverId,
+          status: PatchStatus.PENDING,
+        },
+      ],
+      skipDuplicates: true,
     });
+    if (created === 0) {
+      throw new BadRequestException('Patch request already pending');
+    }
 
     await this.recordPatchHistoryForPair({
       patchId,

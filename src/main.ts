@@ -20,7 +20,11 @@ initSentry();
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { TransformInterceptor } from './transform/transform.interceptor';
-import { BadRequestException, ValidationPipe } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  ValidationPipe,
+} from '@nestjs/common';
 import { Logger } from 'nestjs-pino';
 import { AllExceptionsFilter } from './filters/All-exception.filter';
 import cookieParser from 'cookie-parser';
@@ -441,7 +445,7 @@ async function bootstrap() {
         }
 
         logger.warn(`CORS blocked origin: ${origin}`);
-        callback(new Error(`Origin ${origin} is not allowed by CORS`), false);
+        callback(new ForbiddenException('Origin is not allowed'), false);
       },
       methods: configService.get<string>(
         'CORS_ALLOWED_METHODS',

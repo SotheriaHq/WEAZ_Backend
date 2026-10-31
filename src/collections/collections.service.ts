@@ -1,3 +1,4 @@
+import { lockForTransaction } from 'src/common/transaction-lock.util';
 import {
   BULK_IMPORT_BATCH_SIZE,
   claimBulkImport,
@@ -20,6 +21,11 @@ import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
 import { refreshCollectionPriceRanges } from '../store/collection-price-range.util';
 import { attachFinalizedMedia } from './finalized-media-query';
+import {
+  clearUploadIncomplete,
+  designSizingFields,
+  DRAFT_REASON_UPLOAD_INCOMPLETE,
+} from './design-sizing';
 import {
   lockMembershipProducts,
   readProductMemberships,
@@ -426,11 +432,8 @@ export class CollectionsService {
   private async assertDesignCustomOrderPublishReady(
     sourceId: string,
     ownerId: string,
-    customOrderEnabled: boolean,
     tx?: Prisma.TransactionClient,
   ) {
-    if (!customOrderEnabled) return;
-
     const prismaClient = tx ?? this.prisma;
     const activeConfiguration =
       await prismaClient.customOrderConfiguration.findFirst({
@@ -445,7 +448,7 @@ export class CollectionsService {
 
     if (!activeConfiguration) {
       throw new BadRequestException(
-        'Custom orders are enabled, but no active custom-order configuration exists for this design.',
+        'Finish the custom-order setup for this design before publishing.',
       );
     }
   }
@@ -1442,51 +1445,37 @@ export class CollectionsService {
       select: { id: true, viewerId: true },
     } as any);
 
-    const existingIdsByViewer = new Map<string, string[]>();
-    for (const row of existingRows) {
-      const ids = existingIdsByViewer.get(row.viewerId) ?? [];
-      ids.push(row.id);
-      existingIdsByViewer.set(row.viewerId, ids);
-    }
+    const existingViewerIds = new Set<string>(
+      existingRows.map((row) => row.viewerId),
+    );
 
-    const operations: Prisma.PrismaPromise<any>[] = [];
+    const existingIds = existingRows.map((row) => row.id);
+    const newViewerIds = uniqueViewerIds.filter(
+      (viewerId) => !existingViewerIds.has(viewerId),
+    );
+    const access = {
+      state,
+      notes: options?.notes ?? null,
+      grantedBy: options?.grantedBy ?? null,
+      updatedAt: now,
+    };
 
-    for (const viewerId of uniqueViewerIds) {
-      const existingIds = existingIdsByViewer.get(viewerId) ?? [];
-      if (existingIds.length > 0) {
-        operations.push(
-          this.prisma.collectionAccess.updateMany({
-            where: { id: { in: existingIds } },
-            data: {
-              state,
-              notes: options?.notes ?? null,
-              grantedBy: options?.grantedBy ?? null,
-              updatedAt: now,
-            },
-          } as any),
-        );
-        continue;
-      }
-
-      operations.push(
-        this.prisma.collectionAccess.create({
-          data: {
-            id: uuidv4(),
-            collectionId,
-            viewerId,
-            state,
-            notes: options?.notes ?? null,
-            grantedBy: options?.grantedBy ?? null,
-            createdAt: options?.createdAt ?? now,
-            updatedAt: now,
-          },
-        } as any),
-      );
-    }
-
-    if (operations.length > 0) {
-      await this.prisma.$transaction(operations);
-    }
+    await this.prisma.$transaction([
+      this.prisma.collectionAccess.updateMany({
+        where: { id: { in: existingIds } },
+        data: access,
+      } as any),
+      this.prisma.collectionAccess.createMany({
+        data: newViewerIds.map((viewerId) => ({
+          id: uuidv4(),
+          collectionId,
+          viewerId,
+          ...access,
+          createdAt: options?.createdAt ?? now,
+        })),
+        skipDuplicates: true,
+      } as any),
+    ]);
   }
 
   async requestAccess(collectionId: string, requesterId: string) {
@@ -2540,6 +2529,57 @@ export class CollectionsService {
   // Existing web/mobile clients still use this collection-backed path for
   // design creation. New design-owned entry points should call DesignsService,
   // which delegates here through the legacy adapter until persistence is split.
+  private async validateDesignUploadSpecs(files: FileSpecDto[]) {
+    await Promise.all(
+      files.map((spec) =>
+        this.helperservice.validateFileSpec(
+          spec,
+          this.helperservice.determineFileType(spec.type, spec.fileType),
+        ),
+      ),
+    );
+  }
+
+  private async issueDesignUploads(
+    userId: string,
+    collectionId: string,
+    files: FileSpecDto[],
+    firstOrderIndex = 0,
+  ) {
+    const requests = files.map((fileSpec, index) => {
+      const orderIndex = firstOrderIndex + index;
+      return {
+        originalName: fileSpec.name,
+        fileType: this.helperservice.determineFileType(
+          fileSpec.type,
+          fileSpec.fileType,
+        ) as any,
+        contentType: fileSpec.type,
+        collectionId,
+        orderIndex,
+        viewSlot: this.contentIntegrity?.normalizeViewSlot(
+          (fileSpec as any).viewSlot,
+          orderIndex,
+        ),
+      };
+    });
+    const issued = await this.uploadService.createPresignedUploads(
+      userId,
+      requests,
+    );
+    return issued.map((presign, index) => ({
+      fileId: presign.fileId,
+      orderIndex: requests[index].orderIndex,
+      viewSlot: requests[index].viewSlot,
+      expectedKey: presign.key,
+      uploadUrl: presign.url,
+      uploadFields: presign.fields,
+      method: presign.method,
+      uploadHeaders: presign.uploadHeaders,
+      expiresIn: presign.expiresIn,
+    }));
+  }
+
   async initializeCollection(userId: string, dto: CreateCollectionDto) {
     const catalogContext = await this.resolveCatalogOwnerContext(userId);
     const ownerId = catalogContext.ownerId;
@@ -2550,6 +2590,8 @@ export class CollectionsService {
         `Maximum ${DESIGN_MAX_MEDIA_COUNT} files per design`,
       );
     }
+
+    if (hasFiles) await this.validateDesignUploadSpecs(dto.files!);
 
     // Store-collection session initialization (no media required)
     if (!hasFiles && dto.mode) {
@@ -2653,10 +2695,8 @@ export class CollectionsService {
             minPrice: dto.minPrice,
             maxPrice: dto.maxPrice,
             isAvailableInStore: dto.isAvailableInStore ?? false,
-            sizingMode: dto.sizingMode ?? 'NONE',
-            rtwSizes: Array.isArray(dto.rtwSizes) ? dto.rtwSizes : [],
-            rtwSizeSystem: dto.rtwSizeSystem ?? null,
-            rtwSizeType: dto.rtwSizeType ?? null,
+            ...designSizingFields(),
+            draftReason: hasFiles ? DRAFT_REASON_UPLOAD_INCOMPLETE : null,
             customGender: dto.customGender ?? null,
             customMeasurementKeys: this.normalizeMeasurementKeys(
               dto.customMeasurementKeys,
@@ -2714,39 +2754,10 @@ export class CollectionsService {
         };
       }
 
-      const uploadData = await Promise.all(
-        dto.files.map(async (fileSpec, index) => {
-          const viewSlot = this.contentIntegrity?.normalizeViewSlot(
-            (fileSpec as any).viewSlot,
-            index,
-          );
-          // Validate and determine file type
-          const fileType = this.helperservice.determineFileType(
-            fileSpec.type,
-            fileSpec.fileType,
-          );
-          await this.helperservice.validateFileSpec(fileSpec, fileType);
-
-          const presign = await this.uploadService.createPresignedUpload(
-            userId,
-            fileSpec.name,
-            fileType as any,
-            fileSpec.type,
-            { collectionId, orderIndex: index, viewSlot },
-          );
-
-          return {
-            fileId: (presign as any).fileId,
-            orderIndex: index,
-            viewSlot,
-            expectedKey: (presign as any).key,
-            uploadUrl: (presign as any).url,
-            uploadFields: (presign as any).fields,
-            method: (presign as any).method,
-            uploadHeaders: (presign as any).uploadHeaders,
-            expiresIn: (presign as any).expiresIn || 600,
-          };
-        }),
+      const uploadData = await this.issueDesignUploads(
+        userId,
+        collectionId,
+        dto.files,
       );
 
       return {
@@ -2823,10 +2834,8 @@ export class CollectionsService {
           minPrice: dto.minPrice,
           maxPrice: dto.maxPrice,
           isAvailableInStore: false,
-          sizingMode: dto.sizingMode ?? 'NONE',
-          rtwSizes: Array.isArray(dto.rtwSizes) ? dto.rtwSizes : [],
-          rtwSizeSystem: dto.rtwSizeSystem ?? null,
-          rtwSizeType: dto.rtwSizeType ?? null,
+          ...designSizingFields(),
+          draftReason: DRAFT_REASON_UPLOAD_INCOMPLETE,
           customGender: dto.customGender ?? null,
           customMeasurementKeys: this.normalizeMeasurementKeys(
             dto.customMeasurementKeys,
@@ -2876,41 +2885,10 @@ export class CollectionsService {
       );
     }
 
-    // Generate presigned URLs for each file using UploadService (creates presign DB entries)
-    const uploadData = await Promise.all(
-      dto.files.map(async (fileSpec, index) => {
-        const viewSlot = this.contentIntegrity?.normalizeViewSlot(
-          (fileSpec as any).viewSlot,
-          index,
-        );
-        // Validate and determine file type
-        const fileType = this.helperservice.determineFileType(
-          fileSpec.type,
-          fileSpec.fileType,
-        );
-        await this.helperservice.validateFileSpec(fileSpec, fileType);
-
-        // Use UploadService to create presigned POST and presign DB record
-        const presign = await this.uploadService.createPresignedUpload(
-          userId,
-          fileSpec.name,
-          fileType as any,
-          fileSpec.type,
-          { collectionId, orderIndex: index, viewSlot },
-        );
-
-        return {
-          fileId: (presign as any).fileId,
-          orderIndex: index,
-          viewSlot,
-          expectedKey: (presign as any).key,
-          uploadUrl: (presign as any).url,
-          uploadFields: (presign as any).fields,
-          method: (presign as any).method,
-          uploadHeaders: (presign as any).uploadHeaders,
-          expiresIn: (presign as any).expiresIn || 600, // default 10 minutes
-        };
-      }),
+    const uploadData = await this.issueDesignUploads(
+      userId,
+      collectionId,
+      dto.files,
     );
 
     return {
@@ -2950,6 +2928,8 @@ export class CollectionsService {
       );
     }
 
+    await this.validateDesignUploadSpecs(files);
+
     const existingMediaCount = await this.prisma.collectionMedia.count({
       where: { collectionId },
     });
@@ -2959,39 +2939,11 @@ export class CollectionsService {
       );
     }
 
-    const uploads = await Promise.all(
-      files.map(async (fileSpec, index) => {
-        const orderIndex = existingMediaCount + index;
-        const viewSlot = this.contentIntegrity?.normalizeViewSlot(
-          (fileSpec as any).viewSlot,
-          orderIndex,
-        );
-        const fileType = this.helperservice.determineFileType(
-          fileSpec.type,
-          fileSpec.fileType,
-        );
-        await this.helperservice.validateFileSpec(fileSpec, fileType);
-
-        const presign = await this.uploadService.createPresignedUpload(
-          userId,
-          fileSpec.name,
-          fileType as any,
-          fileSpec.type,
-          { collectionId, orderIndex, viewSlot },
-        );
-
-        return {
-          fileId: (presign as any).fileId,
-          orderIndex,
-          viewSlot,
-          expectedKey: (presign as any).key,
-          uploadUrl: (presign as any).url,
-          uploadFields: (presign as any).fields,
-          method: (presign as any).method,
-          uploadHeaders: (presign as any).uploadHeaders,
-          expiresIn: (presign as any).expiresIn || 600,
-        };
-      }),
+    const uploads = await this.issueDesignUploads(
+      userId,
+      collectionId,
+      files,
+      existingMediaCount,
     );
 
     return {
@@ -4031,10 +3983,6 @@ export class CollectionsService {
           30,
         );
       }
-      const nextCustomOrderEnabled =
-        typeof (metadata as any).customOrderEnabled === 'boolean'
-          ? Boolean((metadata as any).customOrderEnabled)
-          : Boolean((collection as any).customOrderEnabled);
 
       if (action === 'publish') {
         const nextTitle = metadata.title ?? collection.title;
@@ -4073,7 +4021,6 @@ export class CollectionsService {
         await this.assertDesignCustomOrderPublishReady(
           collectionId,
           collection.ownerId,
-          nextCustomOrderEnabled,
         );
       }
 
@@ -4173,14 +4120,8 @@ export class CollectionsService {
               maxPrice: collection.maxPrice,
               saleMinPrice: collection.saleMinPrice,
               saleMaxPrice: collection.saleMaxPrice,
-              sizingMode: metadata.sizingMode ?? (collection as any).sizingMode,
-              rtwSizes: Array.isArray(metadata.rtwSizes)
-                ? metadata.rtwSizes
-                : (collection as any).rtwSizes,
-              rtwSizeSystem:
-                metadata.rtwSizeSystem ?? (collection as any).rtwSizeSystem,
-              rtwSizeType:
-                metadata.rtwSizeType ?? (collection as any).rtwSizeType,
+              ...designSizingFields(),
+              ...clearUploadIncomplete(collection.draftReason),
               customGender:
                 metadata.customGender ?? (collection as any).customGender,
               customMeasurementKeys: Array.isArray(
@@ -4188,10 +4129,6 @@ export class CollectionsService {
               )
                 ? this.normalizeMeasurementKeys(metadata.customMeasurementKeys)
                 : (collection as any).customMeasurementKeys,
-              customOrderEnabled:
-                typeof (metadata as any).customOrderEnabled === 'boolean'
-                  ? Boolean((metadata as any).customOrderEnabled)
-                  : Boolean((collection as any).customOrderEnabled),
               customFreeformPointIds: Array.isArray(
                 metadata.customFreeformPointIds,
               )
@@ -4583,10 +4520,6 @@ export class CollectionsService {
       completionMetadata.filterValueIds,
     );
     let validatedCompletionFilterValueIds = completionFilterValueIds;
-    const completionCustomOrderEnabled =
-      typeof completionMetadata.customOrderEnabled === 'boolean'
-        ? Boolean(completionMetadata.customOrderEnabled)
-        : Boolean((collection as any).customOrderEnabled);
     if (completionAction === 'publish') {
       const nextTitle = completionMetadata.title ?? collection.title;
       if (!nextTitle || !nextTitle.trim()) {
@@ -4653,7 +4586,6 @@ export class CollectionsService {
       await this.assertDesignCustomOrderPublishReady(
         collectionId,
         collection.ownerId,
-        completionCustomOrderEnabled,
       );
     }
 
@@ -4682,16 +4614,8 @@ export class CollectionsService {
           type: completionMetadata.type ?? collection.type,
           ...taxonomy,
           tags: completionResolvedTags,
-          sizingMode:
-            completionMetadata.sizingMode ?? (collection as any).sizingMode,
-          rtwSizes: Array.isArray(completionMetadata.rtwSizes)
-            ? completionMetadata.rtwSizes
-            : (collection as any).rtwSizes,
-          rtwSizeSystem:
-            completionMetadata.rtwSizeSystem ??
-            (collection as any).rtwSizeSystem,
-          rtwSizeType:
-            completionMetadata.rtwSizeType ?? (collection as any).rtwSizeType,
+          ...designSizingFields(),
+          ...clearUploadIncomplete(collection.draftReason),
           customGender:
             completionMetadata.customGender ?? (collection as any).customGender,
           customMeasurementKeys: Array.isArray(
@@ -4701,7 +4625,6 @@ export class CollectionsService {
                 completionMetadata.customMeasurementKeys,
               )
             : (collection as any).customMeasurementKeys,
-          customOrderEnabled: completionCustomOrderEnabled,
           customFreeformPointIds: Array.isArray(
             completionMetadata.customFreeformPointIds,
           )
@@ -5393,12 +5316,16 @@ export class CollectionsService {
       .map((item, index) => ({ productId: item.productId, orderIndex: index }));
 
     await this.prisma.$transaction(async (tx) => {
-      for (const item of normalized) {
-        await tx.storeCollectionProduct.updateMany({
-          where: { collectionId, productId: item.productId },
-          data: { orderIndex: item.orderIndex },
-        });
-      }
+      await tx.$executeRaw`
+        UPDATE "StoreCollectionProduct" AS link
+        SET "orderIndex" = next.position
+        FROM unnest(
+          ${normalized.map((item) => item.productId)}::uuid[],
+          ${normalized.map((item) => item.orderIndex)}::int[]
+        ) AS next(id, position)
+        WHERE link."collectionId" = ${collectionId}::uuid
+          AND link."productId" = next.id
+      `;
 
       await this.touchDraftActivity(tx, collectionId, 'STORE');
     });
@@ -5483,12 +5410,15 @@ export class CollectionsService {
           orderIndex: index,
         }));
 
-      for (const item of normalizedItems) {
-        await tx.collectionMedia.update({
-          where: { id: item.mediaId },
-          data: { orderIndex: item.orderIndex },
-        });
-      }
+      await tx.$executeRaw`
+        UPDATE "CollectionMedia" AS media
+        SET "orderIndex" = next.position
+        FROM unnest(
+          ${normalizedItems.map((item) => item.mediaId)}::uuid[],
+          ${normalizedItems.map((item) => item.orderIndex)}::int[]
+        ) AS next(id, position)
+        WHERE media."_id" = next.id
+      `;
 
       const currentCoverMediaId =
         typeof (collection as any).coverMediaId === 'string'
@@ -8499,15 +8429,21 @@ export class CollectionsService {
       return { status: 'PENDING', message: 'Contribution request resent' };
     }
 
-    await this.prisma.contributionRequest.create({
-      data: {
-        id: uuidv4(),
-        requesterId,
-        collectionId,
-        message,
-        status: PatchStatus.PENDING,
-      },
+    const { count: created } = await this.prisma.contributionRequest.createMany({
+      data: [
+        {
+          id: uuidv4(),
+          requesterId,
+          collectionId,
+          message,
+          status: PatchStatus.PENDING,
+        },
+      ],
+      skipDuplicates: true,
     });
+    if (created === 0) {
+      throw new BadRequestException('Contribution request already pending');
+    }
 
     // Notify owner
     if (this.notifications) {
@@ -8642,43 +8578,46 @@ export class CollectionsService {
       throw new ForbiddenException('Only brands can collab collections');
     }
 
-    // Check if brand already collabed this collection
-    const existingCollab = await this.prisma.collectionCollab.findFirst({
-      where: {
-        collectionId,
-        patchingBrandId: collabBrandId,
-      },
-    });
-
-    if (existingCollab) {
-      throw new BadRequestException(
-        'You have already collabed this collection',
-      );
-    }
-
-    // Create collab record
-    const collab = await this.prisma.collectionCollab.create({
-      data: {
-        id: uuidv4(),
-        collectionId,
-        patchingBrandId: collabBrandId,
-        weight,
-      },
-      include: {
-        patchingBrand: {
-          select: this.selectCollectionOwnerDisplay(),
+    // The duplicate check and the recount both depend on the last collab, so
+    // collabs on one collection take turns.
+    const collab = await this.prisma.$transaction(async (tx) => {
+      await lockForTransaction(tx, `collection-collab-${collectionId}`);
+      const existingCollab = await tx.collectionCollab.findFirst({
+        where: {
+          collectionId,
+          patchingBrandId: collabBrandId,
         },
-      },
-    });
+      });
 
-    // Update denormalized collabs count
-    const totalCollabs = await this.prisma.collectionCollab.count({
-      where: { collectionId },
-    });
+      if (existingCollab) {
+        throw new BadRequestException(
+          'You have already collabed this collection',
+        );
+      }
 
-    await this.prisma.collection.update({
-      where: { id: collectionId },
-      data: { collectionCollabsCount: totalCollabs },
+      const created = await tx.collectionCollab.create({
+        data: {
+          id: uuidv4(),
+          collectionId,
+          patchingBrandId: collabBrandId,
+          weight,
+        },
+        include: {
+          patchingBrand: {
+            select: this.selectCollectionOwnerDisplay(),
+          },
+        },
+      });
+
+      const totalCollabs = await tx.collectionCollab.count({
+        where: { collectionId },
+      });
+      await tx.collection.update({
+        where: { id: collectionId },
+        data: { collectionCollabsCount: totalCollabs },
+      });
+
+      return created;
     });
 
     // Optional: Create notification for collection owner
@@ -9616,6 +9555,7 @@ export class CollectionsService {
         categoryId: true,
         categoryTypeId: true,
         customOrderEnabled: true,
+        draftReason: true,
       } as any,
     } as any)) as any;
     if (!existing) throw new NotFoundException('Collection not found');
@@ -9718,21 +9658,30 @@ export class CollectionsService {
       data.saleStartAt = body.saleStartAt ? new Date(body.saleStartAt) : null;
     if (typeof body.saleEndAt === 'string' || body.saleEndAt === null)
       data.saleEndAt = body.saleEndAt ? new Date(body.saleEndAt) : null;
-    if (typeof body.sizingMode === 'string') data.sizingMode = body.sizingMode;
-    if (Array.isArray(body.rtwSizes)) data.rtwSizes = body.rtwSizes;
-    if (typeof body.rtwSizeSystem === 'string' || body.rtwSizeSystem === null)
-      data.rtwSizeSystem = body.rtwSizeSystem;
-    if (typeof body.rtwSizeType === 'string' || body.rtwSizeType === null)
-      data.rtwSizeType = body.rtwSizeType;
+    const isDesign = existing.domain === 'DESIGN';
+    if (isDesign) {
+      Object.assign(
+        data,
+        designSizingFields(),
+        clearUploadIncomplete(existing.draftReason),
+      );
+    } else {
+      if (typeof body.sizingMode === 'string')
+        data.sizingMode = body.sizingMode;
+      if (Array.isArray(body.rtwSizes)) data.rtwSizes = body.rtwSizes;
+      if (typeof body.rtwSizeSystem === 'string' || body.rtwSizeSystem === null)
+        data.rtwSizeSystem = body.rtwSizeSystem;
+      if (typeof body.rtwSizeType === 'string' || body.rtwSizeType === null)
+        data.rtwSizeType = body.rtwSizeType;
+      if (typeof body.customOrderEnabled === 'boolean')
+        data.customOrderEnabled = body.customOrderEnabled;
+    }
     if (typeof body.customGender === 'string' || body.customGender === null)
       data.customGender = body.customGender;
     if (Array.isArray(body.customMeasurementKeys))
       data.customMeasurementKeys = this.normalizeMeasurementKeys(
         body.customMeasurementKeys,
       );
-    if (typeof body.customOrderEnabled === 'boolean') {
-      data.customOrderEnabled = body.customOrderEnabled;
-    }
     if (Array.isArray(body.customFreeformPointIds))
       data.customFreeformPointIds = body.customFreeformPointIds;
     if (typeof body.fitPreference === 'string' || body.fitPreference === null)
@@ -9825,16 +9774,8 @@ export class CollectionsService {
       data.draftVersion = { increment: 1 };
     }
 
-    const nextCustomOrderEnabled =
-      typeof body.customOrderEnabled === 'boolean'
-        ? body.customOrderEnabled
-        : Boolean(existing.customOrderEnabled);
-    if (existing.status === 'PUBLISHED') {
-      await this.assertDesignCustomOrderPublishReady(
-        collectionId,
-        ownerId,
-        nextCustomOrderEnabled,
-      );
+    if (existing.status === 'PUBLISHED' && isDesign) {
+      await this.assertDesignCustomOrderPublishReady(collectionId, ownerId);
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -9860,7 +9801,7 @@ export class CollectionsService {
       });
     });
 
-    if (body.customOrderEnabled === false) {
+    if (!isDesign && body.customOrderEnabled === false) {
       await this.prisma.customOrderConfiguration.updateMany({
         where: {
           sourceType: CustomOrderSourceType.DESIGN,
@@ -10751,83 +10692,87 @@ export class CollectionsService {
       }
     }
 
-    const activeSession = await this.prisma.collectionDraftSession.findFirst({
-      where: {
-        collectionId: draftId,
-        ownerId,
-        isActive: true,
-        expiresAt: { gt: now },
-      },
-      orderBy: { lastHeartbeatAt: 'desc' },
-    });
+    return this.prisma.$transaction(async (tx) => {
+      await lockForTransaction(tx, `draft-session-${draftId}`);
 
-    /**
-     * An idle session is an abandoned one — reclaim it silently.
-     *
-     * `ownerId` here is the JWT subject and the query filters on it, so EVERY
-     * conflict this method can raise is the same human against themselves;
-     * there is no cross-user path and never was. The session TTL is 30 minutes
-     * and nothing heartbeats it except another draft write, so simply opening
-     * the editor, backing out, and opening it again — the ordinary way anyone
-     * edits on a phone — left a live-looking session behind and the owner was
-     * told their own draft belonged to "another device". They then could not
-     * save or publish at all.
-     *
-     * A session is only treated as live if it was touched inside this window.
-     * Past it, the previous editor is gone and this request takes the draft
-     * over. Cross-device protection is unchanged for genuinely concurrent
-     * editing: a session touched seconds ago still reports the conflict.
-     */
-    const staleAfterMinutes = Math.max(
-      1,
-      parseInt(process.env.DRAFT_SESSION_STALE_MINUTES || '3', 10),
-    );
-    const isStale =
-      activeSession != null &&
-      now.getTime() - new Date(activeSession.lastHeartbeatAt).getTime() >
-        staleAfterMinutes * 60 * 1000;
+      const activeSession = await tx.collectionDraftSession.findFirst({
+        where: {
+          collectionId: draftId,
+          ownerId,
+          isActive: true,
+          expiresAt: { gt: now },
+        },
+        orderBy: { lastHeartbeatAt: 'desc' },
+      });
 
-    if (activeSession && !forceNew && !isStale) {
+      /**
+       * An idle session is an abandoned one — reclaim it silently.
+       *
+       * `ownerId` here is the JWT subject and the query filters on it, so EVERY
+       * conflict this method can raise is the same human against themselves;
+       * there is no cross-user path and never was. The session TTL is 30 minutes
+       * and nothing heartbeats it except another draft write, so simply opening
+       * the editor, backing out, and opening it again — the ordinary way anyone
+       * edits on a phone — left a live-looking session behind and the owner was
+       * told their own draft belonged to "another device". They then could not
+       * save or publish at all.
+       *
+       * A session is only treated as live if it was touched inside this window.
+       * Past it, the previous editor is gone and this request takes the draft
+       * over. Cross-device protection is unchanged for genuinely concurrent
+       * editing: a session touched seconds ago still reports the conflict.
+       */
+      const staleAfterMinutes = Math.max(
+        1,
+        parseInt(process.env.DRAFT_SESSION_STALE_MINUTES || '3', 10),
+      );
+      const isStale =
+        activeSession != null &&
+        now.getTime() - new Date(activeSession.lastHeartbeatAt).getTime() >
+          staleAfterMinutes * 60 * 1000;
+
+      if (activeSession && !forceNew && !isStale) {
+        return {
+          collectionId: draftId,
+          sessionToken: activeSession.sessionToken,
+          hasConflict: true,
+          conflictDetails: {
+            existingSessionToken: activeSession.sessionToken,
+            deviceName: activeSession.deviceName ?? 'Unknown device',
+            deviceType: (activeSession.deviceType as any) ?? 'desktop',
+            startedAt: activeSession.startedAt.toISOString(),
+            userId: ownerId,
+          },
+        };
+      }
+
+      if (activeSession && (forceNew || isStale)) {
+        await tx.collectionDraftSession.updateMany({
+          where: { collectionId: draftId, ownerId, isActive: true },
+          data: { isActive: false },
+        });
+      }
+
+      const sessionToken = uuidv4();
+      await tx.collectionDraftSession.create({
+        data: {
+          id: uuidv4(),
+          collectionId: draftId,
+          ownerId,
+          sessionToken,
+          deviceName: deviceName ?? null,
+          deviceType: normalizeDeviceType(deviceName),
+          lastHeartbeatAt: now,
+          expiresAt,
+        },
+      });
+
       return {
         collectionId: draftId,
-        sessionToken: activeSession.sessionToken,
-        hasConflict: true,
-        conflictDetails: {
-          existingSessionToken: activeSession.sessionToken,
-          deviceName: activeSession.deviceName ?? 'Unknown device',
-          deviceType: (activeSession.deviceType as any) ?? 'desktop',
-          startedAt: activeSession.startedAt.toISOString(),
-          userId: ownerId,
-        },
-      };
-    }
-
-    if (activeSession && (forceNew || isStale)) {
-      await this.prisma.collectionDraftSession.updateMany({
-        where: { collectionId: draftId, ownerId, isActive: true },
-        data: { isActive: false },
-      });
-    }
-
-    const sessionToken = uuidv4();
-    await this.prisma.collectionDraftSession.create({
-      data: {
-        id: uuidv4(),
-        collectionId: draftId,
-        ownerId,
         sessionToken,
-        deviceName: deviceName ?? null,
-        deviceType: normalizeDeviceType(deviceName),
-        lastHeartbeatAt: now,
-        expiresAt,
-      },
+        hasConflict: false,
+      };
     });
-
-    return {
-      collectionId: draftId,
-      sessionToken,
-      hasConflict: false,
-    };
   }
 
   // ===================== Cover Media Reassignment =====================
@@ -10958,7 +10903,6 @@ export class CollectionsService {
         categoryTypeId: true,
         pendingCategorySuggestionId: true,
         draftVersion: true,
-        customOrderEnabled: true,
         type: true,
         tags: true,
         status: true,
@@ -11012,7 +10956,6 @@ export class CollectionsService {
       await this.assertDesignCustomOrderPublishReady(
         collectionId,
         current.ownerId,
-        current.customOrderEnabled,
         tx,
       );
       await this.contentIntegrity?.assertCollectionHasPublishableMedia(

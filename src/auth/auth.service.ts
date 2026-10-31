@@ -1056,6 +1056,27 @@ export class AuthService {
             },
           });
 
+          if (!existingUser.isEmailVerified) {
+            // Pre-account takeover guard. Nobody ever proved they own this
+            // email, so its password may have been set by someone else who
+            // signed up first and is waiting for the real owner to arrive.
+            // Google just proved the owner; whatever was set before that proof
+            // stops working, exactly as a password reset would.
+            await tx.refreshToken.deleteMany({
+              where: { userId: existingUser.id },
+            });
+            return tx.user.update({
+              where: { id: existingUser.id },
+              data: {
+                password: null,
+                passwordCredentialStatus: PasswordCredentialStatus.NOT_SET,
+                mustResetPassword: false,
+                authVersion: { increment: 1 },
+              },
+              select: authUserSelect,
+            });
+          }
+
           return existingUser;
         }
 
@@ -1786,15 +1807,33 @@ export class AuthService {
       throw new BadRequestException('Google sign-in is already linked.');
     }
 
-    await this.prisma.authIdentity.create({
-      data: {
-        userId: user.id,
-        provider: AuthProvider.GOOGLE,
-        providerSubject: identity.providerSubject,
-        email: identity.email,
-        emailVerified: identity.emailVerified,
-      },
+    const { count: linked } = await this.prisma.authIdentity.createMany({
+      data: [
+        {
+          userId: user.id,
+          provider: AuthProvider.GOOGLE,
+          providerSubject: identity.providerSubject,
+          email: identity.email,
+          emailVerified: identity.emailVerified,
+        },
+      ],
+      skipDuplicates: true,
     });
+    if (linked === 0) {
+      const winner = await this.prisma.authIdentity.findUnique({
+        where: {
+          provider_providerSubject: {
+            provider: AuthProvider.GOOGLE,
+            providerSubject: identity.providerSubject,
+          },
+        },
+        select: { userId: true },
+      });
+      if (winner?.userId !== user.id) {
+        throw new BadRequestException('Google sign-in is already linked.');
+      }
+      return { message: 'Google sign-in is already linked.' };
+    }
 
     return { message: 'Google sign-in linked.' };
   }
@@ -2369,7 +2408,7 @@ export class AuthService {
   }
 
   async verifyEmailByToken(token: string) {
-    const verificationToken = token?.trim();
+    const verificationToken = typeof token === 'string' ? token.trim() : '';
     if (!verificationToken) {
       throw new BadRequestException('Verification token is required');
     }
@@ -2497,10 +2536,14 @@ export class AuthService {
 
   // Verify email by link
   async verifyEmailByLink(userId: string, code: string) {
+    this.assertVerificationCode(code);
+    if (typeof userId !== 'string' || !userId.trim()) {
+      throw new BadRequestException('Invalid verification code');
+    }
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new BadRequestException('User not found');
     if (user.isEmailVerified) return { message: 'Email already verified' };
-    if (user.emailVerificationCode !== code)
+    if (!user.emailVerificationCode || user.emailVerificationCode !== code)
       throw new BadRequestException('Invalid verification code');
     await this.prisma.user.update({
       where: { id: userId },
@@ -2516,10 +2559,14 @@ export class AuthService {
 
   // Verify email by code
   async verifyEmailByCode(email: string, code: string) {
+    this.assertVerificationCode(code);
+    if (typeof email !== 'string' || !email.trim()) {
+      throw new BadRequestException('Invalid verification code');
+    }
     const user = await this.prisma.user.findUnique({ where: { email } });
     if (!user) throw new BadRequestException('User not found');
     if (user.isEmailVerified) return { message: 'Email already verified' };
-    if (user.emailVerificationCode !== code)
+    if (!user.emailVerificationCode || user.emailVerificationCode !== code)
       throw new BadRequestException('Invalid verification code');
     await this.prisma.user.update({
       where: { email },
@@ -2531,6 +2578,17 @@ export class AuthService {
       });
     } catch {}
     return { message: 'Email verified successfully' };
+  }
+
+  private assertVerificationCode(code: unknown): asserts code is string {
+    if (
+      typeof code !== 'string' ||
+      !code.trim() ||
+      code.length > 256 ||
+      /\s/.test(code)
+    ) {
+      throw new BadRequestException('Invalid verification code');
+    }
   }
 
   async getProfileWithImage(userId: string) {

@@ -474,19 +474,14 @@ export class AdminFeaturedService {
 
       // If blocking, remove all active featured items for this brand (no penalty)
       if (newBlocked) {
-        const activeItems = await tx.featuredItem.findMany({
+        await tx.featuredItem.updateMany({
           where: { brandId, isActive: true },
+          data: {
+            isActive: false,
+            removedAt: new Date(),
+            removeReason: 'BRAND_BLOCKED',
+          },
         });
-        for (const item of activeItems) {
-          await tx.featuredItem.update({
-            where: { id: item.id },
-            data: {
-              isActive: false,
-              removedAt: new Date(),
-              removeReason: 'BRAND_BLOCKED',
-            },
-          });
-        }
       }
 
       await (tx as any).adminAuditLog.create({
@@ -783,16 +778,17 @@ export class AdminFeaturedService {
     if (!activeItems.length) return;
 
     await this.prisma.$transaction(async (tx) => {
-      for (const item of activeItems) {
-        await tx.featuredItem.update({
-          where: { id: item.id },
-          data: {
-            isActive: false,
-            removedAt: new Date(),
-            removeReason: reason,
-          },
-        });
-      }
+      await tx.featuredItem.updateMany({
+        where: {
+          id: { in: activeItems.map((item) => item.id) },
+          isActive: true,
+        },
+        data: {
+          isActive: false,
+          removedAt: new Date(),
+          removeReason: reason,
+        },
+      });
 
       if (applyPenalty) {
         const penaltyUntil = new Date();

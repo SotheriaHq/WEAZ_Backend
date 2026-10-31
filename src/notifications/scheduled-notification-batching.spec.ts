@@ -382,7 +382,7 @@ describe('scheduled event notification batching', () => {
       { id: 'f2', entityType: 'PRODUCT', entityId: 'product' },
     ];
     const tx = {
-      featuredItem: { update: jest.fn() },
+      featuredItem: { updateMany: jest.fn() },
       brand: { update: jest.fn() },
     };
     const prisma = {
@@ -396,6 +396,7 @@ describe('scheduled event notification batching', () => {
       notify as any,
     ).onBrandOwnerSuspended('brand');
     expect(prisma.brand.findUnique).toHaveBeenCalledTimes(1);
+    expect(tx.featuredItem.updateMany).toHaveBeenCalledTimes(1);
     expect(notify.create).not.toHaveBeenCalled();
     expect(
       notify.createEvents.mock.calls[0][0].map((event) => event.opts.target),
@@ -416,6 +417,7 @@ describe('scheduled event notification batching', () => {
       orderItem: {
         findMany: jest.fn().mockResolvedValue(rows),
         update: jest.fn(),
+        updateMany: jest.fn(),
       },
       productReview: {
         findMany: jest
@@ -451,9 +453,18 @@ describe('scheduled event notification batching', () => {
         (event) => event.opts.payload.orderItemId,
       ),
     ).toEqual(['good', 'failed']);
+    expect(prisma.orderItem.update).toHaveBeenCalledTimes(1);
     expect(prisma.orderItem.update).toHaveBeenCalledWith({
       where: { id: 'failed' },
       data: { reviewReminderLastError: 'delivery unavailable' },
+    });
+    expect(prisma.orderItem.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.orderItem.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ['good'] } },
+      data: {
+        reviewReminderSentAt: expect.any(Date),
+        reviewReminderLastError: null,
+      },
     });
   });
 
@@ -464,7 +475,7 @@ describe('scheduled event notification batching', () => {
           { id: 'p1', userId: 'u1', requireUpdateEveryDays: 14 },
           { id: 'p2', userId: 'u2', requireUpdateEveryDays: 21 },
         ]),
-        update: jest.fn(),
+        updateMany: jest.fn(),
       },
     };
     const notify = notifications();
@@ -483,9 +494,9 @@ describe('scheduled event notification batching', () => {
         where: expect.objectContaining({ user: { is: { type: 'REGULAR' } } }),
       }),
     );
-    expect(prisma.userSizeFitProfile.update).toHaveBeenCalledTimes(1);
-    expect(prisma.userSizeFitProfile.update).toHaveBeenCalledWith({
-      where: { id: 'p1' },
+    expect(prisma.userSizeFitProfile.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.userSizeFitProfile.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ['p1'] } },
       data: { nextReminderAt: expect.any(Date) },
     });
     expect(notify.createEvents.mock.calls[0][0][0].opts.payload.targetUrl).toBe(

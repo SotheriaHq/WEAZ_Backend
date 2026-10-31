@@ -390,24 +390,33 @@ export class MeasurementPointsService implements OnModuleInit, OnModuleDestroy {
     const fuzzyMatches = await this.findFuzzyMatches(dto.label.trim());
 
     const now = new Date();
-    const created = await (this.prisma as any).measurementPoint.create({
-      data: {
-        id: uuidv4(),
-        key: this.buildKeyFromLabel(normalizedLabel, brandId),
-        label: dto.label.trim(),
-        description: dto.description?.trim() || null,
-        category: dto.category,
-        gender: dto.gender ?? null,
-        source: 'BRAND_FREEFORM',
-        status: 'BRAND_ONLY',
-        brandId,
-        minValueCm: dto.minValueCm ?? null,
-        maxValueCm: dto.maxValueCm ?? null,
-        submittedAt: now,
-        sortOrder: 999,
-        isActive: true,
-      },
-    });
+    const created = await (this.prisma as any).measurementPoint
+      .create({
+        data: {
+          id: uuidv4(),
+          key: this.buildKeyFromLabel(normalizedLabel, brandId),
+          label: dto.label.trim(),
+          description: dto.description?.trim() || null,
+          category: dto.category,
+          gender: dto.gender ?? null,
+          source: 'BRAND_FREEFORM',
+          status: 'BRAND_ONLY',
+          brandId,
+          minValueCm: dto.minValueCm ?? null,
+          maxValueCm: dto.maxValueCm ?? null,
+          submittedAt: now,
+          sortOrder: 999,
+          isActive: true,
+        },
+      })
+      .catch((error: { code?: string }) => {
+        if (error.code === 'P2002') {
+          throw new BadRequestException(
+            `Measurement point already exists: ${dto.label.trim()}`,
+          );
+        }
+        throw error;
+      });
 
     await this.notifyAdminsOfFreeformSubmission({
       pointId: created.id,

@@ -57,10 +57,22 @@ const HEIC_FTYP_BRANDS = new Set([
 ]);
 const AVIF_ENCODER_EFFORT = 4;
 const WEBP_ENCODER_EFFORT = 4;
+// Best first, and the last entry is the floor for reaching the target. The largest
+// view served is 2048 pixels wide, so a photo with far more pixels than that hides
+// heavier compression when it is scaled down. Below the floor, quality is only
+// spent to get under the ceiling, since uploads are never resized.
+const UPLOAD_JPEG_QUALITIES = [95, 90, 85, 80];
+const LARGE_PHOTO_PIXELS = 8_000_000;
+const LARGE_UPLOAD_JPEG_QUALITIES = [...UPLOAD_JPEG_QUALITIES, 70, 60];
+const LAST_RESORT_JPEG_QUALITIES = [70, 60, 50, 40];
+// Each one holds a full-resolution image in memory on a small host.
+const MAX_CONCURRENT_UPLOAD_ENCODES = 2;
 
 @Injectable()
 export class MediaProcessingService {
   private readonly maxMegapixels = 50;
+  private activeUploadEncodes = 0;
+  private readonly uploadEncodeWaiters: Array<() => void> = [];
 
   isSupportedImageMime(mimeType: string): boolean {
     return IMAGE_MIME_TYPES.has(String(mimeType || '').toLowerCase());
@@ -387,7 +399,12 @@ export class MediaProcessingService {
 
   async generatePreviewJpeg(
     sourceBuffer: Buffer,
-    options: { maxWidth?: number; quality?: number; maxBytes?: number } = {},
+    options: {
+      maxWidth?: number;
+      quality?: number;
+      maxBytes?: number;
+      targetBytes?: number;
+    } = {},
   ): Promise<PreviewJpeg> {
     let buffer = await this.toDecodableImageBuffer(sourceBuffer);
     try {
@@ -409,11 +426,24 @@ export class MediaProcessingService {
 
   private async encodePreviewJpeg(
     buffer: Buffer,
-    options: { maxWidth?: number; quality?: number; maxBytes?: number },
+    options: {
+      maxWidth?: number;
+      quality?: number;
+      maxBytes?: number;
+      targetBytes?: number;
+    },
   ): Promise<PreviewJpeg> {
     const probe = await this.probeImage(buffer);
     if (!probe.width || !probe.height) {
       throw new BadRequestException('Unable to detect image dimensions');
+    }
+    if (options.targetBytes !== undefined) {
+      return this.encodeUploadJpeg(
+        buffer,
+        probe.width * probe.height,
+        options.targetBytes,
+        options.maxBytes,
+      );
     }
 
     const maxWidth = Math.max(320, Math.min(options.maxWidth ?? 1200, 2048));
@@ -466,6 +496,94 @@ export class MediaProcessingService {
 
     throw new BadRequestException(
       'Unable to encode image preview under size limit',
+    );
+  }
+
+  private async acquireUploadEncode() {
+    if (this.activeUploadEncodes < MAX_CONCURRENT_UPLOAD_ENCODES) {
+      this.activeUploadEncodes += 1;
+      return;
+    }
+    await new Promise<void>((resolve) =>
+      this.uploadEncodeWaiters.push(resolve),
+    );
+  }
+
+  private releaseUploadEncode() {
+    const next = this.uploadEncodeWaiters.shift();
+    if (next) next();
+    else this.activeUploadEncodes -= 1;
+  }
+
+  /*
+    `targetBytes` marks this JPEG as the file that will BE the upload, not a
+    throwaway preview, so it keeps every pixel of the source and only quality
+    moves. Chroma is 4:2:0 here: a master at full resolution still holds more
+    colour detail than the largest view served from it.
+  */
+  private async encodeUploadJpeg(
+    buffer: Buffer,
+    pixels: number,
+    targetBytes: number,
+    maxBytes: number = targetBytes,
+  ): Promise<PreviewJpeg> {
+    const clamp = (bytes: number) =>
+      Math.max(100 * 1024, Math.min(bytes, 8 * 1024 * 1024));
+    const ceiling = clamp(maxBytes);
+    const target = Math.min(clamp(targetBytes), ceiling);
+    const encode = (quality: number) =>
+      sharp(buffer, { ...SECURE_IMAGE_OPTIONS, animated: false })
+        .timeout({ seconds: 30 })
+        .rotate()
+        .jpeg({ quality, mozjpeg: true })
+        .toBuffer({ resolveWithObject: true });
+    type Encoded = Awaited<ReturnType<typeof encode>>;
+    const toPreview = ({ data, info }: Encoded): PreviewJpeg => ({
+      width: info.width,
+      height: info.height,
+      buffer: data,
+      mimeType: 'image/jpeg',
+    });
+
+    await this.acquireUploadEncode();
+    try {
+      // The highest quality that fits, by bisection: three encodes at most.
+      const qualities =
+        pixels >= LARGE_PHOTO_PIXELS
+          ? LARGE_UPLOAD_JPEG_QUALITIES
+          : UPLOAD_JPEG_QUALITIES;
+      const floorRung = qualities.length - 1;
+      let fit: Encoded | null = null;
+      let atFloor: Encoded | null = null;
+      let low = 0;
+      let high = floorRung;
+      for (
+        let rung = Math.floor(high / 2);
+        low <= high;
+        rung = Math.floor((low + high) / 2)
+      ) {
+        const encoded = await encode(qualities[rung]);
+        if (encoded.data.length <= target) {
+          fit = encoded;
+          high = rung - 1;
+        } else {
+          if (rung === floorRung) atFloor = encoded;
+          low = rung + 1;
+        }
+      }
+      if (fit) return toPreview(fit);
+      // The target is only an aim. Anything the API accepts goes up.
+      if (atFloor && atFloor.data.length <= ceiling) return toPreview(atFloor);
+      for (const quality of LAST_RESORT_JPEG_QUALITIES) {
+        if (quality >= qualities[floorRung]) continue;
+        const encoded = await encode(quality);
+        if (encoded.data.length <= ceiling) return toPreview(encoded);
+      }
+    } finally {
+      this.releaseUploadEncode();
+    }
+    throw new BadRequestException(
+      'This image is too detailed to fit the upload limit. Choose a smaller original.',
     );
   }
 

@@ -379,23 +379,29 @@ export class SizeFitService {
     if (existing) return existing;
 
     const now = new Date();
-    return (db as any).userSizeFitProfile.create({
-      data: {
-        id: uuidv4(),
-        userId,
-        visibility: SIZE_FIT_VISIBILITY.PRIVATE,
-        sharePolicy: SIZE_FIT_SHARE_POLICY.REQUIRE_PERMISSION,
-        notifyOnShare: true,
-        requireUpdateEveryDays: 14,
-        version: 0,
-        preferredLengthUnit: 'CM',
-        preferredWeightUnit: 'KG',
-        fitPreference: 'REGULAR',
-        label: 'My Measurements',
-        measurements: {},
-        lastUpdatedAt: null,
-        nextReminderAt: now,
-      },
+    await (db as any).userSizeFitProfile.createMany({
+      data: [
+        {
+          id: uuidv4(),
+          userId,
+          visibility: SIZE_FIT_VISIBILITY.PRIVATE,
+          sharePolicy: SIZE_FIT_SHARE_POLICY.REQUIRE_PERMISSION,
+          notifyOnShare: true,
+          requireUpdateEveryDays: 14,
+          version: 0,
+          preferredLengthUnit: 'CM',
+          preferredWeightUnit: 'KG',
+          fitPreference: 'REGULAR',
+          label: 'My Measurements',
+          measurements: {},
+          lastUpdatedAt: null,
+          nextReminderAt: now,
+        },
+      ],
+      skipDuplicates: true,
+    });
+    return (db as any).userSizeFitProfile.findUniqueOrThrow({
+      where: { userId },
     });
   }
 
@@ -925,38 +931,33 @@ export class SizeFitService {
       );
     }
 
-    const existing = await (this.prisma as any).userSizeFitShare.findUnique({
-      where: {
-        profileId_viewerId: { profileId: profile.id, viewerId: targetUserId },
-      },
-    });
+    const shareKey = {
+      profileId_viewerId: { profileId: profile.id, viewerId: targetUserId },
+    };
 
     if (actorIsOwner) {
       const canReshare = Boolean(dto.canReshare);
-      const share = existing
-        ? await (this.prisma as any).userSizeFitShare.update({
-            where: { id: existing.id },
-            data: {
-              status: SIZE_FIT_SHARE_STATUS.APPROVED,
-              requestedById: actorId,
-              canReshare,
-              note: dto.note ?? existing.note,
-              respondedAt: new Date(),
-            },
-          })
-        : await (this.prisma as any).userSizeFitShare.create({
-            data: {
-              id: uuidv4(),
-              profileId: profile.id,
-              ownerId,
-              viewerId: targetUserId,
-              requestedById: actorId,
-              status: SIZE_FIT_SHARE_STATUS.APPROVED,
-              canReshare,
-              note: dto.note,
-              respondedAt: new Date(),
-            },
-          });
+      const share = await (this.prisma as any).userSizeFitShare.upsert({
+        where: shareKey,
+        update: {
+          status: SIZE_FIT_SHARE_STATUS.APPROVED,
+          requestedById: actorId,
+          canReshare,
+          note: dto.note ?? undefined,
+          respondedAt: new Date(),
+        },
+        create: {
+          id: uuidv4(),
+          profileId: profile.id,
+          ownerId,
+          viewerId: targetUserId,
+          requestedById: actorId,
+          status: SIZE_FIT_SHARE_STATUS.APPROVED,
+          canReshare,
+          note: dto.note,
+          respondedAt: new Date(),
+        },
+      });
 
       await this.notifications.create(targetUserId, NT_SIZE_FIT_SHARED, {
         actorId: ownerId,
@@ -986,28 +987,25 @@ export class SizeFitService {
     await this.assertActorMayReshare(profile.id, actorId);
 
     if (profile.sharePolicy === SIZE_FIT_SHARE_POLICY.REQUIRE_PERMISSION) {
-      const pending = existing
-        ? await (this.prisma as any).userSizeFitShare.update({
-            where: { id: existing.id },
-            data: {
-              status: SIZE_FIT_SHARE_STATUS.PENDING,
-              requestedById: actorId,
-              note: dto.note ?? existing.note,
-              respondedAt: null,
-            },
-          })
-        : await (this.prisma as any).userSizeFitShare.create({
-            data: {
-              id: uuidv4(),
-              profileId: profile.id,
-              ownerId,
-              viewerId: targetUserId,
-              requestedById: actorId,
-              status: SIZE_FIT_SHARE_STATUS.PENDING,
-              canReshare: false,
-              note: dto.note,
-            },
-          });
+      const pending = await (this.prisma as any).userSizeFitShare.upsert({
+        where: shareKey,
+        update: {
+          status: SIZE_FIT_SHARE_STATUS.PENDING,
+          requestedById: actorId,
+          note: dto.note ?? undefined,
+          respondedAt: null,
+        },
+        create: {
+          id: uuidv4(),
+          profileId: profile.id,
+          ownerId,
+          viewerId: targetUserId,
+          requestedById: actorId,
+          status: SIZE_FIT_SHARE_STATUS.PENDING,
+          canReshare: false,
+          note: dto.note,
+        },
+      });
 
       await this.notifications.create(ownerId, NT_SIZE_FIT_SHARE_REQUEST, {
         actorId,
@@ -1028,30 +1026,27 @@ export class SizeFitService {
       };
     }
 
-    const shared = existing
-      ? await (this.prisma as any).userSizeFitShare.update({
-          where: { id: existing.id },
-          data: {
-            status: SIZE_FIT_SHARE_STATUS.APPROVED,
-            requestedById: actorId,
-            canReshare: false,
-            note: dto.note ?? existing.note,
-            respondedAt: new Date(),
-          },
-        })
-      : await (this.prisma as any).userSizeFitShare.create({
-          data: {
-            id: uuidv4(),
-            profileId: profile.id,
-            ownerId,
-            viewerId: targetUserId,
-            requestedById: actorId,
-            status: SIZE_FIT_SHARE_STATUS.APPROVED,
-            canReshare: false,
-            note: dto.note,
-            respondedAt: new Date(),
-          },
-        });
+    const shared = await (this.prisma as any).userSizeFitShare.upsert({
+      where: shareKey,
+      update: {
+        status: SIZE_FIT_SHARE_STATUS.APPROVED,
+        requestedById: actorId,
+        canReshare: false,
+        note: dto.note ?? undefined,
+        respondedAt: new Date(),
+      },
+      create: {
+        id: uuidv4(),
+        profileId: profile.id,
+        ownerId,
+        viewerId: targetUserId,
+        requestedById: actorId,
+        status: SIZE_FIT_SHARE_STATUS.APPROVED,
+        canReshare: false,
+        note: dto.note,
+        respondedAt: new Date(),
+      },
+    });
 
     await this.notifications.create(targetUserId, NT_SIZE_FIT_SHARED, {
       actorId,
@@ -1249,6 +1244,7 @@ export class SizeFitService {
         },
       })),
     );
+    const sentByReminderDays = new Map<number, string[]>();
     for (let index = 0; index < dueProfiles.length; index += 1) {
       const profile = dueProfiles[index];
       try {
@@ -1258,12 +1254,10 @@ export class SizeFitService {
         const nextDays = this.normalizeReminderDays(
           profile.requireUpdateEveryDays,
         );
-        await (this.prisma as any).userSizeFitProfile.update({
-          where: { id: profile.id },
-          data: {
-            nextReminderAt: new Date(now.getTime() + this.daysToMs(nextDays)),
-          },
-        });
+        sentByReminderDays.set(nextDays, [
+          ...(sentByReminderDays.get(nextDays) ?? []),
+          profile.id,
+        ]);
         sent += 1;
       } catch (error) {
         this.logger.warn(
@@ -1272,6 +1266,12 @@ export class SizeFitService {
           }`,
         );
       }
+    }
+    for (const [days, ids] of sentByReminderDays) {
+      await (this.prisma as any).userSizeFitProfile.updateMany({
+        where: { id: { in: ids } },
+        data: { nextReminderAt: new Date(now.getTime() + this.daysToMs(days)) },
+      });
     }
 
     return sent;

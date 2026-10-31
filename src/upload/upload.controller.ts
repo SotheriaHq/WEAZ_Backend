@@ -1,3 +1,4 @@
+import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 import {
   Controller,
   Post,
@@ -24,7 +25,7 @@ import { UploadService } from './upload.service';
 import { FileType } from './upload.enums';
 import { GetFilesDto } from './dto/get-files.dto';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
-import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import { Throttle } from '@nestjs/throttler';
 import {
   multerOptionsForFileType,
   previewImageMulterOptions,
@@ -34,7 +35,6 @@ import type { Response } from 'express';
 
 @ApiTags('uploads')
 @ApiBearerAuth()
-@UseGuards(ThrottlerGuard)
 @Throttle({ default: { limit: 60, ttl: 60000 } })
 @Controller('uploads')
 export class UploadController {
@@ -49,8 +49,8 @@ export class UploadController {
   // PUBLIC ENDPOINTS (No Auth Required)
   // ============================================
 
+  @IsPublic()
   @Get('public-url/:fileId')
-  @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 120, ttl: 60000 } })
   @ApiOperation({
     summary: 'Get public signed URL for file access (no auth required)',
@@ -70,9 +70,9 @@ export class UploadController {
    * one API round trip PER image (~300-400ms each) before the browser could
    * even start downloading it; clients batch the ids into one call instead.
    */
+  @IsPublic()
   @Post('public-urls')
   @HttpCode(200)
-  @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 60, ttl: 60000 } })
   @ApiOperation({
     summary: 'Get public signed URLs for many files at once (no auth required)',
@@ -126,9 +126,9 @@ export class UploadController {
     return body.urls as string[];
   }
 
+  @IsPublic()
   @Post('public-urls-by-source')
   @HttpCode(200)
-  @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 60, ttl: 60000 } })
   async getPublicSignedUrlsBySource(
     @Body() body: { urls?: unknown },
@@ -144,7 +144,7 @@ export class UploadController {
 
   @Post('signed-urls-by-source')
   @HttpCode(200)
-  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 60, ttl: 60000 } })
   async getSignedUrlsBySource(
     @Body() body: { urls?: unknown },
@@ -160,8 +160,8 @@ export class UploadController {
     };
   }
 
+  @IsPublic()
   @Get('public-url-by-key')
-  @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 60, ttl: 60000 } })
   @ApiOperation({
     summary: 'Get public signed URL by S3 key (no auth required)',
@@ -188,7 +188,7 @@ export class UploadController {
   }
 
   @Get('signed-url-by-key')
-  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 240, ttl: 60000 } })
   @ApiOperation({
     summary: 'Get authenticated signed URL by S3 key',
@@ -223,7 +223,7 @@ export class UploadController {
 
   @Post('preview-image')
   @HttpCode(200)
-  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @UseGuards(JwtAuthGuard)
   // Designs allow 20 media; a phone whose camera writes HEIC normalizes every
   // pick through here, so the limit must comfortably cover one full design.
   @Throttle({ default: { limit: 60, ttl: 60000 } })
@@ -252,6 +252,7 @@ export class UploadController {
     const requestedMaxWidth = parseOption(body?.maxWidth) ?? 1200;
     const requestedQuality = parseOption(body?.quality) ?? 99;
     const requestedMaxBytes = parseOption(body?.maxBytes);
+    const requestedTargetBytes = parseOption(body?.targetBytes);
     const originalSizeBytes = file.buffer.length;
     const startedAt = Date.now();
 
@@ -261,6 +262,7 @@ export class UploadController {
         maxWidth: requestedMaxWidth,
         quality: requestedQuality,
         maxBytes: requestedMaxBytes,
+        targetBytes: requestedTargetBytes,
       },
     );
     const outputSizeBytes = preview.buffer.length;
@@ -287,6 +289,7 @@ export class UploadController {
         requestedMaxWidth,
         requestedQuality,
         requestedMaxBytes,
+        requestedTargetBytes,
         durationMs: Date.now() - startedAt,
       }),
     );
@@ -494,7 +497,7 @@ export class UploadController {
     return this.uploadService.getUserFiles(req.user.id, query);
   }
 
-  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 240, ttl: 60000 } })
   @Get('signed-url/:fileId')
   @ApiOperation({ summary: 'Get signed URL for file access' })

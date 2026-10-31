@@ -33,14 +33,19 @@ export class BrandVerificationCronService {
 
     for (const brand of stale) {
       await this.prisma.$transaction(async (tx) => {
-        await tx.brand.update({
-          where: { id: brand.id },
+        const released = await tx.brand.updateMany({
+          where: {
+            id: brand.id,
+            verificationStatus: BrandVerificationStatus.IN_REVIEW,
+            verificationReviewStartedAt: { lt: threshold },
+          },
           data: {
             verificationStatus: BrandVerificationStatus.PENDING,
             verificationReviewedById: null,
             verificationReviewStartedAt: null,
           },
         });
+        if (released.count === 0) return;
         await tx.brandVerificationAttempt.updateMany({
           where: {
             brandId: brand.id,
@@ -177,29 +182,30 @@ export class BrandVerificationCronService {
         },
       })),
     );
-    for (let index = 0; index < brands.length; index += 1) {
-      const brand = brands[index];
-      const notification = results[index];
-      if (notification.status === 'rejected') throw notification.reason;
-
+    const delivered = brands.filter(
+      (_, index) => results[index]?.status === 'fulfilled',
+    );
+    for (const brand of delivered) {
       if (brand.owner.email) {
         const mail = emailTemplates.verificationNudgeEmail(brand.name, appName);
         void this.emailService
           .send(brand.owner.email, mail.subject, mail.html, mail.text)
           .catch(() => undefined);
       }
+    }
 
-      await this.prisma.brand.update({
-        where: { id: brand.id },
+    if (delivered.length > 0) {
+      await this.prisma.brand.updateMany({
+        where: { id: { in: delivered.map((brand) => brand.id) } },
         data: {
           verificationNudgeCount: { increment: 1 },
           verificationLastNudgedAt: now,
         },
       });
+      this.logger.log(`Sent ${delivered.length} verification nudge(s)`);
     }
 
-    if (brands.length > 0) {
-      this.logger.log(`Sent ${brands.length} verification nudge(s)`);
-    }
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
   }
 }
