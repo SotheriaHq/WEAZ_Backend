@@ -11,7 +11,9 @@ module.exports=async function verifyDesignTaxonomy({prisma,suggestions,categorie
   const cases=[],owner=randomUUID(),other=randomUUID();
   await prisma.user.createMany({data:[owner,other].map(id=>({id,username:id,email:`${id}@example.invalid`,type:'BRAND',isEmailVerified:true,notificationSettings:DEFAULT_NOTIFICATION_SETTINGS}))});
   await prisma.userProfile.createMany({data:[owner,other].map(userId=>({userId,firstName:'Taxonomy',lastName:'Fixture'}))});
-  await prisma.brand.create({data:{id:randomUUID(),ownerId:owner,name:'Taxonomy fixture',contentReviewModeOverride:'PRE_REVIEW_REQUIRED'}});
+  const brandId=randomUUID();
+  await prisma.brand.create({data:{id:brandId,ownerId:owner,name:'Taxonomy fixture',contentReviewModeOverride:'PRE_REVIEW_REQUIRED'}});
+  const fabricBasis=await prisma.customFabricRuleBasis.create({data:{label:'Taxonomy fixture',brandId}});
   const content=new ContentIntegrityService(prisma,notifications);
   content.getSubmission=id=>prisma.contentSubmission.findUniqueOrThrow({where:{id}});
   const collections=new CollectionsService(prisma,{}, {},{}, {},undefined,notifications,undefined,undefined,categories,undefined,undefined,undefined,undefined,content);
@@ -25,7 +27,12 @@ module.exports=async function verifyDesignTaxonomy({prisma,suggestions,categorie
   cases.push('26 competing category/garment-type proposals create one pair identity, with no public category or garment type');
   const dimension=await prisma.filterDimension.create({data:{id:randomUUID(),slug:randomUUID(),name:'Design test detail',appliesTo:['COLLECTION']}});
   const detail=await prisma.filterValue.create({data:{id:randomUUID(),dimensionId:dimension.id,slug:'daywear',name:'Daywear'}});
-  const draft=async(suggestionId=proposal.id)=>designs.initializeDesignUpload(owner,{draftOnly:true,title:'Day jacket',type:'FEMALE',tags:['daywear'],filterValueIds:[detail.id],pendingCategorySuggestionId:suggestionId});
+  // A design cannot publish without a custom-order setup, so every fixture design has one.
+  const draft=async(suggestionId=proposal.id)=>{
+    const started=await designs.initializeDesignUpload(owner,{draftOnly:true,title:'Day jacket',type:'FEMALE',tags:['daywear'],filterValueIds:[detail.id],pendingCategorySuggestionId:suggestionId});
+    await prisma.customOrderConfiguration.create({data:{brandId,sourceType:'DESIGN',sourceId:started.designId,title:'Taxonomy fixture',fabricRuleBasisId:fabricBasis.id,baseProductionCharge:100,fabricCostPerYard:0,productionLeadDays:1,deliveryMinDays:1,deliveryMaxDays:2,deliveryScope:'LOCAL',revisionPolicy:'Fixture',returnPolicy:'Fixture',defectPolicy:'Fixture',fabricSourcingMode:'BRAND_SOURCED'}});
+    return started;
+  };
   const created=await draft(),id=created.designId;
   assert(id);let current=await prisma.collection.findUniqueOrThrow({where:{id}});
   assert.equal(current.categoryId,null);assert.equal(current.categoryTypeId,null);assert.equal(current.pendingCategorySuggestionId,proposal.id);assert.equal(current.status,'DRAFT');

@@ -139,7 +139,9 @@ export class CreateCollectionDto {
   // LEGACY_COMPAT_COLLECTION_BACKED_DESIGN:
   // sizingMode, rtw sizes, custom-order fields, fitPreference, and
   // targetAgeGroup are design-owned concepts kept only for compatibility.
-  // New design code should use Design DTOs.
+  // New design code should use Design DTOs. sizingMode, rtw sizes and
+  // customOrderEnabled are accepted from older clients and ignored on save:
+  // see designSizingFields.
   @IsOptional()
   @Transform(normalizeSizingMode)
   @IsIn(['NONE', 'RTW', 'CUSTOM', 'RTW_PLUS_FITTINGS'])
