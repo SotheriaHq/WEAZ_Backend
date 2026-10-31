@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Request } from 'express';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from 'src/prisma/prisma.service';
 
 export type DeviceSignals = {
@@ -62,10 +62,7 @@ export class TrustedDeviceService {
   /**
    * Snapshot the request fields this service needs.
    *
-   * Callers that record a device AFTER responding (login defers it off the
-   * critical path) must capture these first: `req.socket` can be torn down once
-   * the response is sent, and reading `remoteAddress` from a destroyed socket
-   * yields nothing, which would silently poison the device's IP hash.
+   * Keep request fields independent of socket lifetime while database work runs.
    */
   captureSignals(req: Request): DeviceSignals {
     return {
@@ -92,39 +89,23 @@ export class TrustedDeviceService {
     const lastIpHash = this.hash(normalizedIp);
     const lastUserAgent = String(signals.userAgent ?? '').slice(0, 250);
 
-    const existing = await this.prisma.trustedDevice.findUnique({
-      where: {
-        userId_fingerprintHash: {
-          userId,
-          fingerprintHash,
-        },
-      },
-      select: { id: true, revokedAt: true },
-    });
-
-    if (!existing) {
-      await this.prisma.trustedDevice.create({
-        data: {
-          userId,
-          fingerprintHash,
-          lastIpHash,
-          lastUserAgent,
-          isTrusted: false,
-        },
-      });
-      return { isNewDevice: true };
-    }
-
-    await this.prisma.trustedDevice.update({
-      where: { id: existing.id },
-      data: {
-        lastSeenAt: new Date(),
-        lastIpHash,
-        lastUserAgent,
-      },
-    });
-
-    return { isNewDevice: existing.revokedAt !== null };
+    const candidateId = randomUUID();
+    const [device] = await this.prisma.$queryRaw<
+      Array<{ isNewDevice: boolean }>
+    >`
+      INSERT INTO "TrustedDevice" (id, "userId", "fingerprintHash", "lastIpHash",
+        "lastUserAgent", "isTrusted", "firstSeenAt", "lastSeenAt", "createdAt", "updatedAt")
+      VALUES (${candidateId}::uuid, ${userId}::uuid, ${fingerprintHash}, ${lastIpHash},
+        ${lastUserAgent}, FALSE, clock_timestamp() AT TIME ZONE 'UTC',
+        clock_timestamp() AT TIME ZONE 'UTC', clock_timestamp() AT TIME ZONE 'UTC',
+        clock_timestamp() AT TIME ZONE 'UTC')
+      ON CONFLICT ("userId", "fingerprintHash") DO UPDATE SET
+        "lastSeenAt" = GREATEST("TrustedDevice"."lastSeenAt", clock_timestamp() AT TIME ZONE 'UTC'),
+        "lastIpHash" = EXCLUDED."lastIpHash", "lastUserAgent" = EXCLUDED."lastUserAgent",
+        "updatedAt" = clock_timestamp() AT TIME ZONE 'UTC'
+      RETURNING (id = ${candidateId}::uuid OR "revokedAt" IS NOT NULL) AS "isNewDevice"
+    `;
+    return device;
   }
 
   async listDevices(userId: string) {

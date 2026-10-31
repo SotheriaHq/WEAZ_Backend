@@ -117,8 +117,7 @@ const NT_MESSAGE_THREAD_REOPENED =
   'MESSAGE_THREAD_REOPENED' as NotificationType;
 const NT_MESSAGE_MODERATED = 'MESSAGE_MODERATED' as NotificationType;
 const NT_BAG_ITEM_ADDED = 'BAG_ITEM_ADDED' as NotificationType;
-const NT_BAG_CHECKOUT_REMINDER =
-  'BAG_CHECKOUT_REMINDER' as NotificationType;
+const NT_BAG_CHECKOUT_REMINDER = 'BAG_CHECKOUT_REMINDER' as NotificationType;
 
 const optionalMessageRoutingString = Joi.string().allow(null).optional();
 
@@ -276,6 +275,9 @@ export class NotificationRegistry {
     registry.register({
       type: NotificationType.LOGIN,
       schema: Joi.object({
+        newDevice: Joi.boolean().optional(),
+        highRisk: Joi.boolean().optional(),
+        method: Joi.string().max(64).optional(),
         ip: Joi.string().optional(),
         userAgent: Joi.string().optional(),
         location: Joi.object({
@@ -518,8 +520,7 @@ export class NotificationRegistry {
             ? n.payload.productName.trim()
             : 'your item';
         const brandName =
-          typeof n.payload?.brandName === 'string' &&
-          n.payload.brandName.trim()
+          typeof n.payload?.brandName === 'string' && n.payload.brandName.trim()
             ? ` by ${n.payload.brandName.trim()}`
             : '';
         const variant = [n.payload?.selectedSize, n.payload?.selectedColor]
@@ -778,6 +779,9 @@ export class NotificationRegistry {
       type: NotificationType.COLLECTION_UPLOAD,
       schema: Joi.object({
         collectionId: Joi.string().optional(),
+        title: Joi.string().allow(null).optional(),
+        pendingCategoryName: Joi.string().optional(),
+        rejectionReason: Joi.string().allow(null).optional(),
         collectionName: Joi.string().optional(),
         collectionTitle: Joi.string().optional(),
         targetUrl: Joi.string().optional(),
@@ -939,7 +943,9 @@ export class NotificationRegistry {
         if (n.payload?.message) return n.payload.message;
         const currency = n.payload?.currency || 'NGN';
         const amount = Number(n.payload?.amount ?? 0).toLocaleString();
-        const outstanding = Number(n.payload?.outstanding ?? 0).toLocaleString();
+        const outstanding = Number(
+          n.payload?.outstanding ?? 0,
+        ).toLocaleString();
         if (n.payload?.direction === 'RECOVERY') {
           return `${currency} ${amount} of your earnings was applied to your outstanding balance. ${currency} ${outstanding} remains.`;
         }

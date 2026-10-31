@@ -32,6 +32,7 @@ describe('AuthService', () => {
   const mockPasswordService = {
     hashPassword: jest.fn(),
     verifyPassword: jest.fn(),
+    needsRehash: jest.fn(() => false),
   };
 
   const mockTokenService = {
@@ -52,16 +53,19 @@ describe('AuthService', () => {
 
   const mockNotifications = {
     create: jest.fn(),
+    canSendScenarioEmail: jest.fn().mockResolvedValue(true),
   };
 
   const mockEmailService = {
-    send: jest.fn(),
+    send: jest.fn().mockResolvedValue({ dispatchStatus: 'QUEUED' }),
     getAppName: jest.fn(() => 'WIEZ'),
   };
 
   const mockTrustedDeviceService = {
     listDevices: jest.fn(),
     revokeDevice: jest.fn(),
+    captureSignals: jest.fn(),
+    recordLoginDevice: jest.fn(),
   };
 
   const mockGoogleTokenVerifier = {
@@ -101,6 +105,9 @@ describe('AuthService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockPrisma.user.findUnique.mockReset().mockResolvedValue(null);
+    mockPrisma.user.findFirst.mockReset().mockResolvedValue(null);
+    mockNotifications.create.mockReset().mockResolvedValue(null);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -136,6 +143,65 @@ describe('AuthService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  it('login waits for device recording and durable notification enqueue before returning tokens', async () => {
+    jest.spyOn(service, 'validateUser').mockResolvedValue({
+      id: 'user-1',
+      email: 'user@example.invalid',
+      role: Role.User,
+      type: UserType.REGULAR,
+      status: UserStatus.ACTIVE,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as any);
+    mockTokenService.generateTokens.mockResolvedValue({
+      accessToken: 'fixture-token',
+    });
+    mockTrustedDeviceService.captureSignals.mockReturnValue({
+      ip: '203.0.113.42',
+      userAgent: 'Fixture',
+      platform: 'android',
+      acceptLanguage: 'en',
+    });
+    mockTrustedDeviceService.recordLoginDevice.mockResolvedValue({
+      isNewDevice: true,
+    });
+    let release!: () => void,
+      reached!: () => void,
+      finished = false;
+    const ready = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const queued = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    mockNotifications.create.mockImplementationOnce(async () => {
+      reached();
+      await queued;
+      return null;
+    });
+    const login = service
+      .login(
+        { email: 'user@example.invalid', password: 'fixture-password' },
+        { headers: {}, socket: { remoteAddress: '203.0.113.42' } } as any,
+        {} as any,
+      )
+      .then((result) => {
+        finished = true;
+        return result;
+      });
+    await ready;
+    expect(finished).toBe(false);
+    release();
+    expect((await login).accessToken).toBe('fixture-token');
+    expect(mockNotifications.create).toHaveBeenCalledWith(
+      'user-1',
+      'LOGIN',
+      expect.objectContaining({
+        payload: expect.objectContaining({ newDevice: true }),
+      }),
+    );
   });
 
   it('validateUser should normalize email before query', async () => {
@@ -248,10 +314,12 @@ describe('AuthService', () => {
     (mockPrisma.user.update as jest.Mock).mockResolvedValue({
       failedLoginAttempts: 7,
     });
-    (mockPrisma.user.findUnique as jest.Mock).mockResolvedValue({
-      email: 'user@example.com',
-      userProfile: { firstName: 'Ada' },
-    });
+    (mockPrisma.user.findUnique as jest.Mock)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({
+        email: 'user@example.com',
+        userProfile: { firstName: 'Ada' },
+      });
 
     await expect(
       service.validateUser('user@example.com', 'wrong-password'),

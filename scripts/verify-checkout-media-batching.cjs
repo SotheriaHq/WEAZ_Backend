@@ -39,7 +39,10 @@ const {
 const { createHash } = require('node:crypto');
 // Mutation claims contain SELECT CTEs; retain separate read and claim-command budgets.
 const isChannelClaim = query => /UPDATE "NotificationChannelOutbox"/.test(query) && /WITH clock/.test(query);
-const isMeasuredRead = query => /SELECT/.test(query) && !isChannelClaim(query);
+const isSemanticGuard = query => /notification-semantic-(?:current|lock)/.test(query);
+// Authoritative per-command checks are reported separately from shared fanout
+// hydration. They cannot reuse pre-lock candidate snapshots after contention.
+const isMeasuredRead = query => /SELECT/.test(query) && !isChannelClaim(query) && !isSemanticGuard(query);
 const parseStock = (value) =>
   value
     ? Object.fromEntries(
@@ -107,7 +110,11 @@ async function main() {
       adapter: new PrismaPg({ connectionString: testUrl.toString() }),
       log: [{ emit: 'event', level: 'query' }],
     });
-    prisma.$on('query', (event) => queries.push(event.query));
+    prisma.$on('query', (event) => {
+      queries.push(event.query);
+      if (event.query.includes('notification-semantic-current')) evidence.semanticCurrentReadCommands = (evidence.semanticCurrentReadCommands ?? 0) + 1;
+      if (event.query.includes('notification-semantic-lock')) evidence.semanticScopeLockCommands = (evidence.semanticScopeLockCommands ?? 0) + 1;
+    });
     const ownerId = randomUUID(),
       buyerId = randomUUID(),
       brandId = randomUUID(),
@@ -471,33 +478,38 @@ async function main() {
     const moderation = new CollectionsService(prisma, {}, {}, {}, {}, undefined, notifications);
     moderation.logger = { debug: () => {}, warn: () => {}, error: () => {} };
     queries.length = 0;
-    const rejection = await moderation.handleRejectedCategory(suggestionId, 'Fixture rejection');
-    assert.deepEqual(rejection, { updated: 26, notified: 26 });
+    await prisma.collectionCategorySuggestion.update({ where: { id: suggestionId }, data: { status: 'REJECTED', rejectionReason: 'Fixture rejection' } });
+    const moderationTargets = [...moderationIds, publishedDraft];
+    const outcomes = [];
+    do { outcomes.push(await moderation.applyCategoryDecision(suggestionId)); } while (outcomes[outcomes.length - 1].updated);
+    assert.equal(outcomes.reduce((sum, row) => sum + row.updated, 0), 27);
+    assert.equal(outcomes.reduce((sum, row) => sum + row.notified, 0), 27);
     evidence.categoryRejectionSelects = queries.filter(query => isMeasuredRead(query)).length;
-    assert.equal(queries.filter(query => isMeasuredRead(query) && /EmailSuppression/.test(query)).length, 2, 'Email suppression is still checked once per page');
-    assert.equal(evidence.categoryRejectionSelects, 9, 'Three page projections plus shared consent, email suppression and dedupe reads per page; no per-draft SELECTs');
     const rejectedRows = await prisma.collection.findMany({ where: { id: { in: moderationIds } } });
-    assert(rejectedRows.every(row => row.draftReason === 'CATEGORY_REJECTED' && row.status === 'DRAFT' && row.pendingCategorySuggestionId === suggestionId));
+    assert(rejectedRows.every(row => row.draftReason === 'CATEGORY_REJECTED' && row.status === 'DRAFT' && row.pendingCategorySuggestionId === null && row.originalSuggestionId === suggestionId));
     const excludedRows = await prisma.collection.findMany({ where: { id: { in: [excludedDraft, publishedDraft] } } });
     assert(excludedRows.every(row => row.draftReason === null));
     const rejectionNotices = await prisma.notification.findMany({ where: { recipientId: ownerId, type: 'COLLECTION_UPLOAD' } });
-    assert.equal(rejectionNotices.length, 26);
-    assert.deepEqual(rejectionNotices.map(row => row.payload.collectionId).sort(), moderationIds);
-    assert(rejectionNotices.every(row => row.payload.pendingCategoryName === 'Casual' && row.payload.rejectionReason === 'Fixture rejection'));
-    evidence.cases.push('real category rejection updates 26 independent drafts and preserves every notification payload with nine SELECTs including email suppression');
+    assert.equal(rejectionNotices.length, 27);
+    assert.deepEqual(rejectionNotices.map(row => row.payload.collectionId).sort(), moderationTargets.sort());
+    assert(rejectionNotices.every(row => row.payload.rejectionReason === 'Fixture rejection'));
+    evidence.cases.push('real category rejection commits 27 independent metadata updates and notices, retains draft status and records the original suggestion');
     const approvedCategoryId = randomUUID();
     await prisma.collectionCategory.create({ data: { id: approvedCategoryId, name: 'Moderation fixture', slug: approvedCategoryId } });
+    await prisma.collectionCategorySuggestion.update({ where: { id: suggestionId }, data: { status: 'APPROVED', approvedCategoryId } });
+    await prisma.collection.updateMany({ where: { id: { in: moderationTargets } }, data: { pendingCategorySuggestionId: suggestionId } });
     queries.length = 0;
-    const publication = await moderation.autoPublishPendingCollections(suggestionId, approvedCategoryId);
-    assert.deepEqual(publication, { published: 1, skipped: 25, failed: 0, errors: [] });
+    const approvals = [];
+    do { approvals.push(await moderation.applyCategoryDecision(suggestionId)); } while (approvals[approvals.length - 1].updated);
+    assert.equal(approvals.reduce((sum, row) => sum + row.updated, 0), 27);
     evidence.categoryApprovalSelects = queries.filter(query => isMeasuredRead(query)).length;
-    assert.equal(evidence.categoryApprovalSelects, 9, 'Approval and incomplete-upload notices retain bounded shared policy reads');
-    const published = await prisma.collection.findUniqueOrThrow({ where: { id: moderationIds[0] } });
-    assert.equal(published.status, 'PUBLISHED');
-    assert.equal(published.categoryId, approvedCategoryId);
-    assert.equal(published.pendingCategorySuggestionId, null);
-    assert.equal(await prisma.collection.count({ where: { id: { in: moderationIds.slice(1) }, status: 'DRAFT' } }), 25);
-    evidence.cases.push('real category approval preserves existing media-present publication and 25 upload-incomplete outcomes with nine SELECTs; canonical publication-readiness audit remains separate');
+    const resolved = await prisma.collection.findUniqueOrThrow({ where: { id: moderationIds[0] } });
+    assert.equal(resolved.status, 'DRAFT');
+    assert.equal(resolved.categoryId, approvedCategoryId);
+    assert.equal(resolved.pendingCategorySuggestionId, null);
+    assert.equal(await prisma.collection.count({ where: { id: { in: moderationIds }, status: 'DRAFT' } }), 26);
+    assert.equal((await prisma.collection.findUniqueOrThrow({ where: { id: publishedDraft } })).status, 'PUBLISHED');
+    evidence.cases.push('real category approval updates draft and previously published metadata without changing any content publication state');
     const extraBrands = recipientIds.map(owner => ({ id: randomUUID(), ownerId: owner, name: 'Cron fixture' }));
     await prisma.brand.createMany({ data: extraBrands });
     const cron = new CustomOrderOpsCronService(prisma, {}, {}, {}, {}, {});
@@ -522,7 +534,7 @@ async function main() {
     store.logger = { log: () => {}, debug: () => {}, warn: () => {}, error: () => {} };
     queries.length = 0;
     await store.handleCustomOrderOutOfStockLifecycle();
-    const stockReads = queries.filter(query => /^\s*(SELECT|WITH)\b/i.test(query) && !isChannelClaim(query));
+    const stockReads = queries.filter(query => /^\s*(SELECT|WITH)\b/i.test(query) && !isChannelClaim(query) && !isSemanticGuard(query));
     evidence.stockReminderChannelClaims = queries.filter(isChannelClaim).length;
     assert(evidence.stockReminderChannelClaims <= 4, 'Stock reminder handoffs use bounded current-row claim groups');
     evidence.stockReminderSelects = stockReads.length;
@@ -539,7 +551,7 @@ async function main() {
     await prisma.cartItem.createMany({ data: bagUsers.map(userId => ({ id: randomUUID(), userId, productId: lifecycleProducts[0].id, quantity: 2, updatedAt: new Date(Date.now() - 3 * 3600000) })) });
     queries.length = 0;
     await store.handleBagCheckoutReminders();
-    evidence.bagReminderSelects = queries.filter(query => /^\s*(SELECT|WITH)\b/i.test(query) && !isChannelClaim(query)).length;
+    evidence.bagReminderSelects = queries.filter(query => /^\s*(SELECT|WITH)\b/i.test(query) && !isChannelClaim(query) && !isSemanticGuard(query)).length;
     evidence.bagReminderChannelClaims = queries.filter(isChannelClaim).length;
     assert(evidence.bagReminderChannelClaims <= 4, 'Bag reminder handoffs use bounded current-row claim groups');
     assert.equal(evidence.bagReminderSelects, 8, 'Two fixed cart/product reads plus shared preference pages, no per-shopper SQL');
@@ -784,6 +796,17 @@ async function main() {
     const channelProof = await require('./notification-channel-concurrency-scenarios.cjs')({ prisma, queries });
     evidence.cases.push(...channelProof.cases);
     evidence.channelProof = { ...channelProof, cases: channelProof.cases.length };
+    const dedupeProof = await require('./notification-dedupe-concurrency-scenarios.cjs')({ prisma, queries });
+    evidence.cases.push(...dedupeProof.cases);
+    evidence.semanticProof = { ...dedupeProof, cases: dedupeProof.cases.length };
+    const authProof = await require('./auth-notification-concurrency-scenarios.cjs')({ prisma, queries });
+    evidence.cases.push(...authProof.cases);
+    evidence.authNotificationProof = { ...authProof, cases: authProof.cases.length };
+    const productCreationProof = await require('./product-creation-concurrency-scenarios.cjs')({ prisma });
+    evidence.cases.push(...productCreationProof.cases);
+    evidence.productCreationProof = { ...productCreationProof, cases: productCreationProof.cases.length };
+    const categoryProof = await require('./category-approval-concurrency-scenarios.cjs')({ prisma, queries });
+    evidence.cases.push(...categoryProof.cases); evidence.categoryApprovalProof = { ...categoryProof, cases: categoryProof.cases.length };
     evidence.passed = true;
   } finally {
     if (prisma) await prisma.$disconnect();

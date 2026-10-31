@@ -1982,6 +1982,7 @@ model Notification {
   @@index([recipientId])
   @@index([recipientId, isRead])
   @@index([recipientId, createdAt])
+  @@index([recipientId, type, createdAt])
 }
 
 model NotificationChannelOutbox {

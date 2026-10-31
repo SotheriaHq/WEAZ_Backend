@@ -7,6 +7,7 @@ import {
   lockBulkImportCheckpoint,
 } from '../collections/bulk-import-query';
 import { appendProductMemberships } from '../collections/collection-membership-query';
+import { retryProductCreation } from './product-creation-transaction';
 import { refreshCollectionPriceRanges } from './collection-price-range.util';
 import { withCartTransaction } from '../bagging/cart-transaction.util';
 import type { NotificationEvent } from '../notifications/notification-batch-query';
@@ -2214,7 +2215,6 @@ export class StoreService {
     });
     return outcomes;
   }
-
   async createProduct(brandOwnerId: string, dto: CreateProductDto) {
     const brand = await this.resolveCatalogBrandForActor(brandOwnerId);
     return this.createProductWithContext(brandOwnerId, dto, brand);
@@ -2439,8 +2439,9 @@ export class StoreService {
       : null;
     let contentSubmissionId: string | null = null;
 
-    const product = await this.prisma.$transaction(
+    const product = await retryProductCreation((attempt) => this.prisma.$transaction(
       async (tx) => {
+        contentSubmissionId = null;
         if (checkpoint) {
           const saved = await lockBulkImportCheckpoint(tx, checkpoint);
           if (
@@ -2472,7 +2473,9 @@ export class StoreService {
             return existing;
           }
         }
-        let slug = checkpoint
+        const slug = attempt > 0
+          ? `${this.normalizeSlugBase(resolvedName)}-${uuidv4()}`
+          : checkpoint
           ? await loadBulkProductSlug(tx, this.normalizeSlugBase(resolvedName))
           : await this.ensureUniqueProductSlug(tx, resolvedName);
         let collectionId = requestedCollectionId;
@@ -2549,12 +2552,7 @@ export class StoreService {
           where: { collectionId },
         });
 
-        let created = null as Awaited<
-          ReturnType<typeof tx.product.create>
-        > | null;
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          try {
-            created = await tx.product.create({
+        const created = await tx.product.create({
               data: {
                 id: uuidv4(),
                 collectionId,
@@ -2633,23 +2631,6 @@ export class StoreService {
                 publishAt: dto.publishAt ? new Date(dto.publishAt) : null,
               },
             });
-            break;
-          } catch (error) {
-            if (
-              error instanceof Prisma.PrismaClientKnownRequestError &&
-              error.code === 'P2002' &&
-              attempt < 2
-            ) {
-              slug = this.generateSlug(resolvedName);
-              continue;
-            }
-            throw error;
-          }
-        }
-
-        if (!created) {
-          throw new InternalServerErrorException('Unable to create product');
-        }
 
         if (this.contentIntegrity && structuredProductMedia.length > 0) {
           await this.contentIntegrity.replaceProductMedia(tx, {
@@ -2730,7 +2711,7 @@ export class StoreService {
         });
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
-    );
+    ));
 
     if (!product) {
       throw new NotFoundException('Product not found');

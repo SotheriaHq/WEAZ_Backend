@@ -1,11 +1,21 @@
-import { BULK_IMPORT_BATCH_SIZE, claimBulkImport, renewBulkImport, lockBulkImportCheckpoint, finishBulkImport } from './bulk-import-query';
-import { loadPendingCategoryCollections } from './category-moderation-query';
+import {
+  BULK_IMPORT_BATCH_SIZE,
+  claimBulkImport,
+  renewBulkImport,
+  lockBulkImportCheckpoint,
+  finishBulkImport,
+} from './bulk-import-query';
+import { applyCategoryDecisionPage } from './category-moderation-query';
 import type { NotificationEvent } from '../notifications/notification-batch-query';
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
 import { refreshCollectionPriceRanges } from '../store/collection-price-range.util';
 import { attachFinalizedMedia } from './finalized-media-query';
-import { lockMembershipProducts, readProductMemberships, synchronizePrimaryMemberships } from './collection-membership-query';
+import {
+  lockMembershipProducts,
+  readProductMemberships,
+  synchronizePrimaryMemberships,
+} from './collection-membership-query';
 import { privateCollectionCountsForOwners } from './collection-counts.util';
 import { retryDatabaseTransaction } from 'src/common/transaction-retry.util';
 import {
@@ -9075,204 +9085,64 @@ export class CollectionsService {
     return { collectionThreads, mediaThreads, totalThreads };
   }
 
-  // ===================== PHASE 2: Auto-Publishing for Approved Categories =====================
-
-  /**
-   * Automatically publish all draft collections waiting for a specific category suggestion
-   * Called when admin approves a category suggestion
-   */
-  async autoPublishPendingCollections(
+  /** Category moderation never changes a design's publication or media-review state. */
+  async applyCategoryDecision(
     suggestionId: string,
-    approvedCategoryId: string,
-  ): Promise<{
-    published: number;
-    skipped: number;
-    failed: number;
-    errors: string[];
-  }> {
-    const results = {
-      published: 0,
-      skipped: 0,
-      failed: 0,
-      errors: [] as string[],
-    };
-
-    let afterId: string | null = null;
-    while (true) {
-      const pendingCollections = await loadPendingCategoryCollections(
-        this.prisma,
-        suggestionId,
-        afterId,
-      );
-      if (!pendingCollections.length) break;
-      const events: NotificationEvent[] = [];
-      for (const collection of pendingCollections) {
-        try {
-          // Verify collection has uploaded media files
-          if (!collection.hasMedia) {
-            results.skipped++;
-            events.push({
-              recipientId: collection.ownerId,
-              type: NotificationType.COLLECTION_UPLOAD,
-              opts: {
-                payload: {
-                  collectionId: collection.id,
-                  message:
-                    'Your category was approved, but your collection upload is incomplete. Please complete the upload to publish.',
-                },
-              },
-            });
-            continue;
-          }
-
-          // Update collection in a transaction
-          const published = await this.prisma.$transaction(async (tx) => {
-            const publishedAt = new Date();
-            const changed = await tx.collection.updateMany({
-              where: {
-                id: collection.id,
-                status: 'DRAFT',
-                pendingCategorySuggestionId: suggestionId,
-                deletedAt: null,
-              },
-              data: {
-                categoryId: approvedCategoryId,
-                categoryTypeId: null,
-                pendingCategorySuggestionId: null,
-                draftReason: null,
-                status: 'PUBLISHED',
-                updatedAt: publishedAt,
-              },
-            });
-            if (!changed.count) return false;
-            await this.cleanupSupersededDraftCollections(
-              tx,
-              collection.ownerId,
-              collection.id,
-              collection.title,
-              publishedAt,
-              collection.domain,
-              collection.isAvailableInStore,
-            );
-            return true;
-          });
-          if (!published) {
-            results.skipped++;
-            continue;
-          }
-          results.published++;
-          events.push({
-            recipientId: collection.ownerId,
-            type: NotificationType.COLLECTION_UPLOAD,
-            opts: {
-              payload: {
-                collectionId: collection.id,
-                title: collection.title,
-                message: `Great news! Your collection "${collection.title}" has been published automatically because the category you requested was approved.`,
-              },
-            },
-          });
-        } catch (error) {
-          results.failed++;
-          const errorMsg = `Failed to publish collection ${collection.id}: ${error.message}`;
-          results.errors.push(errorMsg);
-          this.logger.error(errorMsg, error);
-          events.push({
-            recipientId: collection.ownerId,
-            type: NotificationType.COLLECTION_UPLOAD,
-            opts: {
-              payload: {
-                collectionId: collection.id,
-                message:
-                  'There was an issue publishing your collection automatically. Please try publishing manually.',
-              },
-            },
-          });
-        }
-      }
-      await this.sendCategoryModerationEvents(events);
-      afterId = pendingCollections[pendingCollections.length - 1].id;
-    }
-
-    return results;
-  }
-
-  /**
-   * Handle rejected category suggestions - update linked draft collections
-   * Called when admin rejects a category suggestion
-   */
-  async handleRejectedCategory(
-    suggestionId: string,
-    rejectionReason: string,
   ): Promise<{ updated: number; notified: number }> {
-    const results = { updated: 0, notified: 0 };
-
-    let afterId: string | null = null;
-    while (true) {
-      const affectedCollections = await loadPendingCategoryCollections(
-        this.prisma,
-        suggestionId,
-        afterId,
-      );
-      if (!affectedCollections.length) break;
-      const events: NotificationEvent[] = [];
-      for (const collection of affectedCollections) {
-        try {
-          // Update collection to reflect rejection
-          const changed = await this.prisma.collection.updateMany({
-            where: {
-              id: collection.id,
-              status: 'DRAFT',
-              pendingCategorySuggestionId: suggestionId,
-              deletedAt: null,
+    return this.prisma.$transaction(
+      async (tx) => {
+        const rows = await applyCategoryDecisionPage(tx, suggestionId);
+        if (!rows.length) return { updated: 0, notified: 0 };
+        if (!this.notifications)
+          throw new Error('Category decision notification service unavailable');
+        const events: NotificationEvent[] = rows.map((row) => ({
+          recipientId: row.ownerId,
+          type: NotificationType.COLLECTION_UPLOAD,
+          opts: {
+            target: { type: 'DESIGN', id: row.id },
+            dedupeMs: 0,
+            payload: {
+              collectionId: row.id,
+              title: row.title,
+              pendingCategoryName: row.name,
+              rejectionReason: row.rejectionReason,
+              targetUrl: `/designs/${row.id}`,
+              message:
+                row.decision === 'APPROVED'
+                  ? `Your category suggestion "${row.name}" was approved. Your design's publication status has not changed.`
+                  : `Your category suggestion "${row.name}" was not approved. Your design's approval is separate. Choose an approved category to appear in its category results.`,
             },
-            data: {
-              draftReason: 'CATEGORY_REJECTED',
-              // Keep pendingCategorySuggestionId for reference
-              updatedAt: new Date(),
-            },
-          });
-          if (!changed.count) continue;
-          results.updated++;
-          events.push({
-            recipientId: collection.ownerId,
-            type: NotificationType.COLLECTION_UPLOAD,
-            opts: {
-              payload: {
-                collectionId: collection.id,
-                title: collection.title,
-                pendingCategoryName: collection.pendingCategoryName,
-                rejectionReason,
-                message: `Your category suggestion "${collection.pendingCategoryName}" was not approved. Your collection "${collection.title}" is saved as a draft. You can select a different category to publish it.`,
-              },
-            },
-          });
-        } catch (error) {
-          this.logger.error(
-            `Failed to update collection ${collection.id}:`,
-            error,
-          );
-        }
-      }
-      results.notified += await this.sendCategoryModerationEvents(events);
-      afterId = affectedCollections[affectedCollections.length - 1].id;
-    }
-
-    return results;
+          },
+        }));
+        const notified = await this.notifications.stageCategoryDecisionEvents(
+          tx,
+          events,
+        );
+        return { updated: rows.length, notified };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
   }
 
-  private async sendCategoryModerationEvents(events: NotificationEvent[]) {
-    if (!this.notifications || !events.length) return 0;
-    const outcomes = await this.notifications.createEvents(events);
-    let fulfilled = 0;
-    outcomes.forEach((outcome, index) => {
-      if (outcome.status === 'fulfilled') fulfilled++;
-      else
-        this.logger.warn(
-          `Category moderation notification failed for ${events[index].recipientId}: ${String(outcome.reason)}`,
+  /** The pending link is the durable retry instruction; clearing it and notices commit together. */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async reconcileCategoryDecisions(): Promise<void> {
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT s."_id" AS id FROM "CollectionCategorySuggestion" s
+      WHERE s.status IN ('APPROVED','REJECTED') AND EXISTS (
+        SELECT 1 FROM "Collection" c WHERE c."pendingCategorySuggestionId"=s."_id" AND c."deletedAt" IS NULL
+      ) ORDER BY s."decidedAt",s."_id" LIMIT 25
+    `;
+    for (const row of rows) {
+      try {
+        await this.applyCategoryDecision(row.id);
+      } catch (error) {
+        this.logger.error(
+          `Category decision propagation failed: ${row.id}`,
+          error,
         );
-    });
-    return fulfilled;
+      }
+    }
   }
 
   // ===================== Invite Links (Feature-flagged) =====================
