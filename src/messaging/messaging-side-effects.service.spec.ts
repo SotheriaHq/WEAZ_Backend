@@ -19,6 +19,7 @@ describe('MessagingSideEffectsService', () => {
         updateMany: jest.fn(),
         update: jest.fn(),
         create: jest.fn(),
+        createMany: jest.fn(),
       },
       messageThreadParticipant: {
         findMany: jest.fn(),
@@ -239,22 +240,20 @@ describe('MessagingSideEffectsService', () => {
     prisma.messageNotificationOutbox.findMany.mockResolvedValue([
       { threadId: 'thread_1', recipientId: 'user_1' },
     ]);
-    prisma.messageNotificationOutbox.create.mockResolvedValue({
-      id: 'new_row',
-    });
+    prisma.messageNotificationOutbox.createMany.mockResolvedValue({ count: 1 });
 
     await service.enqueueUnreadMessageReminders();
 
-    expect(prisma.messageNotificationOutbox.create).toHaveBeenCalledTimes(1);
-    expect(prisma.messageNotificationOutbox.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
+    expect(prisma.messageNotificationOutbox.createMany).toHaveBeenCalledTimes(1);
+    expect(prisma.messageNotificationOutbox.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
           threadId: 'thread_2',
           recipientId: 'user_1',
           notificationType: NotificationType.MESSAGE_UNREAD_REMINDER,
         }),
-      }),
-    );
+      ],
+    });
   });
 
   it('enqueueUnreadMessageReminders builds canonical standard-order deep links', async () => {
@@ -297,9 +296,7 @@ describe('MessagingSideEffectsService', () => {
     ]);
 
     prisma.messageNotificationOutbox.findMany.mockResolvedValue([]);
-    prisma.messageNotificationOutbox.create.mockResolvedValue({
-      id: 'new_row',
-    });
+    prisma.messageNotificationOutbox.createMany.mockResolvedValue({ count: 1 });
 
     await service.enqueueUnreadMessageReminders();
 
@@ -312,11 +309,11 @@ describe('MessagingSideEffectsService', () => {
       minutes until they open it. For a brand an unread thread IS a piece of
       work sitting still, which is what the reminder is for.
     */
-    expect(prisma.messageNotificationOutbox.create).toHaveBeenCalledTimes(1);
+    expect(prisma.messageNotificationOutbox.createMany).toHaveBeenCalledTimes(1);
 
-    const createdRows = prisma.messageNotificationOutbox.create.mock.calls.map(
-      (call: any[]) => call[0].data,
-    );
+    const createdRows =
+      prisma.messageNotificationOutbox.createMany.mock.calls[0][0].data;
+    expect(createdRows).toHaveLength(1);
     const brandRow = createdRows.find(
       (row: any) => row.recipientId === 'brand_owner_1',
     );

@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client';
 import { withCartTransaction } from './cart-transaction.util';
 import {
   BadRequestException,
@@ -298,6 +299,7 @@ export class CollectionBaggingService {
         bagItemId: string;
         quantity: number;
       }> = [];
+      const newItems: Prisma.CartItemCreateManyInput[] = [];
       for (const item of prepared) {
         const existingItem = currentBySelection.get(selectionKey(item));
         this.validationService.validateStandardBagInput({
@@ -324,25 +326,26 @@ export class CollectionBaggingService {
           continue;
         }
 
-        const created = await tx.cartItem.create({
-          data: {
-            id: uuidv4(),
-            userId,
-            productId: item.productId,
-            quantity: item.quantity,
-            selectedSize: item.selectedSize,
-            selectedColor: item.selectedColor,
-            sizingMode: item.sizingMode,
-            requiredMeasurementKeys: item.requiredMeasurementKeys,
-            sizeFitData: item.sizeFitData as any,
-          },
-          select: { id: true, quantity: true },
+        const bagItemId = uuidv4();
+        newItems.push({
+          id: bagItemId,
+          userId,
+          productId: item.productId,
+          quantity: item.quantity,
+          selectedSize: item.selectedSize,
+          selectedColor: item.selectedColor,
+          sizingMode: item.sizingMode,
+          requiredMeasurementKeys: item.requiredMeasurementKeys,
+          sizeFitData: item.sizeFitData as any,
         });
         rows.push({
           productId: item.productId,
-          bagItemId: created.id,
-          quantity: created.quantity,
+          bagItemId,
+          quantity: item.quantity,
         });
+      }
+      if (newItems.length > 0) {
+        await tx.cartItem.createMany({ data: newItems });
       }
       return rows;
     });

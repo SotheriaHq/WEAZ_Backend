@@ -50,6 +50,7 @@ describe('BrandStaffService', () => {
       create: jest.fn(),
       update: jest.fn(),
     },
+    $executeRaw: jest.fn().mockResolvedValue(0),
     $transaction: jest.fn((callback) => callback(prisma)),
   };
 

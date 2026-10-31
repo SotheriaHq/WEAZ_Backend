@@ -155,14 +155,20 @@ export class PatchingService {
       }
     } else {
       // Create new patch connection
-      patchConnection = await this.prisma.patchConnection.create({
-        data: {
-          id: uuidv4(),
-          requester: { connect: { id: requesterId } },
-          target: { connect: { id: brandId } },
-          status: PatchStatus.ACCEPTED, // User-to-brand patches are auto-accepted
-          mode: PatchMode.USER_TO_BRAND,
-        },
+      await this.prisma.patchConnection.createMany({
+        data: [
+          {
+            id: uuidv4(),
+            requesterId,
+            targetId: brandId,
+            status: PatchStatus.ACCEPTED, // User-to-brand patches are auto-accepted
+            mode: PatchMode.USER_TO_BRAND,
+          },
+        ],
+        skipDuplicates: true,
+      });
+      patchConnection = await this.prisma.patchConnection.findUniqueOrThrow({
+        where: { requesterId_targetId: { requesterId, targetId: brandId } },
       });
     }
 

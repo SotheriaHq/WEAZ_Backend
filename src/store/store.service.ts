@@ -1,3 +1,4 @@
+import { lockForTransaction } from 'src/common/transaction-lock.util';
 import {
   BulkImportCheckpoint,
   BulkProductTaxonomy,
@@ -1873,39 +1874,33 @@ export class StoreService {
 
     if (existingDefault?.id) return existingDefault.id;
 
-    let createdDefault: { id: string };
-    try {
-      createdDefault = await tx.storeCollection.create({
-        data: {
-          id: uuidv4(),
-          ownerId,
-          title: 'Store Products',
-          description: 'System bucket for standalone products.',
-          status: 'PUBLISHED',
-          visibility: 'PRIVATE',
-          type: 'EVERYBODY',
-          isAvailableInStore: true,
-          isSystemGenerated: true,
-        },
-        select: { id: true },
-      });
-    } catch {
-      // Handle concurrent create race by re-reading existing system bucket.
-      const retry = await tx.storeCollection.findFirst({
-        where: {
-          ownerId,
-          isSystemGenerated: true,
-          deletedAt: null,
-        },
-        orderBy: { updatedAt: 'desc' },
-        select: { id: true },
-      });
-      if (!retry?.id)
-        throw new InternalServerErrorException(
-          'Failed to ensure default store collection',
-        );
-      return retry.id;
-    }
+    // No unique key can cover this bucket, so concurrent first products take turns.
+    await lockForTransaction(tx, `default-store-collection-${ownerId}`);
+    const concurrentDefault = await tx.storeCollection.findFirst({
+      where: {
+        ownerId,
+        isSystemGenerated: true,
+        deletedAt: null,
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true },
+    });
+    if (concurrentDefault?.id) return concurrentDefault.id;
+
+    const createdDefault = await tx.storeCollection.create({
+      data: {
+        id: uuidv4(),
+        ownerId,
+        title: 'Store Products',
+        description: 'System bucket for standalone products.',
+        status: 'PUBLISHED',
+        visibility: 'PRIVATE',
+        type: 'EVERYBODY',
+        isAvailableInStore: true,
+        isSystemGenerated: true,
+      },
+      select: { id: true },
+    });
 
     return createdDefault.id;
   }
@@ -7184,12 +7179,9 @@ export class StoreService {
       };
     }
 
-    await this.prisma.wishlistItem.create({
-      data: {
-        id: uuidv4(),
-        userId,
-        productId: dto.productId,
-      },
+    await this.prisma.wishlistItem.createMany({
+      data: [{ id: uuidv4(), userId, productId: dto.productId }],
+      skipDuplicates: true,
     });
 
     return { success: true, message: 'Added to wishlist', isWishlisted: true };
@@ -11291,6 +11283,7 @@ export class StoreService {
     if (Object.keys(measurementValues).length === 0) {
       return;
     }
+    await lockForTransaction(tx, `size-fit-${userId}`);
 
     try {
       let profile = await tx.userSizeFitProfile.findUnique({
@@ -11298,23 +11291,29 @@ export class StoreService {
       });
       if (!profile) {
         const now = new Date();
-        profile = await tx.userSizeFitProfile.create({
-          data: {
-            id: uuidv4(),
-            userId,
-            visibility: 'PRIVATE',
-            sharePolicy: 'REQUIRE_PERMISSION',
-            notifyOnShare: true,
-            requireUpdateEveryDays: 14,
-            version: 0,
-            preferredLengthUnit: 'CM',
-            preferredWeightUnit: 'KG',
-            fitPreference: 'REGULAR',
-            label: 'My Measurements',
-            measurements: {},
-            lastUpdatedAt: null,
-            nextReminderAt: now,
-          },
+        await tx.userSizeFitProfile.createMany({
+          data: [
+            {
+              id: uuidv4(),
+              userId,
+              visibility: 'PRIVATE',
+              sharePolicy: 'REQUIRE_PERMISSION',
+              notifyOnShare: true,
+              requireUpdateEveryDays: 14,
+              version: 0,
+              preferredLengthUnit: 'CM',
+              preferredWeightUnit: 'KG',
+              fitPreference: 'REGULAR',
+              label: 'My Measurements',
+              measurements: {},
+              lastUpdatedAt: null,
+              nextReminderAt: now,
+            },
+          ],
+          skipDuplicates: true,
+        });
+        profile = await tx.userSizeFitProfile.findUniqueOrThrow({
+          where: { userId },
         });
       }
 

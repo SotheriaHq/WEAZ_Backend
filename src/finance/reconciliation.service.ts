@@ -236,6 +236,7 @@ export class ReconciliationService {
       this.loadLedgerByReference('PAYMENT_RECEIVED', 'Order', attempts.filter((attempt) => !(attempt.subjectType === 'CUSTOM_ORDER' && attempt.customOrderId)).flatMap((attempt) => attempt.orderIds)),
     ]);
     const createdStatuses: ReconciliationItemStatus[] = [];
+    const items: Record<string, unknown>[] = [];
     for (const attempt of attempts) {
       const expectedAmount = Number(
         attempt.settlementAmount ?? attempt.amount ?? 0,
@@ -255,32 +256,31 @@ export class ReconciliationService {
             : RECONCILIATION_ITEM_STATUS.DISCREPANCY;
 
       createdStatuses.push(status);
-      await (this.prisma as any).reconciliationItem.create({
-        data: {
-          runId,
-          status,
-          referenceType: 'PaymentAttempt',
-          referenceId: attempt.id,
-          expectedAmount: new Prisma.Decimal(expectedAmount.toFixed(2)),
-          actualAmount: new Prisma.Decimal(actualAmount.toFixed(2)),
-          currency: attempt.settlementCurrency || attempt.currency,
-          summary:
-            status === RECONCILIATION_ITEM_STATUS.MATCHED
-              ? `Payment attempt ${attempt.reference} matched ledger receipts.`
-              : status === RECONCILIATION_ITEM_STATUS.UNMATCHED_INTERNAL
-                ? `Payment attempt ${attempt.reference} has no matching ledger receipt.`
-                : `Payment attempt ${attempt.reference} amount differs from ledger receipts.`,
-          detailsJson: {
-            paymentAttemptId: attempt.id,
-            paymentReference: attempt.reference,
-            orderIds: attempt.orderIds,
-            customOrderId: attempt.customOrderId,
-            ledgerTransactionIds: ledgerTransactions.map((tx) => tx.id),
-          },
+      items.push({
+        runId,
+        status,
+        referenceType: 'PaymentAttempt',
+        referenceId: attempt.id,
+        expectedAmount: new Prisma.Decimal(expectedAmount.toFixed(2)),
+        actualAmount: new Prisma.Decimal(actualAmount.toFixed(2)),
+        currency: attempt.settlementCurrency || attempt.currency,
+        summary:
+          status === RECONCILIATION_ITEM_STATUS.MATCHED
+            ? `Payment attempt ${attempt.reference} matched ledger receipts.`
+            : status === RECONCILIATION_ITEM_STATUS.UNMATCHED_INTERNAL
+              ? `Payment attempt ${attempt.reference} has no matching ledger receipt.`
+              : `Payment attempt ${attempt.reference} amount differs from ledger receipts.`,
+        detailsJson: {
+          paymentAttemptId: attempt.id,
+          paymentReference: attempt.reference,
+          orderIds: attempt.orderIds,
+          customOrderId: attempt.customOrderId,
+          ledgerTransactionIds: ledgerTransactions.map((tx) => tx.id),
         },
       });
     }
 
+    await this.writeItems(items);
     return this.buildSummary(createdStatuses);
   }
 
@@ -297,6 +297,7 @@ export class ReconciliationService {
 
     const ledgerByPayout = await this.loadLedgerByReference('PAYOUT_DISBURSED', 'Payout', payouts.map((payout) => payout.id));
     const createdStatuses: ReconciliationItemStatus[] = [];
+    const items: Record<string, unknown>[] = [];
     for (const payout of payouts) {
       const ledgerTransactions = ledgerByPayout.get(payout.id) ?? [];
 
@@ -316,30 +317,29 @@ export class ReconciliationService {
                 : RECONCILIATION_ITEM_STATUS.DISCREPANCY;
 
       createdStatuses.push(status);
-      await (this.prisma as any).reconciliationItem.create({
-        data: {
-          runId,
-          status,
-          referenceType: 'Payout',
-          referenceId: payout.id,
-          expectedAmount: new Prisma.Decimal(expectedAmount.toFixed(2)),
-          actualAmount: new Prisma.Decimal(actualAmount.toFixed(2)),
-          currency: payout.currency,
-          summary:
-            status === RECONCILIATION_ITEM_STATUS.MATCHED
-              ? `Payout ${payout.id} matched payout ledger disbursement.`
-              : status === RECONCILIATION_ITEM_STATUS.UNMATCHED_INTERNAL
-                ? `Paid payout ${payout.id} has no ledger disbursement entry.`
-                : `Payout ${payout.id} status and ledger disbursement are inconsistent.`,
-          detailsJson: {
-            payoutId: payout.id,
-            payoutStatus: payout.status,
-            ledgerTransactionIds: ledgerTransactions.map((tx) => tx.id),
-          },
+      items.push({
+        runId,
+        status,
+        referenceType: 'Payout',
+        referenceId: payout.id,
+        expectedAmount: new Prisma.Decimal(expectedAmount.toFixed(2)),
+        actualAmount: new Prisma.Decimal(actualAmount.toFixed(2)),
+        currency: payout.currency,
+        summary:
+          status === RECONCILIATION_ITEM_STATUS.MATCHED
+            ? `Payout ${payout.id} matched payout ledger disbursement.`
+            : status === RECONCILIATION_ITEM_STATUS.UNMATCHED_INTERNAL
+              ? `Paid payout ${payout.id} has no ledger disbursement entry.`
+              : `Payout ${payout.id} status and ledger disbursement are inconsistent.`,
+        detailsJson: {
+          payoutId: payout.id,
+          payoutStatus: payout.status,
+          ledgerTransactionIds: ledgerTransactions.map((tx) => tx.id),
         },
       });
     }
 
+    await this.writeItems(items);
     return this.buildSummary(createdStatuses);
   }
 
@@ -358,6 +358,7 @@ export class ReconciliationService {
     });
 
     const createdStatuses: ReconciliationItemStatus[] = [];
+    const items: Record<string, unknown>[] = [];
     for (const account of accounts) {
       const recalculatedBalance = this.roundMoney(
         account.entries.reduce((sum, entry) => {
@@ -374,29 +375,33 @@ export class ReconciliationService {
           : RECONCILIATION_ITEM_STATUS.DISCREPANCY;
 
       createdStatuses.push(status);
-      await (this.prisma as any).reconciliationItem.create({
-        data: {
-          runId,
-          status,
-          referenceType: 'LedgerAccount',
-          referenceId: account.id,
-          expectedAmount: new Prisma.Decimal(recalculatedBalance.toFixed(2)),
-          actualAmount: new Prisma.Decimal(actualAmount.toFixed(2)),
-          currency: account.currency,
-          summary:
-            status === RECONCILIATION_ITEM_STATUS.MATCHED
-              ? `Ledger account ${account.code} matches recalculated balance.`
-              : `Ledger account ${account.code} drifted from recalculated balance.`,
-          detailsJson: {
-            accountCode: account.code,
-            accountType: account.type,
-            entryCount: account.entries.length,
-          },
+      items.push({
+        runId,
+        status,
+        referenceType: 'LedgerAccount',
+        referenceId: account.id,
+        expectedAmount: new Prisma.Decimal(recalculatedBalance.toFixed(2)),
+        actualAmount: new Prisma.Decimal(actualAmount.toFixed(2)),
+        currency: account.currency,
+        summary:
+          status === RECONCILIATION_ITEM_STATUS.MATCHED
+            ? `Ledger account ${account.code} matches recalculated balance.`
+            : `Ledger account ${account.code} drifted from recalculated balance.`,
+        detailsJson: {
+          accountCode: account.code,
+          accountType: account.type,
+          entryCount: account.entries.length,
         },
       });
     }
 
+    await this.writeItems(items);
     return this.buildSummary(createdStatuses);
+  }
+
+  private async writeItems(items: Record<string, unknown>[]) {
+    if (items.length === 0) return;
+    await (this.prisma as any).reconciliationItem.createMany({ data: items });
   }
 
   private buildSummary(statuses: ReconciliationItemStatus[]) {

@@ -26,7 +26,7 @@ describe('ReconciliationService', () => {
         findMany: jest.fn(),
       },
       reconciliationItem: {
-        create: jest.fn(),
+        createMany: jest.fn(),
         findMany: jest.fn(),
         findUnique: jest.fn(),
         update: jest.fn(),
@@ -54,7 +54,7 @@ describe('ReconciliationService', () => {
     prisma.ledgerTransaction.findMany.mockResolvedValue([
       { id: 'ledger-1', referenceId: 'order-1', totalAmount: new Prisma.Decimal('100.00') },
     ]);
-    prisma.reconciliationItem.create.mockResolvedValue({ id: 'item-1' });
+    prisma.reconciliationItem.createMany.mockResolvedValue({ count: 1 });
     prisma.reconciliationRun.update.mockResolvedValue({
       id: 'run-1',
       status: 'COMPLETED',
@@ -72,16 +72,17 @@ describe('ReconciliationService', () => {
       actorId: 'admin-1',
     });
 
-    expect(prisma.reconciliationItem.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
+    expect(prisma.reconciliationItem.createMany).toHaveBeenCalledTimes(1);
+    expect(prisma.reconciliationItem.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
           runId: 'run-1',
           status: 'MATCHED',
           referenceType: 'PaymentAttempt',
           referenceId: 'attempt-1',
         }),
-      }),
-    );
+      ],
+    });
     expect(prisma.reconciliationRun.update).toHaveBeenLastCalledWith(
       expect.objectContaining({
         where: { id: 'run-1' },

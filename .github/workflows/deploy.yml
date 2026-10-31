@@ -121,6 +121,7 @@ jobs:
           node scripts/verify-subscription-queue-postgres.cjs
           node scripts/verify-checkout-media-batching.cjs
           node scripts/verify-tag-sync-batching.cjs
+          node scripts/verify-duplicate-safe-writes.cjs
           node scripts/verify-bulk-import-postgres.cjs
           node scripts/verify-file-deletion-postgres.cjs
           node scripts/verify-standard-refund-integrity.cjs
