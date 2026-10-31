@@ -707,7 +707,7 @@ describe('MarketSectionService', () => {
           publicationStatus: CollectionStatus.PUBLISHED,
           deletedAt: null,
           archivedAt: null,
-          brand: { isStoreOpen: true },
+          brand: { isStoreOpen: true, owner: { status: 'ACTIVE' } },
         }),
       }),
     );

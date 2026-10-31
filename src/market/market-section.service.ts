@@ -1033,9 +1033,41 @@ export class MarketSectionService {
       deletedAt: null,
       archivedAt: null,
       ...(options?.includeBrandOpen === false
-        ? {}
-        : { brand: { isStoreOpen: true } }),
+        ? { brand: { owner: { status: 'ACTIVE' } } }
+        : { brand: { isStoreOpen: true, owner: { status: 'ACTIVE' } } }),
       AND: andFilters,
+    };
+  }
+
+  private buildMarketableDesignWhere(): Prisma.CollectionWhereInput {
+    const file = {
+      processingStatus: 'READY' as const,
+      originalDeletedAt: null,
+      s3Url: { not: '' },
+    };
+    return {
+      domain: 'DESIGN',
+      status: CollectionStatus.PUBLISHED,
+      visibility: CollectionVisibility.PUBLIC,
+      deletedAt: null,
+      owner: { status: 'ACTIVE', brand: { isStoreOpen: true } },
+      OR: [
+        { coverMedia: { file } },
+        { medias: { some: { file } } },
+      ],
+    };
+  }
+
+  private buildMarketableCollectionWhere(): Prisma.StoreCollectionWhereInput {
+    return {
+      status: CollectionStatus.PUBLISHED,
+      visibility: CollectionVisibility.PUBLIC,
+      isAvailableInStore: true,
+      deletedAt: null,
+      owner: { status: 'ACTIVE', brand: { isStoreOpen: true } },
+      products: {
+        some: { product: this.buildMarketableProductWhere() },
+      },
     };
   }
 
@@ -1158,20 +1190,7 @@ export class MarketSectionService {
     const take = this.normalizeLimit(options.limit, this.defaultDetailLimit);
     const collections = await this.runCursorQuery(() =>
       this.prisma.storeCollection.findMany({
-        where: {
-          status: CollectionStatus.PUBLISHED,
-          visibility: CollectionVisibility.PUBLIC,
-          isAvailableInStore: true,
-          deletedAt: null,
-          owner: { brand: { isStoreOpen: true } },
-          products: {
-            some: {
-              product: this.buildMarketableProductWhere([], {
-                includeBrandOpen: false,
-              }),
-            },
-          },
-        },
+        where: this.buildMarketableCollectionWhere(),
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
         take: take + 1,
@@ -1209,6 +1228,7 @@ export class MarketSectionService {
             },
           },
           products: {
+            where: { product: this.buildMarketableProductWhere() },
             orderBy: [{ orderIndex: 'asc' }],
             take: 5,
             select: {
@@ -1257,6 +1277,13 @@ export class MarketSectionService {
       this.prisma.collectionCategory.findMany({
         where: {
           isActive: true,
+          // Reference taxonomy is needed by creation forms, but an empty
+          // category is not a discovery card. Check all supported sources.
+          OR: [
+            { products: { some: this.buildMarketableProductWhere() } },
+            { collections: { some: this.buildMarketableDesignWhere() } },
+            { storeCollections: { some: this.buildMarketableCollectionWhere() } },
+          ],
         },
         orderBy: [{ order: 'asc' }, { slug: 'asc' }],
         ...(options.cursor
@@ -1323,6 +1350,7 @@ export class MarketSectionService {
       this.prisma.brand.findMany({
         where: {
           isStoreOpen: true,
+          owner: { status: 'ACTIVE' },
           products: {
             some: productWhere,
           },
@@ -1360,8 +1388,8 @@ export class MarketSectionService {
 
     const hasNextPage = brands.length > take;
     const page = hasNextPage ? brands.slice(0, take) : brands;
-    // Brand cards render a product image or the brand logo — both are raw S3
-    // URLs, so clients need the fileId to resolve a signed URL (otherwise the
+    // Brand cards render a product image or the brand logo. Clients need the
+    // fileId to resolve a signed URL (otherwise the
     // card falls back to initials — client-reported on Trending Now).
     const brandMediaUrls = Array.from(
       new Set(
@@ -1424,17 +1452,7 @@ export class MarketSectionService {
     const take = this.normalizeLimit(options.limit, this.defaultDetailLimit);
     const designs = await this.runCursorQuery(() =>
       this.prisma.collection.findMany({
-        where: {
-          domain: 'DESIGN',
-          status: CollectionStatus.PUBLISHED,
-          visibility: CollectionVisibility.PUBLIC,
-          deletedAt: null,
-          owner: { brand: { isStoreOpen: true } },
-          OR: [
-            { coverMedia: { file: { s3Url: { not: '' } } } },
-            { medias: { some: { file: { s3Url: { not: '' } } } } },
-          ],
-        },
+        where: this.buildMarketableDesignWhere(),
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
         take: take + 1,
