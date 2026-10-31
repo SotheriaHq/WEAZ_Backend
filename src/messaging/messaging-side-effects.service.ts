@@ -184,6 +184,7 @@ export class MessagingSideEffectsService {
       recentReminders.map((row) => `${row.threadId}:${row.recipientId}`),
     );
 
+    const reminders: Prisma.MessageNotificationOutboxCreateManyInput[] = [];
     for (const participant of participants) {
       /*
         The unread nudge is for the side that OWES a reply.
@@ -215,37 +216,41 @@ export class MessagingSideEffectsService {
       const reminderKey = `${participant.threadId}:${participant.userId}`;
       if (recentlyReminded.has(reminderKey)) continue;
 
-      await this.prisma.messageNotificationOutbox.create({
-        data: {
-          threadId: participant.threadId,
-          messageId: participant.thread.lastMessageId ?? participant.threadId,
-          recipientId: participant.userId,
-          notificationType: NotificationType.MESSAGE_UNREAD_REMINDER,
-          payloadJson: {
-            type: 'message',
-            category: 'message',
-            threadId: participant.thread.id,
-            conversationId: participant.thread.id,
-            messageId: participant.thread.lastMessageId,
-            contextType: participant.thread.contextType,
-            orderId: participant.thread.orderId,
-            customOrderId: participant.thread.customOrderId,
-            brandId: participant.thread.brandId,
-            customerId:
-              participant.thread.buyerUserId ?? participant.thread.buyerId,
-            targetUrl: this.resolveThreadTargetUrl(
-              participant.thread.contextType,
-              participant.thread.orderId,
-              participant.thread.customOrderId,
-              participant.thread.brandId,
-              participant.role,
-              participant.thread.id,
-              participant.thread.lastMessageId,
-            ),
-          },
+      reminders.push({
+        threadId: participant.threadId,
+        messageId: participant.thread.lastMessageId ?? participant.threadId,
+        recipientId: participant.userId,
+        notificationType: NotificationType.MESSAGE_UNREAD_REMINDER,
+        payloadJson: {
+          type: 'message',
+          category: 'message',
+          threadId: participant.thread.id,
+          conversationId: participant.thread.id,
+          messageId: participant.thread.lastMessageId,
+          contextType: participant.thread.contextType,
+          orderId: participant.thread.orderId,
+          customOrderId: participant.thread.customOrderId,
+          brandId: participant.thread.brandId,
+          customerId:
+            participant.thread.buyerUserId ?? participant.thread.buyerId,
+          targetUrl: this.resolveThreadTargetUrl(
+            participant.thread.contextType,
+            participant.thread.orderId,
+            participant.thread.customOrderId,
+            participant.thread.brandId,
+            participant.role,
+            participant.thread.id,
+            participant.thread.lastMessageId,
+          ),
         },
       });
       recentlyReminded.add(reminderKey);
+    }
+
+    if (reminders.length > 0) {
+      await this.prisma.messageNotificationOutbox.createMany({
+        data: reminders,
+      });
     }
   }
 

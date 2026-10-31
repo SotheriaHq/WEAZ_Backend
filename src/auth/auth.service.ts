@@ -1807,15 +1807,33 @@ export class AuthService {
       throw new BadRequestException('Google sign-in is already linked.');
     }
 
-    await this.prisma.authIdentity.create({
-      data: {
-        userId: user.id,
-        provider: AuthProvider.GOOGLE,
-        providerSubject: identity.providerSubject,
-        email: identity.email,
-        emailVerified: identity.emailVerified,
-      },
+    const { count: linked } = await this.prisma.authIdentity.createMany({
+      data: [
+        {
+          userId: user.id,
+          provider: AuthProvider.GOOGLE,
+          providerSubject: identity.providerSubject,
+          email: identity.email,
+          emailVerified: identity.emailVerified,
+        },
+      ],
+      skipDuplicates: true,
     });
+    if (linked === 0) {
+      const winner = await this.prisma.authIdentity.findUnique({
+        where: {
+          provider_providerSubject: {
+            provider: AuthProvider.GOOGLE,
+            providerSubject: identity.providerSubject,
+          },
+        },
+        select: { userId: true },
+      });
+      if (winner?.userId !== user.id) {
+        throw new BadRequestException('Google sign-in is already linked.');
+      }
+      return { message: 'Google sign-in is already linked.' };
+    }
 
     return { message: 'Google sign-in linked.' };
   }

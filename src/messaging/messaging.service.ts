@@ -1,3 +1,4 @@
+import { lockForTransaction } from 'src/common/transaction-lock.util';
 import {
   forwardRef,
   BadRequestException,
@@ -4236,40 +4237,43 @@ export class MessagingService {
     actorRole: 'BUYER' | 'BRAND_OWNER',
     origin: 'BUYER' | 'BRAND',
   ) {
-    const existingOpen = await this.prisma.dispute.findFirst({
-      where: {
-        type: DisputeType.ORDER,
-        targetType: 'ORDER',
-        targetId: context.orderId,
-        status: {
-          in: [
-            AdminDisputeStatus.OPEN,
-            AdminDisputeStatus.ASSIGNED,
-            AdminDisputeStatus.IN_PROGRESS,
-            AdminDisputeStatus.REOPENED,
-          ],
+    const dispute = await this.prisma.$transaction(async (tx) => {
+      await lockForTransaction(tx, `order-dispute-${context.orderId}`);
+      const existingOpen = await tx.dispute.findFirst({
+        where: {
+          type: DisputeType.ORDER,
+          targetType: 'ORDER',
+          targetId: context.orderId,
+          status: {
+            in: [
+              AdminDisputeStatus.OPEN,
+              AdminDisputeStatus.ASSIGNED,
+              AdminDisputeStatus.IN_PROGRESS,
+              AdminDisputeStatus.REOPENED,
+            ],
+          },
         },
-      },
-      select: { id: true },
-    });
+        select: { id: true },
+      });
 
-    if (existingOpen) {
-      throw new BadRequestException(
-        'An active dispute already exists for this order',
-      );
-    }
+      if (existingOpen) {
+        throw new BadRequestException(
+          'An active dispute already exists for this order',
+        );
+      }
 
-    const dispute = await this.prisma.dispute.create({
-      data: {
-        id: randomUUID(),
-        type: DisputeType.ORDER,
-        reporter: { connect: { id: actorId } },
-        targetType: 'ORDER',
-        targetId: context.orderId,
-        description: description.trim(),
-        status: AdminDisputeStatus.OPEN,
-      },
-      select: { id: true },
+      return tx.dispute.create({
+        data: {
+          id: randomUUID(),
+          type: DisputeType.ORDER,
+          reporter: { connect: { id: actorId } },
+          targetType: 'ORDER',
+          targetId: context.orderId,
+          description: description.trim(),
+          status: AdminDisputeStatus.OPEN,
+        },
+        select: { id: true },
+      });
     });
 
     const message = await this.createActionMessageForContext({

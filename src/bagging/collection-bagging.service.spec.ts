@@ -154,10 +154,7 @@ describe('CollectionBaggingService', () => {
         $executeRaw: jest.fn().mockResolvedValue(0),
         cartItem: {
           findMany: jest.fn().mockResolvedValue([]),
-          create: jest.fn(async ({ data }: any) => ({
-            id: `cart_${data.productId}`,
-            quantity: data.quantity,
-          })),
+          createMany: jest.fn(async ({ data }: any) => ({ count: data.length })),
           update: jest.fn(async ({ where, data }: any) => ({
             id: where.id,
             quantity: data.quantity,

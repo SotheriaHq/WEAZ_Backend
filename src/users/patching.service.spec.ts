@@ -29,6 +29,8 @@ describe('PatchingService brand id resolution', () => {
       findFirst: jest.Mock;
       findMany: jest.Mock;
       create: jest.Mock;
+      createMany: jest.Mock;
+      findUniqueOrThrow: jest.Mock;
       update: jest.Mock;
       deleteMany: jest.Mock;
     };
@@ -60,6 +62,8 @@ describe('PatchingService brand id resolution', () => {
         findFirst: jest.fn(),
         findMany: jest.fn(),
         create: jest.fn(),
+        createMany: jest.fn(),
+        findUniqueOrThrow: jest.fn(),
         update: jest.fn(),
         deleteMany: jest.fn(),
       },
@@ -71,33 +75,35 @@ describe('PatchingService brand id resolution', () => {
   describe('patchBrand', () => {
     it('patches when handed the Brand record id, which is what the feed sends', async () => {
       prisma.patchConnection.findUnique.mockResolvedValue(null);
-      prisma.patchConnection.create.mockImplementation(async ({ data }: any) => ({
+      prisma.patchConnection.createMany.mockResolvedValue({ count: 1 });
+      prisma.patchConnection.findUniqueOrThrow.mockResolvedValue({
         id: 'connection-id',
-        ...data,
-      }));
+        status: PatchStatus.ACCEPTED,
+      });
 
       await service.patchBrand(SHOPPER_ID, BRAND_RECORD_ID);
 
       // The connection must be written against the USER id, never the Brand id —
       // that is what every read of this table (and /users/:id/patches) uses.
-      expect(prisma.patchConnection.create).toHaveBeenCalledTimes(1);
-      const created = prisma.patchConnection.create.mock.calls[0][0].data;
-      expect(created.target.connect.id).toBe(BRAND_USER_ID);
-      expect(created.requester.connect.id).toBe(SHOPPER_ID);
+      expect(prisma.patchConnection.createMany).toHaveBeenCalledTimes(1);
+      const created = prisma.patchConnection.createMany.mock.calls[0][0].data[0];
+      expect(created.targetId).toBe(BRAND_USER_ID);
+      expect(created.requesterId).toBe(SHOPPER_ID);
       expect(created.status).toBe(PatchStatus.ACCEPTED);
       expect(created.mode).toBe(PatchMode.USER_TO_BRAND);
     });
 
     it('still patches when handed the brand owner user id', async () => {
       prisma.patchConnection.findUnique.mockResolvedValue(null);
-      prisma.patchConnection.create.mockImplementation(async ({ data }: any) => ({
+      prisma.patchConnection.createMany.mockResolvedValue({ count: 1 });
+      prisma.patchConnection.findUniqueOrThrow.mockResolvedValue({
         id: 'connection-id',
-        ...data,
-      }));
+        status: PatchStatus.ACCEPTED,
+      });
 
       await service.patchBrand(SHOPPER_ID, BRAND_USER_ID);
 
-      expect(prisma.patchConnection.create.mock.calls[0][0].data.target.connect.id).toBe(
+      expect(prisma.patchConnection.createMany.mock.calls[0][0].data[0].targetId).toBe(
         BRAND_USER_ID,
       );
     });
@@ -106,7 +112,7 @@ describe('PatchingService brand id resolution', () => {
       await expect(service.patchBrand(SHOPPER_ID, 'not-an-id')).rejects.toBeInstanceOf(
         NotFoundException,
       );
-      expect(prisma.patchConnection.create).not.toHaveBeenCalled();
+      expect(prisma.patchConnection.createMany).not.toHaveBeenCalled();
     });
 
     it('rejects self-patching through the Brand id, not just the user id', async () => {
@@ -121,7 +127,7 @@ describe('PatchingService brand id resolution', () => {
       await expect(service.patchBrand(BRAND_USER_ID, BRAND_RECORD_ID)).rejects.toBeInstanceOf(
         BadRequestException,
       );
-      expect(prisma.patchConnection.create).not.toHaveBeenCalled();
+      expect(prisma.patchConnection.createMany).not.toHaveBeenCalled();
     });
 
     it('is idempotent — re-patching an accepted connection writes nothing', async () => {
@@ -132,7 +138,7 @@ describe('PatchingService brand id resolution', () => {
 
       await service.patchBrand(SHOPPER_ID, BRAND_RECORD_ID);
 
-      expect(prisma.patchConnection.create).not.toHaveBeenCalled();
+      expect(prisma.patchConnection.createMany).not.toHaveBeenCalled();
       expect(prisma.patchConnection.update).not.toHaveBeenCalled();
     });
   });

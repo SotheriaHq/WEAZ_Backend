@@ -29,6 +29,8 @@ describe('ContentIntegrityService', () => {
     deps: { uploadService?: any } = {},
   ) {
     const prisma: any = {
+      $transaction: jest.fn(async (work: any) => work(prisma)),
+      $executeRaw: jest.fn().mockResolvedValue(0),
       fileUpload: {
         findMany: jest.fn(),
       },

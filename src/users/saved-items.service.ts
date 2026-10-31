@@ -108,17 +108,20 @@ export class SavedItemsService {
       throw new NotFoundException(`${createSavedItemDto.targetType} not found`);
     }
 
-    // Create the saved item
-    const savedItem = await this.prisma.savedItem.create({
-      data: {
-        id: uuidv4(),
-        user: { connect: { id: userId } },
-        targetType: createSavedItemDto.targetType,
-        targetId: createSavedItemDto.targetId,
-      },
+    // A double tap reaches here twice. The second insert is a no-op, not a 500.
+    const key = {
+      userId,
+      targetType: createSavedItemDto.targetType,
+      targetId: createSavedItemDto.targetId,
+    };
+    await this.prisma.savedItem.createMany({
+      data: [{ id: uuidv4(), ...key }],
+      skipDuplicates: true,
     });
 
-    return savedItem;
+    return this.prisma.savedItem.findUniqueOrThrow({
+      where: { userId_targetType_targetId: key },
+    });
   }
 
   async unsaveItem(userId: string, createSavedItemDto: CreateSavedItemDto) {

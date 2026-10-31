@@ -1,3 +1,4 @@
+import { lockForTransaction } from 'src/common/transaction-lock.util';
 import {
   loadReviewBrands,
   readReviewRows,
@@ -1166,43 +1167,44 @@ export class ContentIntegrityService {
   }) {
     const target = await this.resolveReportTarget(args);
     const note = String(args.note ?? '').trim() || null;
-    const existing = await (this.prisma as any).contentReport.findFirst({
-      where: {
-        reporterId: args.reporterId,
-        targetType: target.targetType,
-        targetId: target.targetId,
-        mediaId: target.mediaId ?? null,
-        reasonCode: args.reasonCode,
-        status: {
-          in: [ContentReportStatus.OPEN, ContentReportStatus.REVIEWED],
+    const { report, duplicate } = await this.prisma.$transaction(async (tx) => {
+      await lockForTransaction(
+        tx,
+        `content-report-${args.reporterId}-${target.targetId}`,
+      );
+      const existing = await (tx as any).contentReport.findFirst({
+        where: {
+          reporterId: args.reporterId,
+          targetType: target.targetType,
+          targetId: target.targetId,
+          mediaId: target.mediaId ?? null,
+          reasonCode: args.reasonCode,
+          status: {
+            in: [ContentReportStatus.OPEN, ContentReportStatus.REVIEWED],
+          },
         },
-      },
-      orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (existing) return { report: existing, duplicate: true };
+
+      const created = await (tx as any).contentReport.create({
+        data: {
+          id: uuidv4(),
+          reporterId: args.reporterId,
+          targetType: target.targetType,
+          targetId: target.targetId,
+          mediaId: target.mediaId ?? null,
+          reasonCode: args.reasonCode,
+          note,
+        },
+      });
+      return { report: created, duplicate: false };
     });
 
-    if (existing) {
-      return {
-        ...(await this.mapReport(existing)),
-        duplicate: true,
-      };
-    }
-
-    const report = await (this.prisma as any).contentReport.create({
-      data: {
-        id: uuidv4(),
-        reporterId: args.reporterId,
-        targetType: target.targetType,
-        targetId: target.targetId,
-        mediaId: target.mediaId ?? null,
-        reasonCode: args.reasonCode,
-        note,
-      },
-    });
-
-    this.emitReportAlert(report, target);
+    if (!duplicate) this.emitReportAlert(report, target);
     return {
       ...(await this.mapReport(report)),
-      duplicate: false,
+      duplicate,
     };
   }
 
