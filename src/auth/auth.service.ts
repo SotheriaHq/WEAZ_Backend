@@ -2390,7 +2390,7 @@ export class AuthService {
   }
 
   async verifyEmailByToken(token: string) {
-    const verificationToken = token?.trim();
+    const verificationToken = typeof token === 'string' ? token.trim() : '';
     if (!verificationToken) {
       throw new BadRequestException('Verification token is required');
     }
@@ -2518,10 +2518,14 @@ export class AuthService {
 
   // Verify email by link
   async verifyEmailByLink(userId: string, code: string) {
+    this.assertVerificationCode(code);
+    if (typeof userId !== 'string' || !userId.trim()) {
+      throw new BadRequestException('Invalid verification code');
+    }
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new BadRequestException('User not found');
     if (user.isEmailVerified) return { message: 'Email already verified' };
-    if (user.emailVerificationCode !== code)
+    if (!user.emailVerificationCode || user.emailVerificationCode !== code)
       throw new BadRequestException('Invalid verification code');
     await this.prisma.user.update({
       where: { id: userId },
@@ -2537,10 +2541,14 @@ export class AuthService {
 
   // Verify email by code
   async verifyEmailByCode(email: string, code: string) {
+    this.assertVerificationCode(code);
+    if (typeof email !== 'string' || !email.trim()) {
+      throw new BadRequestException('Invalid verification code');
+    }
     const user = await this.prisma.user.findUnique({ where: { email } });
     if (!user) throw new BadRequestException('User not found');
     if (user.isEmailVerified) return { message: 'Email already verified' };
-    if (user.emailVerificationCode !== code)
+    if (!user.emailVerificationCode || user.emailVerificationCode !== code)
       throw new BadRequestException('Invalid verification code');
     await this.prisma.user.update({
       where: { email },
@@ -2552,6 +2560,17 @@ export class AuthService {
       });
     } catch {}
     return { message: 'Email verified successfully' };
+  }
+
+  private assertVerificationCode(code: unknown): asserts code is string {
+    if (
+      typeof code !== 'string' ||
+      !code.trim() ||
+      code.length > 256 ||
+      /\s/.test(code)
+    ) {
+      throw new BadRequestException('Invalid verification code');
+    }
   }
 
   async getProfileWithImage(userId: string) {

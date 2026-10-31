@@ -35,7 +35,7 @@ import { OptionalJwtAuthGuard } from 'src/auth/guard/optional-jwt-auth.guard';
 import { UserTypeGuard } from 'src/auth/guard/user-type.guard';
 import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 import { UserType, ReactionType, PatchStatus } from '@prisma/client';
-import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
+import { Throttle } from '@nestjs/throttler';
 import { EventsGateway } from 'src/realtime/events.gateway';
 import { UpdateCollectionDto } from './dto/update-collection.dto';
 import {
@@ -582,7 +582,7 @@ export class CollectionsController {
       },
     },
   })
-  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 60, ttl: 60000 } })
   async toggleReaction(
     @Param('id') collectionId: string,
@@ -806,7 +806,7 @@ export class CollectionsController {
       req.user.id,
     );
   }
-  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 60, ttl: 60000 } })
   @Post('media/:mediaId/reaction/thread')
   async toggleMediaThread(@Param('mediaId') mediaId: string, @Req() req: any) {
@@ -871,7 +871,7 @@ export class CollectionsController {
   }
 
   // ===================== Access Management =====================
-  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 10, ttl: 60000 } })
   @Post(':id/access-requests')
   @ApiOperation({ summary: 'Request access to a private collection' })

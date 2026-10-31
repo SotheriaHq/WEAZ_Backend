@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import type { RedisOptions } from 'bullmq';
 
 const DEFAULT_REDIS_CONNECT_TIMEOUT_MS = 1000;
+const REDIS_RECONNECT_MAX_DELAY_MS = 5000;
 
 const buildCommonRedisOptionsFromEnv = (
   env: NodeJS.ProcessEnv,
@@ -12,7 +13,10 @@ const buildCommonRedisOptionsFromEnv = (
   enableReadyCheck: false,
   lazyConnect: true,
   maxRetriesPerRequest: 1,
-  retryStrategy: () => null,
+  // Returning null here ends the connection for good. One Redis restart then
+  // left every queue, worker and heartbeat dead in a process that looked healthy.
+  retryStrategy: (attempt: number) =>
+    Math.min(attempt * 200, REDIS_RECONNECT_MAX_DELAY_MS),
 });
 
 const getConfigEnv = (config: ConfigService): NodeJS.ProcessEnv => ({

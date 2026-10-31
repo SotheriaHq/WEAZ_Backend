@@ -1,3 +1,4 @@
+import { Throttle } from '@nestjs/throttler';
 import {
   Controller,
   Get,
@@ -87,6 +88,7 @@ export class AdminPayoutsController {
 
   @Post(':id/initiate-transfer')
   @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   initiateTransfer(@Param('id') id: string, @Req() req: Request) {
     const actorId = (req as any).user.id ?? (req as any).user.sub;
     const actorRole = (req as any).user.role as Role;
@@ -95,6 +97,7 @@ export class AdminPayoutsController {
 
   @Post(':id/finalize-transfer-otp')
   @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   finalizeTransferOtp(
     @Param('id') id: string,
     @Body() dto: { otp: string },
@@ -113,6 +116,7 @@ export class AdminPayoutsController {
 
   @Get(':id/provider-status')
   @RequirePermissions(ADMIN_PERMISSIONS.PAYOUTS_PROCESS)
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
   getProviderStatus(@Param('id') id: string, @Req() req: Request) {
     const actorId = (req as any).user.id ?? (req as any).user.sub;
     const actorRole = (req as any).user.role as Role;

@@ -1,4 +1,5 @@
-﻿import {
+import { IsPublic } from 'src/auth/decorator/is-public.decorator';
+import {
   BadRequestException,
   Controller,
   Logger,
@@ -27,7 +28,7 @@ import { JwtAuthGuard } from './guard/jwt-auth.guard';
 import { RolesGuard } from './guard/role.guard';
 import { Roles } from './decorator/roles.decorator';
 import { Role, NotificationType } from '@prisma/client';
-import { Throttle, ThrottlerGuard, SkipThrottle } from '@nestjs/throttler';
+import { Throttle } from '@nestjs/throttler';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import {
   buildAppLinkBridgeHtml,
@@ -63,6 +64,7 @@ import {
   ExchangeStudioHandoffDto,
 } from './dto/studio-handoff.dto';
 import { StudioHandoffService } from './studio-handoff.service';
+import { VerifyEmailCodeDto } from './dto/verify-email-code.dto';
 import {
   ConfirmEmailLoginCodeDto,
   GoogleAuthDto,
@@ -74,7 +76,6 @@ import {
 @ApiTags('auth')
 @ApiBearerAuth()
 @Controller('auth')
-@UseGuards(ThrottlerGuard)
 export class AuthController {
   private readonly logger = new Logger(AuthController.name);
 
@@ -112,6 +113,7 @@ export class AuthController {
     return req.ip || req.socket?.remoteAddress || null;
   }
 
+  @IsPublic()
   @Post('login')
   @ApiOperation({ summary: 'User login' })
   @ApiBody({ type: LoginDto })
@@ -127,6 +129,7 @@ export class AuthController {
     return this.authService.login(loginDto, req, res);
   }
 
+  @IsPublic()
   @Post('signup')
   @ApiOperation({ summary: 'User signup' })
   @ApiBody({ type: CreateUserDto })
@@ -142,6 +145,7 @@ export class AuthController {
     return this.authService.CreateUser(dto, req, res);
   }
 
+  @IsPublic()
   @Post('google')
   @HttpCode(200)
   @ApiOperation({ summary: 'Sign up or log in with a Google ID token' })
@@ -155,6 +159,7 @@ export class AuthController {
     return this.authService.googleAuth(body, req, res);
   }
 
+  @IsPublic()
   @Post('login-options')
   @HttpCode(200)
   @ApiOperation({
@@ -165,6 +170,7 @@ export class AuthController {
     return this.authService.getLoginOptions(body.email);
   }
 
+  @IsPublic()
   @Post('email-login-code/request')
   @HttpCode(200)
   @ApiOperation({
@@ -177,6 +183,7 @@ export class AuthController {
     return this.authService.requestEmailLoginCode(body.email, body.purpose);
   }
 
+  @IsPublic()
   @Post('email-login-code/confirm')
   @HttpCode(200)
   @ApiOperation({
@@ -197,6 +204,7 @@ export class AuthController {
     );
   }
 
+  @IsPublic()
   @Post('password/setup')
   @HttpCode(200)
   @ApiOperation({
@@ -222,6 +230,7 @@ export class AuthController {
     return this.authService.linkGoogle(req.user.id, body.idToken);
   }
 
+  @IsPublic()
   @Post('account-reactivation/request')
   @ApiOperation({
     summary:
@@ -234,6 +243,7 @@ export class AuthController {
     return this.authService.requestAccountReactivation(body.email, body.reason);
   }
 
+  @IsPublic()
   @Post('admin/reset-password/request')
   @ApiOperation({ summary: 'Request admin reset password token' })
   @Throttle({ default: { limit: 3, ttl: 900000 } })
@@ -243,6 +253,7 @@ export class AuthController {
     return this.authService.requestAdminPasswordReset(body.email);
   }
 
+  @IsPublic()
   @Post('admin/reset-password/confirm')
   @ApiOperation({ summary: 'Confirm admin reset password with token' })
   @Throttle({ default: { limit: 5, ttl: 900000 } })
@@ -252,6 +263,7 @@ export class AuthController {
     return this.authService.resetAdminPassword(body.token, body.newPassword);
   }
 
+  @IsPublic()
   @Post('admin/reset-password/first-login')
   @ApiOperation({
     summary: 'Complete first-login required admin password reset',
@@ -267,6 +279,7 @@ export class AuthController {
     );
   }
 
+  @IsPublic()
   @Post('password-reset/request')
   @ApiOperation({ summary: 'Request password reset token for regular users' })
   @Throttle({ default: { limit: 3, ttl: 900000 } })
@@ -295,6 +308,7 @@ export class AuthController {
     });
   }
 
+  @IsPublic()
   @Post('password-reset/confirm')
   @ApiOperation({
     summary: 'Confirm password reset with token for regular users',
@@ -355,6 +369,7 @@ export class AuthController {
     );
   }
 
+  @IsPublic()
   @Post('change-email/confirm')
   @Throttle({ default: { limit: 8, ttl: 900000 } })
   @ApiOperation({ summary: 'Confirm pending authenticated email change' })
@@ -387,6 +402,7 @@ export class AuthController {
     return this.authService.confirmPhoneChange(req.user.id, body.code);
   }
 
+  @IsPublic()
   @Post('refresh')
   @ApiOperation({ summary: 'Refresh access token' })
   @ApiResponse({ status: 200, description: 'Token refreshed' })
@@ -436,6 +452,7 @@ export class AuthController {
     return this.studioHandoff.create(req.user, body.intendedPath, req);
   }
 
+  @IsPublic()
   @Post('studio-handoff/exchange')
   @HttpCode(200)
   @Throttle({ default: { limit: 12, ttl: 60000 } })
@@ -516,7 +533,6 @@ export class AuthController {
 
   @Get('profile')
   @UseGuards(JwtAuthGuard)
-  @SkipThrottle()
   @Header('Cache-Control', 'no-store')
   @Header('Pragma', 'no-cache')
   @Header('Expires', '0')
@@ -546,11 +562,13 @@ export class AuthController {
     return this.authService.updateProfile(id, dto);
   }
 
+  @IsPublic()
   @Get('verify-email')
   @ApiOperation({ summary: 'Verify email by link' })
   @ApiQuery({ name: 'token', required: false })
   @ApiQuery({ name: 'userId', required: false })
   @ApiQuery({ name: 'code', required: false })
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   async verifyEmailByLink(
     @Query('token') token?: string,
     @Query('userId') userId?: string,
@@ -569,6 +587,7 @@ export class AuthController {
     );
   }
 
+  @IsPublic()
   @Post('verify-email-code')
   @ApiOperation({ summary: 'Verify email by code' })
   @ApiBody({
@@ -576,11 +595,12 @@ export class AuthController {
       properties: { email: { type: 'string' }, code: { type: 'string' } },
     },
   })
+  @Throttle({ default: { limit: 5, ttl: 900000 } })
   async verifyEmailByCode(
-    @Body('email') email: string,
-    @Body('code') code: string,
+    @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    body: VerifyEmailCodeDto,
   ) {
-    return this.authService.verifyEmailByCode(email, code);
+    return this.authService.verifyEmailByCode(body.email, body.code);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -603,9 +623,12 @@ export class AuthController {
 
   // "Open in app" bridge pages. Auth emails link here over https (Gmail strips
   // raw wiezmobile:// links); this page redirects into the app's custom scheme.
+  @IsPublic()
   @Get('app-link/verify-email')
-  @ApiOperation({ summary: 'Open the verify-email deep link in the native app' })
-  @SkipThrottle()
+  @ApiOperation({
+    summary: 'Open the verify-email deep link in the native app',
+  })
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   async openVerifyEmailInApp(
     @Query('token') token: string,
     @Query('next') next: string,
@@ -635,16 +658,17 @@ export class AuthController {
       .send(buildAppLinkBridgeHtml('verify-email', { token, next }));
   }
 
+  @IsPublic()
   @Get('app-link/reset-password')
-  @ApiOperation({ summary: 'Open the reset-password deep link in the native app' })
-  @SkipThrottle()
+  @ApiOperation({
+    summary: 'Open the reset-password deep link in the native app',
+  })
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   async openResetPasswordInApp(
     @Query('token') token: string,
     @Res() res: Response,
   ) {
-    res
-      .type('html')
-      .send(buildAppLinkBridgeHtml('reset-password', { token }));
+    res.type('html').send(buildAppLinkBridgeHtml('reset-password', { token }));
   }
 
   @Get('security/devices')
