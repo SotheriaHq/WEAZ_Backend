@@ -47,7 +47,9 @@ function paystackSimulator() {
     modes: new Map(),
     listDown: new Set(),
     gates: new Map(),
+    lookupGates: new Map(),
     sequence: 7000,
+    ignoreTransactionFilter: false,
     unauthorized: 0,
   };
   // Create returns the transaction object; fetch and list return its numeric id.
@@ -102,7 +104,14 @@ function paystackSimulator() {
           status: 'pending',
         };
         state.refunds.set(String(refund.id), refund);
-        if (mode === 'drop') {
+        if (mode === 'drop-buried') {
+          for (let index = 0; index < 150; index++) {
+            const id = ++state.sequence;
+            state.refunds.set(String(id), { id, reference: `noise-${id}`, transactionId: id,
+              amount: 100, currency: 'NGN', note: 'another refund', status: 'pending' });
+          }
+        }
+        if (mode === 'drop' || mode === 'drop-buried') {
           // The refund exists at the provider, but the answer never arrives.
           req.socket.destroy();
           return;
@@ -115,14 +124,23 @@ function paystackSimulator() {
         return send(200, { status: true, message: 'Refund has been queued for processing', data: view(refund, true) });
       }
       if (req.method === 'GET' && url.pathname === '/refund') {
-        const reference = url.searchParams.get('reference');
-        if (reference && state.listDown.has(reference)) return send(503, { status: false });
-        const rows = [...state.refunds.values()].filter((refund) => !reference || refund.reference === reference);
-        return send(200, { status: true, data: rows.map((refund) => view(refund, false)) });
+        const transactionId = url.searchParams.get('transaction');
+        if (!transactionId || url.searchParams.has('reference')) return send(400, { status: false });
+        const capture = [...state.transactions.entries()].find(([, transaction]) => String(transaction.id) === transactionId);
+        if (capture && state.listDown.has(capture[0])) return send(503, { status: false });
+        const page = Number(url.searchParams.get('page') || 1);
+        const rows = [...state.refunds.values()].filter((refund) => state.ignoreTransactionFilter || String(refund.transactionId) === transactionId).sort((a,b) => b.id-a.id);
+        return send(200, { status: true, data: rows.slice((page - 1) * 100, page * 100).map((refund) => view(refund, false)), meta: { page, pageCount: Math.ceil(rows.length / 100) } });
       }
       if (req.method === 'GET' && url.pathname.startsWith('/refund/')) {
         const refund = state.refunds.get(decodeURIComponent(url.pathname.slice('/refund/'.length)));
         if (!refund) return send(404, { status: false, message: 'Refund not found' });
+        const gate = state.lookupGates.get(String(refund.id))?.shift();
+        if (gate) {
+          const snapshot = view(refund, false);
+          gate.arrived.resolve(); await gate.release.promise;
+          return send(gate.status || 200, gate.status ? { status: false } : { status: true, data: { ...snapshot, ...gate.override } });
+        }
         return send(200, { status: true, data: view(refund, false) });
       }
       return send(404, { status: false });
@@ -152,7 +170,7 @@ async function main() {
   testUrl.searchParams.set('options', '-c timezone=UTC');
   const admin = new Client({ connectionString: adminUrl.toString() });
   const savedEnv = Object.fromEntries(
-    ['PAYSTACK_SECRET_KEY', 'NODE_ENV', 'STANDARD_ORDER_REFUND_SIMULATION_ENABLED'].map((key) => [key, process.env[key]]),
+    ['PAYSTACK_SECRET_KEY', 'NODE_ENV', 'STANDARD_ORDER_REFUND_SIMULATION_ENABLED', 'CUSTOM_ORDER_QUEUE_REFUND_SIMULATION_ENABLED'].map((key) => [key, process.env[key]]),
   );
   // A synthetic test-mode key: the real one is never read into a request here.
   process.env.PAYSTACK_SECRET_KEY = `sk_test_fixture_${randomUUID().replaceAll('-', '')}`;
@@ -234,14 +252,14 @@ async function main() {
     });
 
     let transactionSequence = 5000;
-    const paid = async ({ brandId, amount = 100, status = 'PROCESSING', productId = null, mode = 'test' }) => {
+    const paid = async ({ brandId, amount = 100, status = 'PROCESSING', productId = null, mode = 'test', currency = 'NGN', settlementAmount = amount }) => {
       const id = randomUUID(),
         reference = `refund-fixture-${randomUUID()}`,
         providerTransactionId = String(++transactionSequence);
       const order = await prisma.order.create({
         data: {
           id, brandId, buyerId: buyer, customerName: 'Refund fixture', items: productId ? [{ productId }] : [],
-          totalAmount: amount, currency: 'NGN', status, paymentStatus: 'PAID', paidAt: new Date(), paymentReference: reference,
+          totalAmount: amount, currency, status, paymentStatus: 'PAID', paidAt: new Date(), paymentReference: reference,
         },
       });
       if (productId)
@@ -249,12 +267,12 @@ async function main() {
       const capture = await prisma.paymentAttempt.create({
         data: {
           buyerId: buyer, provider: 'PAYSTACK', providerMode: mode, paymentMethod: 'PAYSTACK', status: 'PAID', reference,
-          providerTransactionId, amount, currency: 'NGN', settlementAmount: amount, settlementCurrency: 'NGN',
+          providerTransactionId, amount, currency, settlementAmount, settlementCurrency: 'NGN',
           orderIds: [id], subjectType: 'STANDARD_ORDER',
         },
       });
-      simulator.state.transactions.set(reference, { id: Number(providerTransactionId), amount: Math.round(amount * 100), currency: 'NGN' });
-      await prisma.$transaction((tx) => escrow.ensureHoldsForPaidOrders(tx, [order], amount, 'NGN'), { timeout: 20000 });
+      simulator.state.transactions.set(reference, { id: Number(providerTransactionId), amount: Math.round(amount * 100), currency });
+      await prisma.$transaction((tx) => escrow.ensureHoldsForPaidOrders(tx, [order], settlementAmount, 'NGN'), { timeout: 20000 });
       return { order, capture, reference, hold: await prisma.escrowHold.findUniqueOrThrow({ where: { orderId: id } }) };
     };
     const request = (orderId, trigger = 'ADMIN') =>
@@ -277,6 +295,8 @@ async function main() {
       prisma.ledgerTransaction.count({ where: { referenceType: 'StandardOrderRefund', referenceId: refundId, type: 'REFUND_ISSUED' } });
 
     // ── Concurrent requests converge ───────────────────────────────────────
+    const payoutOnly = process.argv.includes('--payout-only');
+    if (!payoutOnly) {
     const a1 = await paid({ brandId: brand1 });
     assert.equal(a1.hold.status, 'PARTIALLY_RELEASED');
     assert.equal(a1.hold.firstReleaseNetAmount.toFixed(2), '27.00');
@@ -420,6 +440,34 @@ async function main() {
     assert.equal(posts(b1.reference), 1);
     evidence.cases.push('a submission whose answer is lost is found by its note at the provider and linked; the refund is never sent a second time');
 
+    const buried = await paid({ brandId: brand1 });
+    const buriedId = (await request(buried.order.id)).id;
+    simulator.state.modes.set(buried.reference, 'drop-buried');
+    simulator.state.ignoreTransactionFilter = true;
+    try {
+      await only([buriedId]); await refunds.processPending();
+      const found = await refundRow(buriedId);
+      assert.equal(found.status, 'PROCESSING');
+      assert.equal(providerRefund(found.providerRefundId).reference, buried.reference);
+      assert.equal(posts(buried.reference), 1);
+    } finally { simulator.state.ignoreTransactionFilter = false; }
+    evidence.cases.push('a provider that ignores the optional transaction filter still recovers a lost refund behind 150 newer unrelated records using complete bounded pagination, exact note and capture identity, without resending');
+
+    const usd = await paid({ brandId: brand3, amount: 40, currency: 'USD', settlementAmount: 54448 });
+    const usdId = (await request(usd.order.id)).id;
+    await only([usdId]); await refunds.processPending();
+    const usdRow = await refundRow(usdId), usdProvider = providerRefund(usdRow.providerRefundId);
+    assert.equal(usdRow.currency, 'USD'); assert.equal(usdRow.amount.toFixed(2), '40.00');
+    assert.equal(usdProvider.currency, 'USD'); assert.equal(usdProvider.amount, 4000);
+    usdProvider.status = 'processed';
+    await refunds.handleWebhook('PAYSTACK', { event: 'refund.processed', data: { id: usdProvider.id } });
+    await refunds.notifySettled();
+    assert.equal((await refundRow(usdId)).status, 'SETTLED');
+    const usdJournal = await prisma.ledgerTransaction.findFirstOrThrow({ where: { referenceType: 'StandardOrderRefund', referenceId: usdId, type: 'REFUND_ISSUED' } });
+    assert.equal(usdJournal.currency, 'NGN'); assert.equal(usdJournal.totalAmount.toFixed(2), '54448.00');
+    assert(buyerNotices.some(notice => notice.payload?.orderId === usd.order.id && notice.payload.message.includes('USD 40.00')));
+    evidence.cases.push('a USD40 capture refunds USD40 at the provider and in shopper notices while the NGN54448 original-rate settlement is reversed separately in the balanced ledger');
+
     const b2 = await paid({ brandId: brand1 });
     const refundB2 = (await request(b2.order.id)).id;
     simulator.state.modes.set(b2.reference, 'drop');
@@ -501,17 +549,25 @@ async function main() {
     await only([refundB6]);
     const slowRun = refunds.processPending();
     const lateRefund = await gate.arrived.promise;
-    await prisma.standardOrderRefund.update({ where: { id: refundB6 }, data: { leaseToken: randomUUID() } });
+    const replacementLease = randomUUID();
+    await prisma.standardOrderRefund.update({ where: { id: refundB6 }, data: { leaseToken: replacementLease } });
     gate.release.resolve();
     await slowRun;
     const lostB6 = await refundRow(refundB6);
-    assert.equal(lostB6.status, 'NEEDS_ATTENTION');
-    assert.equal(lostB6.lastError, 'REFUND_SUBMISSION_LEASE_LOST');
-    assert.equal(lostB6.providerRefundId, String(lateRefund.id));
+    assert.equal(lostB6.status, 'SUBMITTING');
+    assert.equal(lostB6.leaseToken, replacementLease);
+    assert.equal(lostB6.providerRefundId, null);
+    assert.equal(await prisma.paymentEvent.count({where: {paymentAttemptId: b6.capture.id, type: 'STANDARD_ORDER_REFUND_LATE_PROVIDER_RESULT'}}), 1);
+    const lateAlert = await prisma.operationalAlert.findUniqueOrThrow({where: {dedupeKey: `standard-refund:${refundB6}:attention`}});
+    assert.equal(lateAlert.metadata.providerRefundId, String(lateRefund.id));
     lateRefund.status = 'processed';
-    assert.equal((await controller.reconcileRefund(refundB6, { providerRefundId: String(lateRefund.id) }, actor)).status, 'SETTLED');
+    await prisma.$executeRaw`UPDATE "StandardOrderRefund" SET "lockedAt"=clock_timestamp() AT TIME ZONE 'UTC'-INTERVAL '11 minutes' WHERE id=${refundB6}::uuid`;
+    await only([refundB6]); await refunds.processPending();
+    assert.equal((await refundRow(refundB6)).status, 'SETTLED');
+    assert.equal(await settledJournals(refundB6), 1);
+    assert.equal((await prisma.operationalAlert.findUniqueOrThrow({where: {dedupeKey: `standard-refund:${refundB6}:attention`}})).status, 'RESOLVED');
     assert.equal(posts(b6.reference), 1);
-    evidence.cases.push('a provider answer that arrives after the lease was lost keeps the refund id it created, goes to a person, and reconciles to one settlement');
+    evidence.cases.push('a late submission response records the provider id as durable evidence without changing a replacement claim; expired-owner lookup links that same refund, settles once and clears the alert without resubmission');
 
     const mockRun = await paid({ brandId: brand1, mode: 'mock' });
     const refundMock = (await request(mockRun.order.id)).id;
@@ -786,9 +842,18 @@ async function main() {
     assert.equal(await lateCheckout, false);
     evidence.cases.push('product deletion cancels unshipped paid orders through the canonical refund (pending wording, one refund on replay), refuses shipped orders and a checkout committed while it waited, and a checkout that waited on a deletion sees the product as unsellable');
 
+    const leaseProof = await require('./standard-refund-lease-concurrency-scenarios.cjs')({prisma,refunds,provider,paid,request,only,refundRow,posts,settledJournals,brandId:brand1});
+    evidence.cases.push(...leaseProof.cases);
+    const customLeaseProof = await require('./custom-refund-lease-concurrency-scenarios.cjs')({prisma,ledger,balance,provider,simulator,buyer,ownerId:owner1,brandId:brand1,paid,refunds,request,onlyStandard:only});
+    evidence.cases.push(...customLeaseProof.cases);
+    }
+    const payoutProof = await require('./payout-transfer-concurrency-scenarios.cjs')({prisma, ledger, balance, paid, adminId});
+    evidence.cases.push(...payoutProof.cases);
+    evidence.payoutProof = payoutProof.payoutProof;
     evidence.paystackSimulator = {
       refundSubmissions: [...simulator.state.posts.values()].reduce((sum, count) => sum + count, 0),
       providerRefunds: simulator.state.refunds.size,
+      unrelatedPaginationFixtures: [...simulator.state.refunds.values()].filter(row => row.reference.startsWith('noise-')).length,
       unauthorizedRequests: simulator.state.unauthorized,
     };
     assert.equal(simulator.state.unauthorized, 0);
@@ -809,7 +874,7 @@ async function main() {
     }
     await admin.end();
     await fs.writeFile(
-      path.resolve(__dirname, '../docs/performance-reviews/standard-refund-integrity-postgres-2026-10-26.json'),
+      path.resolve(__dirname, process.argv.includes('--payout-only') ? '../docs/performance-reviews/payout-transfer-concurrency-postgres-2026-10-28.json' : '../docs/performance-reviews/standard-refund-integrity-postgres-2026-10-26.json'),
       JSON.stringify(evidence, null, 2) + '\n',
     );
     console.log(JSON.stringify(evidence));
@@ -822,7 +887,7 @@ main().catch((error) => {
       ? error.message
       : error.name === 'PrismaClientValidationError'
         ? String(error.message).split('\n').slice(-4).join('\n')
-        : error.code || error.name || 'Standard refund integrity fixture failed',
+        : [error.code, error.meta?.code, error.meta?.message, JSON.stringify(error.meta ?? {}), error.name].filter(Boolean).join(' ') || 'Standard refund integrity fixture failed',
   );
   process.exitCode = 1;
 });

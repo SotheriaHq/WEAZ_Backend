@@ -12,6 +12,9 @@ import {
   getDaysUntilExpiry,
 } from './config/draft-expiry.config';
 import { ClockEffectiveState } from 'src/common/clock/clock.types';
+import { DRAFT_REASON_UPLOAD_INCOMPLETE } from './design-sizing';
+
+const ABANDONED_UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface DraftCleanupSummary {
   clockState: ClockEffectiveState;
@@ -20,6 +23,7 @@ export interface DraftCleanupSummary {
   firstWarningsSent?: number;
   finalWarningsSent?: number;
   draftsDeleted?: number;
+  abandonedUploadsDeleted?: number;
   softDeletedCollectionsDeleted?: number;
 }
 
@@ -103,6 +107,7 @@ export class CollectionSchedulerService {
       firstWarningsSent: 0,
       finalWarningsSent: 0,
       draftsDeleted: 0,
+      abandonedUploadsDeleted: 0,
       softDeletedCollectionsDeleted: 0,
     };
 
@@ -124,10 +129,15 @@ export class CollectionSchedulerService {
       // 3. Delete drafts older than TTL
       summary.draftsDeleted = await this.deleteExpiredDrafts(expiryThreshold);
 
-      // 4. Clean up orphaned presigned uploads (always real time — security boundary)
+      // 4. Remove draft rows whose upload never finished
+      summary.abandonedUploadsDeleted = await this.deleteAbandonedUploadDrafts(
+        new Date(now.getTime() - ABANDONED_UPLOAD_TTL_MS),
+      );
+
+      // 5. Clean up orphaned presigned uploads (always real time — security boundary)
       await this.cleanupOrphanedPresigns();
 
-      // 5. Permanently delete collections past soft-delete window
+      // 6. Permanently delete collections past soft-delete window
       summary.softDeletedCollectionsDeleted =
         await this.deleteExpiredSoftDeletedCollections(now);
 
@@ -271,6 +281,43 @@ export class CollectionSchedulerService {
           );
     }
     this.logger.log(`Deleted ${deleted} expired drafts`);
+    return deleted;
+  }
+
+  /**
+   * The server creates a design row before its media uploads, so a failed or
+   * abandoned upload leaves a row its owner never chose to keep. No notice goes
+   * out for that reason. The delete rechecks activity under the row lock, so a
+   * save that lands first keeps the row.
+   */
+  private async deleteAbandonedUploadDrafts(
+    activityBefore: Date,
+  ): Promise<number> {
+    const abandoned = await this.prisma.collection.findMany({
+      where: {
+        status: 'DRAFT',
+        deletedAt: null,
+        draftReason: DRAFT_REASON_UPLOAD_INCOMPLETE,
+        medias: { none: {} },
+        OR: [
+          { lastActivityAt: { lte: activityBefore } },
+          { lastActivityAt: null, createdAt: { lte: activityBefore } },
+        ],
+      },
+      select: { id: true },
+      take: this.config.CLEANUP_BATCH_SIZE,
+    });
+
+    let deleted = 0;
+    for (const { id } of abandoned) {
+      try {
+        if (await this.deleteExpiredCollection(id, 'DRAFT', activityBefore))
+          deleted++;
+      } catch (error) {
+        this.logger.error(`Failed to remove abandoned upload ${id}:`, error);
+      }
+    }
+    this.logger.log(`Deleted ${deleted} abandoned uploads`);
     return deleted;
   }
 

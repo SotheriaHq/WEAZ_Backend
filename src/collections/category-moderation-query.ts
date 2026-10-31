@@ -51,14 +51,14 @@ export function applyCategoryDecisionPage(
 > {
   return tx.$queryRaw(Prisma.sql`
     WITH due AS (
-      SELECT c."_id", s.status AS decision, s."approvedCategoryId", s.name, s."rejectionReason"
+      SELECT c."_id", s.status AS decision, s."approvedCategoryId", s."approvedCategoryTypeId", s.name, s."rejectionReason"
       FROM "Collection" c JOIN "CollectionCategorySuggestion" s ON s."_id"=c."pendingCategorySuggestionId"
       WHERE s."_id"=${suggestionId}::uuid AND s.status IN ('APPROVED','REJECTED') AND c."deletedAt" IS NULL
       ORDER BY c."_id" LIMIT ${CATEGORY_MODERATION_PAGE_SIZE} FOR UPDATE OF c SKIP LOCKED
     )
     UPDATE "Collection" c SET
       "categoryId"=CASE WHEN due.decision='APPROVED' THEN COALESCE(c."categoryId",due."approvedCategoryId") ELSE c."categoryId" END,
-      "categoryTypeId"=CASE WHEN due.decision='APPROVED' AND c."categoryId" IS NULL THEN NULL ELSE c."categoryTypeId" END,
+      "categoryTypeId"=CASE WHEN due.decision='APPROVED' AND c."categoryId" IS NULL THEN due."approvedCategoryTypeId" ELSE c."categoryTypeId" END,
       "originalSuggestionId"=${suggestionId}::uuid,
       "pendingCategorySuggestionId"=NULL,"pendingCategoryName"=NULL,
       "draftReason"=CASE WHEN c.status='DRAFT' THEN CASE WHEN due.decision='REJECTED' THEN 'CATEGORY_REJECTED' ELSE 'USER_SAVED' END ELSE c."draftReason" END,

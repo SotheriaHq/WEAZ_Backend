@@ -42,3 +42,66 @@ African Casual is a content lane, not a viewer ethnicity filter. Classification 
 5. Commit and push all application changes before the GitHub APK build. Build the exact pushed mobile commit and identify it in the download. Do not label a local query benchmark as production capacity or a passing suite as proof of zero bugs.
 
 [Implementation, exact weights and primary research](RUNWAY_V2_FASHION_AND_SCALE_2026-10-21.md) · [Measured query evidence](../performance/runway-local-benchmark.json)
+
+## 27 October: tag projection consistency
+
+Saved source tags are authoritative. Delayed requests and concurrent edits must
+not restore stale tag bindings. Source/lifecycle changes now leave a coalesced,
+transactional retry instruction, including deletions and future publication.
+Recovery runs in bounded batches every ten seconds, fences stale owners and
+generations, isolates malformed sources and quarantines repeated failures.
+Typed-FK cascade deletion also schedules usage-counter repair. Admin merges
+resolve canonical aliases and refuse cycles. Reindex remains paginated and
+keeps the existing searchable index available throughout repair.
+
+These are consistency guarantees, not new ranking weights or a measured
+production-capacity claim. Public feed/search eligibility gates still apply.
+See the [tag recovery runbook](../operations/TAG_PROJECTION_RECOVERY.md) for
+deployment order, recovery limits and reproducible PostgreSQL scenarios.
+
+## 29 October: bounded work and expiry
+
+As a shopper, I want overlapping feed requests to reuse my taste calculation
+without mixing my account or reset history with anyone else's. As an operator,
+I want traffic bursts and expired snapshots to consume bounded work so that
+feed maintenance does not exhaust the database.
+
+- A cold affinity rebuild is shared only within the same application process,
+  user ID and latest personalization-reset timestamp. Completed and failed
+  operations leave the in-flight map immediately. Each caller still checks its
+  own reset and current database cache. No cross-account result sharing.
+- At most 16 Runway page calculations run concurrently per process, including
+  continuation pages. Excess requests receive a retryable HTTP 503; no unbounded
+  waiting queue is created. This is an admission guard, not a throughput claim.
+  The existing search guard also limits distinct in-flight searches to 16 and
+  lets repeated identical queries share an admitted calculation.
+- Empty candidate sets do not create empty pagination records.
+- Every minute, cleanup removes at most 500 expired sessions and then 500
+  expired affinities, using database time and separate short statements. Locked
+  rows are skipped and revisited; live records remain intact. A local overlap
+  guard prevents concurrent invocations within one service instance.
+- Structured `runway.busy` and `runway.expiry` events expose admission pressure
+  and full maintenance batches. Repeated full batches require measurement of
+  oldest-expired age and storage growth before increasing capacity. Maximum
+  single-instance cleanup budget is 500 records/table/minute; it is not a claim
+  that this rate is sufficient for unspecified launch traffic.
+
+Verification includes account/reset isolation, failure/retry cleanup, overload
+admission/recovery, and a real PostgreSQL competing-lock fixture with 1,001
+expired sessions, 600 expired affinity records and ten live records. Both PR
+quality and deployment gates run these checks. Ranking coefficients, African
+Casual classification, exposure qualification and snapshot privacy remain the
+documented policies above.
+
+The local query benchmark now reports overload responses separately from admitted
+latency. It excludes HTTP, media transfer and device rendering. Neither those
+results nor synthetic ranking fixtures certify real-user relevance. Chronological
+holdouts and representative device/HTTP load tests remain separate acceptance
+evidence; the temporary first-card rendering target remains five seconds.
+
+These changes follow bounded candidate generation, scoring and reranking
+([Google](https://developers.google.com/machine-learning/recommendation/overview/types))
+and PostgreSQL's queue-style
+[SKIP LOCKED semantics](https://www.postgresql.org/docs/17/sql-select.html#SQL-FOR-UPDATE-SHARE).
+
+Local evidence (29 October): 100,000 synthetic designs, 100 brands, 21 shoppers, pool size 10. Three batches each at 1/5/20 concurrent requests. At five concurrent requests, all 15 were admitted (p50 203 ms, p95 516 ms). At twenty, 48 of 60 were admitted (admitted p95 887 ms) and 12 received the expected retryable overload response. The three single-shopper samples include a 1,631 ms cold path; continuation reads were 23–28 ms. These are local service/query observations, not sustained HTTP throughput, real-user ranking quality or phone rendering results. Source hashes and plans are recorded in the benchmark JSON.

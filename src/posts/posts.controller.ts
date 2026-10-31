@@ -14,8 +14,7 @@ import { PostsService } from './posts.service';
 import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 import { CreatePostDto, UpdatePostDto, GetPostsDto } from './dto/post.dto';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
-import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
-import { UseGuards as UseGuardsDeco } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { EventsGateway } from '../realtime/events.gateway';
 
 @ApiTags('posts')
@@ -57,7 +56,6 @@ export class PostsController {
     return this.postsService.delete(id, req.user.id);
   }
 
-  @UseGuardsDeco(ThrottlerGuard)
   @Throttle({ default: { limit: 60, ttl: 60000 } })
   @Post(':id/threads')
   async toggleThread(@Param('id') id: string, @Req() req: any) {

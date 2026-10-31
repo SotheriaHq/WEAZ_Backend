@@ -10,14 +10,13 @@ import {
   Query,
   UseGuards,
   Req,
-  HttpCode,
   UseInterceptors,
   ValidationPipe,
   Logger,
   Patch,
   ParseUUIDPipe,
 } from '@nestjs/common';
-import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import { Throttle } from '@nestjs/throttler';
 import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guard/role.guard';
@@ -117,24 +116,8 @@ export class PaymentController {
     }
   }
 
-  private isLegacyPaystackWebhookAliasEnabled(): boolean {
-    return (
-      String(process.env.PAYMENT_LEGACY_PAYSTACK_WEBHOOK_ALIASES_ENABLED ?? '')
-        .trim()
-        .toLowerCase() === 'true'
-    );
-  }
-
-  private isLegacyFlutterwaveWebhookAliasEnabled(): boolean {
-    return (
-      String(process.env.PAYMENT_LEGACY_FLUTTERWAVE_WEBHOOK_ALIAS_ENABLED ?? '')
-        .trim()
-        .toLowerCase() === 'true'
-    );
-  }
-
+  @IsPublic()
   @Get('fx/quote')
-  @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 30, ttl: 60000 } })
   async getFxQuote(@Query() query: FxQuoteQueryDto) {
     const result = await this.fxRateService.getQuotePreview({
@@ -147,7 +130,6 @@ export class PaymentController {
 
   @Get('fx/display')
   @IsPublic()
-  @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 30, ttl: 60000 } })
   async getFxDisplay(@Query() query: FxDisplayQueryDto) {
     return this.fxRateService.getDisplayRates(query);
@@ -216,6 +198,7 @@ export class PaymentController {
    */
   @Post('saved-cards/record')
   @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   async recordSavedCard(
     @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
     dto: RecordSavedCardDto,
@@ -274,6 +257,7 @@ export class PaymentController {
 
   @Get('cards/validate/:sessionId')
   @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   async getCardValidationSession(
     @Param('sessionId') sessionId: string,
     @Req() req: Request,
@@ -341,6 +325,7 @@ export class PaymentController {
   @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
   @Roles(Role.SuperAdmin, Role.Admin)
   @RequirePermissions(ADMIN_PERMISSIONS.PAYMENTS_SIMULATE)
+  @Throttle({ default: { limit: 2, ttl: 60000 } })
   async reconcileStale(
     @Body() dto: ReconcileStalePaymentsDto,
     @Req() req: Request,
@@ -350,67 +335,31 @@ export class PaymentController {
   }
 
   /**
-   * Webhook endpoints for Paystack and Flutterwave.
-   * These receive POST requests from the payment gateways
-   * when a payment is completed. No auth guard — gateways
-   * authenticate via signature headers (validated in service).
-   * `@IsPublic()` is required: without it the global `AuthIntentGuard` rejects
-   * these with 401, which would also swallow the "legacy alias" diagnostic a
-   * misconfigured gateway needs to see.
+   * Retired webhook URLs. Gateways post to `/webhooks/paystack` and
+   * `/webhooks/flutterwave`; these old paths only answer 410 with that
+   * instruction, so a misconfigured dashboard is easy to diagnose. They never
+   * process a payload. `@IsPublic()` keeps the global guard from turning the
+   * instruction into a bare 401.
    */
   @IsPublic()
   @Post('webhook/paystack')
-  @HttpCode(200)
-  async paystackWebhook(
-    @Body() payload: Record<string, any>,
-    @Req() req: Request & { rawBody?: string },
-  ) {
-    if (!this.isLegacyPaystackWebhookAliasEnabled()) {
-      this.logger.warn(
-        'Blocked request to legacy /payment/webhook/paystack because legacy aliases are disabled.',
-      );
-      throw new GoneException(
-        'Legacy Paystack webhook alias is disabled. Configure Paystack to POST /webhooks/paystack.',
-      );
-    }
-
+  paystackWebhook(): never {
     this.logger.warn(
-      'Received Paystack webhook on legacy /payment/webhook/paystack. Use /webhooks/paystack in the Paystack dashboard instead.',
+      'Webhook received on retired /payment/webhook/paystack; configure /webhooks/paystack.',
     );
-    await this.paymentService.enqueueWebhook('PAYSTACK', payload, {
-      headers: req.headers,
-      rawBody: req.rawBody,
-      remoteAddress: req.ip ?? req.socket?.remoteAddress ?? null,
-      correlationId: this.readCorrelationHeader(req),
-    });
-    return { status: 'ok' };
+    throw new GoneException(
+      'This webhook URL is retired. Configure Paystack to POST /webhooks/paystack.',
+    );
   }
 
   @IsPublic()
   @Post('webhook/flutterwave')
-  @HttpCode(200)
-  async flutterwaveWebhook(
-    @Body() payload: Record<string, any>,
-    @Req() req: Request & { rawBody?: string },
-  ) {
-    if (!this.isLegacyFlutterwaveWebhookAliasEnabled()) {
-      this.logger.warn(
-        'Blocked request to legacy /payment/webhook/flutterwave because legacy aliases are disabled.',
-      );
-      throw new GoneException(
-        'Legacy Flutterwave webhook alias is disabled. Configure Flutterwave to POST /webhooks/flutterwave.',
-      );
-    }
-
+  flutterwaveWebhook(): never {
     this.logger.warn(
-      'Received Flutterwave webhook on legacy /payment/webhook/flutterwave. Use /webhooks/flutterwave in the Flutterwave dashboard instead.',
+      'Webhook received on retired /payment/webhook/flutterwave; configure /webhooks/flutterwave.',
     );
-    await this.paymentService.enqueueWebhook('FLUTTERWAVE', payload, {
-      headers: req.headers,
-      rawBody: req.rawBody,
-      remoteAddress: req.ip ?? req.socket?.remoteAddress ?? null,
-      correlationId: this.readCorrelationHeader(req),
-    });
-    return { status: 'ok' };
+    throw new GoneException(
+      'This webhook URL is retired. Configure Flutterwave to POST /webhooks/flutterwave.',
+    );
   }
 }

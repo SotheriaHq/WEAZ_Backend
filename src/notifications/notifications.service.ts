@@ -1906,16 +1906,37 @@ export class NotificationsService {
     tx: Prisma.TransactionClient,
     events: NotificationEvent[],
   ): Promise<number> {
+    return this.stageSystemDecisionEvents(tx, events, [
+      NotificationType.COLLECTION_UPLOAD,
+    ]);
+  }
+
+  async stageContentReviewEvents(
+    tx: Prisma.TransactionClient,
+    events: NotificationEvent[],
+  ): Promise<number> {
+    return this.stageSystemDecisionEvents(tx, events, [
+      NotificationType.CONTENT_SUBMITTED_FOR_REVIEW,
+      NotificationType.CONTENT_REVIEW_APPROVED,
+      NotificationType.CONTENT_REVIEW_REJECTED,
+      NotificationType.CONTENT_CHANGES_REQUESTED,
+    ]);
+  }
+
+  /** Persist decision, inbox and channel intent atomically; never call providers inside a transaction. */
+  private async stageSystemDecisionEvents(
+    tx: Prisma.TransactionClient,
+    events: NotificationEvent[],
+    allowed: NotificationType[],
+  ): Promise<number> {
     if (
       events.length > 25 ||
       events.some(
-        (event) =>
-          event.type !== NotificationType.COLLECTION_UPLOAD ||
-          event.opts?.actorId,
+        (event) => !allowed.includes(event.type) || event.opts?.actorId,
       )
     ) {
       throw new BadRequestException(
-        'Invalid category decision notification batch',
+        'Invalid system decision notification batch',
       );
     }
     if (!events.length) return 0;
@@ -1931,11 +1952,13 @@ export class NotificationsService {
     events.forEach((event, index) => {
       const policy = policies.get(index);
       if (!policy)
-        throw new NotFoundException('Category decision recipient not found');
+        throw new NotFoundException(
+          'Decision notification recipient not found',
+        );
       const settings = this.normalizeSettings(policy.notificationSettings);
       if (!this.isNotificationEnabled(event.type, settings)) return;
       const created: Notification = {
-        id: uuidv4(),
+        id: event.opts?.notificationId ?? uuidv4(),
         recipientId: event.recipientId,
         actorId: null,
         type: event.type,

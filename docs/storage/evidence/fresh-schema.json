@@ -1,7 +1,7 @@
 {
-  "checkedAt": "2026-10-26T20:45:02.913Z",
+  "checkedAt": "2026-10-28T13:10:08.900Z",
   "passed": true,
-  "appliedMigrations": 155,
+  "appliedMigrations": 162,
   "failures": [],
   "cleanupPassed": true,
   "subscriptionTierValues": [

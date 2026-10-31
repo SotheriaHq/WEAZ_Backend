@@ -107,6 +107,28 @@ export function getUploadFileExtension(fileName: string): string {
     .toLowerCase();
 }
 
+/** Display names are retained as metadata only, never as storage paths. */
+export function assertSafeUploadName(fileName: string): void {
+  if (
+    typeof fileName !== 'string' ||
+    !fileName.trim() ||
+    Buffer.byteLength(fileName, 'utf8') > 255 ||
+    fileName.startsWith('.') ||
+    fileName !== fileName.trim() ||
+    /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069/\\:<>"|?*]/u.test(
+      fileName,
+    ) ||
+    /%(?:00|0a|0d|2f|5c|3a)/i.test(fileName) ||
+    /\.(?:php\d*|phtml|phar|asp|aspx|jsp|jspx|exe|com|bat|cmd|ps1|sh|html?|svg|js|mjs)(?:\.|$)/i.test(
+      fileName,
+    )
+  ) {
+    throw new BadRequestException(
+      'Choose a plain filename of at most 255 bytes without paths or executable extensions',
+    );
+  }
+}
+
 export function inferUploadContentType(fileName: string): string | null {
   return UPLOAD_EXTENSION_MIME_HINTS[getUploadFileExtension(fileName)] ?? null;
 }
@@ -115,10 +137,25 @@ export function assertAllowedUploadExtension(
   originalName: string,
   fileType: FileType,
 ): void {
+  assertSafeUploadName(originalName);
   const extension = getUploadFileExtension(originalName);
   const allowed = UPLOAD_ALLOWED_EXTENSIONS[fileType] ?? [];
   if (!extension || !allowed.includes(extension)) {
     throw new BadRequestException(`File extension not allowed for ${fileType}`);
+  }
+}
+
+export function assertAllowedUploadType(
+  originalName: string,
+  mimeType: string | null,
+  fileType: FileType,
+): void {
+  assertAllowedUploadExtension(originalName, fileType);
+  assertAllowedUploadMimeType(mimeType, fileType);
+  if (inferUploadContentType(originalName) !== mimeType) {
+    throw new BadRequestException(
+      'File extension does not match the selected file type',
+    );
   }
 }
 
@@ -140,9 +177,8 @@ function validateMulterFileShape(
   file: Pick<Express.Multer.File, 'originalname' | 'mimetype'>,
   fileType: FileType,
 ): void {
-  assertAllowedUploadExtension(file.originalname, fileType);
   const trustedMimeType = normalizeUploadContentType(file.mimetype);
-  assertAllowedUploadMimeType(trustedMimeType, fileType);
+  assertAllowedUploadType(file.originalname, trustedMimeType, fileType);
 }
 
 export function multerOptionsForFileType(fileType: FileType): MulterOptions {
@@ -151,6 +187,9 @@ export function multerOptionsForFileType(fileType: FileType): MulterOptions {
     limits: {
       fileSize: DIRECT_UPLOAD_HARD_LIMIT_BYTES[fileType],
       files: 1,
+      fields: 20,
+      fieldSize: 16 * 1024,
+      parts: 21,
     },
     fileFilter: (_req, file, callback) => {
       try {
@@ -169,8 +208,17 @@ export function collectionBulkUploadMulterOptions(): MulterOptions {
     limits: {
       fileSize: COLLECTION_BULK_UPLOAD_HARD_LIMIT_BYTES,
       files: 1,
+      fields: 20,
+      fieldSize: 16 * 1024,
+      parts: 21,
     },
     fileFilter: (_req, file, callback) => {
+      try {
+        assertSafeUploadName(file.originalname);
+      } catch (error) {
+        callback(error as Error, false);
+        return;
+      }
       const extension = getUploadFileExtension(file.originalname);
       const contentType = normalizeUploadContentType(file.mimetype);
       const validExtension = COLLECTION_BULK_ALLOWED_EXTENSIONS.has(extension);
@@ -210,8 +258,17 @@ export function previewImageMulterOptions(): MulterOptions {
     limits: {
       fileSize: PREVIEW_IMAGE_UPLOAD_HARD_LIMIT_BYTES,
       files: 1,
+      fields: 20,
+      fieldSize: 16 * 1024,
+      parts: 21,
     },
     fileFilter: (_req, file, callback) => {
+      try {
+        assertSafeUploadName(file.originalname);
+      } catch (error) {
+        callback(error as Error, false);
+        return;
+      }
       const extension = getUploadFileExtension(file.originalname);
       const contentType = normalizeUploadContentType(file.mimetype);
       const validExtension = allowedExtensions.has(extension);

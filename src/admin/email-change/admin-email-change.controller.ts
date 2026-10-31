@@ -99,6 +99,7 @@ export class AdminEmailChangeController {
   @Post('requests/:id/approve')
   @Roles(Role.SuperAdmin)
   @RequirePermissions(ADMIN_PERMISSIONS.PERMISSIONS_MANAGE)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   approveRequest(@Param('id') id: string, @Request() req: any) {
     return this.service.approveRequest(id, req.user.id);
   }
@@ -106,6 +107,7 @@ export class AdminEmailChangeController {
   @Post('requests/:id/reject')
   @Roles(Role.SuperAdmin)
   @RequirePermissions(ADMIN_PERMISSIONS.PERMISSIONS_MANAGE)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   rejectRequest(
     @Param('id') id: string,
     @Request() req: any,

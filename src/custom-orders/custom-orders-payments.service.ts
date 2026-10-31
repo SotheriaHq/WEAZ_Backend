@@ -322,6 +322,10 @@ export class CustomOrdersPaymentsService {
     const updatedAttempt = transitionResult.attempt;
 
     if (transitionResult.transitionedToPaid) {
+      await this.paymentService.rememberVerifiedCheckoutCard(
+        updatedAttempt,
+        resolvedVerification.providerAuthorization,
+      );
       const buyerDisplayName = this.buyerDisplayName(order.buyer);
       const buyerFirstName = order.buyer.userProfile?.firstName ?? '';
       const buyerLastName = order.buyer.userProfile?.lastName ?? '';
@@ -599,6 +603,10 @@ export class CustomOrdersPaymentsService {
     const updatedAttempt = transitionResult.attempt;
 
     if (transitionResult.transitionedToPaid) {
+      await this.paymentService.rememberVerifiedCheckoutCard(
+        updatedAttempt,
+        resolvedVerification.providerAuthorization,
+      );
       await this.ensurePaidCustomOrderSettlement(updatedAttempt.reference);
       const refreshedAttempt = await this.prisma.paymentAttempt.findUnique({
         where: { reference: dto.reference },

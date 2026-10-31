@@ -729,12 +729,14 @@ export class CustomOrderOpsCronService {
         take: 200,
       });
 
-      for (const event of events) {
-        await this.prisma.customOrderProgressEvent.update({
-          where: { id: event.id },
+      if (events.length > 0) {
+        await this.prisma.customOrderProgressEvent.updateMany({
+          where: { id: { in: events.map((event) => event.id) } },
           data: { staleBuyerWarnedAt: now },
         });
+      }
 
+      for (const event of events) {
         await this.sideEffects.enqueueNotification({
           customOrderId: event.customOrder.id,
           recipientIds: [event.customOrder.buyerId],

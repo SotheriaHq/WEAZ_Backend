@@ -92,6 +92,10 @@ export class DesignMetadataDto {
 
   @IsOptional()
   @IsUUID('4')
+  pendingCategorySuggestionId?: string | null;
+
+  @IsOptional()
+  @IsUUID('4')
   subCategoryId?: string;
 
   @IsOptional()
@@ -117,6 +121,8 @@ export class DesignMetadataDto {
   @IsString({ each: true })
   filterValueIds?: string[];
 
+  // sizingMode, rtw sizes and customOrderEnabled are accepted from older clients
+  // and ignored on save: see designSizingFields.
   @IsOptional()
   @Transform(normalizeSizingMode)
   @IsIn(['NONE', 'RTW', 'CUSTOM', 'RTW_PLUS_FITTINGS'])

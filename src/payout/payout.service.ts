@@ -18,7 +18,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { PasswordService } from 'src/auth/helper/password.service';
 import { EmailService } from 'src/email/email.service';
 import * as emailTemplates from 'src/email/email.templates';
-import { CommissionService } from 'src/finance/commission.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
 import {
   BRAND_SETTLEMENT_CURRENCY,
@@ -67,7 +66,6 @@ export class PayoutService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly standardOrderEscrowService: StandardOrderEscrowService,
-    private readonly commissionService: CommissionService,
     private readonly standardOrderFinanceSyncService: StandardOrderFinanceSyncService,
     private readonly customOrderFinanceSyncService: CustomOrderFinanceSyncService,
     private readonly passwordService: PasswordService,
@@ -597,7 +595,7 @@ export class PayoutService {
     // Over-fetch slightly so merge with bounded fallbacks stays correct without loading all history.
     const ledgerFetchLimit = Math.min(100, skip + safeLimit);
 
-    const [entries, entryTotal, legacyOrders, fallbackCustomAllocations] =
+    const [entries, entryTotal, fallbackCustomAllocations] =
       await Promise.all([
         (this.prisma as any).ledgerEntry.findMany({
           where: {
@@ -654,23 +652,9 @@ export class PayoutService {
             direction: 'CREDIT',
           },
         }),
-        this.prisma.order.findMany({
-          where: {
-            brandId,
-            paymentStatus: 'PAID' as any,
-            escrowHold: { is: null },
-          },
-          orderBy: { createdAt: 'desc' },
-          take: 20,
-          select: {
-            id: true,
-            totalAmount: true,
-            currency: true,
-            customerName: true,
-            createdAt: true,
-            status: true,
-          },
-        }),
+        // Released custom-order allocations not yet posted to the ledger. Live
+        // paths mark allocations payout-eligible before a ledger post exists,
+        // so this is not old-data compatibility.
         this.prisma.customOrderLedgerAllocation.findMany({
           where: {
             customOrder: { brandId },
@@ -875,10 +859,6 @@ export class PayoutService {
       };
     });
 
-    const legacyItems = await this.buildLegacyStandardIncomeItems(
-      brandId,
-      legacyOrders,
-    );
     const customFallbackItems = fallbackCustomAllocations
       .filter((allocation) => {
         const stage = this.mapCustomAllocationStage(allocation.allocationType);
@@ -935,18 +915,14 @@ export class PayoutService {
         };
       });
 
-    const allItems = [
-      ...ledgerItems,
-      ...legacyItems,
-      ...customFallbackItems,
-    ].sort(
+    const allItems = [...ledgerItems, ...customFallbackItems].sort(
       (a, b) =>
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     );
 
     // total ≈ ledger count + fallback rows not already represented in ledger
     const total = Math.max(
-      Number(entryTotal || 0) + legacyItems.length + customFallbackItems.length,
+      Number(entryTotal || 0) + customFallbackItems.length,
       allItems.length,
     );
 
@@ -1218,147 +1194,33 @@ export class PayoutService {
     brandId: string,
     client: Pick<Prisma.TransactionClient, '$queryRaw' | 'order'> = this.prisma,
   ) {
-    const [position, legacyFallbackBalance] = await Promise.all([
-      loadBrandPosition(client, brandId, BRAND_SETTLEMENT_CURRENCY),
-      this.getLegacyFallbackBalance(brandId, client),
-    ]);
-    const released = position.released.plus(legacyFallbackBalance.toFixed(2));
-    const available = position.position.plus(legacyFallbackBalance.toFixed(2));
+    // The position is the only authority. A paid order without an escrow hold
+    // is repaired into a hold by `syncFinanceSources` before callers get here;
+    // it is never counted as withdrawable on its own.
+    const position = await loadBrandPosition(client, brandId, BRAND_SETTLEMENT_CURRENCY);
 
     return {
-      availableBalance: available.toNumber(),
-      releasedBalance: released.toNumber(),
+      availableBalance: position.position.toNumber(),
+      releasedBalance: position.released.toNumber(),
       reservedPayoutBalance: position.reserved.toNumber(),
       paidOutBalance: position.paidOut.toNumber(),
     };
   }
 
-  /** Paid orders that predate escrow holds. Settlement currency only. */
-  private async getLegacyFallbackBalance(
-    brandId: string,
-    client: Pick<Prisma.TransactionClient, 'order'> = this.prisma,
-  ): Promise<number> {
-    const paidOrders = await client.order.findMany({
-      where: {
-        brandId,
-        paymentStatus: 'PAID',
-        currency: BRAND_SETTLEMENT_CURRENCY,
-        escrowHold: { is: null },
-      },
-      select: {
-        totalAmount: true,
-        currency: true,
-      },
-    });
-
-    if (paidOrders.length === 0) {
-      return 0;
-    }
-
-    const rateMap = await this.getCommissionRateMap(
-      brandId,
-      paidOrders.map((order) => String(order.currency || 'NGN')),
-    );
-
-    return this.roundMoney(
-      paidOrders.reduce((sum, order) => {
-        const grossAmount = Number(order.totalAmount ?? 0);
-        const commissionRate =
-          rateMap.get(String(order.currency || 'NGN').toUpperCase()) ?? 0;
-        const commissionAmount = this.roundMoney(
-          (grossAmount * commissionRate) / 100,
-        );
-        return sum + this.roundMoney(grossAmount - commissionAmount);
-      }, 0),
-    );
-  }
-
-  private async buildLegacyStandardIncomeItems(
-    brandId: string,
-    orders: Array<{
-      id: string;
-      totalAmount: Prisma.Decimal;
-      currency: string;
-      customerName: string;
-      createdAt: Date;
-      status: string;
-    }>,
-  ) {
-    if (orders.length === 0) {
-      return [];
-    }
-
-    const rateMap = await this.getCommissionRateMap(
-      brandId,
-      orders.map((order) => String(order.currency || 'NGN')),
-    );
-
-    return orders.map((order) => {
-      const grossAmount = Number(order.totalAmount ?? 0);
-      const commissionRate =
-        rateMap.get(String(order.currency || 'NGN').toUpperCase()) ?? 0;
-      const commissionAmount = this.roundMoney(
-        (grossAmount * commissionRate) / 100,
-      );
-      const netAmount = this.roundMoney(grossAmount - commissionAmount);
-
-      return {
-        id: order.id,
-        amount: netAmount,
-        grossAmount: this.roundMoney(grossAmount),
-        commissionAmount,
-        netAmount,
-        balanceAfter: 0,
-        currency: order.currency || 'NGN',
-        createdAt: order.createdAt,
-        transactionId: null,
-        transactionType: 'PAYMENT_RECEIVED',
-        description: `Payment for order #${order.id.slice(0, 8).toUpperCase()}`,
-        referenceType: 'Order',
-        referenceId: order.id,
-        title: `Order #${order.id.slice(0, 8).toUpperCase()}`,
-        counterparty: order.customerName,
-        stage:
-          String(order.status) === 'DELIVERED'
-            ? 'DELIVERED_RELEASE'
-            : String(order.status) === 'SHIPPED'
-              ? 'SHIPPED_RELEASE'
-              : 'PAYMENT',
-        metadata: null,
-      };
-    });
-  }
-
-  private async getCommissionRateMap(brandId: string, currencies: string[]) {
-    const uniqueCurrencies = Array.from(
-      new Set(
-        currencies
-          .map((currency) =>
-            String(currency || 'NGN')
-              .trim()
-              .toUpperCase(),
-          )
-          .filter(Boolean),
-      ),
-    );
-
-    const resolvedRules = await this.commissionService.resolveRulesBatch(
-      uniqueCurrencies.map((currency) => ({ brandId, currency })),
-    );
-    return new Map<string, number>(
-      uniqueCurrencies.map((currency, index) => [currency, resolvedRules[index].ratePercent]),
-    );
-  }
-
   private async syncFinanceSources(brandId: string) {
     await Promise.all([
-      this.syncLegacyStandardOrderSources(brandId),
+      this.repairStandardOrdersMissingHolds(brandId),
       this.customOrderFinanceSyncService.ensureSettlementsForBrand(brandId, 25),
     ]);
   }
 
-  private async syncLegacyStandardOrderSources(brandId: string) {
-    const legacyOrderIds = await this.prisma.order.findMany({
+  /**
+   * A paid order should always have an escrow hold from finance sync at
+   * payment time. If one is missing (a failed sync), create it now so the
+   * money is held and released by the normal rules, never paid out directly.
+   */
+  private async repairStandardOrdersMissingHolds(brandId: string) {
+    const missingHolds = await this.prisma.order.findMany({
       where: {
         brandId,
         paymentStatus: 'PAID',
@@ -1369,12 +1231,12 @@ export class PayoutService {
       take: 50,
     });
 
-    if (legacyOrderIds.length === 0) {
+    if (missingHolds.length === 0) {
       return;
     }
 
     await this.standardOrderFinanceSyncService.syncPaidOrdersByOrderIds(
-      legacyOrderIds.map((order) => order.id),
+      missingHolds.map((order) => order.id),
     );
   }
 

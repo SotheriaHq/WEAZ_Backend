@@ -103,16 +103,22 @@ export class PhysicalVerificationService {
     });
     if (existing) return existing.id;
 
-    const created = await tx.brandPhysicalVerification.create({
-      data: {
-        id: randomUUID(),
-        attemptId: input.attemptId,
-        brandId: input.brandId,
-        status: PhysicalVerificationStatus.PENDING_ASSIGNMENT,
-      },
+    await tx.brandPhysicalVerification.createMany({
+      data: [
+        {
+          id: randomUUID(),
+          attemptId: input.attemptId,
+          brandId: input.brandId,
+          status: PhysicalVerificationStatus.PENDING_ASSIGNMENT,
+        },
+      ],
+      skipDuplicates: true,
+    });
+    const opened = await tx.brandPhysicalVerification.findUniqueOrThrow({
+      where: { attemptId: input.attemptId },
       select: { id: true },
     });
-    return created.id;
+    return opened.id;
   }
 
   /** The queue a SuperAdmin assigns from and an agent claims from. */

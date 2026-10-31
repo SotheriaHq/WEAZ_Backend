@@ -10,7 +10,7 @@ import { DevToolsModule } from './dev-tools/dev-tools.module';
 import { BrandsModule } from './brands/brands.module';
 import { CollectionsModule } from './collections/collections.module';
 import { DesignsModule } from './designs/designs.module';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { RateLimitingModule } from './auth/rate-limiting.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { PostsModule } from './posts/posts.module';
@@ -28,6 +28,7 @@ import { AdminModule } from './admin/admin.module';
 import { EmailModule } from './email/email.module';
 import { FeaturedModule } from './featured/featured.module';
 import { PaymentModule } from './payment/payment.module';
+import { LocationsModule } from './locations/locations.module';
 import { SearchModule } from './search/search.module';
 import { ReviewsModule } from './reviews/reviews.module';
 import { CustomOrderConfigurationsModule } from './custom-order-configurations/custom-order-configurations.module';
@@ -80,7 +81,7 @@ const isHardProduction =
     MonitoringModule,
     HealthModule,
     AuthModule,
-    ThrottlerModule.forRoot([{ ttl: 60000, limit: 120 }]),
+    RateLimitingModule,
     UploadModule,
     BrandsModule,
     // Collections for brands
@@ -104,6 +105,7 @@ const isHardProduction =
     AdminModule,
     FeaturedModule,
     PaymentModule,
+    LocationsModule,
     SearchModule,
     ReviewsModule,
     CustomOrderConfigurationsModule,
@@ -121,9 +123,8 @@ const isHardProduction =
   controllers: [AppController],
   providers: [
     AppService,
-    // Fail-closed default auth: any handler with no explicit `@UseGuards(...)`
-    // and no `@IsPublic()` is rejected. Endpoints that already declare a guard
-    // (incl. OptionalJwtAuthGuard) are unaffected. Kill-switch: AUTH_FAIL_CLOSED=false.
+    // Fail-closed default auth: any handler with no recognised authentication
+    // guard and no `@IsPublic()` is rejected. There is no kill switch.
     { provide: APP_GUARD, useClass: AuthIntentGuard },
   ],
 })

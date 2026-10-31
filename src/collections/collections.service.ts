@@ -1,3 +1,4 @@
+import { lockForTransaction } from 'src/common/transaction-lock.util';
 import {
   BULK_IMPORT_BATCH_SIZE,
   claimBulkImport,
@@ -5,12 +6,26 @@ import {
   lockBulkImportCheckpoint,
   finishBulkImport,
 } from './bulk-import-query';
+import {
+  deleteDetachedContentFiles,
+  deleteOwnedFile,
+} from '../upload/file-deletion-query';
+import { lockContentReviewTarget } from '../content-integrity/content-review-lock';
 import { applyCategoryDecisionPage } from './category-moderation-query';
+import {
+  resolveDesignTaxonomy,
+  type DesignTaxonomyState,
+} from '../designs/design-taxonomy';
 import type { NotificationEvent } from '../notifications/notification-batch-query';
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
 import { refreshCollectionPriceRanges } from '../store/collection-price-range.util';
 import { attachFinalizedMedia } from './finalized-media-query';
+import {
+  clearUploadIncomplete,
+  designSizingFields,
+  DRAFT_REASON_UPLOAD_INCOMPLETE,
+} from './design-sizing';
 import {
   lockMembershipProducts,
   readProductMemberships,
@@ -417,11 +432,8 @@ export class CollectionsService {
   private async assertDesignCustomOrderPublishReady(
     sourceId: string,
     ownerId: string,
-    customOrderEnabled: boolean,
     tx?: Prisma.TransactionClient,
   ) {
-    if (!customOrderEnabled) return;
-
     const prismaClient = tx ?? this.prisma;
     const activeConfiguration =
       await prismaClient.customOrderConfiguration.findFirst({
@@ -436,7 +448,7 @@ export class CollectionsService {
 
     if (!activeConfiguration) {
       throw new BadRequestException(
-        'Custom orders are enabled, but no active custom-order configuration exists for this design.',
+        'Finish the custom-order setup for this design before publishing.',
       );
     }
   }
@@ -1433,51 +1445,37 @@ export class CollectionsService {
       select: { id: true, viewerId: true },
     } as any);
 
-    const existingIdsByViewer = new Map<string, string[]>();
-    for (const row of existingRows) {
-      const ids = existingIdsByViewer.get(row.viewerId) ?? [];
-      ids.push(row.id);
-      existingIdsByViewer.set(row.viewerId, ids);
-    }
+    const existingViewerIds = new Set<string>(
+      existingRows.map((row) => row.viewerId),
+    );
 
-    const operations: Prisma.PrismaPromise<any>[] = [];
+    const existingIds = existingRows.map((row) => row.id);
+    const newViewerIds = uniqueViewerIds.filter(
+      (viewerId) => !existingViewerIds.has(viewerId),
+    );
+    const access = {
+      state,
+      notes: options?.notes ?? null,
+      grantedBy: options?.grantedBy ?? null,
+      updatedAt: now,
+    };
 
-    for (const viewerId of uniqueViewerIds) {
-      const existingIds = existingIdsByViewer.get(viewerId) ?? [];
-      if (existingIds.length > 0) {
-        operations.push(
-          this.prisma.collectionAccess.updateMany({
-            where: { id: { in: existingIds } },
-            data: {
-              state,
-              notes: options?.notes ?? null,
-              grantedBy: options?.grantedBy ?? null,
-              updatedAt: now,
-            },
-          } as any),
-        );
-        continue;
-      }
-
-      operations.push(
-        this.prisma.collectionAccess.create({
-          data: {
-            id: uuidv4(),
-            collectionId,
-            viewerId,
-            state,
-            notes: options?.notes ?? null,
-            grantedBy: options?.grantedBy ?? null,
-            createdAt: options?.createdAt ?? now,
-            updatedAt: now,
-          },
-        } as any),
-      );
-    }
-
-    if (operations.length > 0) {
-      await this.prisma.$transaction(operations);
-    }
+    await this.prisma.$transaction([
+      this.prisma.collectionAccess.updateMany({
+        where: { id: { in: existingIds } },
+        data: access,
+      } as any),
+      this.prisma.collectionAccess.createMany({
+        data: newViewerIds.map((viewerId) => ({
+          id: uuidv4(),
+          collectionId,
+          viewerId,
+          ...access,
+          createdAt: options?.createdAt ?? now,
+        })),
+        skipDuplicates: true,
+      } as any),
+    ]);
   }
 
   async requestAccess(collectionId: string, requesterId: string) {
@@ -2485,14 +2483,103 @@ export class CollectionsService {
     return { success: true, message: 'Access revoked successfully' };
   }
 
-  /**
-   * STEP 1: Create collection draft and return presigned URLs
-   * Simplified: category suggestions removed; categoryId is required and must be active.
-   */
+  private createDesignDraftWithTaxonomy(
+    actorUserId: string,
+    ownerUserId: string,
+    metadata: DesignTaxonomyState,
+    params: { data: Prisma.CollectionUncheckedCreateInput },
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const taxonomy = await resolveDesignTaxonomy(
+        tx,
+        metadata,
+        {},
+        { actorUserId, ownerUserId },
+      );
+      return tx.collection.create({ data: { ...params.data, ...taxonomy } });
+    });
+  }
+
+  private async lockDesignMutation(
+    tx: Prisma.TransactionClient,
+    id: string,
+    observed: { status: string; draftVersion?: number; ownerId?: string },
+  ) {
+    await lockContentReviewTarget(tx, { legacyCollectionId: id });
+    const current = await tx.collection.findUnique({ where: { id } });
+    if (!current || current.deletedAt)
+      throw new NotFoundException('Design not found');
+    if (
+      current.domain !== 'DESIGN' ||
+      current.status !== observed.status ||
+      (observed.draftVersion !== undefined &&
+        current.draftVersion !== observed.draftVersion) ||
+      (observed.ownerId !== undefined && current.ownerId !== observed.ownerId)
+    )
+      throw new ConflictException({
+        code: 'DRAFT_VERSION_CONFLICT',
+        message: 'This design changed. Refresh it before saving again.',
+        serverVersion: current.draftVersion,
+      });
+    return current;
+  }
+
+  /** STEP 1: Create a design draft with approved taxonomy or a pending pair. */
   // LEGACY_COMPAT_COLLECTION_BACKED_DESIGN:
   // Existing web/mobile clients still use this collection-backed path for
   // design creation. New design-owned entry points should call DesignsService,
   // which delegates here through the legacy adapter until persistence is split.
+  private async validateDesignUploadSpecs(files: FileSpecDto[]) {
+    await Promise.all(
+      files.map((spec) =>
+        this.helperservice.validateFileSpec(
+          spec,
+          this.helperservice.determineFileType(spec.type, spec.fileType),
+        ),
+      ),
+    );
+  }
+
+  private async issueDesignUploads(
+    userId: string,
+    collectionId: string,
+    files: FileSpecDto[],
+    firstOrderIndex = 0,
+  ) {
+    const requests = files.map((fileSpec, index) => {
+      const orderIndex = firstOrderIndex + index;
+      return {
+        originalName: fileSpec.name,
+        fileType: this.helperservice.determineFileType(
+          fileSpec.type,
+          fileSpec.fileType,
+        ) as any,
+        contentType: fileSpec.type,
+        collectionId,
+        orderIndex,
+        viewSlot: this.contentIntegrity?.normalizeViewSlot(
+          (fileSpec as any).viewSlot,
+          orderIndex,
+        ),
+      };
+    });
+    const issued = await this.uploadService.createPresignedUploads(
+      userId,
+      requests,
+    );
+    return issued.map((presign, index) => ({
+      fileId: presign.fileId,
+      orderIndex: requests[index].orderIndex,
+      viewSlot: requests[index].viewSlot,
+      expectedKey: presign.key,
+      uploadUrl: presign.url,
+      uploadFields: presign.fields,
+      method: presign.method,
+      uploadHeaders: presign.uploadHeaders,
+      expiresIn: presign.expiresIn,
+    }));
+  }
+
   async initializeCollection(userId: string, dto: CreateCollectionDto) {
     const catalogContext = await this.resolveCatalogOwnerContext(userId);
     const ownerId = catalogContext.ownerId;
@@ -2504,8 +2591,14 @@ export class CollectionsService {
       );
     }
 
+    if (hasFiles) await this.validateDesignUploadSpecs(dto.files!);
+
     // Store-collection session initialization (no media required)
     if (!hasFiles && dto.mode) {
+      if (dto.pendingCategorySuggestionId)
+        throw new BadRequestException(
+          'Category proposals are supported for designs.',
+        );
       if (dto.categoryId) {
         await this.assertActiveCategory(dto.categoryId);
       }
@@ -2588,43 +2681,40 @@ export class CollectionsService {
       this.assertValidPriceRange(dto.minPrice, dto.maxPrice);
       const collectionId = uuidv4();
       const now = new Date();
-      const collection = await (this.prisma.collection as any).create({
-        data: {
-          id: collectionId,
-          owner: { connect: { id: ownerId } },
-          domain: 'DESIGN',
-          title: dto.title?.trim() || null,
-          description: dto.description?.trim() || null,
-          minPrice: dto.minPrice,
-          maxPrice: dto.maxPrice,
-          isAvailableInStore: dto.isAvailableInStore ?? false,
-          sizingMode: dto.sizingMode ?? 'NONE',
-          rtwSizes: Array.isArray(dto.rtwSizes) ? dto.rtwSizes : [],
-          rtwSizeSystem: dto.rtwSizeSystem ?? null,
-          rtwSizeType: dto.rtwSizeType ?? null,
-          customGender: dto.customGender ?? null,
-          customMeasurementKeys: this.normalizeMeasurementKeys(
-            dto.customMeasurementKeys,
-          ),
-          customFreeformPointIds: Array.isArray(dto.customFreeformPointIds)
-            ? dto.customFreeformPointIds
-            : [],
-          fitPreference: dto.fitPreference ?? null,
-          targetAgeGroup: dto.targetAgeGroup ?? 'ADULT',
-          tags: sanitizedTags,
-          status: 'DRAFT',
-          visibility: CollectionVisibility.PRIVATE,
-          type: dto.type ?? CollectionType.EVERYBODY,
-          ...(dto.categoryId
-            ? { category: { connect: { id: dto.categoryId } } }
-            : {}),
-          ...(dto.categoryTypeId
-            ? { categoryType: { connect: { id: dto.categoryTypeId } } }
-            : {}),
-          lastActivityAt: now,
-          draftVersion: 0,
+      const collection = await this.createDesignDraftWithTaxonomy(
+        userId,
+        ownerId,
+        dto,
+        {
+          data: {
+            id: collectionId,
+            ownerId,
+            domain: 'DESIGN',
+            title: dto.title?.trim() || null,
+            description: dto.description?.trim() || null,
+            minPrice: dto.minPrice,
+            maxPrice: dto.maxPrice,
+            isAvailableInStore: dto.isAvailableInStore ?? false,
+            ...designSizingFields(),
+            draftReason: hasFiles ? DRAFT_REASON_UPLOAD_INCOMPLETE : null,
+            customGender: dto.customGender ?? null,
+            customMeasurementKeys: this.normalizeMeasurementKeys(
+              dto.customMeasurementKeys,
+            ),
+            customFreeformPointIds: Array.isArray(dto.customFreeformPointIds)
+              ? dto.customFreeformPointIds
+              : [],
+            fitPreference: dto.fitPreference ?? null,
+            targetAgeGroup: dto.targetAgeGroup ?? 'ADULT',
+            tags: sanitizedTags,
+            status: 'DRAFT',
+            visibility: CollectionVisibility.PRIVATE,
+            type: dto.type ?? CollectionType.EVERYBODY,
+            lastActivityAt: now,
+            draftVersion: 0,
+          },
         },
-      });
+      );
 
       const initialFilterValueIds = this.normalizeFilterValueIds(
         dto.filterValueIds,
@@ -2664,39 +2754,10 @@ export class CollectionsService {
         };
       }
 
-      const uploadData = await Promise.all(
-        dto.files.map(async (fileSpec, index) => {
-          const viewSlot = this.contentIntegrity?.normalizeViewSlot(
-            (fileSpec as any).viewSlot,
-            index,
-          );
-          // Validate and determine file type
-          const fileType = this.helperservice.determineFileType(
-            fileSpec.type,
-            fileSpec.fileType,
-          );
-          await this.helperservice.validateFileSpec(fileSpec, fileType);
-
-          const presign = await this.uploadService.createPresignedPost(
-            userId,
-            fileSpec.name,
-            fileType as any,
-            fileSpec.type,
-            { collectionId, orderIndex: index, viewSlot },
-          );
-
-          return {
-            fileId: (presign as any).fileId,
-            orderIndex: index,
-            viewSlot,
-            expectedKey: (presign as any).key,
-            uploadUrl: (presign as any).url,
-            uploadFields: (presign as any).fields,
-            method: (presign as any).method ?? 'POST',
-            uploadHeaders: (presign as any).uploadHeaders,
-            expiresIn: (presign as any).expiresIn || 600,
-          };
-        }),
+      const uploadData = await this.issueDesignUploads(
+        userId,
+        collectionId,
+        dto.files,
       );
 
       return {
@@ -2714,11 +2775,13 @@ export class CollectionsService {
       throw new BadRequestException('Title is required');
     }
 
-    if (!dto.categoryId) {
-      throw new BadRequestException('Category is required');
+    if (!dto.categoryId && !dto.pendingCategorySuggestionId) {
+      throw new BadRequestException(
+        'Choose a category or propose a category and garment type.',
+      );
     }
 
-    if (!isUuid(dto.categoryId)) {
+    if (dto.categoryId && !isUuid(dto.categoryId)) {
       throw new BadRequestException('Category format is invalid');
     }
 
@@ -2744,56 +2807,53 @@ export class CollectionsService {
     }
 
     // Require a valid, active category
-    await this.assertActiveCategory(dto.categoryId);
+    if (dto.categoryId) await this.assertActiveCategory(dto.categoryId);
     if (dto.categoryTypeId) {
       await this.assertCategoryTypeMatchesCategory(
         dto.categoryId,
         dto.categoryTypeId,
       );
     }
-    const finalCategoryId = dto.categoryId;
     const collectionStatus: 'DRAFT' | 'PUBLISHED' = 'DRAFT';
 
     // Create collection in DRAFT status
     this.assertValidPriceRange(dto.minPrice, dto.maxPrice);
     const collectionId = uuidv4();
     const now = new Date();
-    const collection = await (this.prisma.collection as any).create({
-      data: {
-        id: collectionId,
-        owner: { connect: { id: ownerId } },
-        domain: 'DESIGN',
-        title: dto.title,
-        description: dto.description,
-        minPrice: dto.minPrice,
-        maxPrice: dto.maxPrice,
-        isAvailableInStore: false,
-        sizingMode: dto.sizingMode ?? 'NONE',
-        rtwSizes: Array.isArray(dto.rtwSizes) ? dto.rtwSizes : [],
-        rtwSizeSystem: dto.rtwSizeSystem ?? null,
-        rtwSizeType: dto.rtwSizeType ?? null,
-        customGender: dto.customGender ?? null,
-        customMeasurementKeys: this.normalizeMeasurementKeys(
-          dto.customMeasurementKeys,
-        ),
-        customFreeformPointIds: Array.isArray(dto.customFreeformPointIds)
-          ? dto.customFreeformPointIds
-          : [],
-        fitPreference: dto.fitPreference ?? null,
-        targetAgeGroup: dto.targetAgeGroup ?? 'ADULT',
-        tags: sanitizedTags,
-        status: collectionStatus,
-        visibility: CollectionVisibility.PRIVATE,
-        type: dto.type ?? CollectionType.EVERYBODY,
-        // Set required category
-        category: { connect: { id: finalCategoryId } },
-        categoryType: dto.categoryTypeId
-          ? { connect: { id: dto.categoryTypeId } }
-          : undefined,
-        lastActivityAt: now,
-        draftVersion: 0,
+    const collection = await this.createDesignDraftWithTaxonomy(
+      userId,
+      ownerId,
+      dto,
+      {
+        data: {
+          id: collectionId,
+          ownerId,
+          domain: 'DESIGN',
+          title: dto.title,
+          description: dto.description,
+          minPrice: dto.minPrice,
+          maxPrice: dto.maxPrice,
+          isAvailableInStore: false,
+          ...designSizingFields(),
+          draftReason: DRAFT_REASON_UPLOAD_INCOMPLETE,
+          customGender: dto.customGender ?? null,
+          customMeasurementKeys: this.normalizeMeasurementKeys(
+            dto.customMeasurementKeys,
+          ),
+          customFreeformPointIds: Array.isArray(dto.customFreeformPointIds)
+            ? dto.customFreeformPointIds
+            : [],
+          fitPreference: dto.fitPreference ?? null,
+          targetAgeGroup: dto.targetAgeGroup ?? 'ADULT',
+          tags: sanitizedTags,
+          status: collectionStatus,
+          visibility: CollectionVisibility.PRIVATE,
+          type: dto.type ?? CollectionType.EVERYBODY,
+          lastActivityAt: now,
+          draftVersion: 0,
+        },
       },
-    });
+    );
 
     const initialFilterValueIds = this.normalizeFilterValueIds(
       dto.filterValueIds,
@@ -2825,41 +2885,10 @@ export class CollectionsService {
       );
     }
 
-    // Generate presigned URLs for each file using UploadService (creates presign DB entries)
-    const uploadData = await Promise.all(
-      dto.files.map(async (fileSpec, index) => {
-        const viewSlot = this.contentIntegrity?.normalizeViewSlot(
-          (fileSpec as any).viewSlot,
-          index,
-        );
-        // Validate and determine file type
-        const fileType = this.helperservice.determineFileType(
-          fileSpec.type,
-          fileSpec.fileType,
-        );
-        await this.helperservice.validateFileSpec(fileSpec, fileType);
-
-        // Use UploadService to create presigned POST and presign DB record
-        const presign = await this.uploadService.createPresignedPost(
-          userId,
-          fileSpec.name,
-          fileType as any,
-          fileSpec.type,
-          { collectionId, orderIndex: index, viewSlot },
-        );
-
-        return {
-          fileId: (presign as any).fileId,
-          orderIndex: index,
-          viewSlot,
-          expectedKey: (presign as any).key,
-          uploadUrl: (presign as any).url,
-          uploadFields: (presign as any).fields,
-          method: (presign as any).method ?? 'POST',
-          uploadHeaders: (presign as any).uploadHeaders,
-          expiresIn: (presign as any).expiresIn || 600, // default 10 minutes
-        };
-      }),
+    const uploadData = await this.issueDesignUploads(
+      userId,
+      collectionId,
+      dto.files,
     );
 
     return {
@@ -2899,6 +2928,8 @@ export class CollectionsService {
       );
     }
 
+    await this.validateDesignUploadSpecs(files);
+
     const existingMediaCount = await this.prisma.collectionMedia.count({
       where: { collectionId },
     });
@@ -2908,39 +2939,11 @@ export class CollectionsService {
       );
     }
 
-    const uploads = await Promise.all(
-      files.map(async (fileSpec, index) => {
-        const orderIndex = existingMediaCount + index;
-        const viewSlot = this.contentIntegrity?.normalizeViewSlot(
-          (fileSpec as any).viewSlot,
-          orderIndex,
-        );
-        const fileType = this.helperservice.determineFileType(
-          fileSpec.type,
-          fileSpec.fileType,
-        );
-        await this.helperservice.validateFileSpec(fileSpec, fileType);
-
-        const presign = await this.uploadService.createPresignedPost(
-          userId,
-          fileSpec.name,
-          fileType as any,
-          fileSpec.type,
-          { collectionId, orderIndex, viewSlot },
-        );
-
-        return {
-          fileId: (presign as any).fileId,
-          orderIndex,
-          viewSlot,
-          expectedKey: (presign as any).key,
-          uploadUrl: (presign as any).url,
-          uploadFields: (presign as any).fields,
-          method: (presign as any).method ?? 'POST',
-          uploadHeaders: (presign as any).uploadHeaders,
-          expiresIn: (presign as any).expiresIn || 600,
-        };
-      }),
+    const uploads = await this.issueDesignUploads(
+      userId,
+      collectionId,
+      files,
+      existingMediaCount,
     );
 
     return {
@@ -3980,10 +3983,6 @@ export class CollectionsService {
           30,
         );
       }
-      const nextCustomOrderEnabled =
-        typeof (metadata as any).customOrderEnabled === 'boolean'
-          ? Boolean((metadata as any).customOrderEnabled)
-          : Boolean((collection as any).customOrderEnabled);
 
       if (action === 'publish') {
         const nextTitle = metadata.title ?? collection.title;
@@ -3993,21 +3992,26 @@ export class CollectionsService {
         if (resolvedNextTags.length === 0) {
           throw new BadRequestException('Add at least one hashtag.');
         }
-        const nextCategoryId = metadata.categoryId ?? collection.categoryId;
-        if (!nextCategoryId) {
-          throw new BadRequestException('Choose what this item is.');
-        }
-        await this.assertActiveCategory(nextCategoryId);
+        if (
+          !metadata.pendingCategorySuggestionId &&
+          !(collection as any).pendingCategorySuggestionId
+        ) {
+          const nextCategoryId = metadata.categoryId ?? collection.categoryId;
+          if (!nextCategoryId) {
+            throw new BadRequestException('Choose what this item is.');
+          }
+          await this.assertActiveCategory(nextCategoryId);
 
-        const nextCategoryTypeId =
-          metadata.categoryTypeId ?? (collection as any).categoryTypeId;
-        if (!nextCategoryTypeId) {
-          throw new BadRequestException('Choose a garment type.');
+          const nextCategoryTypeId =
+            metadata.categoryTypeId ?? (collection as any).categoryTypeId;
+          if (!nextCategoryTypeId) {
+            throw new BadRequestException('Choose a garment type.');
+          }
+          await this.assertCategoryTypeMatchesCategory(
+            nextCategoryId,
+            nextCategoryTypeId,
+          );
         }
-        await this.assertCategoryTypeMatchesCategory(
-          nextCategoryId,
-          nextCategoryTypeId,
-        );
         this.assertAudienceForPublish(metadata.type ?? collection.type);
         validatedFilterValueIds = await this.assertStructuredFiltersForPublish(
           'COLLECTION',
@@ -4017,7 +4021,6 @@ export class CollectionsService {
         await this.assertDesignCustomOrderPublishReady(
           collectionId,
           collection.ownerId,
-          nextCustomOrderEnabled,
         );
       }
 
@@ -4043,6 +4046,18 @@ export class CollectionsService {
         const isStoreDomain = (collection as any).domain === 'STORE';
 
         if (!isStoreDomain) {
+          const current = await this.lockDesignMutation(
+            tx,
+            collectionId,
+            collection,
+          );
+          const taxonomy = await resolveDesignTaxonomy(
+            tx,
+            metadata,
+            current,
+            { actorUserId: userId, ownerUserId: current.ownerId },
+            action === 'publish',
+          );
           const brand =
             action === 'publish'
               ? await tx.brand.findUnique({
@@ -4097,9 +4112,7 @@ export class CollectionsService {
               description: metadata.description ?? collection.description,
               visibility: metadata.visibility ?? collection.visibility,
               type: metadata.type ?? collection.type,
-              categoryId: metadata.categoryId ?? collection.categoryId,
-              categoryTypeId:
-                metadata.categoryTypeId ?? (collection as any).categoryTypeId,
+              ...taxonomy,
               domain: 'DESIGN',
               isAvailableInStore: false,
               tags: resolvedNextTags,
@@ -4107,14 +4120,8 @@ export class CollectionsService {
               maxPrice: collection.maxPrice,
               saleMinPrice: collection.saleMinPrice,
               saleMaxPrice: collection.saleMaxPrice,
-              sizingMode: metadata.sizingMode ?? (collection as any).sizingMode,
-              rtwSizes: Array.isArray(metadata.rtwSizes)
-                ? metadata.rtwSizes
-                : (collection as any).rtwSizes,
-              rtwSizeSystem:
-                metadata.rtwSizeSystem ?? (collection as any).rtwSizeSystem,
-              rtwSizeType:
-                metadata.rtwSizeType ?? (collection as any).rtwSizeType,
+              ...designSizingFields(),
+              ...clearUploadIncomplete(collection.draftReason),
               customGender:
                 metadata.customGender ?? (collection as any).customGender,
               customMeasurementKeys: Array.isArray(
@@ -4122,10 +4129,6 @@ export class CollectionsService {
               )
                 ? this.normalizeMeasurementKeys(metadata.customMeasurementKeys)
                 : (collection as any).customMeasurementKeys,
-              customOrderEnabled:
-                typeof (metadata as any).customOrderEnabled === 'boolean'
-                  ? Boolean((metadata as any).customOrderEnabled)
-                  : Boolean((collection as any).customOrderEnabled),
               customFreeformPointIds: Array.isArray(
                 metadata.customFreeformPointIds,
               )
@@ -4162,8 +4165,11 @@ export class CollectionsService {
                 submissionId: submission.id,
                 entityType: ContentEntityType.DESIGN,
                 collectionId,
+                title: updatedCollection.title,
                 message: 'Your design was submitted for review.',
               },
+              undefined,
+              tx,
             );
           }
           if (
@@ -4514,10 +4520,6 @@ export class CollectionsService {
       completionMetadata.filterValueIds,
     );
     let validatedCompletionFilterValueIds = completionFilterValueIds;
-    const completionCustomOrderEnabled =
-      typeof completionMetadata.customOrderEnabled === 'boolean'
-        ? Boolean(completionMetadata.customOrderEnabled)
-        : Boolean((collection as any).customOrderEnabled);
     if (completionAction === 'publish') {
       const nextTitle = completionMetadata.title ?? collection.title;
       if (!nextTitle || !nextTitle.trim()) {
@@ -4526,21 +4528,27 @@ export class CollectionsService {
       if (completionResolvedTags.length === 0) {
         throw new BadRequestException('Add at least one hashtag.');
       }
-      const nextCategoryId =
-        completionMetadata.categoryId ?? collection.categoryId;
-      if (!nextCategoryId) {
-        throw new BadRequestException('Choose what this item is.');
+      if (
+        !completionMetadata.pendingCategorySuggestionId &&
+        !(collection as any).pendingCategorySuggestionId
+      ) {
+        const nextCategoryId =
+          completionMetadata.categoryId ?? collection.categoryId;
+        if (!nextCategoryId) {
+          throw new BadRequestException('Choose what this item is.');
+        }
+        await this.assertActiveCategory(nextCategoryId);
+        const nextCategoryTypeId =
+          completionMetadata.categoryTypeId ??
+          (collection as any).categoryTypeId;
+        if (!nextCategoryTypeId) {
+          throw new BadRequestException('Choose a garment type.');
+        }
+        await this.assertCategoryTypeMatchesCategory(
+          nextCategoryId,
+          nextCategoryTypeId,
+        );
       }
-      await this.assertActiveCategory(nextCategoryId);
-      const nextCategoryTypeId =
-        completionMetadata.categoryTypeId ?? (collection as any).categoryTypeId;
-      if (!nextCategoryTypeId) {
-        throw new BadRequestException('Choose a garment type.');
-      }
-      await this.assertCategoryTypeMatchesCategory(
-        nextCategoryId,
-        nextCategoryTypeId,
-      );
       this.assertAudienceForPublish(completionMetadata.type ?? collection.type);
       validatedCompletionFilterValueIds =
         await this.assertStructuredFiltersForPublish(
@@ -4578,12 +4586,23 @@ export class CollectionsService {
       await this.assertDesignCustomOrderPublishReady(
         collectionId,
         collection.ownerId,
-        completionCustomOrderEnabled,
       );
     }
 
     const finalizeAt = new Date();
     const publishedCollection = await this.prisma.$transaction(async (tx) => {
+      const current = await this.lockDesignMutation(
+        tx,
+        collectionId,
+        collection,
+      );
+      const taxonomy = await resolveDesignTaxonomy(
+        tx,
+        completionMetadata,
+        current,
+        { actorUserId: userId, ownerUserId: current.ownerId },
+        completionAction === 'publish',
+      );
       const updatedCollection = await tx.collection.update({
         where: { id: collectionId },
         data: {
@@ -4593,21 +4612,10 @@ export class CollectionsService {
           description: completionMetadata.description ?? collection.description,
           visibility: completionMetadata.visibility ?? collection.visibility,
           type: completionMetadata.type ?? collection.type,
-          categoryId: completionMetadata.categoryId ?? collection.categoryId,
-          categoryTypeId:
-            completionMetadata.categoryTypeId ??
-            (collection as any).categoryTypeId,
+          ...taxonomy,
           tags: completionResolvedTags,
-          sizingMode:
-            completionMetadata.sizingMode ?? (collection as any).sizingMode,
-          rtwSizes: Array.isArray(completionMetadata.rtwSizes)
-            ? completionMetadata.rtwSizes
-            : (collection as any).rtwSizes,
-          rtwSizeSystem:
-            completionMetadata.rtwSizeSystem ??
-            (collection as any).rtwSizeSystem,
-          rtwSizeType:
-            completionMetadata.rtwSizeType ?? (collection as any).rtwSizeType,
+          ...designSizingFields(),
+          ...clearUploadIncomplete(collection.draftReason),
           customGender:
             completionMetadata.customGender ?? (collection as any).customGender,
           customMeasurementKeys: Array.isArray(
@@ -4617,7 +4625,6 @@ export class CollectionsService {
                 completionMetadata.customMeasurementKeys,
               )
             : (collection as any).customMeasurementKeys,
-          customOrderEnabled: completionCustomOrderEnabled,
           customFreeformPointIds: Array.isArray(
             completionMetadata.customFreeformPointIds,
           )
@@ -4653,13 +4660,24 @@ export class CollectionsService {
         completionPublicationDecision?.requiresPreReview &&
         this.contentIntegrity
       ) {
-        await this.contentIntegrity.createSubmission(tx, {
+        const submission = await this.contentIntegrity.createSubmission(tx, {
           entityType: ContentEntityType.DESIGN,
           legacyCollectionId: collectionId,
           brandId: completionBrand?.id,
           submittedById: userId,
           previousStatus: collection.status as CollectionStatus,
         });
+        await this.contentIntegrity.notifyContentSubmitted(
+          collection.ownerId,
+          {
+            submissionId: submission.id,
+            entityType: ContentEntityType.DESIGN,
+            collectionId,
+            title: updatedCollection.title,
+          },
+          undefined,
+          tx,
+        );
       }
 
       return updatedCollection;
@@ -4808,6 +4826,10 @@ export class CollectionsService {
     userId: string,
     dto: FinalizeCollectionDto,
   ) {
+    if (dto.collectionMetadata?.pendingCategorySuggestionId)
+      throw new BadRequestException(
+        'Category proposals are supported for designs.',
+      );
     await this.assertOwner(collectionId, userId, 'STORE');
     const collection = await this.prisma.storeCollection.findUnique({
       where: { id: collectionId },
@@ -5294,12 +5316,16 @@ export class CollectionsService {
       .map((item, index) => ({ productId: item.productId, orderIndex: index }));
 
     await this.prisma.$transaction(async (tx) => {
-      for (const item of normalized) {
-        await tx.storeCollectionProduct.updateMany({
-          where: { collectionId, productId: item.productId },
-          data: { orderIndex: item.orderIndex },
-        });
-      }
+      await tx.$executeRaw`
+        UPDATE "StoreCollectionProduct" AS link
+        SET "orderIndex" = next.position
+        FROM unnest(
+          ${normalized.map((item) => item.productId)}::uuid[],
+          ${normalized.map((item) => item.orderIndex)}::int[]
+        ) AS next(id, position)
+        WHERE link."collectionId" = ${collectionId}::uuid
+          AND link."productId" = next.id
+      `;
 
       await this.touchDraftActivity(tx, collectionId, 'STORE');
     });
@@ -5384,12 +5410,15 @@ export class CollectionsService {
           orderIndex: index,
         }));
 
-      for (const item of normalizedItems) {
-        await tx.collectionMedia.update({
-          where: { id: item.mediaId },
-          data: { orderIndex: item.orderIndex },
-        });
-      }
+      await tx.$executeRaw`
+        UPDATE "CollectionMedia" AS media
+        SET "orderIndex" = next.position
+        FROM unnest(
+          ${normalizedItems.map((item) => item.mediaId)}::uuid[],
+          ${normalizedItems.map((item) => item.orderIndex)}::int[]
+        ) AS next(id, position)
+        WHERE media."_id" = next.id
+      `;
 
       const currentCoverMediaId =
         typeof (collection as any).coverMediaId === 'string'
@@ -6025,6 +6054,9 @@ export class CollectionsService {
     const collection = (await this.prisma.collection.findUnique({
       where: { id },
       include: {
+        pendingCategorySuggestion: {
+          select: { id: true, name: true, garmentTypeName: true, status: true },
+        },
         owner: {
           select: this.selectCollectionOwnerDisplay(),
         },
@@ -7876,13 +7908,27 @@ export class CollectionsService {
         );
       }
 
-      await this.prisma.storeCollection.delete({ where: { id: collectionId } });
+      await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw(
+          Prisma.sql`SELECT "_id" FROM "StoreCollection" WHERE "_id"=${collectionId}::uuid FOR UPDATE`,
+        );
+        const current = await tx.storeCollection.findUnique({
+          where: { id: collectionId },
+          select: { deletedAt: true },
+        });
+        if (!current) throw new NotFoundException('Collection not found');
+        if (!current.deletedAt)
+          throw new BadRequestException(
+            'Collection must be deleted before permanent removal',
+          );
+        await tx.storeCollection.delete({ where: { id: collectionId } });
+      });
       return { success: true, permanentlyDeleted: true };
     }
 
     const collection = await this.prisma.collection.findUnique({
       where: { id: collectionId },
-      include: { medias: { include: { file: true } } },
+      select: { id: true, ownerId: true, domain: true, deletedAt: true },
     });
     if (!collection) throw new NotFoundException('Collection not found');
     await this.assertActorCanManageLegacyOwnerCatalog(
@@ -7901,30 +7947,42 @@ export class CollectionsService {
       );
     }
 
-    const fileIds = collection.medias
-      .map((media) => media.file?.id)
-      .filter((id): id is string => Boolean(id));
-    const s3Keys = collection.medias
-      .map((media) => media.file?.s3Key)
-      .filter((key): key is string => Boolean(key));
-
-    if (s3Keys.length > 0) {
-      try {
-        await this.uploadService.deleteS3ObjectsByKeys(s3Keys);
-      } catch (error) {
-        console.warn(
-          `Failed to delete S3 objects while permanently deleting collection ${collectionId}:`,
-          error,
-        );
-      }
-    }
-
-    await this.prisma.$transaction(async (tx) => {
-      await tx.collection.delete({ where: { id: collectionId } });
-      if (fileIds.length > 0) {
-        await tx.fileUpload.deleteMany({ where: { id: { in: fileIds } } });
-      }
-    });
+    await this.prisma.$transaction(
+      async (tx) => {
+        await lockContentReviewTarget(tx, { legacyCollectionId: collectionId });
+        const current = await tx.collection.findUnique({
+          where: { id: collectionId },
+          select: { deletedAt: true, domain: true },
+        });
+        if (!current) throw new NotFoundException('Collection not found');
+        if (!current.deletedAt)
+          throw new BadRequestException(
+            'Collection must be deleted before permanent removal',
+          );
+        if (expectedDomain && current.domain !== expectedDomain)
+          throw new BadRequestException(
+            'Collection scope changed. Refresh before deleting.',
+          );
+        for (;;) {
+          const page = await tx.collectionMedia.findMany({
+            where: { collectionId },
+            select: { id: true, file: { select: { id: true, userId: true } } },
+            orderBy: [{ fileUploadId: 'asc' }, { id: 'asc' }],
+            take: 500,
+          });
+          if (!page.length) break;
+          await tx.collectionMedia.deleteMany({
+            where: { id: { in: page.map((media) => media.id) } },
+          });
+          await deleteDetachedContentFiles(
+            tx,
+            page.flatMap((media) => (media.file ? [media.file] : [])),
+          );
+        }
+        await tx.collection.delete({ where: { id: collectionId } });
+      },
+      { timeout: 30000 },
+    );
 
     return { success: true, permanentlyDeleted: true };
   }
@@ -7937,121 +7995,24 @@ export class CollectionsService {
     itemId: string,
     requesterId: string,
   ) {
-    // Verify collection exists and owner
-    const collection = await this.prisma.collection.findUnique({
-      where: { id: collectionId },
-      include: { medias: { include: { file: true } } },
-    });
-    if (!collection) throw new NotFoundException('Collection not found');
-    await this.assertActorCanManageLegacyOwnerCatalog(
+    await this.assertOwner(
+      collectionId,
       requesterId,
-      collection.ownerId,
+      undefined,
       BRAND_PERMISSIONS.CATALOG_DELETE,
     );
-
-    const media = collection.medias.find(
-      (m) =>
-        m.id === itemId ||
-        (m as any).fileUploadId === itemId ||
-        m.file?.id === itemId,
-    );
-    if (!media) throw new NotFoundException('Collection item not found');
-
-    // Delete S3 object for this media first
-    const key = media.file?.s3Key;
-    if (!key) throw new BadRequestException('No file key found for media');
-
-    try {
-      await this.uploadService.deleteS3ObjectByKey(key);
-    } catch (err) {
-      console.warn('Failed to delete S3 object for media:', media.id, err);
-      throw new BadRequestException('Failed to delete file from storage');
-    }
-
-    const previousIndexedTags = this.getIndexedCollectionTags(
-      {
-        status: collection.status,
-        visibility: collection.visibility,
-        deletedAt: collection.deletedAt,
-        tags: collection.tags ?? [],
-      },
-      collection.tags ?? [],
-    );
-
-    // Then run DB transaction to remove fileUpload, media row, and possibly collection
-    try {
-      await this.prisma.$transaction(async (tx) => {
-        if (media.file && media.file.id) {
-          await tx.fileUpload.delete({ where: { id: media.file.id } as any });
-        }
-
-        await tx.collectionMedia.delete({ where: { id: media.id } as any });
-
-        const remaining = await tx.collectionMedia.count({
-          where: { collectionId } as any,
-        });
-        const productCount = await tx.storeCollectionProduct.count({
-          where: { collectionId } as any,
-        });
-
-        if (collection.coverMediaId === media.id) {
-          const nextCover = await tx.collectionMedia.findFirst({
-            where: { collectionId } as any,
-            orderBy: { orderIndex: 'asc' },
-            select: { id: true },
-          });
-          await tx.collection.update({
-            where: { id: collectionId },
-            data: { coverMediaId: nextCover?.id ?? null },
-          });
-        }
-
-        if (remaining === 0 && productCount === 0) {
-          const now = new Date();
-          const deleteExpiresAt = new Date(
-            now.getTime() + this.collectionDeleteWindowMs,
-          );
-          await tx.collection.update({
-            where: { id: collectionId },
-            data: { deletedAt: now, deleteExpiresAt },
-          });
-        }
-      });
-    } catch (err) {
-      console.warn('DB transaction failed after S3 deletion for media:', err);
-      throw new BadRequestException('Failed to delete media records');
-    }
-
-    const [remainingAfter, remainingProducts, deletedInfo] = await Promise.all([
-      this.prisma.collectionMedia.count({ where: { collectionId } }),
-      this.prisma.storeCollectionProduct.count({ where: { collectionId } }),
-      this.prisma.collection.findUnique({
-        where: { id: collectionId },
-        select: { deletedAt: true } as any,
-      }),
-    ]);
-    const deletedCollection =
-      !!deletedInfo?.deletedAt ||
-      (remainingAfter === 0 && remainingProducts === 0);
-    if (deletedCollection) {
-      if (previousIndexedTags.length > 0 && this.systemTags) {
-        await this.systemTags.syncTags(previousIndexedTags, []);
-      }
-      if (previousIndexedTags.length > 0 && this.tagIndex) {
-        await this.tagIndex.syncEntityTags(
-          TAG_ENTITY_TYPE.COLLECTION,
-          collectionId,
-          previousIndexedTags,
-          [],
-          { maxCount: 30 },
-        );
-      }
-    }
-    await (this.prisma.collection as any).updateMany({
-      where: { id: collectionId, status: 'DRAFT', deletedAt: null },
-      data: { lastActivityAt: new Date(), draftVersion: { increment: 1 } },
+    const media = await this.prisma.collectionMedia.findFirst({
+      where: { collectionId, OR: [{ id: itemId }, { fileUploadId: itemId }] },
+      select: { id: true },
+      orderBy: { id: 'asc' },
     });
-    return { success: true, deletedCollection };
+    if (!media) throw new NotFoundException('Collection item not found');
+    const result = await this.deleteCollectionMedia(
+      collectionId,
+      media.id,
+      requesterId,
+    );
+    return { success: true, deletedCollection: result.deletedCollection };
   }
 
   /**
@@ -8468,15 +8429,21 @@ export class CollectionsService {
       return { status: 'PENDING', message: 'Contribution request resent' };
     }
 
-    await this.prisma.contributionRequest.create({
-      data: {
-        id: uuidv4(),
-        requesterId,
-        collectionId,
-        message,
-        status: PatchStatus.PENDING,
-      },
+    const { count: created } = await this.prisma.contributionRequest.createMany({
+      data: [
+        {
+          id: uuidv4(),
+          requesterId,
+          collectionId,
+          message,
+          status: PatchStatus.PENDING,
+        },
+      ],
+      skipDuplicates: true,
     });
+    if (created === 0) {
+      throw new BadRequestException('Contribution request already pending');
+    }
 
     // Notify owner
     if (this.notifications) {
@@ -8611,43 +8578,46 @@ export class CollectionsService {
       throw new ForbiddenException('Only brands can collab collections');
     }
 
-    // Check if brand already collabed this collection
-    const existingCollab = await this.prisma.collectionCollab.findFirst({
-      where: {
-        collectionId,
-        patchingBrandId: collabBrandId,
-      },
-    });
-
-    if (existingCollab) {
-      throw new BadRequestException(
-        'You have already collabed this collection',
-      );
-    }
-
-    // Create collab record
-    const collab = await this.prisma.collectionCollab.create({
-      data: {
-        id: uuidv4(),
-        collectionId,
-        patchingBrandId: collabBrandId,
-        weight,
-      },
-      include: {
-        patchingBrand: {
-          select: this.selectCollectionOwnerDisplay(),
+    // The duplicate check and the recount both depend on the last collab, so
+    // collabs on one collection take turns.
+    const collab = await this.prisma.$transaction(async (tx) => {
+      await lockForTransaction(tx, `collection-collab-${collectionId}`);
+      const existingCollab = await tx.collectionCollab.findFirst({
+        where: {
+          collectionId,
+          patchingBrandId: collabBrandId,
         },
-      },
-    });
+      });
 
-    // Update denormalized collabs count
-    const totalCollabs = await this.prisma.collectionCollab.count({
-      where: { collectionId },
-    });
+      if (existingCollab) {
+        throw new BadRequestException(
+          'You have already collabed this collection',
+        );
+      }
 
-    await this.prisma.collection.update({
-      where: { id: collectionId },
-      data: { collectionCollabsCount: totalCollabs },
+      const created = await tx.collectionCollab.create({
+        data: {
+          id: uuidv4(),
+          collectionId,
+          patchingBrandId: collabBrandId,
+          weight,
+        },
+        include: {
+          patchingBrand: {
+            select: this.selectCollectionOwnerDisplay(),
+          },
+        },
+      });
+
+      const totalCollabs = await tx.collectionCollab.count({
+        where: { collectionId },
+      });
+      await tx.collection.update({
+        where: { id: collectionId },
+        data: { collectionCollabsCount: totalCollabs },
+      });
+
+      return created;
     });
 
     // Optional: Create notification for collection owner
@@ -9356,6 +9326,10 @@ export class CollectionsService {
     const resolvedScope = this.normalizeCollectionScope(scope);
     const expectedDomain = this.scopeToDomain(resolvedScope);
     if (expectedDomain === 'STORE') {
+      if (body.pendingCategorySuggestionId)
+        throw new BadRequestException(
+          'Category proposals are supported for designs.',
+        );
       await this.assertOwner(collectionId, ownerId, 'STORE');
       const existing = await this.prisma.storeCollection.findUnique({
         where: { id: collectionId },
@@ -9562,6 +9536,10 @@ export class CollectionsService {
     const existing = (await this.prisma.collection.findUnique({
       where: { id: collectionId },
       select: {
+        ownerId: true,
+        pendingCategorySuggestionId: true,
+        pendingCategoryName: true,
+        originalSuggestionId: true,
         domain: true,
         status: true,
         visibility: true,
@@ -9577,6 +9555,7 @@ export class CollectionsService {
         categoryId: true,
         categoryTypeId: true,
         customOrderEnabled: true,
+        draftReason: true,
       } as any,
     } as any)) as any;
     if (!existing) throw new NotFoundException('Collection not found');
@@ -9679,21 +9658,30 @@ export class CollectionsService {
       data.saleStartAt = body.saleStartAt ? new Date(body.saleStartAt) : null;
     if (typeof body.saleEndAt === 'string' || body.saleEndAt === null)
       data.saleEndAt = body.saleEndAt ? new Date(body.saleEndAt) : null;
-    if (typeof body.sizingMode === 'string') data.sizingMode = body.sizingMode;
-    if (Array.isArray(body.rtwSizes)) data.rtwSizes = body.rtwSizes;
-    if (typeof body.rtwSizeSystem === 'string' || body.rtwSizeSystem === null)
-      data.rtwSizeSystem = body.rtwSizeSystem;
-    if (typeof body.rtwSizeType === 'string' || body.rtwSizeType === null)
-      data.rtwSizeType = body.rtwSizeType;
+    const isDesign = existing.domain === 'DESIGN';
+    if (isDesign) {
+      Object.assign(
+        data,
+        designSizingFields(),
+        clearUploadIncomplete(existing.draftReason),
+      );
+    } else {
+      if (typeof body.sizingMode === 'string')
+        data.sizingMode = body.sizingMode;
+      if (Array.isArray(body.rtwSizes)) data.rtwSizes = body.rtwSizes;
+      if (typeof body.rtwSizeSystem === 'string' || body.rtwSizeSystem === null)
+        data.rtwSizeSystem = body.rtwSizeSystem;
+      if (typeof body.rtwSizeType === 'string' || body.rtwSizeType === null)
+        data.rtwSizeType = body.rtwSizeType;
+      if (typeof body.customOrderEnabled === 'boolean')
+        data.customOrderEnabled = body.customOrderEnabled;
+    }
     if (typeof body.customGender === 'string' || body.customGender === null)
       data.customGender = body.customGender;
     if (Array.isArray(body.customMeasurementKeys))
       data.customMeasurementKeys = this.normalizeMeasurementKeys(
         body.customMeasurementKeys,
       );
-    if (typeof body.customOrderEnabled === 'boolean') {
-      data.customOrderEnabled = body.customOrderEnabled;
-    }
     if (Array.isArray(body.customFreeformPointIds))
       data.customFreeformPointIds = body.customFreeformPointIds;
     if (typeof body.fitPreference === 'string' || body.fitPreference === null)
@@ -9747,11 +9735,16 @@ export class CollectionsService {
       if (nextPublishedTags.length === 0) {
         throw new BadRequestException('Add at least one hashtag.');
       }
-      if (!targetCategoryId) {
-        throw new BadRequestException('Choose what this item is.');
-      }
-      if (!targetCategoryTypeId) {
-        throw new BadRequestException('Choose a garment type.');
+      if (
+        !body.pendingCategorySuggestionId &&
+        !existing.pendingCategorySuggestionId
+      ) {
+        if (!targetCategoryId) {
+          throw new BadRequestException('Choose what this item is.');
+        }
+        if (!targetCategoryTypeId) {
+          throw new BadRequestException('Choose a garment type.');
+        }
       }
       this.assertAudienceForPublish(body.type ?? existing.type);
       await this.assertStructuredFiltersForPublish(
@@ -9781,32 +9774,34 @@ export class CollectionsService {
       data.draftVersion = { increment: 1 };
     }
 
-    const nextCustomOrderEnabled =
-      typeof body.customOrderEnabled === 'boolean'
-        ? body.customOrderEnabled
-        : Boolean(existing.customOrderEnabled);
-    if (existing.status === 'PUBLISHED') {
-      await this.assertDesignCustomOrderPublishReady(
-        collectionId,
-        ownerId,
-        nextCustomOrderEnabled,
-      );
+    if (existing.status === 'PUBLISHED' && isDesign) {
+      await this.assertDesignCustomOrderPublishReady(collectionId, ownerId);
     }
 
-    const updated = await this.prisma.collection.update({
-      where: { id: collectionId },
-      data,
-      include: {
-        owner: {
-          select: this.selectCollectionOwnerDisplay(),
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const current = await this.lockDesignMutation(tx, collectionId, existing);
+      const taxonomy = await resolveDesignTaxonomy(
+        tx,
+        body,
+        current,
+        { actorUserId: ownerId, ownerUserId: current.ownerId },
+        current.status === 'PUBLISHED',
+      );
+      return tx.collection.update({
+        where: { id: collectionId },
+        data: { ...data, ...taxonomy, draftVersion: { increment: 1 } },
+        include: {
+          owner: {
+            select: this.selectCollectionOwnerDisplay(),
+          },
+          // coverMedia relation may not be generated yet until migration applied; comment out include safely
+          // coverMedia: { include: { file: true } },
+          _count: { select: { medias: true, views: true, comments: true } },
         },
-        // coverMedia relation may not be generated yet until migration applied; comment out include safely
-        // coverMedia: { include: { file: true } },
-        _count: { select: { medias: true, views: true, comments: true } },
-      },
+      });
     });
 
-    if (body.customOrderEnabled === false) {
+    if (!isDesign && body.customOrderEnabled === false) {
       await this.prisma.customOrderConfiguration.updateMany({
         where: {
           sourceType: CustomOrderSourceType.DESIGN,
@@ -10400,7 +10395,7 @@ export class CollectionsService {
           },
         );
         return { jobId, retriedCount, status: 'queued' };
-      } catch (error) {
+      } catch {
         if (process.env.NODE_ENV === 'production')
           throw new InternalServerErrorException(
             'Bulk upload queue is unavailable. Retry when it recovers.',
@@ -10697,83 +10692,87 @@ export class CollectionsService {
       }
     }
 
-    const activeSession = await this.prisma.collectionDraftSession.findFirst({
-      where: {
-        collectionId: draftId,
-        ownerId,
-        isActive: true,
-        expiresAt: { gt: now },
-      },
-      orderBy: { lastHeartbeatAt: 'desc' },
-    });
+    return this.prisma.$transaction(async (tx) => {
+      await lockForTransaction(tx, `draft-session-${draftId}`);
 
-    /**
-     * An idle session is an abandoned one — reclaim it silently.
-     *
-     * `ownerId` here is the JWT subject and the query filters on it, so EVERY
-     * conflict this method can raise is the same human against themselves;
-     * there is no cross-user path and never was. The session TTL is 30 minutes
-     * and nothing heartbeats it except another draft write, so simply opening
-     * the editor, backing out, and opening it again — the ordinary way anyone
-     * edits on a phone — left a live-looking session behind and the owner was
-     * told their own draft belonged to "another device". They then could not
-     * save or publish at all.
-     *
-     * A session is only treated as live if it was touched inside this window.
-     * Past it, the previous editor is gone and this request takes the draft
-     * over. Cross-device protection is unchanged for genuinely concurrent
-     * editing: a session touched seconds ago still reports the conflict.
-     */
-    const staleAfterMinutes = Math.max(
-      1,
-      parseInt(process.env.DRAFT_SESSION_STALE_MINUTES || '3', 10),
-    );
-    const isStale =
-      activeSession != null &&
-      now.getTime() - new Date(activeSession.lastHeartbeatAt).getTime() >
-        staleAfterMinutes * 60 * 1000;
+      const activeSession = await tx.collectionDraftSession.findFirst({
+        where: {
+          collectionId: draftId,
+          ownerId,
+          isActive: true,
+          expiresAt: { gt: now },
+        },
+        orderBy: { lastHeartbeatAt: 'desc' },
+      });
 
-    if (activeSession && !forceNew && !isStale) {
+      /**
+       * An idle session is an abandoned one — reclaim it silently.
+       *
+       * `ownerId` here is the JWT subject and the query filters on it, so EVERY
+       * conflict this method can raise is the same human against themselves;
+       * there is no cross-user path and never was. The session TTL is 30 minutes
+       * and nothing heartbeats it except another draft write, so simply opening
+       * the editor, backing out, and opening it again — the ordinary way anyone
+       * edits on a phone — left a live-looking session behind and the owner was
+       * told their own draft belonged to "another device". They then could not
+       * save or publish at all.
+       *
+       * A session is only treated as live if it was touched inside this window.
+       * Past it, the previous editor is gone and this request takes the draft
+       * over. Cross-device protection is unchanged for genuinely concurrent
+       * editing: a session touched seconds ago still reports the conflict.
+       */
+      const staleAfterMinutes = Math.max(
+        1,
+        parseInt(process.env.DRAFT_SESSION_STALE_MINUTES || '3', 10),
+      );
+      const isStale =
+        activeSession != null &&
+        now.getTime() - new Date(activeSession.lastHeartbeatAt).getTime() >
+          staleAfterMinutes * 60 * 1000;
+
+      if (activeSession && !forceNew && !isStale) {
+        return {
+          collectionId: draftId,
+          sessionToken: activeSession.sessionToken,
+          hasConflict: true,
+          conflictDetails: {
+            existingSessionToken: activeSession.sessionToken,
+            deviceName: activeSession.deviceName ?? 'Unknown device',
+            deviceType: (activeSession.deviceType as any) ?? 'desktop',
+            startedAt: activeSession.startedAt.toISOString(),
+            userId: ownerId,
+          },
+        };
+      }
+
+      if (activeSession && (forceNew || isStale)) {
+        await tx.collectionDraftSession.updateMany({
+          where: { collectionId: draftId, ownerId, isActive: true },
+          data: { isActive: false },
+        });
+      }
+
+      const sessionToken = uuidv4();
+      await tx.collectionDraftSession.create({
+        data: {
+          id: uuidv4(),
+          collectionId: draftId,
+          ownerId,
+          sessionToken,
+          deviceName: deviceName ?? null,
+          deviceType: normalizeDeviceType(deviceName),
+          lastHeartbeatAt: now,
+          expiresAt,
+        },
+      });
+
       return {
         collectionId: draftId,
-        sessionToken: activeSession.sessionToken,
-        hasConflict: true,
-        conflictDetails: {
-          existingSessionToken: activeSession.sessionToken,
-          deviceName: activeSession.deviceName ?? 'Unknown device',
-          deviceType: (activeSession.deviceType as any) ?? 'desktop',
-          startedAt: activeSession.startedAt.toISOString(),
-          userId: ownerId,
-        },
-      };
-    }
-
-    if (activeSession && (forceNew || isStale)) {
-      await this.prisma.collectionDraftSession.updateMany({
-        where: { collectionId: draftId, ownerId, isActive: true },
-        data: { isActive: false },
-      });
-    }
-
-    const sessionToken = uuidv4();
-    await this.prisma.collectionDraftSession.create({
-      data: {
-        id: uuidv4(),
-        collectionId: draftId,
-        ownerId,
         sessionToken,
-        deviceName: deviceName ?? null,
-        deviceType: normalizeDeviceType(deviceName),
-        lastHeartbeatAt: now,
-        expiresAt,
-      },
+        hasConflict: false,
+      };
     });
-
-    return {
-      collectionId: draftId,
-      sessionToken,
-      hasConflict: false,
-    };
   }
 
   // ===================== Cover Media Reassignment =====================
@@ -10791,108 +10790,98 @@ export class CollectionsService {
       undefined,
       BRAND_PERMISSIONS.CATALOG_DELETE,
     );
-
-    const collection = await this.prisma.collection.findUnique({
-      where: { id: collectionId },
-      select: {
-        coverMediaId: true,
-        status: true,
-        visibility: true,
-        deletedAt: true,
-        tags: true,
-      },
-    });
-
-    const media = await this.prisma.collectionMedia.findFirst({
-      where: { id: mediaId, collectionId },
-      include: { file: true },
-    });
-
-    if (!media) throw new NotFoundException('Media not found in collection');
-    await this.contentIntegrity?.blockRequiredDesignMediaDeletion(
-      collectionId,
-      mediaId,
-    );
-
-    const key = media.file?.s3Key;
-    if (key) {
-      await this.uploadService.deleteS3ObjectByKey(key);
-    }
-
-    const now = new Date();
-    const previousIndexedTags = this.getIndexedCollectionTags(
-      {
-        status: collection?.status,
-        visibility: collection?.visibility as CollectionVisibility | undefined,
-        deletedAt: collection?.deletedAt,
-        tags: collection?.tags ?? [],
-      },
-      collection?.tags ?? [],
-    );
-    await this.prisma.$transaction(async (tx) => {
-      if (media.file?.id) {
-        await tx.fileUpload.delete({ where: { id: media.file.id } as any });
-      }
-
-      await tx.collectionMedia.delete({ where: { id: mediaId } as any });
-
-      if (collection?.coverMediaId === mediaId) {
-        const firstRemaining = await tx.collectionMedia.findFirst({
-          where: { collectionId },
-          orderBy: { orderIndex: 'asc' },
-          select: { id: true },
-        });
-
-        await tx.collection.update({
+    const result = await this.prisma.$transaction(
+      async (tx) => {
+        await lockContentReviewTarget(tx, { legacyCollectionId: collectionId });
+        const collection = await tx.collection.findUniqueOrThrow({
           where: { id: collectionId },
-          data: { coverMediaId: firstRemaining?.id ?? null },
+          select: {
+            coverMediaId: true,
+            status: true,
+            visibility: true,
+            deletedAt: true,
+            tags: true,
+          },
         });
-      }
-
-      const remainingMedia = await tx.collectionMedia.count({
-        where: { collectionId },
-      });
-      const remainingProducts = await tx.storeCollectionProduct.count({
-        where: { collectionId },
-      });
-      if (remainingMedia === 0 && remainingProducts === 0) {
-        const deleteExpiresAt = new Date(
-          now.getTime() + this.collectionDeleteWindowMs,
+        const media = await tx.collectionMedia.findFirst({
+          where: { id: mediaId, collectionId },
+          include: { file: true },
+        });
+        if (!media)
+          throw new NotFoundException('Media not found in collection');
+        if (!this.contentIntegrity)
+          throw new Error('Content integrity service unavailable');
+        await this.contentIntegrity.blockRequiredDesignMediaDeletion(
+          collectionId,
+          mediaId,
+          tx,
         );
-        await tx.collection.update({
-          where: { id: collectionId },
-          data: { deletedAt: now, deleteExpiresAt },
+        await tx.collectionMedia.delete({ where: { id: mediaId } });
+        if (media.file)
+          await deleteOwnedFile(tx, media.file.id, media.file.userId, false);
+        const coverReassigned = collection.coverMediaId === mediaId;
+        if (coverReassigned) {
+          const firstRemaining = await tx.collectionMedia.findFirst({
+            where: { collectionId },
+            orderBy: [{ orderIndex: 'asc' }, { id: 'asc' }],
+            select: { id: true },
+          });
+          await tx.collection.update({
+            where: { id: collectionId },
+            data: { coverMediaId: firstRemaining?.id ?? null },
+          });
+        }
+        const remainingMedia = await tx.collectionMedia.count({
+          where: { collectionId },
         });
-      }
-    });
-
-    const deletedInfo = await this.prisma.collection.findUnique({
-      where: { id: collectionId },
-      select: { deletedAt: true },
-    });
-    if (deletedInfo?.deletedAt) {
-      if (previousIndexedTags.length > 0 && this.systemTags) {
-        await this.systemTags.syncTags(previousIndexedTags, []);
-      }
-      if (previousIndexedTags.length > 0 && this.tagIndex) {
+        const remainingProducts = await tx.storeCollectionProduct.count({
+          where: { collectionId },
+        });
+        const deletedCollection =
+          remainingMedia === 0 && remainingProducts === 0;
+        if (deletedCollection) {
+          const now = new Date();
+          await tx.collection.update({
+            where: { id: collectionId },
+            data: {
+              deletedAt: now,
+              deleteExpiresAt: new Date(
+                now.getTime() + this.collectionDeleteWindowMs,
+              ),
+            },
+          });
+        }
+        await tx.collection.updateMany({
+          where: { id: collectionId, status: 'DRAFT', deletedAt: null },
+          data: { lastActivityAt: new Date(), draftVersion: { increment: 1 } },
+        });
+        return {
+          coverReassigned,
+          deletedCollection,
+          previousTags: this.getIndexedCollectionTags(
+            collection,
+            collection.tags,
+          ),
+        };
+      },
+      { timeout: 15000 },
+    );
+    if (result.deletedCollection && result.previousTags.length) {
+      if (this.systemTags)
+        await this.systemTags.syncTags(result.previousTags, []);
+      if (this.tagIndex)
         await this.tagIndex.syncEntityTags(
           TAG_ENTITY_TYPE.COLLECTION,
           collectionId,
-          previousIndexedTags,
+          result.previousTags,
           [],
           { maxCount: 30 },
         );
-      }
     }
-
-    await (this.prisma.collection as any).updateMany({
-      where: { id: collectionId, status: 'DRAFT', deletedAt: null },
-      data: { lastActivityAt: new Date(), draftVersion: { increment: 1 } },
-    });
-
     return {
       success: true,
-      coverReassigned: collection?.coverMediaId === mediaId,
+      coverReassigned: result.coverReassigned,
+      deletedCollection: result.deletedCollection,
     };
   }
 
@@ -10912,6 +10901,8 @@ export class CollectionsService {
         title: true,
         categoryId: true,
         categoryTypeId: true,
+        pendingCategorySuggestionId: true,
+        draftVersion: true,
         type: true,
         tags: true,
         status: true,
@@ -10923,12 +10914,6 @@ export class CollectionsService {
     }
     if (!collection.title?.trim()) {
       throw new BadRequestException('Title is required to publish');
-    }
-    if (!collection.categoryId) {
-      throw new BadRequestException('Choose what this item is.');
-    }
-    if (!collection.categoryTypeId) {
-      throw new BadRequestException('Choose a garment type.');
     }
     if (!Array.isArray(collection.tags) || collection.tags.length === 0) {
       throw new BadRequestException('Add at least one hashtag.');
@@ -10950,6 +10935,29 @@ export class CollectionsService {
 
     let submissionId: string | null = null;
     await this.prisma.$transaction(async (tx) => {
+      const current = await this.lockDesignMutation(
+        tx,
+        collectionId,
+        collection,
+      );
+      const taxonomy = await resolveDesignTaxonomy(
+        tx,
+        {},
+        current,
+        { actorUserId: ownerId, ownerUserId: current.ownerId },
+        true,
+      );
+      if (!current.title?.trim())
+        throw new BadRequestException('Title is required to publish');
+      if (!current.tags.length)
+        throw new BadRequestException('Add at least one hashtag.');
+      this.assertAudienceForPublish(current.type);
+      await this.assertStructuredFiltersForPublish('COLLECTION', collectionId);
+      await this.assertDesignCustomOrderPublishReady(
+        collectionId,
+        current.ownerId,
+        tx,
+      );
       await this.contentIntegrity?.assertCollectionHasPublishableMedia(
         tx,
         collectionId,
@@ -10962,7 +10970,11 @@ export class CollectionsService {
 
       await tx.collection.update({
         where: { id: collectionId },
-        data: { status: decision.publicationStatus } as any,
+        data: {
+          ...taxonomy,
+          status: decision.publicationStatus,
+          draftVersion: { increment: 1 },
+        } as any,
       });
 
       if (decision.requiresPreReview && this.contentIntegrity) {
@@ -10974,17 +10986,19 @@ export class CollectionsService {
           previousStatus: collection.status as CollectionStatus,
         });
         submissionId = submission.id;
+        await this.contentIntegrity.notifyContentSubmitted(
+          collection.ownerId,
+          {
+            submissionId,
+            entityType: ContentEntityType.DESIGN,
+            collectionId,
+            title: current.title,
+          },
+          undefined,
+          tx,
+        );
       }
     });
-
-    if (submissionId && this.contentIntegrity) {
-      await this.contentIntegrity.notifyContentSubmitted(ownerId, {
-        submissionId,
-        entityType: ContentEntityType.DESIGN,
-        collectionId,
-        message: 'Your design was submitted for review.',
-      });
-    }
 
     return {
       collectionId,

@@ -1,3 +1,4 @@
+import { lockForTransaction } from 'src/common/transaction-lock.util';
 import {
   BadRequestException,
   ForbiddenException,
@@ -312,34 +313,37 @@ export class BrandStaffService {
       }
     }
 
-    const duplicatePending = await this.prisma.brandStaffInvite.findFirst({
-      where: {
-        brandId,
-        email,
-        status: BrandStaffInviteStatus.PENDING,
-        expiresAt: { gt: new Date() },
-      },
-      select: { id: true },
-    });
-    if (duplicatePending) {
-      throw new BadRequestException(
-        'A pending invite already exists for this email',
-      );
-    }
-
     const token = randomBytes(32).toString('hex');
-    const invite = await this.prisma.brandStaffInvite.create({
-      data: {
-        id: uuidv4(),
-        brandId,
-        email,
-        role: input.role,
-        status: BrandStaffInviteStatus.PENDING,
-        tokenHash: this.hashToken(token),
-        invitedById: actorUserId,
-        invitedUserId: invitedUser?.id ?? null,
-        expiresAt: new Date(Date.now() + STAFF_INVITE_TTL_MS),
-      },
+    const invite = await this.prisma.$transaction(async (tx) => {
+      await lockForTransaction(tx, `staff-invite-${brandId}-${email}`);
+      const duplicatePending = await tx.brandStaffInvite.findFirst({
+        where: {
+          brandId,
+          email,
+          status: BrandStaffInviteStatus.PENDING,
+          expiresAt: { gt: new Date() },
+        },
+        select: { id: true },
+      });
+      if (duplicatePending) {
+        throw new BadRequestException(
+          'A pending invite already exists for this email',
+        );
+      }
+
+      return tx.brandStaffInvite.create({
+        data: {
+          id: uuidv4(),
+          brandId,
+          email,
+          role: input.role,
+          status: BrandStaffInviteStatus.PENDING,
+          tokenHash: this.hashToken(token),
+          invitedById: actorUserId,
+          invitedUserId: invitedUser?.id ?? null,
+          expiresAt: new Date(Date.now() + STAFF_INVITE_TTL_MS),
+        },
+      });
     });
 
     const emailDelivery = await this.queueInviteEmail({

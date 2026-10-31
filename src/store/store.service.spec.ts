@@ -752,6 +752,21 @@ describe('StoreService', () => {
         }),
       },
     } as any;
+    catalogPrisma.$transaction = jest.fn(async (work) => work(catalogPrisma));
+    catalogPrisma.$queryRaw = jest.fn(async (query) =>
+      /AS "inUse"/.test(query.text)
+        ? [{ id: 'media_1', inUse: true, idle: true }]
+        : [{ id: 'source' }],
+    );
+    catalogPrisma.product.findUniqueOrThrow = jest.fn().mockResolvedValue({
+      images: ['https://cdn.example.com/image.jpg'],
+      thumbnail: 'https://cdn.example.com/image.jpg',
+      publicationStatus: 'DRAFT',
+    });
+    catalogPrisma.productMedia = {
+      findFirst: jest.fn().mockResolvedValue(null),
+      deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+    };
     const uploadService = {
       deleteFileIfUnused: jest.fn().mockResolvedValue(false),
     };
@@ -777,7 +792,11 @@ describe('StoreService', () => {
         'media_1',
       ),
     ).resolves.toEqual({ success: true });
-    expect(uploadService.deleteFileIfUnused).toHaveBeenCalledWith('media_1', 'catalog_manager_1');
+    expect(uploadService.deleteFileIfUnused).not.toHaveBeenCalled();
+    expect(catalogPrisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(catalogPrisma.productMedia.deleteMany).toHaveBeenCalledWith({
+      where: { productId: 'product_1', fileUploadId: 'media_1' },
+    });
     expect(brandAccess.assertCanManageCatalog).toHaveBeenCalledWith(
       'catalog_manager_1',
       'brand_1',

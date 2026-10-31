@@ -1,4 +1,5 @@
 import * as Sentry from '@sentry/nestjs';
+import { sentryScrubHooks } from './sentry-scrub';
 
 let sentryInitialised = false;
 
@@ -66,6 +67,9 @@ export function initSentry(): void {
     profileSessionSampleRate: enableProfiling ? profileSessionSampleRate : 0,
     profileLifecycle: enableProfiling ? 'trace' : undefined,
     sendDefaultPii: false,
+    // Tokens, keys, signed URLs and emails are removed before anything leaves
+    // this server; see sentry-scrub.ts.
+    ...sentryScrubHooks,
   });
 
   sentryInitialised = true;

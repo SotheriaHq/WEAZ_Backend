@@ -1,3 +1,4 @@
+import { lockForTransaction } from 'src/common/transaction-lock.util';
 import {
   BadRequestException,
   ConflictException,
@@ -6665,7 +6666,21 @@ export class CustomOrdersService {
     if (!measurementValues || Object.keys(measurementValues).length === 0) {
       return;
     }
-    const db = tx || this.prisma;
+    if (!tx) {
+      // Failing to sync must never fail the order that carried the measurements.
+      await this.prisma
+        .$transaction((locked) =>
+          this.syncMeasurementsToProfile(userId, measurementValues, locked),
+        )
+        .catch((err) =>
+          this.logger.warn(
+            `Failed to sync measurements to profile for user ${userId}: ${err.message}`,
+          ),
+        );
+      return;
+    }
+    await lockForTransaction(tx, `size-fit-${userId}`);
+    const db = tx;
 
     try {
       let profile = await db.userSizeFitProfile.findUnique({
@@ -6673,23 +6688,29 @@ export class CustomOrdersService {
       });
       if (!profile) {
         const now = new Date();
-        profile = await db.userSizeFitProfile.create({
-          data: {
-            id: randomUUID(),
-            userId,
-            visibility: 'PRIVATE',
-            sharePolicy: 'REQUIRE_PERMISSION',
-            notifyOnShare: true,
-            requireUpdateEveryDays: 14,
-            version: 0,
-            preferredLengthUnit: 'CM',
-            preferredWeightUnit: 'KG',
-            fitPreference: 'REGULAR',
-            label: 'My Measurements',
-            measurements: {},
-            lastUpdatedAt: null,
-            nextReminderAt: now,
-          },
+        await db.userSizeFitProfile.createMany({
+          data: [
+            {
+              id: randomUUID(),
+              userId,
+              visibility: 'PRIVATE',
+              sharePolicy: 'REQUIRE_PERMISSION',
+              notifyOnShare: true,
+              requireUpdateEveryDays: 14,
+              version: 0,
+              preferredLengthUnit: 'CM',
+              preferredWeightUnit: 'KG',
+              fitPreference: 'REGULAR',
+              label: 'My Measurements',
+              measurements: {},
+              lastUpdatedAt: null,
+              nextReminderAt: now,
+            },
+          ],
+          skipDuplicates: true,
+        });
+        profile = await db.userSizeFitProfile.findUniqueOrThrow({
+          where: { userId },
         });
       }
 

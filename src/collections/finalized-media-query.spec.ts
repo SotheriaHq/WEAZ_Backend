@@ -95,6 +95,24 @@ describe('verified design media batch attachment', () => {
       tx.collectionMedia.createMany.mock.calls[0][0].skipDuplicates,
     ).toBeUndefined();
   });
+  it('counts media under the lock, so two saves cannot both pass the limit', async () => {
+    const { tx, entries } = fixture(['a', 'b', 'c', 'd']);
+    await expect(
+      attachFinalizedMedia(
+        tx as any,
+        { id: 'design', ownerId: 'owner' },
+        'actor',
+        entries.slice(0, 3),
+      ),
+    ).rejects.toThrow('Maximum 6 files per design');
+    expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      tx.collectionMedia.findMany.mock.invocationCallOrder[0],
+    );
+    expect(tx.collectionMedia.findMany.mock.calls[0][0].where).toEqual({
+      collectionId: 'design',
+    });
+    expect(tx.collectionMedia.createMany).not.toHaveBeenCalled();
+  });
   it('rejects a design removed before attachment', async () => {
     const { tx, entries } = fixture();
     tx.$queryRaw.mockResolvedValue([]);

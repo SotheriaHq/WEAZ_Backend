@@ -1,6 +1,34 @@
 import { SearchService } from './search.service';
 
 describe('Search load and caller isolation', () => {
+  it('bounds distinct work while allowing an identical query to join an admitted flight', async () => {
+    const service = new SearchService({} as any, {} as any);
+    const releases: Array<(value: any) => void> = [];
+    const lookup = jest
+      .spyOn(service as any, 'executeSearch')
+      .mockImplementation(
+        () => new Promise((resolve) => releases.push(resolve)),
+      );
+    jest.spyOn(service as any, 'recordSearch').mockResolvedValue(undefined);
+    const requests = Array.from({ length: 16 }, (_, index) =>
+      service.search({ query: `fashion ${index}` }),
+    );
+    const repeated = service.search({ query: 'fashion 0' });
+    await expect(
+      service.search({ query: 'extra request' }),
+    ).rejects.toMatchObject({
+      status: 503,
+    });
+    expect(lookup).toHaveBeenCalledTimes(16);
+    releases.forEach((release) => release({ items: [] }));
+    await Promise.all([...requests, repeated]);
+    lookup.mockResolvedValue({ items: [] });
+    await expect(
+      service.search({ query: 'extra request' }),
+    ).resolves.toMatchObject({
+      items: [],
+    });
+  });
   it('shares concurrent identical database work while recording each shopper separately', async () => {
     const service = new SearchService({} as any, {} as any);
     let release!: (value: any) => void;

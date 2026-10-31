@@ -41,7 +41,10 @@ module.exports = async function verifyCategoryApproval({ prisma, queries }) {
   assert.equal(await prisma.collection.count({ where: { category: { slug: request.slug } } }), 0);
   cases.push('a pending category is absent from the actual public taxonomy and category-based content lookup');
 
-  const content = new ContentIntegrityService(prisma);
+  const reviewFiles = Array.from({length: 4}, () => ({id: randomUUID(), userId: owner, originalName: 'review.jpg', fileName: 'review.jpg', s3Key: randomUUID(), s3Url: 'https://example.invalid/review.jpg', fileType: 'POST_IMAGE', mimeType: 'image/jpeg', size: 100, processingStatus: 'READY'}));
+  await prisma.fileUpload.createMany({data: reviewFiles});
+  await prisma.collectionMedia.createMany({data: ['FRONT','BACK','LEFT_SIDE','RIGHT_SIDE'].map((viewSlot, orderIndex) => ({id: randomUUID(), collectionId: inReview, fileUploadId: reviewFiles[orderIndex].id, orderIndex, viewSlot, mediaType: 'POST_IMAGE'}))});
+  const content = new ContentIntegrityService(prisma, notifications);
   content.getSubmission = id => prisma.contentSubmission.findUniqueOrThrow({ where: { id } });
   const submission = await prisma.contentSubmission.create({ data: { entityType: 'DESIGN', legacyCollectionId: inReview, submittedById: owner } });
   await content.reviewSubmission({ submissionId: submission.id, adminUserId: admin, action: 'approve' });
@@ -91,5 +94,7 @@ module.exports = async function verifyCategoryApproval({ prisma, queries }) {
   assert.equal(await prisma.collectionCategorySuggestion.count({ where: { proposedByUserId: quotaUser } }), 5);
   assert.equal(providerCalls, 0);
   cases.push('26 concurrent distinct requests from one user respect the five-per-day database-serialized quota without provider calls');
+  const paired = await require('./design-taxonomy-concurrency-scenarios.cjs')({prisma,suggestions,categories,notifications,admin});
+  cases.push(...paired.cases);
   return { cases, providerCalls };
 };

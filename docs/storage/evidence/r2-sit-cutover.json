@@ -1,0 +1,50 @@
+{
+  "checkedAt": "2026-10-29T09:51:04Z",
+  "backendCommit": "8a6f3364edfb6385149c14bc946f4de76b62e7d7",
+  "githubDeploymentRun": 40851472678,
+  "provider": "R2",
+  "bucket": "wiez-sit-media",
+  "gatewayEnvironment": "sit",
+  "retiredStorageConfigurationNames": [],
+  "readiness": {
+    "database": true,
+    "redis": true,
+    "worker": true
+  },
+  "sit": {
+    "appliedMigrations": 162,
+    "pendingMigrations": 0,
+    "failedMigrations": 0,
+    "usersPreserved": 2,
+    "activeAdmins": 1,
+    "measurements": 38,
+    "sizeCharts": 46,
+    "tags": 133,
+    "categories": 13,
+    "settings": 21,
+    "settlementPolicies": 2,
+    "subscriptionTiers": 4,
+    "files": 0,
+    "products": 0,
+    "designs": 0,
+    "orders": 0,
+    "customOrders": 0
+  },
+  "local": {
+    "appliedMigrations": 162,
+    "pendingMigrations": 0,
+    "failedMigrations": 0,
+    "usersPreserved": 1,
+    "activeAdmins": 1,
+    "referenceSeedsReady": true
+  },
+  "website": {
+    "status": 200,
+    "r2Csp": true,
+    "gatewayCsp": true,
+    "awsOrCloudfrontCsp": false
+  },
+  "databaseResetPerformed": false,
+  "interactiveBrowserAcceptance": false,
+  "nativeApkAcceptance": false
+}

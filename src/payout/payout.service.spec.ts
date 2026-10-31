@@ -3,7 +3,6 @@ import { BadRequestException } from '@nestjs/common';
 import { PayoutService } from './payout.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { StandardOrderEscrowService } from 'src/finance/standard-order-escrow.service';
-import { CommissionService } from 'src/finance/commission.service';
 import { StandardOrderFinanceSyncService } from 'src/finance/standard-order-finance-sync.service';
 import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-sync.service';
 import { PasswordService } from 'src/auth/helper/password.service';
@@ -52,10 +51,6 @@ describe('PayoutService', () => {
         {
           provide: StandardOrderEscrowService,
           useValue: { getReleasedBalance: jest.fn() },
-        },
-        {
-          provide: CommissionService,
-          useValue: { resolveRule: jest.fn(), resolveRulesBatch: jest.fn() },
         },
         {
           provide: StandardOrderFinanceSyncService,
@@ -117,26 +112,31 @@ describe('PayoutService', () => {
       isEmailVerified: true,
     });
 
-  it('resolves distinct payout currencies in one commission batch', async () => {
-    const commission = (service as any).commissionService;
-    commission.resolveRulesBatch.mockResolvedValue([
-      { ratePercent: 12 },
-      { ratePercent: 8 },
-    ]);
-    const rates = await (service as any).getCommissionRateMap(BRAND_ID, [
-      'ngn',
-      'NGN',
-      ' usd ',
-    ]);
-    expect(commission.resolveRulesBatch).toHaveBeenCalledWith([
-      { brandId: BRAND_ID, currency: 'NGN' },
-      { brandId: BRAND_ID, currency: 'USD' },
-    ]);
-    expect([...rates]).toEqual([
-      ['NGN', 12],
-      ['USD', 8],
-    ]);
-    expect(commission.resolveRule).not.toHaveBeenCalled();
+  it('takes the withdrawable balance from the ledger position alone', async () => {
+    // Paid orders without an escrow hold used to be added at face value; they
+    // are repaired into holds instead and must never be read here.
+    const client = {
+      $queryRaw: jest.fn().mockResolvedValue([
+        {
+          released: '1000.00',
+          reserved: '200.00',
+          paidOut: '300.00',
+          manualNetDebit: '50.00',
+        },
+      ]),
+      order: { findMany: jest.fn() },
+    };
+    const snapshot = await (service as any).calculateBalanceSnapshot(
+      BRAND_ID,
+      client,
+    );
+    expect(snapshot).toEqual({
+      availableBalance: 450,
+      releasedBalance: 1000,
+      reservedPayoutBalance: 200,
+      paidOutBalance: 300,
+    });
+    expect(client.order.findMany).not.toHaveBeenCalled();
   });
 
   describe('requestPayout', () => {

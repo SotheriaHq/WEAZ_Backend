@@ -1,0 +1,19 @@
+# False positives of the generic-api-key rule. Each entry is a commit:file:rule:line
+# fingerprint; none of them is a credential.
+# A Prisma filter on the storage-object field in a test script:
+92924e72e61e7b8377d41f3e5d22feaf5e36e577:scripts/verify-file-deletion-postgres.cjs:generic-api-key:283
+# The first version of this file quoted that filter in its comment:
+d8b0779cb1bb636ff0a336faf1e181f3ca1e4e35:.gitleaksignore:generic-api-key:2
+
+# Synthetic Sentry redaction fixtures only: RFC example UUID, invented provider
+# string, and unsigned example JWT with a literal "signature-value" payload.
+# Exact historical findings, not a file-wide or rule-wide exemption.
+343ff294fbc35d1fb45cfa53932584610a356034:src/common/observability/sentry-scrub.spec.ts:generic-api-key:28
+7ce99def297473b8e9f5c913fe757380ee5f8fc4:src/common/observability/sentry-scrub.spec.ts:jwt:15
+7ce99def297473b8e9f5c913fe757380ee5f8fc4:src/common/observability/sentry-scrub.spec.ts:jwt:32
+7ce99def297473b8e9f5c913fe757380ee5f8fc4:src/common/observability/sentry-scrub.spec.ts:jwt:58
+7ce99def297473b8e9f5c913fe757380ee5f8fc4:src/common/observability/sentry-scrub.spec.ts:stripe-access-token:13
+7ce99def297473b8e9f5c913fe757380ee5f8fc4:src/common/observability/sentry-scrub.spec.ts:stripe-access-token:31
+7ce99def297473b8e9f5c913fe757380ee5f8fc4:src/common/observability/sentry-scrub.spec.ts:stripe-access-token:67
+7ce99def297473b8e9f5c913fe757380ee5f8fc4:src/common/observability/sentry-scrub.spec.ts:stripe-access-token:125
+7ce99def297473b8e9f5c913fe757380ee5f8fc4:src/common/observability/sentry-scrub.spec.ts:stripe-access-token:127

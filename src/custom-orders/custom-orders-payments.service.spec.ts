@@ -309,6 +309,7 @@ describe('CustomOrdersPaymentsService', () => {
       getAttemptProviderMode,
       resolveAttemptVerification,
       isAttemptTerminalStatus,
+      rememberVerifiedCheckoutCard: jest.fn().mockResolvedValue(null),
     };
 
     settlementCalculatorService = {
@@ -585,6 +586,14 @@ describe('CustomOrdersPaymentsService', () => {
         grossAmount: 1000,
       }),
     );
+    // The card is saved once, after the PAID transition commits.
+    expect(paymentService.rememberVerifiedCheckoutCard).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(paymentService.rememberVerifiedCheckoutCard).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'attempt_2' }),
+      undefined,
+    );
     expect(result).toEqual({
       success: true,
       status: 'PAID',
@@ -632,6 +641,7 @@ describe('CustomOrdersPaymentsService', () => {
     });
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(paymentService.rememberVerifiedCheckoutCard).not.toHaveBeenCalled();
     expect(result).toEqual({
       success: false,
       status: 'FAILED',

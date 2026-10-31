@@ -1165,6 +1165,7 @@ export class ReviewsService {
         },
       })),
     );
+    const sentIds: string[] = [];
     for (let index = 0; index < eligible.length; index += 1) {
       const candidate = eligible[index];
       try {
@@ -1173,13 +1174,7 @@ export class ReviewsService {
         const created = result.value;
 
         if (created) {
-          await this.prisma.orderItem.update({
-            where: { id: candidate.id },
-            data: {
-              reviewReminderSentAt: new Date(),
-              reviewReminderLastError: null,
-            },
-          });
+          sentIds.push(candidate.id);
           sent += 1;
         } else {
           skipped += 1;
@@ -1196,6 +1191,15 @@ export class ReviewsService {
           },
         });
       }
+    }
+    if (sentIds.length > 0) {
+      await this.prisma.orderItem.updateMany({
+        where: { id: { in: sentIds } },
+        data: {
+          reviewReminderSentAt: new Date(),
+          reviewReminderLastError: null,
+        },
+      });
     }
 
     this.logger.log(

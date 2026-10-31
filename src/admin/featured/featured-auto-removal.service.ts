@@ -50,16 +50,17 @@ export class FeaturedAutoRemovalService {
     penaltyUntil.setMonth(penaltyUntil.getMonth() + PENALTY_MONTHS);
 
     await this.prisma.$transaction(async (tx) => {
-      for (const item of activeItems) {
-        await tx.featuredItem.update({
-          where: { id: item.id },
-          data: {
-            isActive: false,
-            removedAt: new Date(),
-            removeReason: 'BRAND_SUSPENDED',
-          },
-        });
-      }
+      await tx.featuredItem.updateMany({
+        where: {
+          id: { in: activeItems.map((item) => item.id) },
+          isActive: true,
+        },
+        data: {
+          isActive: false,
+          removedAt: new Date(),
+          removeReason: 'BRAND_SUSPENDED',
+        },
+      });
 
       await tx.brand.update({
         where: { id: brandId },

@@ -15,11 +15,15 @@ import {
   ModerationDecision,
 } from './dto/moderate-category-suggestion.dto';
 import { v4 as uuidv4 } from 'uuid';
+import { createHash } from 'node:crypto';
+import { TAXONOMY_PROPOSAL_NAME } from './taxonomy-proposal-name';
 import { CollectionsService } from '../../collections/collections.service';
 import { AdminAuditService } from 'src/admin/services/admin-audit.service';
 import {
   assertGarmentCategoryTermAllowed,
+  assertGarmentSubCategoryTermAllowed,
   getBlockedTaxonomyGuidance,
+  normalizeTaxonomySlug,
 } from '../taxonomy-governance';
 // Use local types to avoid build-time coupling to generated Prisma enums
 export type CategorySuggestionStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
@@ -28,10 +32,13 @@ interface SuggestionResponse {
   id: string;
   name: string;
   slug: string;
+  garmentTypeName?: string | null;
+  garmentTypeSlug?: string;
   description?: string | null;
   status: CategorySuggestionStatus;
   rejectionReason?: string | null;
   approvedCategoryId?: string | null;
+  approvedCategoryTypeId?: string | null;
   proposedByUserId: string;
   decisionByUserId?: string | null;
   createdAt: Date;
@@ -50,14 +57,11 @@ export class CategorySuggestionsService {
   ) {}
 
   private normalizeSlug(base: string): string {
-    return (
-      base
-        .toLowerCase()
-        .trim()
-        .replace(/[^a-z0-9 ]+/g, '')
-        .replace(/\s+/g, '-')
-        .slice(0, 60) || 'category'
-    );
+    const normalized = base.normalize('NFKC').trim();
+    const slug = normalizeTaxonomySlug(normalized);
+    return slug === 'taxonomy-item'
+      ? `${slug}-${createHash('sha256').update(normalized.toLowerCase()).digest('hex').slice(0, 12)}`
+      : slug;
   }
 
   private toResponse(row: any): SuggestionResponse {
@@ -65,10 +69,13 @@ export class CategorySuggestionsService {
       id: row.id,
       name: row.name,
       slug: row.slug,
+      garmentTypeName: row.garmentTypeName,
+      garmentTypeSlug: row.garmentTypeSlug,
       description: row.description,
       status: row.status,
       rejectionReason: row.rejectionReason,
       approvedCategoryId: row.approvedCategoryId,
+      approvedCategoryTypeId: row.approvedCategoryTypeId,
       proposedByUserId: row.proposedByUserId,
       decisionByUserId: row.decisionByUserId,
       createdAt: row.createdAt,
@@ -79,26 +86,72 @@ export class CategorySuggestionsService {
 
   async submit(userId: string, dto: SubmitCategorySuggestionDto) {
     const name = dto.name.trim();
-    if (name.length < 2 || name.length > 48) {
-      throw new BadRequestException('Name length out of bounds');
+    if (!TAXONOMY_PROPOSAL_NAME.test(name)) {
+      throw new BadRequestException(
+        'Use 2–48 letters, numbers or ordinary name punctuation for the category.',
+      );
     }
     assertGarmentCategoryTermAllowed(name);
-    const slug = this.normalizeSlug(name);
+    const proposedSlug = this.normalizeSlug(name);
+    const garmentTypeName = dto.garmentTypeName?.trim() || null;
+    if (
+      dto.garmentTypeName !== undefined &&
+      (!garmentTypeName || !TAXONOMY_PROPOSAL_NAME.test(garmentTypeName))
+    )
+      throw new BadRequestException(
+        'Use 2–48 letters, numbers or ordinary name punctuation for the garment type.',
+      );
+    if (garmentTypeName) assertGarmentSubCategoryTermAllowed(garmentTypeName);
+    const garmentTypeSlug = garmentTypeName
+      ? this.normalizeSlug(garmentTypeName)
+      : '';
 
     const row = await this.prisma.$transaction(
       async (tx) => {
         // Same-brand concurrent requests share the quota lock; same-slug requests share identity.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`category-request-user:${userId}`},0))`;
+        const named = await tx.collectionCategory.findMany({
+          where: {
+            isActive: true,
+            name: { equals: name, mode: 'insensitive' },
+          },
+          select: { slug: true },
+          take: 2,
+        });
+        if (named.length > 1)
+          throw new BadRequestException(
+            'Multiple approved categories have this name. Ask WIEZ to resolve the taxonomy before proposing a garment type.',
+          );
+        const slug = named[0]?.slug ?? proposedSlug;
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`category-request-slug:${slug}`},0))`;
         const existingCategory = await tx.collectionCategory.findUnique({
           where: { slug },
         });
-        if (existingCategory)
+        if (
+          existingCategory &&
+          existingCategory.name.normalize('NFKC').toLowerCase() !==
+            name.normalize('NFKC').toLowerCase()
+        )
+          throw new BadRequestException(
+            'This category name conflicts with an existing category identifier. Choose a more specific garment category name.',
+          );
+        if (
+          existingCategory &&
+          (!garmentTypeName ||
+            (await tx.collectionCategoryType.findUnique({
+              where: {
+                categoryId_slug: {
+                  categoryId: existingCategory.id,
+                  slug: garmentTypeSlug,
+                },
+              },
+            })))
+        )
           throw new BadRequestException(
             'A category with this name already exists',
           );
         const existing = await tx.collectionCategorySuggestion.findUnique({
-          where: { slug },
+          where: { slug_garmentTypeSlug: { slug, garmentTypeSlug } },
         });
         if (existing)
           throw new BadRequestException(
@@ -121,6 +174,8 @@ export class CategorySuggestionsService {
             id: uuidv4(),
             name,
             slug,
+            garmentTypeName,
+            garmentTypeSlug,
             description: dto.description?.trim() || null,
             proposedByUserId: userId,
             status: 'PENDING',
@@ -183,6 +238,7 @@ export class CategorySuggestionsService {
         if (suggestion.status !== 'PENDING')
           throw new BadRequestException('Suggestion already decided');
         let categoryId: string | null = null;
+        let categoryTypeId: string | null = null;
         let rejectionReason: string | null = null;
         if (dto.decision === ModerationDecision.REJECT) {
           rejectionReason =
@@ -219,6 +275,28 @@ export class CategorySuggestionsService {
             },
           });
           categoryId = category.id;
+          if (suggestion.garmentTypeName) {
+            assertGarmentSubCategoryTermAllowed(suggestion.garmentTypeName);
+            const garmentType = await tx.collectionCategoryType.upsert({
+              where: {
+                categoryId_slug: {
+                  categoryId: category.id,
+                  slug: suggestion.garmentTypeSlug,
+                },
+              },
+              create: {
+                id: uuidv4(),
+                categoryId: category.id,
+                name: suggestion.garmentTypeName,
+                slug: suggestion.garmentTypeSlug,
+                description: dto.approvalGarmentTypeDescription?.trim() || null,
+                isActive: true,
+                order: 0,
+              },
+              update: { isActive: true },
+            });
+            categoryTypeId = garmentType.id;
+          }
         }
         const decision =
           dto.decision === ModerationDecision.REJECT ? 'REJECTED' : 'APPROVED';
@@ -228,6 +306,7 @@ export class CategorySuggestionsService {
             status: decision,
             rejectionReason,
             approvedCategoryId: categoryId,
+            approvedCategoryTypeId: categoryTypeId,
             decisionByUserId: adminUserId,
             decidedAt: new Date(),
           },
@@ -248,6 +327,7 @@ export class CategorySuggestionsService {
           newState: {
             status: row.status,
             approvedCategoryId: categoryId,
+            approvedCategoryTypeId: categoryTypeId,
             rejectionReason,
           },
         });

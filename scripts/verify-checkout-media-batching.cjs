@@ -115,6 +115,18 @@ async function main() {
       if (event.query.includes('notification-semantic-current')) evidence.semanticCurrentReadCommands = (evidence.semanticCurrentReadCommands ?? 0) + 1;
       if (event.query.includes('notification-semantic-lock')) evidence.semanticScopeLockCommands = (evidence.semanticScopeLockCommands ?? 0) + 1;
     });
+    if (process.argv.includes('--content-review-only')) {
+      const proof = await require('./content-review-concurrency-scenarios.cjs')({prisma});
+      evidence.cases.push(...proof.cases); evidence.contentReviewProof = {...proof, cases: proof.cases.length};
+      evidence.passed = true;
+      return;
+    }
+    if (process.argv.includes('--category-only')) {
+      const proof = await require('./category-approval-concurrency-scenarios.cjs')({prisma,queries});
+      evidence.cases.push(...proof.cases); evidence.categoryApprovalProof={...proof,cases:proof.cases.length};
+      evidence.passed=true;
+      return;
+    }
     const ownerId = randomUUID(),
       buyerId = randomUUID(),
       brandId = randomUUID(),
@@ -682,7 +694,21 @@ async function main() {
       { id: failedDispatchId, customOrderId: outboxOrder.id, recipientId: buyerId, notificationType: 'CUSTOM_ORDER_PROGRESS_UPDATED', status: 'FAILED', attempts: 7, payloadJson: { fail: true }, availableAt: new Date(Date.now() - 1000) },
     ] });
     const handoffs = [];
-    const dispatcher = new CustomOrderSideEffectsService(prisma, { enqueueFanout: async event => {
+    const claimBatches = [];
+    // Observe actual PostgreSQL results without replacing the claim query.
+    const dispatchPrisma = {
+      $executeRaw: query => prisma.$executeRaw(query),
+      $queryRaw: async query => {
+        const rows = await prisma.$queryRaw(query);
+        if (/FROM candidates, moment WHERE event.id = candidates.id RETURNING event\.\*/.test(query.strings.join(' '))) {
+          claimBatches.push({ requested: query.values[1], ids: rows.map(row => row.id) });
+        }
+        return rows;
+      },
+      customOrderNotificationOutbox: prisma.customOrderNotificationOutbox,
+      customOrder: prisma.customOrder,
+    };
+    const dispatcher = new CustomOrderSideEffectsService(dispatchPrisma, { enqueueFanout: async event => {
       handoffs.push(event);
       if (event.payload.fail) throw new Error('fixture queue unavailable');
     } });
@@ -692,7 +718,18 @@ async function main() {
     evidence.customOutboxDispatchSelects = queries.filter(query => /^\s*SELECT\b/i.test(query)).length;
     assert.equal(evidence.customOutboxDispatchSelects, 0, 'Atomic bounded claim commands return current event payloads without separate scan or per-event metadata SELECTs');
     evidence.customOutboxClaimCommands=queries.filter(query=>/FROM candidates, moment WHERE event.id = candidates.id RETURNING event\.\*/.test(query)).length;
-    assert(evidence.customOutboxClaimCommands>=3&&evidence.customOutboxClaimCommands<=5);
+    evidence.customOutboxClaimBatchSizes = claimBatches.map(batch => batch.ids.length);
+    assert.equal(evidence.customOutboxClaimCommands, claimBatches.length);
+    assert(claimBatches.every(batch => batch.requested === 10 && batch.ids.length <= batch.requested));
+    const claimedIds = claimBatches.flatMap(batch => batch.ids);
+    assert.deepEqual([...claimedIds].sort(), [...dispatchedIds, failedDispatchId].sort(), 'Every due event is claimed exactly once across competing workers');
+    assert.equal(new Set(claimedIds).size, claimedIds.length);
+    assert(claimBatches.filter(batch => !batch.ids.length).length <= 2, 'Each dispatcher stops after its first empty claim');
+    // SKIP LOCKED may fragment batches under contention. Each nonempty claim
+    // must make progress; allow at most one claim per event plus one empty
+    // terminal claim per dispatcher, instead of assuming full batches.
+    assert(evidence.customOutboxClaimCommands >= Math.ceil(claimedIds.length / 10));
+    assert(evidence.customOutboxClaimCommands <= claimedIds.length + 2);
     assert.equal(dispatchCounts.reduce((sum, value) => sum + value, 0), 25);
     assert.equal(handoffs.length, 26);
     assert.equal(new Set(handoffs.filter(event => !event.payload.fail).map(event => event.payload.eventId)).size, 25);
@@ -793,6 +830,12 @@ async function main() {
     assert(confirmation && confirmation.id);
     assert.equal((await prisma.notification.findUniqueOrThrow({ where: { id: confirmation.id } })).actorId, null);
     evidence.cases.push('actual notification service suppresses a self-authored extension rejection confirmation but persists the system-authored confirmation for that shopper');
+    // Earlier scenarios intentionally leave durable instructions pending. Keep
+    // them out of this next scenario's one-event global recovery sweep.
+    await prisma.notificationChannelOutbox.updateMany({
+      where: { status: { in: ['PENDING', 'FAILED'] } },
+      data: { availableAt: new Date(Date.now() + 86400000) },
+    });
     const channelProof = await require('./notification-channel-concurrency-scenarios.cjs')({ prisma, queries });
     evidence.cases.push(...channelProof.cases);
     evidence.channelProof = { ...channelProof, cases: channelProof.cases.length };
@@ -807,6 +850,8 @@ async function main() {
     evidence.productCreationProof = { ...productCreationProof, cases: productCreationProof.cases.length };
     const categoryProof = await require('./category-approval-concurrency-scenarios.cjs')({ prisma, queries });
     evidence.cases.push(...categoryProof.cases); evidence.categoryApprovalProof = { ...categoryProof, cases: categoryProof.cases.length };
+    const reviewProof = await require('./content-review-concurrency-scenarios.cjs')({prisma});
+    evidence.cases.push(...reviewProof.cases); evidence.contentReviewProof = {...reviewProof, cases: reviewProof.cases.length};
     evidence.passed = true;
   } finally {
     if (prisma) await prisma.$disconnect();
@@ -823,14 +868,18 @@ async function main() {
     await fs.writeFile(
       path.resolve(
         __dirname,
-        '../docs/performance-reviews/checkout-media-batching-postgres-2026-10-23.json',
+        process.argv.includes('--content-review-only') ? '../docs/performance-reviews/content-review-concurrency-postgres-2026-10-27.json' : process.argv.includes('--category-only') ? '../docs/performance-reviews/category-approval-concurrency-postgres-2026-10-28.json' : '../docs/performance-reviews/checkout-media-batching-postgres-2026-10-23.json',
       ),
       JSON.stringify(evidence, null, 2) + '\n',
     );
     console.log(JSON.stringify(evidence));
   }
 }
-main().catch((error) => {
+main().catch(async (error) => {
+  await fs.mkdir(path.resolve(__dirname, '../.tmp'), { recursive: true });
+  await fs.writeFile(path.resolve(__dirname, '../.tmp/checkout-media-failure.json'),
+    JSON.stringify({ code: error.code, name: error.name, message: error.message, meta: error.meta, stack: error.stack }, null, 2)
+      .replace(/postgres(?:ql)?:\/\/\S+/g, '[database-url-redacted]'));
   console.error(
     error instanceof assert.AssertionError
       ? error.message
