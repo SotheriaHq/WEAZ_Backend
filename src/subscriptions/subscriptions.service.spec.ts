@@ -157,6 +157,21 @@ describe('SubscriptionsService boundary and payment invariants', () => {
     expect(paystack.initialize).not.toHaveBeenCalled();
   });
 
+  it('rejects subscription tier upgrade when brand is not verified', async () => {
+    prisma.brand.findUnique.mockResolvedValue({
+      verificationStatus: 'PENDING',
+    });
+    await expect(
+      service.checkout('owner', 'brand-one', {
+        tierKey: 'ARU',
+        legalVersion: '2026.10.19-v1.4',
+        recurringConsent: true,
+      } as any),
+    ).rejects.toThrow('Only verified brands are eligible for subscription tier upgrades.');
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(paystack.initialize).not.toHaveBeenCalled();
+  });
+
   it('does not accept a provider success with the wrong invoice amount', async () => {
     const invoice = {
       id: 'invoice-one',

@@ -83,3 +83,5 @@ memory-bank/
 
 # Generated Jest transform cache
 /src/.cache/
+
+security Audit/
