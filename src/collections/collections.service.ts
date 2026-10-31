@@ -21,6 +21,11 @@ import { validateSync } from 'class-validator';
 import { refreshCollectionPriceRanges } from '../store/collection-price-range.util';
 import { attachFinalizedMedia } from './finalized-media-query';
 import {
+  clearUploadIncomplete,
+  designSizingFields,
+  DRAFT_REASON_UPLOAD_INCOMPLETE,
+} from './design-sizing';
+import {
   lockMembershipProducts,
   readProductMemberships,
   synchronizePrimaryMemberships,
@@ -426,11 +431,8 @@ export class CollectionsService {
   private async assertDesignCustomOrderPublishReady(
     sourceId: string,
     ownerId: string,
-    customOrderEnabled: boolean,
     tx?: Prisma.TransactionClient,
   ) {
-    if (!customOrderEnabled) return;
-
     const prismaClient = tx ?? this.prisma;
     const activeConfiguration =
       await prismaClient.customOrderConfiguration.findFirst({
@@ -445,7 +447,7 @@ export class CollectionsService {
 
     if (!activeConfiguration) {
       throw new BadRequestException(
-        'Custom orders are enabled, but no active custom-order configuration exists for this design.',
+        'Finish the custom-order setup for this design before publishing.',
       );
     }
   }
@@ -2706,10 +2708,8 @@ export class CollectionsService {
             minPrice: dto.minPrice,
             maxPrice: dto.maxPrice,
             isAvailableInStore: dto.isAvailableInStore ?? false,
-            sizingMode: dto.sizingMode ?? 'NONE',
-            rtwSizes: Array.isArray(dto.rtwSizes) ? dto.rtwSizes : [],
-            rtwSizeSystem: dto.rtwSizeSystem ?? null,
-            rtwSizeType: dto.rtwSizeType ?? null,
+            ...designSizingFields(),
+            draftReason: hasFiles ? DRAFT_REASON_UPLOAD_INCOMPLETE : null,
             customGender: dto.customGender ?? null,
             customMeasurementKeys: this.normalizeMeasurementKeys(
               dto.customMeasurementKeys,
@@ -2847,10 +2847,8 @@ export class CollectionsService {
           minPrice: dto.minPrice,
           maxPrice: dto.maxPrice,
           isAvailableInStore: false,
-          sizingMode: dto.sizingMode ?? 'NONE',
-          rtwSizes: Array.isArray(dto.rtwSizes) ? dto.rtwSizes : [],
-          rtwSizeSystem: dto.rtwSizeSystem ?? null,
-          rtwSizeType: dto.rtwSizeType ?? null,
+          ...designSizingFields(),
+          draftReason: DRAFT_REASON_UPLOAD_INCOMPLETE,
           customGender: dto.customGender ?? null,
           customMeasurementKeys: this.normalizeMeasurementKeys(
             dto.customMeasurementKeys,
@@ -3998,10 +3996,6 @@ export class CollectionsService {
           30,
         );
       }
-      const nextCustomOrderEnabled =
-        typeof (metadata as any).customOrderEnabled === 'boolean'
-          ? Boolean((metadata as any).customOrderEnabled)
-          : Boolean((collection as any).customOrderEnabled);
 
       if (action === 'publish') {
         const nextTitle = metadata.title ?? collection.title;
@@ -4040,7 +4034,6 @@ export class CollectionsService {
         await this.assertDesignCustomOrderPublishReady(
           collectionId,
           collection.ownerId,
-          nextCustomOrderEnabled,
         );
       }
 
@@ -4140,14 +4133,8 @@ export class CollectionsService {
               maxPrice: collection.maxPrice,
               saleMinPrice: collection.saleMinPrice,
               saleMaxPrice: collection.saleMaxPrice,
-              sizingMode: metadata.sizingMode ?? (collection as any).sizingMode,
-              rtwSizes: Array.isArray(metadata.rtwSizes)
-                ? metadata.rtwSizes
-                : (collection as any).rtwSizes,
-              rtwSizeSystem:
-                metadata.rtwSizeSystem ?? (collection as any).rtwSizeSystem,
-              rtwSizeType:
-                metadata.rtwSizeType ?? (collection as any).rtwSizeType,
+              ...designSizingFields(),
+              ...clearUploadIncomplete(collection.draftReason),
               customGender:
                 metadata.customGender ?? (collection as any).customGender,
               customMeasurementKeys: Array.isArray(
@@ -4155,10 +4142,6 @@ export class CollectionsService {
               )
                 ? this.normalizeMeasurementKeys(metadata.customMeasurementKeys)
                 : (collection as any).customMeasurementKeys,
-              customOrderEnabled:
-                typeof (metadata as any).customOrderEnabled === 'boolean'
-                  ? Boolean((metadata as any).customOrderEnabled)
-                  : Boolean((collection as any).customOrderEnabled),
               customFreeformPointIds: Array.isArray(
                 metadata.customFreeformPointIds,
               )
@@ -4550,10 +4533,6 @@ export class CollectionsService {
       completionMetadata.filterValueIds,
     );
     let validatedCompletionFilterValueIds = completionFilterValueIds;
-    const completionCustomOrderEnabled =
-      typeof completionMetadata.customOrderEnabled === 'boolean'
-        ? Boolean(completionMetadata.customOrderEnabled)
-        : Boolean((collection as any).customOrderEnabled);
     if (completionAction === 'publish') {
       const nextTitle = completionMetadata.title ?? collection.title;
       if (!nextTitle || !nextTitle.trim()) {
@@ -4620,7 +4599,6 @@ export class CollectionsService {
       await this.assertDesignCustomOrderPublishReady(
         collectionId,
         collection.ownerId,
-        completionCustomOrderEnabled,
       );
     }
 
@@ -4649,16 +4627,8 @@ export class CollectionsService {
           type: completionMetadata.type ?? collection.type,
           ...taxonomy,
           tags: completionResolvedTags,
-          sizingMode:
-            completionMetadata.sizingMode ?? (collection as any).sizingMode,
-          rtwSizes: Array.isArray(completionMetadata.rtwSizes)
-            ? completionMetadata.rtwSizes
-            : (collection as any).rtwSizes,
-          rtwSizeSystem:
-            completionMetadata.rtwSizeSystem ??
-            (collection as any).rtwSizeSystem,
-          rtwSizeType:
-            completionMetadata.rtwSizeType ?? (collection as any).rtwSizeType,
+          ...designSizingFields(),
+          ...clearUploadIncomplete(collection.draftReason),
           customGender:
             completionMetadata.customGender ?? (collection as any).customGender,
           customMeasurementKeys: Array.isArray(
@@ -4668,7 +4638,6 @@ export class CollectionsService {
                 completionMetadata.customMeasurementKeys,
               )
             : (collection as any).customMeasurementKeys,
-          customOrderEnabled: completionCustomOrderEnabled,
           customFreeformPointIds: Array.isArray(
             completionMetadata.customFreeformPointIds,
           )
@@ -9583,6 +9552,7 @@ export class CollectionsService {
         categoryId: true,
         categoryTypeId: true,
         customOrderEnabled: true,
+        draftReason: true,
       } as any,
     } as any)) as any;
     if (!existing) throw new NotFoundException('Collection not found');
@@ -9685,21 +9655,30 @@ export class CollectionsService {
       data.saleStartAt = body.saleStartAt ? new Date(body.saleStartAt) : null;
     if (typeof body.saleEndAt === 'string' || body.saleEndAt === null)
       data.saleEndAt = body.saleEndAt ? new Date(body.saleEndAt) : null;
-    if (typeof body.sizingMode === 'string') data.sizingMode = body.sizingMode;
-    if (Array.isArray(body.rtwSizes)) data.rtwSizes = body.rtwSizes;
-    if (typeof body.rtwSizeSystem === 'string' || body.rtwSizeSystem === null)
-      data.rtwSizeSystem = body.rtwSizeSystem;
-    if (typeof body.rtwSizeType === 'string' || body.rtwSizeType === null)
-      data.rtwSizeType = body.rtwSizeType;
+    const isDesign = existing.domain === 'DESIGN';
+    if (isDesign) {
+      Object.assign(
+        data,
+        designSizingFields(),
+        clearUploadIncomplete(existing.draftReason),
+      );
+    } else {
+      if (typeof body.sizingMode === 'string')
+        data.sizingMode = body.sizingMode;
+      if (Array.isArray(body.rtwSizes)) data.rtwSizes = body.rtwSizes;
+      if (typeof body.rtwSizeSystem === 'string' || body.rtwSizeSystem === null)
+        data.rtwSizeSystem = body.rtwSizeSystem;
+      if (typeof body.rtwSizeType === 'string' || body.rtwSizeType === null)
+        data.rtwSizeType = body.rtwSizeType;
+      if (typeof body.customOrderEnabled === 'boolean')
+        data.customOrderEnabled = body.customOrderEnabled;
+    }
     if (typeof body.customGender === 'string' || body.customGender === null)
       data.customGender = body.customGender;
     if (Array.isArray(body.customMeasurementKeys))
       data.customMeasurementKeys = this.normalizeMeasurementKeys(
         body.customMeasurementKeys,
       );
-    if (typeof body.customOrderEnabled === 'boolean') {
-      data.customOrderEnabled = body.customOrderEnabled;
-    }
     if (Array.isArray(body.customFreeformPointIds))
       data.customFreeformPointIds = body.customFreeformPointIds;
     if (typeof body.fitPreference === 'string' || body.fitPreference === null)
@@ -9792,16 +9771,8 @@ export class CollectionsService {
       data.draftVersion = { increment: 1 };
     }
 
-    const nextCustomOrderEnabled =
-      typeof body.customOrderEnabled === 'boolean'
-        ? body.customOrderEnabled
-        : Boolean(existing.customOrderEnabled);
-    if (existing.status === 'PUBLISHED') {
-      await this.assertDesignCustomOrderPublishReady(
-        collectionId,
-        ownerId,
-        nextCustomOrderEnabled,
-      );
+    if (existing.status === 'PUBLISHED' && isDesign) {
+      await this.assertDesignCustomOrderPublishReady(collectionId, ownerId);
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -9827,7 +9798,7 @@ export class CollectionsService {
       });
     });
 
-    if (body.customOrderEnabled === false) {
+    if (!isDesign && body.customOrderEnabled === false) {
       await this.prisma.customOrderConfiguration.updateMany({
         where: {
           sourceType: CustomOrderSourceType.DESIGN,
@@ -10925,7 +10896,6 @@ export class CollectionsService {
         categoryTypeId: true,
         pendingCategorySuggestionId: true,
         draftVersion: true,
-        customOrderEnabled: true,
         type: true,
         tags: true,
         status: true,
@@ -10979,7 +10949,6 @@ export class CollectionsService {
       await this.assertDesignCustomOrderPublishReady(
         collectionId,
         current.ownerId,
-        current.customOrderEnabled,
         tx,
       );
       await this.contentIntegrity?.assertCollectionHasPublishableMedia(
