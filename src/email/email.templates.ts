@@ -101,11 +101,11 @@ export function emailVerificationEmail(
     subject: `✨ You're almost in — confirm your ${companyName} email`,
     html: wrap(
       `✨ Confirm your ${companyName} email`,
-      `${p(`Welcome to <strong>${companyName}</strong> — Africa's fashion social commerce community. You're just one click away from unlocking your full workspace.`)}
-      ${p('Verifying your email lets you create designs, connect with buyers, build your brand, and do so much more. It keeps your account secure too.')}
+      `${p(`Welcome to <strong>${companyName}</strong> — Africa's Fashion Media community. You're just one click away from unlocking your full workspace.`)}
+      ${p('Wiezing your email lets you create designs, connect with buyers, build your brand, and do so much more. It keeps your account secure too.')}
       <div style="text-align:center;margin:24px 0">${btn(verifyLink, 'WIEZ up my email')}</div>
       ${linkFallback(verifyLink, 'Verify your email')}
-      ${infoBox(`<p style="margin:0;color:${BRAND_PRIMARY};font-size:13px">This link is single-use and stops working once your email is confirmed — so click it when you're ready to dive in.</p>`)}`,
+      ${infoBox(`<p style="margin:0;color:${BRAND_PRIMARY};font-size:13px">This link is single-use and stops working once your email is WIEZED — so click it when you're ready to dive in.</p>`)}`,
       companyName,
       `This email was sent because someone signed up for a ${companyName} account with this address.`,
     ),
