@@ -2540,6 +2540,57 @@ export class CollectionsService {
   // Existing web/mobile clients still use this collection-backed path for
   // design creation. New design-owned entry points should call DesignsService,
   // which delegates here through the legacy adapter until persistence is split.
+  private async validateDesignUploadSpecs(files: FileSpecDto[]) {
+    await Promise.all(
+      files.map((spec) =>
+        this.helperservice.validateFileSpec(
+          spec,
+          this.helperservice.determineFileType(spec.type, spec.fileType),
+        ),
+      ),
+    );
+  }
+
+  private async issueDesignUploads(
+    userId: string,
+    collectionId: string,
+    files: FileSpecDto[],
+    firstOrderIndex = 0,
+  ) {
+    const requests = files.map((fileSpec, index) => {
+      const orderIndex = firstOrderIndex + index;
+      return {
+        originalName: fileSpec.name,
+        fileType: this.helperservice.determineFileType(
+          fileSpec.type,
+          fileSpec.fileType,
+        ) as any,
+        contentType: fileSpec.type,
+        collectionId,
+        orderIndex,
+        viewSlot: this.contentIntegrity?.normalizeViewSlot(
+          (fileSpec as any).viewSlot,
+          orderIndex,
+        ),
+      };
+    });
+    const issued = await this.uploadService.createPresignedUploads(
+      userId,
+      requests,
+    );
+    return issued.map((presign, index) => ({
+      fileId: presign.fileId,
+      orderIndex: requests[index].orderIndex,
+      viewSlot: requests[index].viewSlot,
+      expectedKey: presign.key,
+      uploadUrl: presign.url,
+      uploadFields: presign.fields,
+      method: presign.method,
+      uploadHeaders: presign.uploadHeaders,
+      expiresIn: presign.expiresIn,
+    }));
+  }
+
   async initializeCollection(userId: string, dto: CreateCollectionDto) {
     const catalogContext = await this.resolveCatalogOwnerContext(userId);
     const ownerId = catalogContext.ownerId;
@@ -2550,6 +2601,8 @@ export class CollectionsService {
         `Maximum ${DESIGN_MAX_MEDIA_COUNT} files per design`,
       );
     }
+
+    if (hasFiles) await this.validateDesignUploadSpecs(dto.files!);
 
     // Store-collection session initialization (no media required)
     if (!hasFiles && dto.mode) {
@@ -2714,39 +2767,10 @@ export class CollectionsService {
         };
       }
 
-      const uploadData = await Promise.all(
-        dto.files.map(async (fileSpec, index) => {
-          const viewSlot = this.contentIntegrity?.normalizeViewSlot(
-            (fileSpec as any).viewSlot,
-            index,
-          );
-          // Validate and determine file type
-          const fileType = this.helperservice.determineFileType(
-            fileSpec.type,
-            fileSpec.fileType,
-          );
-          await this.helperservice.validateFileSpec(fileSpec, fileType);
-
-          const presign = await this.uploadService.createPresignedUpload(
-            userId,
-            fileSpec.name,
-            fileType as any,
-            fileSpec.type,
-            { collectionId, orderIndex: index, viewSlot },
-          );
-
-          return {
-            fileId: (presign as any).fileId,
-            orderIndex: index,
-            viewSlot,
-            expectedKey: (presign as any).key,
-            uploadUrl: (presign as any).url,
-            uploadFields: (presign as any).fields,
-            method: (presign as any).method,
-            uploadHeaders: (presign as any).uploadHeaders,
-            expiresIn: (presign as any).expiresIn || 600,
-          };
-        }),
+      const uploadData = await this.issueDesignUploads(
+        userId,
+        collectionId,
+        dto.files,
       );
 
       return {
@@ -2876,41 +2900,10 @@ export class CollectionsService {
       );
     }
 
-    // Generate presigned URLs for each file using UploadService (creates presign DB entries)
-    const uploadData = await Promise.all(
-      dto.files.map(async (fileSpec, index) => {
-        const viewSlot = this.contentIntegrity?.normalizeViewSlot(
-          (fileSpec as any).viewSlot,
-          index,
-        );
-        // Validate and determine file type
-        const fileType = this.helperservice.determineFileType(
-          fileSpec.type,
-          fileSpec.fileType,
-        );
-        await this.helperservice.validateFileSpec(fileSpec, fileType);
-
-        // Use UploadService to create presigned POST and presign DB record
-        const presign = await this.uploadService.createPresignedUpload(
-          userId,
-          fileSpec.name,
-          fileType as any,
-          fileSpec.type,
-          { collectionId, orderIndex: index, viewSlot },
-        );
-
-        return {
-          fileId: (presign as any).fileId,
-          orderIndex: index,
-          viewSlot,
-          expectedKey: (presign as any).key,
-          uploadUrl: (presign as any).url,
-          uploadFields: (presign as any).fields,
-          method: (presign as any).method,
-          uploadHeaders: (presign as any).uploadHeaders,
-          expiresIn: (presign as any).expiresIn || 600, // default 10 minutes
-        };
-      }),
+    const uploadData = await this.issueDesignUploads(
+      userId,
+      collectionId,
+      dto.files,
     );
 
     return {
@@ -2950,6 +2943,8 @@ export class CollectionsService {
       );
     }
 
+    await this.validateDesignUploadSpecs(files);
+
     const existingMediaCount = await this.prisma.collectionMedia.count({
       where: { collectionId },
     });
@@ -2959,39 +2954,11 @@ export class CollectionsService {
       );
     }
 
-    const uploads = await Promise.all(
-      files.map(async (fileSpec, index) => {
-        const orderIndex = existingMediaCount + index;
-        const viewSlot = this.contentIntegrity?.normalizeViewSlot(
-          (fileSpec as any).viewSlot,
-          orderIndex,
-        );
-        const fileType = this.helperservice.determineFileType(
-          fileSpec.type,
-          fileSpec.fileType,
-        );
-        await this.helperservice.validateFileSpec(fileSpec, fileType);
-
-        const presign = await this.uploadService.createPresignedUpload(
-          userId,
-          fileSpec.name,
-          fileType as any,
-          fileSpec.type,
-          { collectionId, orderIndex, viewSlot },
-        );
-
-        return {
-          fileId: (presign as any).fileId,
-          orderIndex,
-          viewSlot,
-          expectedKey: (presign as any).key,
-          uploadUrl: (presign as any).url,
-          uploadFields: (presign as any).fields,
-          method: (presign as any).method,
-          uploadHeaders: (presign as any).uploadHeaders,
-          expiresIn: (presign as any).expiresIn || 600,
-        };
-      }),
+    const uploads = await this.issueDesignUploads(
+      userId,
+      collectionId,
+      files,
+      existingMediaCount,
     );
 
     return {
