@@ -16,7 +16,7 @@ import {
   Patch,
   ParseUUIDPipe,
 } from '@nestjs/common';
-import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import { Throttle } from '@nestjs/throttler';
 import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guard/role.guard';
@@ -116,8 +116,8 @@ export class PaymentController {
     }
   }
 
+  @IsPublic()
   @Get('fx/quote')
-  @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 30, ttl: 60000 } })
   async getFxQuote(@Query() query: FxQuoteQueryDto) {
     const result = await this.fxRateService.getQuotePreview({
@@ -130,7 +130,6 @@ export class PaymentController {
 
   @Get('fx/display')
   @IsPublic()
-  @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 30, ttl: 60000 } })
   async getFxDisplay(@Query() query: FxDisplayQueryDto) {
     return this.fxRateService.getDisplayRates(query);
@@ -199,6 +198,7 @@ export class PaymentController {
    */
   @Post('saved-cards/record')
   @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   async recordSavedCard(
     @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
     dto: RecordSavedCardDto,
@@ -257,6 +257,7 @@ export class PaymentController {
 
   @Get('cards/validate/:sessionId')
   @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   async getCardValidationSession(
     @Param('sessionId') sessionId: string,
     @Req() req: Request,
@@ -324,6 +325,7 @@ export class PaymentController {
   @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
   @Roles(Role.SuperAdmin, Role.Admin)
   @RequirePermissions(ADMIN_PERMISSIONS.PAYMENTS_SIMULATE)
+  @Throttle({ default: { limit: 2, ttl: 60000 } })
   async reconcileStale(
     @Body() dto: ReconcileStalePaymentsDto,
     @Req() req: Request,

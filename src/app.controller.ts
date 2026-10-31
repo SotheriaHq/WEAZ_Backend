@@ -1,4 +1,5 @@
 import { Controller, Get, Res } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { AppService } from './app.service';
 import { ReadinessService } from './health/readiness.service';
@@ -18,6 +19,9 @@ export class AppController {
     return this.appService.getHello();
   }
 
+  // Liveness does no I/O, and it must not report the process as dead because
+  // the rate-limit store is unreachable. /ready is what reports Redis.
+  @SkipThrottle()
   @Get('healthz')
   getHealth() {
     return this.appService.getHealth();

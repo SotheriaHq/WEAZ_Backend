@@ -1,5 +1,5 @@
-import { Controller, Get, Header, Query, UseGuards } from '@nestjs/common';
-import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import { Controller, Get, Header, Query } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { IsOptional, IsString, MaxLength } from 'class-validator';
 import { IsPublic } from 'src/auth/decorator/is-public.decorator';
 import { LocationsService } from './locations.service';
@@ -18,7 +18,6 @@ export class LocationListQueryDto {
 
 /** Public, cacheable lists for address and profile forms. */
 @Controller('locations')
-@UseGuards(ThrottlerGuard)
 export class LocationsController {
   constructor(private readonly locations: LocationsService) {}
 

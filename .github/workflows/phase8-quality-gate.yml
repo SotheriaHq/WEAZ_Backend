@@ -54,6 +54,13 @@ jobs:
         run: npm test -- src/common/observability/sentry-scrub.spec.ts --runInBand
       - name: Sign-in and email-link security
         run: npm test -- src/auth/auth-google-foundation.spec.ts src/common/utils/auth-links.spec.ts src/email/email-links.spec.ts --runInBand
+
+      - name: Endpoint authentication and rate limiting
+        env:
+          REDIS_URL: redis://127.0.0.1:6379/15
+        run: |
+          npm test -- src/auth/guard/auth-intent.coverage.spec.ts src/auth/guard/auth-intent.guard.spec.ts src/auth/auth-verification-security.spec.ts src/queue/queue.config.spec.ts --runInBand
+          node scripts/verify-redis-rate-limit.cjs
       - name: Shared deployment lock regression
         run: |
           bash scripts/verify-deploy-lock.sh

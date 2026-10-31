@@ -6,6 +6,9 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { IS_PUBLIC_KEY } from '../decorator/is-public.decorator';
+import { AuthGuard } from '@nestjs/passport';
+import { JwtAuthGuard } from './jwt-auth.guard';
+import { OptionalJwtAuthGuard } from './optional-jwt-auth.guard';
 
 // NestJS stores the guards registered by @UseGuards() under this metadata key.
 // Hard-coded (instead of importing from '@nestjs/common/constants') to avoid
@@ -20,7 +23,7 @@ const GUARDS_METADATA = '__guards__';
  * keeping the blast radius minimal:
  *
  *  - `@IsPublic()` handlers/classes are always allowed.
- *  - Handlers/classes that already declare ANY guard via `@UseGuards(...)`
+ *  - Handlers/classes that declare a recognised authentication guard
  *    (including `OptionalJwtAuthGuard` used by public storefront reads) are
  *    allowed through — their own guard performs whatever auth it intends, so
  *    this guard never double-enforces or blocks anonymous-allowed routes.
@@ -37,16 +40,6 @@ export class AuthIntentGuard implements CanActivate {
       return true;
     }
 
-    // Kill-switch: default-enforced, but set AUTH_FAIL_CLOSED=false to instantly
-    // disable (without redeploy) if a public route was missed during rollout.
-    const enforce =
-      String(process.env.AUTH_FAIL_CLOSED ?? 'true')
-        .trim()
-        .toLowerCase() !== 'false';
-    if (!enforce) {
-      return true;
-    }
-
     const handler = context.getHandler();
     const cls = context.getClass();
 
@@ -58,17 +51,28 @@ export class AuthIntentGuard implements CanActivate {
       return true;
     }
 
-    if (this.hasExplicitGuard(handler) || this.hasExplicitGuard(cls)) {
+    if (
+      this.hasAuthenticationGuard(handler) ||
+      this.hasAuthenticationGuard(cls)
+    ) {
       return true;
     }
 
     throw new UnauthorizedException('Authentication required');
   }
 
-  private hasExplicitGuard(target: unknown): boolean {
+  private hasAuthenticationGuard(target: unknown): boolean {
     const guards = Reflect.getMetadata(GUARDS_METADATA, target as object) as
       | unknown[]
       | undefined;
-    return Array.isArray(guards) && guards.length > 0;
+    const authenticationGuards: readonly unknown[] = [
+      JwtAuthGuard,
+      OptionalJwtAuthGuard,
+      AuthGuard('jwt'),
+    ];
+    return (
+      Array.isArray(guards) &&
+      guards.some((guard) => authenticationGuards.includes(guard))
+    );
   }
 }
