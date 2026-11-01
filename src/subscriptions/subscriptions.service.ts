@@ -15,6 +15,7 @@ import { SUBSCRIPTION_TIER_ORDER as TIER_ORDER } from './subscription-tiers';
 import {
   BrandSubscription,
   BrandSubscriptionInvoice,
+  BrandVerificationStatus,
   LegalAcceptanceSource,
   LegalDocumentKey,
   NotificationType,
@@ -732,6 +733,15 @@ export class SubscriptionsService {
       userId,
       brandId,
     );
+    const brand = await this.prisma.brand.findUnique({
+      where: { id: resolved.brandId },
+      select: { verificationStatus: true },
+    });
+    if (brand && brand.verificationStatus !== BrandVerificationStatus.APPROVED) {
+      throw new ForbiddenException(
+        'Only verified brands are eligible for subscription tier upgrades.',
+      );
+    }
     if (dto.recurringConsent !== true || dto.legalVersion !== LEGAL_VERSION)
       throw new BadRequestException(
         'Accept the current subscription terms and recurring-payment authorization.',
