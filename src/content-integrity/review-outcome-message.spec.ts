@@ -11,14 +11,14 @@ describe('Approval message', () => {
       isPrivate,
     );
 
-  it('says a public design is live', () => {
-    expect(message(false)).toContain('is now live');
+  it('says a public design is approved and published on the Runway', () => {
+    expect(message(false)).toContain('“Drimmer” has been approved and published on the Runway');
   });
 
-  it('never says a private design is live, and says what to do', () => {
+  it('never says a private design is published, and says what to do', () => {
     const text = message(true);
-    expect(text).not.toContain('is now live');
+    expect(text).not.toContain('published');
     expect(text).toContain('set to Private');
-    expect(text).toContain('choose Public');
+    expect(text).toContain('make it Public');
   });
 });

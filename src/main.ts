@@ -266,14 +266,12 @@ async function bootstrap() {
     disablePoweredByHeader(app);
 
     // The same set reaches Socket.IO's transport through EventsGateway.
-    app.use(
-      (req: express.Request, res: express.Response, next: () => void) => {
-        for (const [name, value] of Object.entries(securityHeadersFor(req))) {
-          res.setHeader(name, value);
-        }
-        next();
-      },
-    );
+    app.use((req: express.Request, res: express.Response, next: () => void) => {
+      for (const [name, value] of Object.entries(securityHeadersFor(req))) {
+        res.setHeader(name, value);
+      }
+      next();
+    });
 
     app.use(requestLoggerMiddleware);
 

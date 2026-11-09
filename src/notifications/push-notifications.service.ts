@@ -37,7 +37,6 @@ import {
 
 const INVALID_EXPO_TOKEN_DISABLED_REASON = 'INVALID_EXPO_TOKEN';
 const DEVICE_NOT_REGISTERED_DISABLED_REASON = 'DEVICE_NOT_REGISTERED';
-const GENERIC_PUSH_BODY = 'Something new for you on WIEZ 👀';
 
 const MESSAGE_NOTIFICATION_TYPES = new Set<NotificationType>([
   NotificationType.MESSAGE_RECEIVED,
@@ -360,9 +359,12 @@ export class PushNotificationsService {
   }): PushOutboxPayload {
     const payload = this.toRecord(args.notification.payload);
     const showPreview = args.settings.push.showPreview;
+    const presentation = getPushPresentation(args.notification.type);
+    // Previews off hides the CONTENT, not the meaning: the per-type line says
+    // what kind of thing happened ("Changes requested on one of your uploads").
     const body = showPreview
-      ? this.formatPushBody(args.notification)
-      : GENERIC_PUSH_BODY;
+      ? this.formatPushBody(args.notification, presentation.hiddenBody)
+      : presentation.hiddenBody;
     const messageRoutingData = this.extractMessageRoutingData(
       args.notification.type,
       payload,
@@ -377,9 +379,9 @@ export class PushNotificationsService {
       ...this.extractRoutingFields(args.notification, payload),
       ...messageRoutingData,
     };
-    const presentation = getPushPresentation(args.notification.type);
     return {
-      title: showPreview ? presentation.title : 'WIEZ',
+      // The type's own title in both modes; titles never reveal content.
+      title: presentation.title,
       body,
       data,
       channelId: presentation.channelId,
@@ -476,15 +478,25 @@ export class PushNotificationsService {
     return data;
   }
 
-  private formatPushBody(notification: PushDeliveryNotification): string {
+  /**
+   * The push body with previews on: the type's short push copy when it has
+   * one, else its inbox formatter. A missing config or a formatter that throws
+   * falls back to the type's own preview-off line — never a generic one.
+   */
+  private formatPushBody(
+    notification: PushDeliveryNotification,
+    typeFallback: string,
+  ): string {
     try {
       const config = this.registry.getConfig(notification.type);
-      return config?.formatter(notification) ?? GENERIC_PUSH_BODY;
+      const formatter = config?.pushFormatter ?? config?.formatter;
+      const text = formatter?.(notification);
+      return typeof text === 'string' && text.trim() ? text.trim() : typeFallback;
     } catch (error) {
       this.logger.warn(
         `Failed to format push body notification=${notification.id}: ${String(error)}`,
       );
-      return GENERIC_PUSH_BODY;
+      return typeFallback;
     }
   }
 

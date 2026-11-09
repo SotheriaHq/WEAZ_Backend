@@ -1,5 +1,25 @@
 import { NotificationType } from '@prisma/client';
 import * as Joi from 'joi';
+import {
+  contentReviewInboxMessage,
+  contentReviewPushBody,
+  type ContentReviewCopyInput,
+} from 'src/content-integrity/content-review-copy';
+
+/** What the content-review copy needs, read from any (old or new) payload. */
+function contentReviewCopyInput(n: any): ContentReviewCopyInput {
+  const payload = (n?.payload ?? {}) as Record<string, unknown>;
+  const text = (value: unknown) =>
+    typeof value === 'string' && value.trim() ? value.trim() : null;
+  return {
+    title: text(payload.title) ?? text(payload.contentTitle),
+    entityType: text(payload.entityType),
+    recipientName: text(payload.recipientName),
+    isPrivate: payload.isPrivate === true,
+    reasonLabel: text(payload.reasonLabel),
+    reasonNote: text(payload.reasonNote),
+  };
+}
 
 const NT_SIZE_FIT_UPDATE_REMINDER =
   'SIZE_FIT_UPDATE_REMINDER' as NotificationType;
@@ -249,7 +269,13 @@ const toContentLabel = (targetType: unknown): string => {
 export interface NotificationConfig {
   type: NotificationType;
   schema: Joi.ObjectSchema;
+  /** The inbox line (and the push body when there is no `pushFormatter`). */
   formatter: (notification: any) => string;
+  /**
+   * A short push body for types whose inbox line is long. A lock screen shows
+   * two lines; the full story belongs in the inbox the push opens.
+   */
+  pushFormatter?: (notification: any) => string;
 }
 
 export class NotificationRegistry {
@@ -2001,16 +2027,12 @@ export class NotificationRegistry {
               ? n.payload.message.trim()
               : '';
           if (detailed) return detailed;
-          const title =
-            (typeof n.payload?.title === 'string' && n.payload.title.trim()) ||
-            (typeof n.payload?.contentTitle === 'string' &&
-              n.payload.contentTitle.trim()) ||
-            '';
-          if (title) {
-            return `Content review update for "${title}"`;
-          }
-          return 'Content review status updated';
+          // An older or partial payload gets the same voice, never
+          // "Content review status updated".
+          return contentReviewInboxMessage(type, contentReviewCopyInput(n));
         },
+        pushFormatter: (n: any) =>
+          contentReviewPushBody(type, contentReviewCopyInput(n)),
       });
     });
 

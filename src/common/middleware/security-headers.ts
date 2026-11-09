@@ -49,7 +49,10 @@ type RequestLike = {
 export function isHttpsRequest(req: RequestLike | null | undefined): boolean {
   if (!req) return false;
   if (req.secure === true) return true;
-  if ((req.socket as { encrypted?: unknown } | null | undefined)?.encrypted === true) {
+  if (
+    (req.socket as { encrypted?: unknown } | null | undefined)?.encrypted ===
+    true
+  ) {
     return true;
   }
   const raw = req.headers?.['x-forwarded-proto'];
