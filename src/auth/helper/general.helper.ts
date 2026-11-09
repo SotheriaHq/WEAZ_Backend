@@ -14,6 +14,7 @@ import {
 } from './prisma-select.helper';
 import { ConfigService } from '@nestjs/config';
 import { isNonLocalEnvironment } from 'src/common/utils/web-app-url';
+import { isHttpsRequest } from 'src/common/middleware/security-headers';
 
 const DEFAULT_ACCESS_TOKEN_COOKIE = 'accessToken';
 const DEFAULT_REFRESH_TOKEN_COOKIE = 'refreshToken';
@@ -92,10 +93,16 @@ export class TokenService {
     );
   }
 
-  private get isSecureCookie(): boolean {
+  /**
+   * Secure in production, and on any request that arrived over HTTPS. SIT runs
+   * behind TLS without `NODE_ENV=production`, so keying on the environment
+   * alone sent session cookies there without `Secure` (ZAP, CWE-614). Plain
+   * http on localhost still gets a cookie the browser will keep.
+   */
+  private isSecureCookieFor(res: Response): boolean {
     return (
       this.configService.get<string>('NODE_ENV', '').toLowerCase() ===
-      'production'
+        'production' || isHttpsRequest(res.req)
     );
   }
 
@@ -259,9 +266,10 @@ export class TokenService {
     refreshToken: string,
     refreshTokenTtlMs: number,
   ) {
+    const secure = this.isSecureCookieFor(res);
     res.cookie(this.refreshTokenCookieName, refreshToken, {
       httpOnly: true,
-      secure: this.isSecureCookie,
+      secure,
       sameSite: 'strict',
       maxAge: refreshTokenTtlMs,
       path: '/',
@@ -269,7 +277,7 @@ export class TokenService {
 
     res.cookie(this.accessTokenCookieName, accessToken, {
       httpOnly: true,
-      secure: this.isSecureCookie,
+      secure,
       sameSite: 'strict',
       maxAge: this.accessTokenTtlSeconds * 1000,
       path: '/',

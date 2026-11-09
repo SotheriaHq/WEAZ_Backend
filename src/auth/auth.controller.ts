@@ -23,6 +23,7 @@ import { AuthService } from './auth.service';
 import { CreateUserDto } from './dto/create-auth.dto';
 import { TransformInterceptor } from 'src/transform/transform.interceptor';
 import { TokenService } from './helper/general.helper';
+import { isHttpsRequest } from 'src/common/middleware/security-headers';
 import { LoginDto } from './dto/login-auth.dto';
 import { JwtAuthGuard } from './guard/jwt-auth.guard';
 import { RolesGuard } from './guard/role.guard';
@@ -98,12 +99,13 @@ export class AuthController {
     );
   }
 
-  private get cookieBaseOptions() {
+  /** Same attributes the session cookies were set with (see TokenService). */
+  private cookieOptionsFor(res: Response) {
     return {
       httpOnly: true,
       secure:
         this.configService.get<string>('NODE_ENV', '').toLowerCase() ===
-        'production',
+          'production' || isHttpsRequest(res.req),
       sameSite: 'strict' as const,
       path: '/',
     };
@@ -421,7 +423,7 @@ export class AuthController {
     const refreshToken =
       req.cookies[this.refreshTokenCookieName] ?? bodyRefreshToken;
     if (!refreshToken) {
-      const cookieOptions = this.cookieBaseOptions;
+      const cookieOptions = this.cookieOptionsFor(res);
       res.clearCookie(this.refreshTokenCookieName, cookieOptions);
       res.clearCookie(this.accessTokenCookieName, cookieOptions);
       throw new UnauthorizedException('Refresh token not found');
@@ -430,7 +432,7 @@ export class AuthController {
     try {
       return await this.tokenService.refreshToken(refreshToken, req, res);
     } catch (error) {
-      const cookieOptions = this.cookieBaseOptions;
+      const cookieOptions = this.cookieOptionsFor(res);
       res.clearCookie(this.refreshTokenCookieName, cookieOptions);
       res.clearCookie(this.accessTokenCookieName, cookieOptions);
       throw error;
@@ -481,7 +483,7 @@ export class AuthController {
     const refreshToken =
       req.cookies[this.refreshTokenCookieName] ?? bodyRefreshToken;
 
-    const cookieOptions = this.cookieBaseOptions;
+    const cookieOptions = this.cookieOptionsFor(res);
 
     res.clearCookie(this.refreshTokenCookieName, cookieOptions);
     res.clearCookie(this.accessTokenCookieName, cookieOptions);
@@ -511,7 +513,7 @@ export class AuthController {
     @Req() req: Request & { user: { id: string } },
     @Res({ passthrough: true }) res: Response,
   ) {
-    const cookieOptions = this.cookieBaseOptions;
+    const cookieOptions = this.cookieOptionsFor(res);
 
     res.clearCookie(this.refreshTokenCookieName, cookieOptions);
     res.clearCookie(this.accessTokenCookieName, cookieOptions);
@@ -747,7 +749,7 @@ export class AuthController {
       refreshToken,
     );
 
-    const cookieOptions = this.cookieBaseOptions;
+    const cookieOptions = this.cookieOptionsFor(res);
     res.clearCookie(this.refreshTokenCookieName, cookieOptions);
     res.clearCookie(this.accessTokenCookieName, cookieOptions);
     return result;

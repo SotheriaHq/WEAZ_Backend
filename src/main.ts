@@ -33,6 +33,7 @@ import type * as express from 'express';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { requestLoggerMiddleware } from './common/middleware/request-logger.middleware';
+import { securityHeadersFor } from './common/middleware/security-headers';
 import { InputSanitizationPipe } from './common/pipes/input-sanitization.pipe';
 import {
   formatPrimaryValidationMessage,
@@ -239,6 +240,15 @@ const isSameLoopbackOrigin = (
   return incoming.protocol === allowed.protocol && incomingPort === allowedPort;
 };
 
+const disablePoweredByHeader = (
+  app: Awaited<ReturnType<typeof NestFactory.create>>,
+) => {
+  const expressApp = app.getHttpAdapter().getInstance();
+  if (expressApp && typeof expressApp.disable === 'function') {
+    expressApp.disable('x-powered-by');
+  }
+};
+
 async function bootstrap() {
   let logger: BootstrapLogger = bootstrapConsoleLogger();
 
@@ -252,26 +262,18 @@ async function bootstrap() {
     logger = app.get(Logger);
     const configService = app.get(ConfigService);
     applyTrustProxy(app, configService.get<string>('TRUST_PROXY', 'false'));
+    // Express announces itself on every response (`X-Powered-By: Express`).
+    disablePoweredByHeader(app);
 
-    app.use((req, res, next) => {
-      res.setHeader('X-Content-Type-Options', 'nosniff');
-      res.setHeader('X-Frame-Options', 'DENY');
-      res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-      res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
-      res.setHeader(
-        'Permissions-Policy',
-        'camera=(), microphone=(), geolocation=()',
-      );
-      const isSecure =
-        req.secure || req.headers['x-forwarded-proto'] === 'https';
-      if (isSecure) {
-        res.setHeader(
-          'Strict-Transport-Security',
-          'max-age=31536000; includeSubDomains; preload',
-        );
-      }
-      next();
-    });
+    // The same set reaches Socket.IO's transport through EventsGateway.
+    app.use(
+      (req: express.Request, res: express.Response, next: () => void) => {
+        for (const [name, value] of Object.entries(securityHeadersFor(req))) {
+          res.setHeader(name, value);
+        }
+        next();
+      },
+    );
 
     app.use(requestLoggerMiddleware);
 
