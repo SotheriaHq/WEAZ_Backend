@@ -6,9 +6,11 @@ import {
   ConnectedSocket,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  OnGatewayInit,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
+import { applyRealtimeSecurityHeaders } from 'src/common/middleware/security-headers';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CollectionVisibility } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
@@ -36,7 +38,9 @@ const wsAllowedOrigins = [
     credentials: true,
   },
 })
-export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class EventsGateway
+  implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
+{
   @WebSocketServer() server!: Server;
   private readonly logger = new Logger(EventsGateway.name);
   private readonly joinWindowMs = 10_000;
@@ -51,6 +55,16 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
   ) {}
+
+  /**
+   * Engine.IO answers `/socket.io/` on the raw HTTP server, before Express,
+   * so the API's security headers never reached these responses. Its
+   * `headers` event fires for every polling response and the WebSocket
+   * upgrade; one listener, registered once per process.
+   */
+  afterInit(server: Server) {
+    server?.engine?.on?.('headers', applyRealtimeSecurityHeaders);
+  }
 
   async handleConnection(client: Socket) {
     const userId = await this.authenticateSocket(client);
