@@ -51,6 +51,7 @@ import {
   HIGH_SEVERITY_CONTENT_REPORT_REASONS,
   REQUIRED_CONTENT_MEDIA_VIEW_SLOTS,
 } from './content-integrity.constants';
+import { contentReviewInboxMessage } from './content-review-copy';
 import {
   buildSnapshot,
   evaluateRequiredChange,
@@ -2569,11 +2570,21 @@ export class ContentIntegrityService {
                     args.reasonNote,
                     recipientName,
                     targetIsPrivate,
+                    String(submission.entityType ?? ''),
                   ),
                   title: targetTitle,
                   contentTitle: targetTitle,
                   submissionId: submission.id,
                   reasonCode: args.reasonCode ?? null,
+                  // What the push copy and the edit screen read: the greeting
+                  // name, the visibility, and the canned reason in words.
+                  recipientName,
+                  isPrivate: Boolean(targetIsPrivate),
+                  reasonLabel: args.reasonCode
+                    ? (CONTENT_REVIEW_REASON_LABELS[
+                        args.reasonCode as ContentReviewReasonCode
+                      ] ?? null)
+                    : null,
                   // Full admin note + target identifiers so clients can route the
                   // notification to the exact content (edit screen / status tab) and
                   // render the reviewer feedback banner.
@@ -2900,18 +2911,12 @@ export class ContentIntegrityService {
   ) {
     const title = await this.resolveContentTitleForNotification(payload);
     const when = this.formatUserFacingTime();
-    const entityLabel = String(payload.entityType ?? payload.contentType ?? '')
-      .toUpperCase()
-      .includes('PRODUCT')
-      ? 'product'
-      : String(payload.entityType ?? '')
-            .toUpperCase()
-            .includes('COLLECTION')
-        ? 'collection'
-        : 'design';
-    const message = title
-      ? `Your ${entityLabel} "${title}" was submitted for review on ${when} and is pending approval. We'll notify you as soon as the review is complete.`
-      : `Your ${entityLabel} was submitted for review on ${when} and is pending approval. We'll notify you as soon as the review is complete.`;
+    // "<title> sent for review" — never names the admins (owner, Nov 2026).
+    const message = contentReviewInboxMessage('CONTENT_SUBMITTED_FOR_REVIEW', {
+      title,
+      entityType: String(payload.entityType ?? payload.contentType ?? ''),
+      when,
+    });
     if (deferredEvents || tx) {
       const event: NotificationEvent = {
         recipientId: ownerId,
@@ -3006,32 +3011,27 @@ export class ContentIntegrityService {
     reasonNote?: string | null,
     recipientName?: string | null,
     isPrivate = false,
+    entityType?: string | null,
   ) {
-    const contentRef = title?.trim() ? `"${title.trim()}"` : 'your content';
-    const when = this.formatUserFacingTime();
-    const greeting = recipientName?.trim()
-      ? `Hi ${recipientName.trim()} — `
-      : '';
-    if (action === 'approve' && isPrivate) {
-      return `${greeting}great news! ${contentRef} was approved on ${when}. It is set to Private, so it stays off the Runway and your Public tab. Edit it and choose Public when you are ready for shoppers to see it.`;
-    }
-    if (action === 'approve') {
-      return `${greeting}great news! ${contentRef} was approved on ${when} and is now live. Shoppers can discover it on the Runway and place orders right away. Share it with your customers and friends to get more eyes on it.`;
-    }
-    const reason = reasonCode
-      ? CONTENT_REVIEW_REASON_LABELS[reasonCode as ContentReviewReasonCode]
-      : null;
-    const note = reasonNote?.trim() || null;
-    // Show the canned reason plus the admin's own note when both exist.
-    const feedback = [reason, note].filter(Boolean).join(' — ');
-    if (action === 'reject') {
-      return feedback
-        ? `${greeting}unfortunately ${contentRef} was not approved on ${when}: ${feedback}. You can update it and submit again once it's ready.`
-        : `${greeting}unfortunately ${contentRef} was not approved on ${when}. You can update it and submit again once it's ready.`;
-    }
-    return feedback
-      ? `${greeting}admin requested changes on ${contentRef} (${when}). Notes: ${feedback}. Tap to review and update.`
-      : `${greeting}admin requested changes on ${contentRef} (${when}). Tap to review and update.`;
+    const event =
+      action === 'approve'
+        ? 'CONTENT_REVIEW_APPROVED'
+        : action === 'reject'
+          ? 'CONTENT_REVIEW_REJECTED'
+          : 'CONTENT_CHANGES_REQUESTED';
+    // One voice for inbox and push: content-review-copy.ts.
+    return contentReviewInboxMessage(event, {
+      title,
+      entityType,
+      recipientName,
+      isPrivate,
+      reasonLabel: reasonCode
+        ? (CONTENT_REVIEW_REASON_LABELS[reasonCode as ContentReviewReasonCode] ??
+          null)
+        : null,
+      reasonNote,
+      when: this.formatUserFacingTime(),
+    });
   }
 
   emitIntegrityAlert(event: string, metadata: Record<string, unknown>) {

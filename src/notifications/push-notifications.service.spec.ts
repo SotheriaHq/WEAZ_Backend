@@ -147,7 +147,7 @@ describe('PushNotificationsService', () => {
     expect(client.sendPushNotificationsAsync).not.toHaveBeenCalled();
   });
 
-  it('uses generic body when preview is disabled', async () => {
+  it('hides the content but keeps the meaning when preview is disabled', async () => {
     prisma.pushDeviceToken.findMany.mockResolvedValue([makeToken()]);
 
     const result = await service.deliverAfterNotificationCreated({
@@ -169,8 +169,10 @@ describe('PushNotificationsService', () => {
     expect(client.sendPushNotificationsAsync).toHaveBeenCalledWith([
       expect.objectContaining({
         to: 'ExponentPushToken[abcdef1234567890]',
-        title: 'WIEZ',
-        body: 'Something new for you on WIEZ 👀',
+        // The type's own title and a per-type line; never the old
+        // "Something new for you on WIEZ" (SIT, Nov 2026).
+        title: 'New thread 🧵',
+        body: 'Wiez 👋 Someone threaded your work.',
         sound: 'default',
         data: expect.objectContaining({
           notificationId: notification.id,

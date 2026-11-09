@@ -37,7 +37,7 @@ it('defers distinct submission notices with loaded product names until the page 
   expect(notifications.create).not.toHaveBeenCalled();
   expect(notifications.createEvents).not.toHaveBeenCalled();
   expect(events[0].opts.payload.message).toContain(
-    'Your product "Current name 0" was submitted for review',
+    '“Current name 0” sent for review',
   );
   await service.flushContentSubmittedNotifications(events);
   expect(notifications.createEvents).toHaveBeenCalledTimes(1);

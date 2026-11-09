@@ -1,4 +1,9 @@
-import { createServer, get, type IncomingHttpHeaders, type Server as HttpServer } from 'http';
+import {
+  createServer,
+  get,
+  type IncomingHttpHeaders,
+  type Server as HttpServer,
+} from 'http';
 import type { AddressInfo } from 'net';
 import { Server } from 'socket.io';
 import { EventsGateway } from 'src/realtime/events.gateway';
@@ -23,7 +28,11 @@ describe('isHttpsRequest', () => {
     ['Express secure flag', { headers: {}, secure: true }, true],
     ['direct TLS socket', { headers: {}, socket: { encrypted: true } }, true],
     ['TLS proxy in front', { headers: { 'x-forwarded-proto': 'https' } }, true],
-    ['proxy chain, client hop first', { headers: { 'x-forwarded-proto': 'HTTPS, http' } }, true],
+    [
+      'proxy chain, client hop first',
+      { headers: { 'x-forwarded-proto': 'HTTPS, http' } },
+      true,
+    ],
     ['plain http', { headers: { 'x-forwarded-proto': 'http' } }, false],
     ['no signal at all', { headers: {} }, false],
   ])('%s', (_label, req, expected) => {
@@ -49,8 +58,12 @@ describe('securityHeadersFor', () => {
       { headers: { 'x-forwarded-proto': 'https' } },
       { contentSecurityPolicy: REALTIME_CONTENT_SECURITY_POLICY },
     );
-    expect(headers['Strict-Transport-Security']).toBe(STRICT_TRANSPORT_SECURITY);
-    expect(headers['Content-Security-Policy']).toBe(REALTIME_CONTENT_SECURITY_POLICY);
+    expect(headers['Strict-Transport-Security']).toBe(
+      STRICT_TRANSPORT_SECURITY,
+    );
+    expect(headers['Content-Security-Policy']).toBe(
+      REALTIME_CONTENT_SECURITY_POLICY,
+    );
   });
 });
 
@@ -73,39 +86,60 @@ describe('Socket.IO transport responses', () => {
   });
 
   const handshake = (headers: Record<string, string> = {}) =>
-    new Promise<{ status: number; headers: IncomingHttpHeaders }>((resolve, reject) => {
-      const req = get(
-        { host: '127.0.0.1', port, path: '/socket.io/?EIO=4&transport=polling', headers },
-        (res) => {
-          res.resume();
-          res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers }));
-        },
-      );
-      req.on('error', reject);
-    });
+    new Promise<{ status: number; headers: IncomingHttpHeaders }>(
+      (resolve, reject) => {
+        const req = get(
+          {
+            host: '127.0.0.1',
+            port,
+            path: '/socket.io/?EIO=4&transport=polling',
+            headers,
+          },
+          (res) => {
+            res.resume();
+            res.on('end', () =>
+              resolve({ status: res.statusCode ?? 0, headers: res.headers }),
+            );
+          },
+        );
+        req.on('error', reject);
+      },
+    );
 
   it('carries the security headers on the polling handshake', async () => {
     const res = await handshake();
     expect(res.status).toBe(200);
     expect(res.headers['x-frame-options']).toBe('DENY');
     expect(res.headers['x-content-type-options']).toBe('nosniff');
-    expect(res.headers['content-security-policy']).toBe(REALTIME_CONTENT_SECURITY_POLICY);
+    expect(res.headers['content-security-policy']).toBe(
+      REALTIME_CONTENT_SECURITY_POLICY,
+    );
     expect(res.headers['strict-transport-security']).toBeUndefined();
   });
 
   it('adds HSTS when the TLS proxy says the client used HTTPS', async () => {
     const res = await handshake({ 'X-Forwarded-Proto': 'https' });
-    expect(res.headers['strict-transport-security']).toBe(STRICT_TRANSPORT_SECURITY);
+    expect(res.headers['strict-transport-security']).toBe(
+      STRICT_TRANSPORT_SECURITY,
+    );
   });
 });
 
 describe('session cookies', () => {
   type CookieCall = { name: string; options: { secure?: boolean } };
 
-  const attach = (env: Record<string, string>, reqHeaders: Record<string, string>) => {
+  const attach = (
+    env: Record<string, string>,
+    reqHeaders: Record<string, string>,
+  ) => {
     const service = Object.create(TokenService.prototype) as {
       configService: { get: (key: string, fallback?: unknown) => unknown };
-      attachAuthCookies: (res: unknown, a: string, r: string, ttl: number) => void;
+      attachAuthCookies: (
+        res: unknown,
+        a: string,
+        r: string,
+        ttl: number,
+      ) => void;
     };
     service.configService = { get: (key, fallback) => env[key] ?? fallback };
     const calls: CookieCall[] = [];
@@ -120,7 +154,10 @@ describe('session cookies', () => {
 
   it('are Secure over HTTPS even when NODE_ENV is not production (SIT)', () => {
     const calls = attach({ NODE_ENV: 'sit' }, { 'x-forwarded-proto': 'https' });
-    expect(calls.map((c) => c.name).sort()).toEqual(['accessToken', 'refreshToken']);
+    expect(calls.map((c) => c.name).sort()).toEqual([
+      'accessToken',
+      'refreshToken',
+    ]);
     expect(calls.every((c) => c.options.secure === true)).toBe(true);
   });
 
