@@ -72,6 +72,8 @@ const NT_VERIFICATION_PHYSICAL_FAILED =
   'VERIFICATION_PHYSICAL_FAILED' as NotificationType;
 const NT_VERIFICATION_VISIT_ASSIGNED =
   'VERIFICATION_VISIT_ASSIGNED' as NotificationType;
+const NT_VERIFICATION_VIDEO_CALL_REQUESTED =
+  'VERIFICATION_VIDEO_CALL_REQUESTED' as NotificationType;
 const NT_VERIFICATION_REJECTED = 'VERIFICATION_REJECTED' as NotificationType;
 const NT_VERIFICATION_CANCELLED = 'VERIFICATION_CANCELLED' as NotificationType;
 const NT_VERIFICATION_CANCELLED_ADMIN =
@@ -1234,6 +1236,7 @@ export class NotificationRegistry {
       schema: Joi.object({
         brandId: Joi.string().required(),
         brandName: Joi.string().allow(null, '').optional(),
+        videoCallAllowed: Joi.boolean().optional(),
         documentsApprovedAt: Joi.string().optional(),
         targetUrl: Joi.string().optional(),
       }),
@@ -1243,10 +1246,15 @@ export class NotificationRegistry {
         indicate like a next phase thing"). The brand does nothing until an
         agent proposes times, so the next step is to expect them.
       */
-      formatter: () =>
-        'Your brand documents are approved. Last step: a short physical verification visit. We’ll send you times to choose from in WIEZ.',
+      // Free brands also hear they may choose a live video call instead.
+      formatter: (n: any) =>
+        n?.payload?.videoCallAllowed === true
+          ? 'Your brand documents are approved. Last step: a short physical verification visit, or a live video call if you prefer — we’ll send you times to choose from in WIEZ.'
+          : 'Your brand documents are approved. Last step: a short physical verification visit. We’ll send you times to choose from in WIEZ.',
       pushFormatter: (n: any) =>
-        `${wiezGreeting(n?.payload?.brandName, '🎉')} Your brand documents are approved. Last step: a short verification visit — we’ll send you times to choose from.`,
+        n?.payload?.videoCallAllowed === true
+          ? `${wiezGreeting(n?.payload?.brandName, '🎉')} Your brand documents are approved. Last step: a short verification visit or a live video call — we’ll send you times to choose from.`
+          : `${wiezGreeting(n?.payload?.brandName, '🎉')} Your brand documents are approved. Last step: a short verification visit — we’ll send you times to choose from.`,
     });
 
     registry.register({
@@ -1256,15 +1264,21 @@ export class NotificationRegistry {
         brandId: Joi.string().required(),
         slots: Joi.array().items(Joi.string()).optional(),
         note: Joi.string().allow(null, '').optional(),
+        mode: Joi.string().valid('IN_PERSON', 'VIDEO_CALL').optional(),
+        meetingUrl: Joi.string().allow(null, '').optional(),
         targetUrl: Joi.string().optional(),
       }),
       formatter: (n: any) => {
         const count = Array.isArray(n.payload?.slots)
           ? n.payload.slots.length
           : 0;
+        const what =
+          n.payload?.mode === 'VIDEO_CALL'
+            ? 'your verification video call'
+            : 'your verification visit';
         return count > 0
-          ? `Choose a time for your verification visit (${count} options)`
-          : 'Choose a time for your verification visit';
+          ? `Choose a time for ${what} (${count} options)`
+          : `Choose a time for ${what}`;
       },
     });
 
@@ -1345,12 +1359,19 @@ export class NotificationRegistry {
         brandName: Joi.string().allow(null, '').optional(),
         scheduledFor: Joi.string().allow(null).optional(),
         when: Joi.string().allow(null, '').optional(),
+        mode: Joi.string().valid('IN_PERSON', 'VIDEO_CALL').optional(),
+        meetingUrl: Joi.string().allow(null, '').optional(),
         targetUrl: Joi.string().optional(),
       }),
-      formatter: (n: any) =>
-        n.payload?.when
-          ? `Verification visit ${n.payload.when}`
-          : 'Your verification visit is coming up',
+      formatter: (n: any) => {
+        const video = n.payload?.mode === 'VIDEO_CALL';
+        if (n.payload?.when) {
+          return `${video ? 'Verification video call' : 'Verification visit'} ${n.payload.when}`;
+        }
+        return video
+          ? 'Your verification video call is coming up'
+          : 'Your verification visit is coming up';
+      },
     });
 
     registry.register({
@@ -1432,6 +1453,22 @@ export class NotificationRegistry {
         n.payload?.brandName
           ? `A verification visit for ${n.payload.brandName} is yours`
           : 'A verification visit was assigned to you',
+    });
+
+    // To the agent: a free brand asked for a video call instead of a visit.
+    registry.register({
+      type: NT_VERIFICATION_VIDEO_CALL_REQUESTED,
+      schema: Joi.object({
+        physicalVerificationId: Joi.string().required(),
+        brandId: Joi.string().required(),
+        brandName: Joi.string().allow(null, '').optional(),
+        note: Joi.string().allow(null, '').optional(),
+        targetUrl: Joi.string().optional(),
+      }),
+      formatter: (n: any) =>
+        n.payload?.brandName
+          ? `${n.payload.brandName} asked for a video call instead of a visit. Send call times with a link.`
+          : 'A brand asked for a video call instead of a visit. Send call times with a link.',
     });
 
     // VERIFICATION_REJECTED

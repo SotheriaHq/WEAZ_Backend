@@ -1136,6 +1136,8 @@ enum NotificationType {
   VERIFICATION_PHYSICAL_FAILED
   /// To the agent: this visit is yours.
   VERIFICATION_VISIT_ASSIGNED
+  /// To the agent: a free brand asked for a video call instead of a visit.
+  VERIFICATION_VIDEO_CALL_REQUESTED
   VERIFICATION_REVIEW_DELAYED
 
   // Product Reviews
@@ -3330,6 +3332,15 @@ model BrandPhysicalVerification {
   brandRespondedAt  DateTime?
   brandResponseNote String?
   rescheduleCount   Int                                @default(0)
+
+  /// How the check happens (owner, Nov 2026). A brand on the free plan may
+  /// switch to a live VIDEO_CALL, showing its workstation and tools; the agent
+  /// still uploads proof (screenshots from the call). Paid brands are visited.
+  mode                 PhysicalVerificationMode @default(IN_PERSON)
+  /// The call link the agent sends with video-call times.
+  meetingUrl           String?
+  /// When the brand asked for a video call instead of a visit.
+  videoCallRequestedAt DateTime?
 
   /// Reminder bookkeeping.
   ///
@@ -5753,6 +5764,12 @@ enum PhysicalVerificationBrandResponse {
   AGREED
   RESCHEDULE_REQUESTED
   DECLINED
+}
+
+/// How physical verification happens. VIDEO_CALL is for free brands only.
+enum PhysicalVerificationMode {
+  IN_PERSON
+  VIDEO_CALL
 }
 
 enum PhysicalVerificationProofKind {

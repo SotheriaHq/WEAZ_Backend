@@ -91,6 +91,9 @@ export class PhysicalVerificationCronService {
           brandName: row.brand.name,
           scheduledFor: row.selectedSlotAt?.toISOString() ?? null,
           when: window.label,
+          // A video call reminds about the call, and carries its link.
+          mode: row.mode,
+          meetingUrl: row.meetingUrl ?? null,
         };
         events.push({
           recipientId: row.brand.ownerId,

@@ -118,10 +118,11 @@ const VERIFICATION_PRESENTATION: Record<
     title: 'Verification approved 🎉',
     hiddenBody: 'Wiez 🎉 Your brand verification is approved.',
   },
+  // Visit or video call: one line that fits both.
   VERIFICATION_VISIT_PROPOSED: {
-    title: 'Pick a visit time 📅',
+    title: 'Pick a time 📅',
     hiddenBody:
-      'Wiez 👋 Times for your verification visit are ready. Open WIEZ to choose one.',
+      'Wiez 👋 Times for your verification are ready. Open WIEZ to choose one.',
   },
   VERIFICATION_VISIT_CONFIRMED: {
     title: 'Visit confirmed 📅',
@@ -147,9 +148,9 @@ const VERIFICATION_PRESENTATION: Record<
       'Wiez 👋 The verification visit was declined, so verification didn’t complete.',
   },
   VERIFICATION_VISIT_REMINDER: {
-    title: 'Visit coming up 📅',
+    title: 'Verification coming up 📅',
     hiddenBody:
-      'Wiez 👋 A verification visit is coming up. Open WIEZ for the time.',
+      'Wiez 👋 A verification appointment is coming up. Open WIEZ for the time.',
   },
   VERIFICATION_VISIT_RESPONSE_DUE: {
     title: 'Visit needs your answer 📅',
@@ -163,6 +164,11 @@ const VERIFICATION_PRESENTATION: Record<
   VERIFICATION_VISIT_ASSIGNED: {
     title: 'Visit assigned 🧭',
     hiddenBody: 'Wiez 👋 A verification visit was assigned to you.',
+  },
+  VERIFICATION_VIDEO_CALL_REQUESTED: {
+    title: 'Video call requested 🎥',
+    hiddenBody:
+      'Wiez 👋 A brand asked for a video call instead of a visit. Send call times with a link.',
   },
   VERIFICATION_PHYSICAL_PASSED: {
     title: 'You’re verified 🎉',

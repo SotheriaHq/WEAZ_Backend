@@ -16,6 +16,7 @@ import {
   PhysicalVerificationProofKind,
   PhysicalVerificationStatus,
   Prisma,
+  type PhysicalVerificationMode,
 } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
@@ -55,10 +56,34 @@ export const MIN_PROOFS_FOR_DECISION = 3;
 /** Beyond this the brand is not scheduling, it is avoiding. */
 export const MAX_RESCHEDULES = 2;
 
+/**
+ * When a brand may still swap the visit for a video call: any time before the
+ * check takes place — not once evidence is being recorded or a verdict exists.
+ */
+export const VIDEO_CALL_REQUEST_STATUSES: PhysicalVerificationStatus[] = [
+  PhysicalVerificationStatus.PENDING_ASSIGNMENT,
+  PhysicalVerificationStatus.ASSIGNED,
+  PhysicalVerificationStatus.SCHEDULE_PROPOSED,
+  PhysicalVerificationStatus.SCHEDULE_CONFIRMED,
+  PhysicalVerificationStatus.RESCHEDULE_REQUESTED,
+  PhysicalVerificationStatus.ON_HOLD,
+];
+
+const VIDEO_CALL: PhysicalVerificationMode = 'VIDEO_CALL';
+const IN_PERSON: PhysicalVerificationMode = 'IN_PERSON';
+const NT_VIDEO_CALL_REQUESTED =
+  'VERIFICATION_VIDEO_CALL_REQUESTED' as NotificationType;
+
 export interface ProposeVisitInput {
   /** ISO datetimes the agent can attend. The brand may pick only from these. */
   slots: string[];
   note?: string;
+  /**
+   * VIDEO_CALL offers call times instead of a visit — free brands only, and a
+   * `meetingUrl` is required. Omitted keeps the current mode.
+   */
+  mode?: PhysicalVerificationMode;
+  meetingUrl?: string;
 }
 
 export interface BrandVisitReplyInput {
@@ -155,7 +180,12 @@ export class PhysicalVerificationService {
       },
     });
     if (!row) throw new NotFoundException('Physical verification not found');
-    return { ...this.toSummary(row), proofs: row.proofs };
+    return {
+      ...this.toSummary(row),
+      proofs: row.proofs,
+      // Whether the agent may run this as a video call (free plan only).
+      videoCallAllowed: await this.videoCallAllowed(row.brandId),
+    };
   }
 
   /** What the brand sees: their own visit, and what they may do about it. */
@@ -176,6 +206,11 @@ export class PhysicalVerificationService {
       assignedAgentId: undefined,
       canRespond: row.status === PhysicalVerificationStatus.SCHEDULE_PROPOSED,
       remainingReschedules: Math.max(0, MAX_RESCHEDULES - row.rescheduleCount),
+      // Free brands may swap the visit for a live video call before it happens.
+      canRequestVideoCall:
+        row.mode !== VIDEO_CALL &&
+        VIDEO_CALL_REQUEST_STATUSES.includes(row.status) &&
+        (await this.videoCallAllowed(row.brandId)),
     };
   }
 
@@ -284,6 +319,28 @@ export class PhysicalVerificationService {
       );
     }
 
+    /*
+      A video call (free brands only) needs the link the brand will join.
+      Proposing a visit again switches back and clears the link.
+    */
+    const mode = input.mode ?? current.mode ?? IN_PERSON;
+    let meetingUrl: string | null = null;
+    if (mode === VIDEO_CALL) {
+      if (!(await this.videoCallAllowed(current.brandId))) {
+        throw new ForbiddenException(
+          'Video calls are for brands on the free plan. This brand is visited in person.',
+        );
+      }
+      meetingUrl = this.normalizeMeetingUrl(
+        input.meetingUrl ?? current.meetingUrl,
+      );
+      if (!meetingUrl) {
+        throw new BadRequestException(
+          'Add the call link (https://…) so the brand can join the video call',
+        );
+      }
+    }
+
     const updated = await this.prisma.brandPhysicalVerification.update({
       where: { id },
       data: {
@@ -291,6 +348,8 @@ export class PhysicalVerificationService {
         scheduleProposedAt: new Date(),
         scheduleProposedById: agentId,
         status: PhysicalVerificationStatus.SCHEDULE_PROPOSED,
+        mode,
+        meetingUrl,
         // A fresh offer clears the previous answer; the brand answers again.
         brandResponse: null,
         brandRespondedAt: null,
@@ -309,6 +368,8 @@ export class PhysicalVerificationService {
           brandId: updated.brandId,
           slots,
           note: input.note ?? null,
+          mode,
+          meetingUrl,
           targetUrl: '/studio/verification',
         },
       },
@@ -412,6 +473,91 @@ export class PhysicalVerificationService {
     }
 
     return this.getDetail(id);
+  }
+
+  /**
+   * A brand on the free plan asks for a live video call instead of a visit
+   * (owner, Nov 2026) — because no offered day works, or because it would
+   * rather show its workstation and tools on camera.
+   *
+   * Any visit times on the table no longer apply, so they are cleared and the
+   * visit returns to its agent (or the queue), who sends call times with a
+   * link. Proof is still required: the agent uploads screenshots from the
+   * call before a verdict, exactly as with photos from a visit.
+   */
+  async requestVideoCall(ownerId: string, id: string, note?: string) {
+    const row = await this.prisma.brandPhysicalVerification.findUnique({
+      where: { id },
+      include: { brand: { select: { id: true, name: true, ownerId: true } } },
+    });
+    if (!row) throw new NotFoundException('Physical verification not found');
+    if (row.brand.ownerId !== ownerId) {
+      throw new ForbiddenException('This visit belongs to another brand');
+    }
+    if (row.mode === VIDEO_CALL) {
+      throw new ConflictException('This verification is already a video call');
+    }
+    if (!VIDEO_CALL_REQUEST_STATUSES.includes(row.status)) {
+      throw new ConflictException(
+        'A video call can only be asked for before the visit takes place',
+      );
+    }
+    if (!(await this.videoCallAllowed(row.brandId))) {
+      throw new ForbiddenException(
+        'Video calls are for brands on the free plan. Your plan includes an in-person visit.',
+      );
+    }
+
+    const cleanNote = String(note ?? '').trim().slice(0, 500) || null;
+    await this.prisma.brandPhysicalVerification.update({
+      where: { id },
+      data: {
+        mode: VIDEO_CALL,
+        videoCallRequestedAt: new Date(),
+        brandResponseNote: cleanNote ?? row.brandResponseNote,
+        // The visit times no longer apply; the agent sends call times.
+        proposedSlots: Prisma.DbNull,
+        selectedSlotAt: null,
+        brandResponse: null,
+        brandRespondedAt: null,
+        reminderDayBeforeAt: null,
+        reminderHourBeforeAt: null,
+        awaitingReplyNudgedAt: null,
+        status: row.assignedAgentId
+          ? PhysicalVerificationStatus.ASSIGNED
+          : PhysicalVerificationStatus.PENDING_ASSIGNMENT,
+      },
+    });
+
+    if (row.assignedAgentId) {
+      await this.notifications.create(
+        row.assignedAgentId,
+        NT_VIDEO_CALL_REQUESTED,
+        {
+          actorId: ownerId,
+          payload: {
+            physicalVerificationId: id,
+            brandId: row.brandId,
+            brandName: row.brand.name,
+            note: cleanNote,
+            targetUrl: `/admin/verification/visits/${id}`,
+          },
+        },
+      );
+    }
+
+    return this.getForBrandOwner(ownerId);
+  }
+
+  /**
+   * Whether this brand may verify by video call: no paid plan in force (the
+   * free plan) — the same rule custom-order capacity uses.
+   */
+  async videoCallAllowed(brandId: string, now = new Date()): Promise<boolean> {
+    const paid = await this.prisma.brandSubscription.count({
+      where: { brandId, status: 'ACTIVE', currentPeriodEnd: { gt: now } },
+    });
+    return paid === 0;
   }
 
   /**
@@ -748,6 +894,18 @@ export class PhysicalVerificationService {
     return Array.from(seen).sort();
   }
 
+  /** An https call link, or null. The brand opens it, so nothing else passes. */
+  private normalizeMeetingUrl(value: unknown): string | null {
+    const raw = String(value ?? '').trim();
+    if (!raw || raw.length > 500) return null;
+    try {
+      const url = new URL(raw);
+      return url.protocol === 'https:' ? url.toString() : null;
+    } catch {
+      return null;
+    }
+  }
+
   private toSummary(row: {
     id: string;
     brandId: string;
@@ -762,6 +920,9 @@ export class PhysicalVerificationService {
     brandRespondedAt: Date | null;
     brandResponseNote: string | null;
     rescheduleCount: number;
+    mode?: PhysicalVerificationMode;
+    meetingUrl?: string | null;
+    videoCallRequestedAt?: Date | null;
     visitCompletedAt: Date | null;
     decidedAt: Date | null;
     decisionNotes: string | null;
@@ -788,6 +949,9 @@ export class PhysicalVerificationService {
       brandRespondedAt: row.brandRespondedAt?.toISOString() ?? null,
       brandResponseNote: row.brandResponseNote,
       rescheduleCount: row.rescheduleCount,
+      mode: row.mode ?? IN_PERSON,
+      meetingUrl: row.meetingUrl ?? null,
+      videoCallRequestedAt: row.videoCallRequestedAt?.toISOString() ?? null,
       visitCompletedAt: row.visitCompletedAt?.toISOString() ?? null,
       decidedAt: row.decidedAt?.toISOString() ?? null,
       decisionNotes: row.decisionNotes,

@@ -162,4 +162,47 @@ describe('brand verification pushes say what happened and what is next', () => {
     });
     expect(error).toBeUndefined();
   });
+
+  it('the video-call request reaches the agent with its own title and line', () => {
+    const type = 'VERIFICATION_VIDEO_CALL_REQUESTED' as NotificationType;
+    const presentation = getPushPresentation(type);
+    expect(presentation.title).toBe('Video call requested 🎥');
+    expect(presentation.hiddenBody).toMatch(
+      /^Wiez 👋 A brand asked for a video call instead of a visit/,
+    );
+    const config = NotificationRegistry.createDefault().getConfig(type)!;
+    expect(config.formatter({ payload: { brandName: 'Nuel' } })).toBe(
+      'Nuel asked for a video call instead of a visit. Send call times with a link.',
+    );
+  });
+
+  it('documents approved tells a free brand about the video call', () => {
+    const config =
+      NotificationRegistry.createDefault().getConfig(physicalRequired)!;
+    const notification = {
+      payload: { brandId: 'b1', brandName: "Ebi's Lines", videoCallAllowed: true },
+    };
+    expect(config.pushFormatter!(notification)).toContain(
+      'a short verification visit or a live video call',
+    );
+    expect(config.formatter(notification)).toContain(
+      'or a live video call if you prefer',
+    );
+  });
+
+  it('visit-time and reminder notices say "video call" for a call', () => {
+    const registry = NotificationRegistry.createDefault();
+    const proposed = registry.getConfig(
+      NotificationType.VERIFICATION_VISIT_PROPOSED,
+    )!;
+    expect(
+      proposed.formatter({ payload: { slots: ['a', 'b'], mode: 'VIDEO_CALL' } }),
+    ).toBe('Choose a time for your verification video call (2 options)');
+    const reminder = registry.getConfig(
+      NotificationType.VERIFICATION_VISIT_REMINDER,
+    )!;
+    expect(
+      reminder.formatter({ payload: { when: 'tomorrow', mode: 'VIDEO_CALL' } }),
+    ).toBe('Verification video call tomorrow');
+  });
 });
