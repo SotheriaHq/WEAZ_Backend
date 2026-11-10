@@ -64,13 +64,16 @@ async function main() {
     const intake = Object.assign(Object.create(CustomOrderQueueService.prototype), { prisma: {
       ...prisma, user: { findUnique: async () => ({ type: 'REGULAR', status: 'ACTIVE' }) },
     } });
-    await assert.rejects(intake.assertIntakeForBrands(stranger, [brand]), /CUSTOM_ORDER_INTAKE_UNAVAILABLE/);
+    // Owner, Nov 2026: a free brand takes custom orders too (one Active at a
+    // time, enforced at admission). Free, expired and cancelled all qualify;
+    // blocks, verification and owner status still refuse.
+    await intake.assertIntakeForBrands(stranger, [brand]);
     await client.query(`INSERT INTO "BrandSubscription" VALUES ($1,'THREAD','ACTIVE',now()+interval '1 day',now())`, [brand]);
     await intake.assertIntakeForBrands(stranger, [brand]);
     await client.query(`UPDATE "BrandSubscription" SET "currentPeriodEnd"=now()-interval '1 second'`);
-    await assert.rejects(intake.assertIntakeForBrands(stranger, [brand]), /CUSTOM_ORDER_INTAKE_UNAVAILABLE/);
+    await intake.assertIntakeForBrands(stranger, [brand]);
     await client.query(`UPDATE "BrandSubscription" SET "currentPeriodEnd"=now()+interval '1 day', status='CANCELLED'`);
-    await assert.rejects(intake.assertIntakeForBrands(stranger, [brand]), /CUSTOM_ORDER_INTAKE_UNAVAILABLE/);
+    await intake.assertIntakeForBrands(stranger, [brand]);
     await client.query(`UPDATE "BrandSubscription" SET status='ACTIVE'`);
     await client.query(`UPDATE "Brand" SET "customOrderIntakeBlockedAt"=now()`);
     await assert.rejects(intake.assertIntakeForBrands(stranger, [brand]), /CUSTOM_ORDER_INTAKE_UNAVAILABLE/);

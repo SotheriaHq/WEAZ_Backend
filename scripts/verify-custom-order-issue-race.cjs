@@ -486,10 +486,12 @@ async function main() {
     const queue = new CustomOrderQueueService(prisma, {}, {}, {});
     const capacityNow = new Date();
     queries.length = 0;
-    assert.equal(
-      (await queue.capacity(prisma, brand.id, capacityNow)).intakeAllowed,
-      false,
-    );
+    // Owner, Nov 2026: no paid plan in force = the free plan — custom orders
+    // open, ONE Active at a time (it used to be no intake at all).
+    const freeCap = await queue.capacity(prisma, brand.id, capacityNow);
+    assert.equal(freeCap.intakeAllowed, true);
+    assert.equal(freeCap.active, 1);
+    assert.equal(freeCap.tierKey, 'FREE');
     evidence.capacitySelectsPerGuard = queries.filter((query) =>
       /^\s*SELECT\b/i.test(query),
     ).length;
@@ -513,7 +515,10 @@ async function main() {
       data: { currentPeriodEnd: capacityNow },
     });
     const expiredCap = await queue.capacity(prisma, brand.id, capacityNow);
-    assert.equal(expiredCap.intakeAllowed, false);
+    // An expired paid period falls back to the free plan, not to no intake.
+    assert.equal(expiredCap.intakeAllowed, true);
+    assert.equal(expiredCap.active, 1);
+    assert.equal(expiredCap.tierKey, 'FREE');
     assert.equal(expiredCap.safetyAllowed, true);
     await prisma.brandSubscription.update({
       where: { id: agreement.id },
