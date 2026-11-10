@@ -6,6 +6,8 @@ import {
 } from '@nestjs/common';
 import { BrandMemberRole, BrandMemberStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { assertOperationBrand } from 'src/auth/access/operation-brand-binding';
+import { hasBrandOwnership, isActiveOwnerMembership } from './brand-ownership';
 import { BrandPermissionService } from './permissions/brand-permission.service';
 import {
   BRAND_PERMISSIONS,
@@ -32,6 +34,7 @@ export class BrandAccessService {
       throw new NotFoundException('Brand not found');
     }
 
+    assertOperationBrand(brand.id);
     return brand;
   }
 
@@ -110,24 +113,7 @@ export class BrandAccessService {
 
   async isBrandOwner(userId: string, brandId: string): Promise<boolean> {
     const brand = await this.resolveBrand(brandId);
-    if (brand.ownerId === userId) {
-      return true;
-    }
-
-    const membership = await this.prisma.brandMember.findUnique({
-      where: {
-        brandId_userId: {
-          brandId: brand.id,
-          userId,
-        },
-      },
-      select: { role: true, status: true },
-    });
-
-    return (
-      membership?.role === BrandMemberRole.OWNER &&
-      membership.status === BrandMemberStatus.ACTIVE
-    );
+    return hasBrandOwnership(this.prisma, userId, brand);
   }
 
   async canAccessBrand(userId: string, brandId: string): Promise<boolean> {
@@ -182,24 +168,8 @@ export class BrandAccessService {
     brandIdOrOwnerId: string,
   ): Promise<{ brandId: string; ownerId: string }> {
     const brand = await this.resolveBrand(brandIdOrOwnerId);
-    if (brand.ownerId !== userId) {
-      const membership = await this.prisma.brandMember.findUnique({
-        where: {
-          brandId_userId: {
-            brandId: brand.id,
-            userId,
-          },
-        },
-        select: { role: true, status: true },
-      });
-      const isOwnerMember =
-        membership?.role === BrandMemberRole.OWNER &&
-        membership.status === BrandMemberStatus.ACTIVE;
-      if (!isOwnerMember) {
-        throw new ForbiddenException(
-          'Only a brand owner can perform this action',
-        );
-      }
+    if (!(await hasBrandOwnership(this.prisma, userId, brand))) {
+      throw new ForbiddenException('Only a brand owner can perform this action');
     }
     return { brandId: brand.id, ownerId: brand.ownerId };
   }
@@ -344,23 +314,17 @@ export class BrandAccessService {
     }
 
     const memberships = Array.from(membershipByBrandId.values());
-    const activeOwner = memberships.find(
-      (membership) =>
-        membership.status === BrandMemberStatus.ACTIVE &&
-        membership.role === BrandMemberRole.OWNER,
-    );
+    const activeOwner = memberships.find(isActiveOwnerMembership);
     const activeMembership = memberships.find(
       (membership) => membership.status === BrandMemberStatus.ACTIVE,
     );
 
-    return {
-      activeBrandId:
-        ownedBrands[0]?.id ??
+    const activeBrandId = ownedBrands[0]?.id ??
         activeOwner?.brandId ??
         activeMembership?.brandId ??
-        null,
-      memberships,
-    };
+        null;
+    assertOperationBrand(activeBrandId);
+    return { activeBrandId, memberships };
   }
 
   async assertCanManageCatalog(

@@ -4,6 +4,7 @@ import { lockCheckoutSession } from './checkout-session-query';
 import type { NotificationEvent } from '../notifications/notification-batch-query';
 import { lockStandardPlacementThread, loadStandardPlacementContext } from './standard-order-message-query';
 import { nextMessageTimestamp, withMessagingTransaction } from '../messaging/messaging-transaction.util';
+import { savedPaymentMethodVersion } from './saved-payment-method-version';
 import {
   BadRequestException,
   ConflictException,
@@ -1100,19 +1101,16 @@ export class PaymentService implements OnModuleInit {
 
   /** Server-only bridge: caller must obtain recurring consent before charging. */
   async getSubscriptionSavedCard(userId: string, savedCardId: string) {
-    const authorization = await this.resolveSavedPaystackAuthorization(
-      userId,
-      savedCardId,
-    );
-    const canonicalId = await this.resolveCanonicalSavedPaymentMethodId(
-      userId,
-      savedCardId,
-    );
-    const card = canonicalId
-      ? await this.prisma.savedPaymentMethod.findFirst({
-          where: { id: canonicalId, buyerId: userId, status: 'ACTIVE' },
-        })
-      : null;
+    const id = this.normalizeSavedCardIdentifier(savedCardId);
+    const card = id ? await this.prisma.savedPaymentMethod.findFirst({
+      where: { id, buyerId: userId, status: 'ACTIVE', provider: 'PAYSTACK', paymentMethod: PaymentMethod.PAYSTACK },
+    }) : null;
+    if (!card) throw new BadRequestException('The selected saved card is no longer available.');
+    const metadata = this.asObject(card.providerAuthorizationMeta);
+    const authorizationCode = this.decryptSavedPaymentMethodAuthorizationCode(card.providerAuthorizationCodeEncrypted);
+    const authorizationEmail = this.normalizeCardText(metadata.authorizationEmail);
+    if (!authorizationCode || metadata.reusable === false)
+      throw new BadRequestException('Reauthorize this card through secure checkout before using it for subscriptions.');
     if (
       card?.expYear &&
       card.expMonth &&
@@ -1123,11 +1121,12 @@ export class PaymentService implements OnModuleInit {
         'This card has expired. Choose another card.',
       );
     }
-    if (!authorization.authorizationEmail)
+    if (!authorizationEmail)
       throw new BadRequestException(
         'Reauthorize this card through secure checkout before using it for subscriptions.',
       );
-    return { ...authorization, savedPaymentMethodId: canonicalId };
+    return { authorizationCode, authorizationEmail, savedPaymentMethodId: card.id,
+      credentialVersion: savedPaymentMethodVersion(card) };
   }
 
   /** Called only with the authorization from an amount/reference-verified capture. */
@@ -5507,7 +5506,7 @@ export class PaymentService implements OnModuleInit {
     }
 
     const iv = randomBytes(12);
-    const cipher = createCipheriv('aes-256-gcm', key, iv);
+    const cipher = createCipheriv('aes-256-gcm', key, iv, { authTagLength: 16 });
     const encrypted = Buffer.concat([
       cipher.update(raw, 'utf8'),
       cipher.final(),
@@ -5530,19 +5529,24 @@ export class PaymentService implements OnModuleInit {
     }
 
     try {
-      const [ivText, tagText, encryptedText] = payload.split('.');
-      if (!ivText || !tagText || !encryptedText) {
+      if (payload.length > 16384) return null;
+      const [ivText, tagText, encryptedText, extra] = payload.split('.');
+      if (!ivText || !tagText || !encryptedText || extra !== undefined) {
         return null;
       }
+      const iv = Buffer.from(ivText, 'base64'), tag = Buffer.from(tagText, 'base64'), encrypted = Buffer.from(encryptedText, 'base64');
+      if (iv.length !== 12 || tag.length !== 16 || !encrypted.length || iv.toString('base64') !== ivText ||
+        tag.toString('base64') !== tagText || encrypted.toString('base64') !== encryptedText) return null;
 
       const decipher = createDecipheriv(
         'aes-256-gcm',
         key,
-        Buffer.from(ivText, 'base64'),
+        iv,
+        { authTagLength: 16 },
       );
-      decipher.setAuthTag(Buffer.from(tagText, 'base64'));
+      decipher.setAuthTag(tag);
       const decrypted = Buffer.concat([
-        decipher.update(Buffer.from(encryptedText, 'base64')),
+        decipher.update(encrypted),
         decipher.final(),
       ]);
       return decrypted.toString('utf8');

@@ -15,6 +15,7 @@ import {
   VerificationAuthorityType,
   VerificationIdDocumentType,
   VerificationSignatureMethod,
+  Prisma,
 } from '@prisma/client';
 import type { BrandVerificationAttempt } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -476,7 +477,6 @@ export class BrandVerificationService {
       });
     }
 
-    await this.validateVerificationDocuments(ownerUserId, dto);
     await this.ensureNinNotApprovedElsewhere(dto.ownerNin, brand.id);
     const resolvedOwnerPhoneNumber =
       this.normalizePhoneNumber(dto.ownerPhoneNumber) ||
@@ -492,16 +492,14 @@ export class BrandVerificationService {
     const attemptNumber = (brand.verificationAttemptNumber ?? 0) + 1;
     const now = new Date();
     const rejectionReasons: RejectionReasonRecord[] = [];
-    const evidenceManifest = await this.buildEvidenceManifest(ownerUserId, [
-      dto.ownerPhotoKey,
-      dto.idDocumentFrontKey,
-      dto.idDocumentBackKey,
-      dto.cacCertificateKey,
-      dto.authorityProofKey,
-      dto.letterKey,
-    ]);
-
     await this.prisma.$transaction(async (tx) => {
+      const current = await this.lockVerificationBrand(tx, brand);
+      this.assertCanSubmit({ ...brand, ...current });
+      const evidenceManifest = await this.buildEvidenceManifest(
+        tx,
+        ownerUserId,
+        this.verificationDocumentKeys(dto),
+      );
       await tx.brandVerificationAttempt.create({
         data: {
           id: randomUUID(),
@@ -708,7 +706,6 @@ export class BrandVerificationService {
         'Verification is not awaiting additional information',
       );
     }
-    const latestAttempt = await this.getLatestAttemptOrThrow(brand.id);
     const now = new Date();
     const patch: Record<string, unknown> = {};
     const resolvedOwnerPhoneNumber = this.normalizePhoneNumber(
@@ -782,19 +779,38 @@ export class BrandVerificationService {
     // Appending a row fixes both: the counter advances naturally, and every
     // submission keeps its own snapshot of what was filed and what had been
     // requested at the time.
-    const nextAttemptNumber = latestAttempt.attemptNumber + 1;
-    const {
-      id: _previousId,
-      createdAt: _previousCreatedAt,
-      updatedAt: _previousUpdatedAt,
-      ...carriedForward
-    } = latestAttempt;
-
     await this.prisma.$transaction(async (tx) => {
+      await this.lockVerificationBrand(tx, brand);
+      const latestAttempt = await tx.brandVerificationAttempt.findFirst({
+        where: { brandId: brand.id },
+        orderBy: [{ attemptNumber: 'desc' }],
+      });
+      if (!latestAttempt)
+        throw new NotFoundException('Verification attempt not found');
+      const nextAttemptNumber = latestAttempt.attemptNumber + 1;
+      const {
+        id: _previousId,
+        createdAt: _previousCreatedAt,
+        updatedAt: _previousUpdatedAt,
+        ...carriedForward
+      } = latestAttempt;
+      const merged = { ...carriedForward, ...patch };
+      const evidenceManifest = await this.buildEvidenceManifest(
+        tx,
+        brand.ownerId,
+        this.verificationDocumentKeys({
+          ...merged,
+          letterKey: merged.letterOfConfirmationKey,
+        } as Parameters<
+          BrandVerificationService['verificationDocumentKeys']
+        >[0]),
+        latestAttempt.evidenceManifest,
+      );
       await tx.brandVerificationAttempt.create({
         data: {
           ...carriedForward,
           ...patch,
+          evidenceManifest: evidenceManifest as any,
           id: randomUUID(),
           attemptNumber: nextAttemptNumber,
           status: BrandVerificationStatus.IN_REVIEW,
@@ -827,7 +843,7 @@ export class BrandVerificationService {
 
       if (Object.keys(profileIdentityData).length > 0) {
         await tx.userProfile.updateMany({
-          where: { userId: ownerId },
+          where: { userId: brand.ownerId },
           data: profileIdentityData,
         });
       }
@@ -1920,47 +1936,119 @@ export class BrandVerificationService {
     }
   }
 
-  private async validateVerificationDocuments(
-    ownerId: string,
-    dto: SubmitBrandVerificationDto,
-  ) {
+  private verificationDocumentKeys(dto: {
+    ownerPhotoKey?: string | null;
+    idDocumentFrontKey?: string | null;
+    cacCertificateKey?: string | null;
+    letterKey?: string | null;
+    authorityProofKey?: string | null;
+    idDocumentBackKey?: string | null;
+    authorityType?: VerificationAuthorityType | null;
+    idDocumentType?: VerificationIdDocumentType | null;
+  }) {
+    if (!dto.authorityType || !dto.idDocumentType)
+      throw new BadRequestException(
+        'Choose the identity document and authority type before submitting.',
+      );
     const requiredKeys = [
       dto.ownerPhotoKey,
       dto.idDocumentFrontKey,
       dto.cacCertificateKey,
       dto.letterKey,
-      dto.authorityType === VerificationAuthorityType.AUTHORIZED_REPRESENTATIVE
-        ? dto.authorityProofKey
-        : undefined,
-      this.requiresBackImage(dto.idDocumentType)
-        ? dto.idDocumentBackKey
-        : undefined,
     ];
-    await this.buildEvidenceManifest(ownerId, requiredKeys);
+    if (
+      dto.authorityType === VerificationAuthorityType.AUTHORIZED_REPRESENTATIVE
+    )
+      requiredKeys.push(dto.authorityProofKey);
+    if (this.requiresBackImage(dto.idDocumentType))
+      requiredKeys.push(dto.idDocumentBackKey);
+    if (requiredKeys.some((key) => typeof key !== 'string' || !key.trim()))
+      throw new BadRequestException(
+        'Upload every required verification document before submitting.',
+      );
+    return [...requiredKeys, dto.idDocumentBackKey, dto.authorityProofKey];
+  }
+
+  private async lockVerificationBrand(
+    tx: Prisma.TransactionClient,
+    expected: Awaited<
+      ReturnType<BrandVerificationService['getBrandByOwnerOrThrow']>
+    >,
+  ) {
+    await tx.$queryRaw`SELECT "_id" FROM "Brand" WHERE "_id" = ${expected.id}::uuid FOR UPDATE`;
+    const current = await tx.brand.findFirst({
+      where: { id: expected.id },
+      include: {
+        owner: {
+          select: {
+            id: true,
+            email: true,
+            status: true,
+            deactivatedAt: true,
+            userProfile: { select: canonicalUserProfileSelect },
+          },
+        },
+      },
+    });
+    if (
+      !current ||
+      current.ownerId !== expected.ownerId ||
+      current.verificationStatus !== expected.verificationStatus ||
+      current.verificationAttemptNumber !== expected.verificationAttemptNumber
+    )
+      throw new ConflictException(
+        'Verification changed. Reload its current status before submitting.',
+      );
+    return current;
   }
 
   private async buildEvidenceManifest(
+    tx: Prisma.TransactionClient,
     ownerId: string,
-    keys: Array<string | undefined>,
+    keys: Array<string | null | undefined>,
+    previousManifest?: Prisma.JsonValue,
   ) {
-    const filteredKeys = keys.filter((value): value is string =>
-      Boolean(value),
-    );
+    const filteredKeys = [
+      ...new Set(
+        keys.filter(
+          (value): value is string =>
+            typeof value === 'string' && value.trim().length > 0,
+        ),
+      ),
+    ];
+    if (filteredKeys.length)
+      await tx.$queryRaw(Prisma.sql`
+      SELECT "_id" FROM "FileUpload" WHERE "s3Key" IN (${Prisma.join(filteredKeys)})
+      ORDER BY "_id" FOR UPDATE
+    `);
     const files = filteredKeys.length
-      ? await this.prisma.fileUpload.findMany({
+      ? await tx.fileUpload.findMany({
           where: {
-            userId: ownerId,
-            s3Key: { in: [...new Set(filteredKeys)] },
+            s3Key: { in: filteredKeys },
             fileType: FileType.BRAND_VERIFICATION as any,
+            processingStatus: { not: 'FAILED' },
+            originalDeletedAt: null,
           },
         })
       : [];
     const byKey = new Map(files.map((file) => [file.s3Key, file]));
+    const previous = Array.isArray(previousManifest) ? previousManifest : [];
     const rows = filteredKeys.map((key) => {
       const file = byKey.get(key);
-      if (!file)
+      if (
+        !file ||
+        (file.userId !== ownerId &&
+          !previous.some(
+            (entry) =>
+              entry &&
+              typeof entry === 'object' &&
+              !Array.isArray(entry) &&
+              entry.fileId === file.id &&
+              entry.s3Key === file.s3Key,
+          ))
+      )
         throw new BadRequestException(
-          `Verification file does not belong to this brand owner: ${key}`,
+          'Choose available verification documents uploaded by this brand owner.',
         );
       return file;
     });

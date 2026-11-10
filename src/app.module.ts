@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
+import { AdaptiveAccessModule } from './auth/access/adaptive-access.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ViewCountingModule } from './view-counting/view-counting.module';
 import { ConfigModule } from '@nestjs/config';
@@ -81,6 +82,7 @@ const isHardProduction =
     MonitoringModule,
     HealthModule,
     AuthModule,
+    AdaptiveAccessModule,
     RateLimitingModule,
     UploadModule,
     BrandsModule,

@@ -1,4 +1,4 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { EmailPriority, Role, UserStatus } from '@prisma/client';
 
 import { AuthService } from './auth.service';
@@ -34,6 +34,7 @@ describe('AuthService password reset hardening', () => {
 
   const createService = () => {
     mockPrisma = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       user: {
         findUnique: jest.fn(),
         update: jest.fn(),
@@ -301,7 +302,7 @@ describe('AuthService password reset hardening', () => {
     );
   });
 
-  it('increments authVersion for authenticated password changes while preserving the current refresh session', async () => {
+  it('does not mutate a password without the bound session and exact-action approval', async () => {
     mockPrisma.user.findUnique.mockResolvedValue(activeResetUser);
     mockPasswordService.verifyPassword
       .mockResolvedValueOnce(true)
@@ -316,34 +317,13 @@ describe('AuthService password reset hardening', () => {
         'BetterVault93!',
         'refresh-session.current-secret',
       ),
-    ).resolves.toEqual({ message: 'Password updated successfully' });
-
-    expect(mockPrisma.user.update).toHaveBeenCalledWith({
-      where: { id: 'user-1' },
-      data: {
-        password: 'changed-password-hash',
-        passwordCredentialStatus: 'ENABLED',
-        mustResetPassword: false,
-        authVersion: { increment: 1 },
-        failedLoginAttempts: 0,
-        lastFailedLoginAt: null,
-        loginLockedUntil: null,
-      },
-    });
-    expect(mockTokenService.revokeOtherRefreshTokens).toHaveBeenCalledWith(
-      'user-1',
-      'refresh-session.current-secret',
-    );
-    expect(mockEmailService.send).toHaveBeenCalledWith(
-      'user@example.com',
-      expect.stringContaining('security alert'),
-      expect.any(String),
-      expect.stringContaining('password was changed'),
-      expect.objectContaining({
-        recipientUserId: 'user-1',
-        scenarioKey: 'auth.password.changed',
-        priority: EmailPriority.P0_SECURITY,
-      }),
-    );
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    mockPasswordService.verifyPassword.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    await expect(service.changePasswordForAuthenticatedUser('user-1', 'CurrentPassword123!', 'BetterVault93!',
+      'refresh-session', { headers: {} } as any, { cookie: jest.fn() } as any)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    expect(mockTokenService.revokeOtherRefreshTokens).not.toHaveBeenCalled();
+    expect(mockEmailService.send).not.toHaveBeenCalled();
   });
 });

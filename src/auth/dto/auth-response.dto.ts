@@ -245,6 +245,7 @@ export class AuthProfileResponseDto {
   user: AuthUserResponseDto;
 }
 export interface AuthJwtClaims {
+  sid?: string;
   sub: string;
   username: string;
   role: 'SuperAdmin' | 'Admin' | 'User';

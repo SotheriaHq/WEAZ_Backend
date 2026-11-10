@@ -22,6 +22,10 @@ const res = {} as any;
 
 describe('StudioHandoffService', () => {
   const prisma = {
+    $queryRaw: jest.fn().mockResolvedValue([]),
+    user: { findUnique: jest.fn() },
+    refreshToken: { findFirst: jest.fn() },
+    $transaction: jest.fn(),
     studioHandoffCode: {
       create: jest.fn(),
       findUnique: jest.fn(),
@@ -39,6 +43,9 @@ describe('StudioHandoffService', () => {
     (bcrypt.hash as jest.Mock).mockResolvedValue('hashed-secret');
     (bcrypt.compare as jest.Mock).mockResolvedValue(true);
     prisma.studioHandoffCode.deleteMany.mockResolvedValue({ count: 0 });
+    prisma.$transaction.mockImplementation(callback => callback(prisma));
+    prisma.user.findUnique.mockResolvedValue({ status: 'ACTIVE', type: 'BRAND', authVersion: 0 });
+    prisma.refreshToken.findFirst.mockResolvedValue({ id: 'phone-session' });
     tokenService.generateWebSessionForUserId.mockResolvedValue({
       accessToken: 'access',
     });
@@ -105,7 +112,7 @@ describe('StudioHandoffService', () => {
 
   it('creates one-time handoff codes with hashed secret only', async () => {
     const result = await service.create(
-      { id: 'user-1', type: 'BRAND' },
+      { id: 'user-1', type: 'BRAND', sid: 'phone-session', authVersion: 0 },
       '/studio/store',
       req,
     );
@@ -117,6 +124,8 @@ describe('StudioHandoffService', () => {
           codeHash: 'hashed-secret',
           userId: 'user-1',
           intendedPath: '/studio/store',
+          sourceSessionId: 'phone-session',
+          sourceAuthVersion: 0,
         }),
       }),
     );
@@ -127,7 +136,7 @@ describe('StudioHandoffService', () => {
 
   it('creates a valid brand handoff for the Studio overview', async () => {
     const result = await service.create(
-      { id: 'user-1', type: 'BRAND' },
+      { id: 'user-1', type: 'BRAND', sid: 'phone-session', authVersion: 0 },
       '/studio',
       req,
     );
@@ -147,7 +156,7 @@ describe('StudioHandoffService', () => {
 
   it('allows supported studio tab routes', async () => {
     const result = await service.create(
-      { id: 'user-1', type: 'BRAND' },
+      { id: 'user-1', type: 'BRAND', sid: 'phone-session', authVersion: 0 },
       '/studio?tab=orders',
       req,
     );
@@ -209,6 +218,7 @@ describe('StudioHandoffService', () => {
       'user-1',
       req,
       res,
+      'code-id',
     );
     expect(result).toEqual({
       accessToken: 'access',
@@ -226,7 +236,7 @@ describe('StudioHandoffService', () => {
       intendedPath: '/studio/store',
       user: { type: 'BRAND', status: 'ACTIVE' },
     });
-    prisma.studioHandoffCode.updateMany.mockResolvedValue({ count: 0 });
+    tokenService.generateWebSessionForUserId.mockRejectedValueOnce(new UnauthorizedException('Handoff was already consumed'));
 
     await expect(
       service.exchange('code-id.secret', req, res),

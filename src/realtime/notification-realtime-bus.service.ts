@@ -6,13 +6,16 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createClient, type RedisClientType } from 'redis';
-import { EventsGateway } from './events.gateway';
+import { resourceUuid } from 'src/common/content-audience';
 
 export type NotificationRealtimeEventName =
   | 'notification.created'
   | 'notification.deleted'
   | 'order.updated'
-  | 'custom-order.updated';
+  | 'custom-order.updated'
+  | 'thread.created' | 'thread.removed' | 'thread.updated'
+  | 'comment.created' | 'comment.deleted' | 'comment.threaded'
+  | 'message.created' | 'message.delivered' | 'message.read';
 
 export type NotificationRealtimeBusEvent = {
   event: NotificationRealtimeEventName;
@@ -33,10 +36,20 @@ export class NotificationRealtimeBusService
   private subscriber: RedisClientType | null = null;
   private subscriberReady = false;
   private lastRedisErrorLogAt = 0;
+  private delivery?: (event: NotificationRealtimeBusEvent) => Promise<boolean>;
+  private closed = false;
+  private readonly pending: Array<{ event: NotificationRealtimeBusEvent; bytes: number; resolve: (value: boolean) => void }> = [];
+  private pendingBytes = 0;
+  private readonly activeRooms = new Set<string>();
+
+  registerLocalDelivery(delivery: NonNullable<NotificationRealtimeBusService['delivery']>) {
+    if (this.delivery) throw new Error('Realtime delivery is already registered');
+    this.delivery = delivery;
+    return () => { if (this.delivery === delivery) this.delivery = undefined; };
+  }
 
   constructor(
     private readonly config: ConfigService,
-    private readonly events: EventsGateway,
   ) {}
 
   async onModuleInit() {
@@ -53,8 +66,8 @@ export class NotificationRealtimeBusService
 
     try {
       await Promise.all([publisher.connect(), subscriber.connect()]);
-      await subscriber.subscribe(NOTIFICATION_REALTIME_CHANNEL, (message) => {
-        this.handleMessage(message);
+      await subscriber.subscribe(this.channelName, (message) => {
+        void this.handleMessage(message);
       });
 
       this.publisher = publisher;
@@ -76,6 +89,10 @@ export class NotificationRealtimeBusService
   }
 
   async onModuleDestroy() {
+    this.closed = true;
+    this.delivery = undefined;
+    for (const job of this.pending.splice(0)) job.resolve(false);
+    this.pendingBytes = 0;
     this.subscriberReady = false;
     await Promise.allSettled([
       this.closeRedisClient(this.publisher),
@@ -94,7 +111,7 @@ export class NotificationRealtimeBusService
     const published = await this.publish(normalized);
     if (published) {
       if (!this.subscriberReady) {
-        this.emitLocal(normalized);
+        await this.emitLocal(normalized);
       }
       return true;
     }
@@ -169,6 +186,10 @@ export class NotificationRealtimeBusService
     });
   }
 
+  private get channelName(): string {
+    return this.config.get<string>('NOTIFICATION_REALTIME_CHANNEL', NOTIFICATION_REALTIME_CHANNEL);
+  }
+
   private async publish(event: NotificationRealtimeBusEvent): Promise<boolean> {
     if (!this.publisher?.isReady) {
       return false;
@@ -181,7 +202,7 @@ export class NotificationRealtimeBusService
 
     try {
       await this.publisher.publish(
-        NOTIFICATION_REALTIME_CHANNEL,
+        this.channelName,
         JSON.stringify(normalized),
       );
       return true;
@@ -191,12 +212,13 @@ export class NotificationRealtimeBusService
     }
   }
 
-  private handleMessage(message: string) {
+  private async handleMessage(message: string) {
     try {
+      if (Buffer.byteLength(message, 'utf8') > 262144) return;
       const parsed = JSON.parse(message);
       const event = this.normalizeEvent(parsed);
       if (!event) return;
-      this.emitLocal(event);
+      await this.emitLocal(event);
     } catch (error) {
       this.logger.warn(
         `Invalid notification realtime bus message ignored: ${String(
@@ -218,35 +240,54 @@ export class NotificationRealtimeBusService
     const room = record.room;
     const payload = record.payload;
 
-    if (
-      event !== 'notification.created' &&
-      event !== 'notification.deleted' &&
-      event !== 'order.updated' &&
-      event !== 'custom-order.updated'
-    ) {
-      return null;
-    }
-    if (typeof room !== 'string' || !room.startsWith('USER:')) {
-      return null;
-    }
+    const userEvents = ['notification.created', 'notification.deleted', 'order.updated', 'custom-order.updated',
+      'thread.updated', 'message.created', 'message.delivered', 'message.read'];
+    const contentEvents = ['thread.created', 'thread.removed', 'comment.created', 'comment.deleted', 'comment.threaded'];
+    const parts = typeof room === 'string' ? room.split(':') : [];
+    if (parts.length !== 2 || !resourceUuid.test(parts[1])) return null;
+    if (typeof event !== 'string' || !(userEvents.includes(event) ? parts[0] === 'USER' :
+      contentEvents.includes(event) && ['POST', 'COLLECTION', 'COLLECTION_MEDIA', 'DESIGN', 'PRODUCT', 'COMMENT'].includes(parts[0]))) return null;
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       return null;
     }
+    try { if (Buffer.byteLength(JSON.stringify({ event, room, payload }), 'utf8') > 262144) return null; }
+    catch { return null; }
 
     return {
-      event,
-      room,
+      event: event as NotificationRealtimeEventName,
+      room: room as string,
       payload: payload as Record<string, unknown>,
     };
   }
 
-  private emitLocal(event: NotificationRealtimeBusEvent): boolean {
-    const server = this.events.server;
-    if (!server) {
-      return false;
+  private emitLocal(event: NotificationRealtimeBusEvent): Promise<boolean> {
+    if (this.closed || !this.delivery) return Promise.resolve(false);
+    let serialized: string;
+    try { serialized = JSON.stringify(event); } catch { return Promise.resolve(false); }
+    const bytes = Buffer.byteLength(serialized, 'utf8');
+    // Ephemeral events retain their existing best-effort semantics. Bound both
+    // memory and DB concurrency; persisted application data remains canonical.
+    if (bytes > 262144 || this.pending.length >= 256 || this.pendingBytes + bytes > 4194304) {
+      this.logRedisError('backpressure', new Error('Realtime delivery queue is full'));
+      return Promise.resolve(false);
     }
-    server.to(event.room).emit(event.event, event.payload);
-    return true;
+    return new Promise(resolve => {
+      this.pending.push({ event: JSON.parse(serialized), bytes, resolve });
+      this.pendingBytes += bytes; this.drain();
+    });
+  }
+
+  private drain() {
+    if (this.closed || !this.delivery) return;
+    while (this.activeRooms.size < 4) {
+      const index = this.pending.findIndex(job => !this.activeRooms.has(job.event.room));
+      if (index < 0) return;
+      const job = this.pending.splice(index, 1)[0]; this.pendingBytes -= job.bytes;
+      this.activeRooms.add(job.event.room);
+      void Promise.resolve().then(() => this.delivery?.(job.event) ?? false).then(job.resolve, () => job.resolve(false)).finally(() => {
+        this.activeRooms.delete(job.event.room); this.drain();
+      });
+    }
   }
 
   private async closeRedisClient(client: RedisClientType | null) {

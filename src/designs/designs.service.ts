@@ -262,8 +262,8 @@ export class DesignsService {
     return result;
   }
 
-  async getMyDraftDesigns(userId: string) {
-    const result = await this.collectionsService.getMyDraftCollections(userId);
+  async getMyDraftDesigns(userId: string, options: { cursor?: string; limit?: string | number } = {}) {
+    const result = await this.collectionsService.getMyDraftCollections(userId, { ...options, domain: 'DESIGN' });
     return DesignResponseMapper.fromLegacyCollectionList(result);
   }
 

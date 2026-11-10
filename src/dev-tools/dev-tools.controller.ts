@@ -6,21 +6,33 @@ import {
   UploadedFiles,
   BadRequestException,
   ForbiddenException,
+  UseGuards,
 } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 import { isSentryEnabled } from 'src/common/observability/sentry.instrument';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { DevToolsService } from './dev-tools.service';
 import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
-import { IsPublic } from 'src/auth/decorator/is-public.decorator';
+import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
+import { RolesGuard } from 'src/auth/guard/role.guard';
+import { Roles } from 'src/auth/decorator/roles.decorator';
+import { Role } from '@prisma/client';
+import { DIRECT_UPLOAD_HARD_LIMIT_BYTES } from 'src/upload/upload-policy';
+import { FileType } from 'src/upload/upload.enums';
+import { metadataOnlyUploadStorage } from './metadata-only-upload.storage';
+import { ReadOnlyResponse } from 'src/auth/decorator/read-only-response.decorator';
+import { Throttle } from '@nestjs/throttler';
 
-// Dev-only module (not loaded in hard production); left open for local use.
-@IsPublic()
+// Excluded from hard production, but SIT is also internet-facing. Diagnostics
+// retain their functions behind the current privileged session and MFA gate.
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(Role.SuperAdmin)
 @Controller('dev-tools')
 export class DevToolsController {
   constructor(private readonly devToolsService: DevToolsService) {}
 
   @Get('debug-sentry')
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
   @ApiOperation({
     summary: 'DEV ONLY: Throws a test error to verify Sentry wiring',
   })
@@ -38,7 +50,11 @@ export class DevToolsController {
   }
 
   @Post('extract-metadata')
-  @UseInterceptors(FilesInterceptor('file', 20)) // Allow up to 20 files with the key 'file'
+  @ReadOnlyResponse()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @UseInterceptors(FilesInterceptor('file', 20, { storage: metadataOnlyUploadStorage, limits: {
+    files: 20, fields: 0, parts: 20, fileSize: DIRECT_UPLOAD_HARD_LIMIT_BYTES[FileType.POST_IMAGE],
+  } }))
   @ApiOperation({
     summary: 'DEV ONLY: Extracts metadata from one or more uploaded files',
     description:

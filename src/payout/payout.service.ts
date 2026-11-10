@@ -1,3 +1,4 @@
+import { withSecurityWrite, withSecurityTransaction } from 'src/auth/access/transactional-enforcement';
 import {
   BadRequestException,
   Injectable,
@@ -201,7 +202,7 @@ export class PayoutService {
 
     if (!valid) {
       const spent = activeCode.attempts + 1 >= PAYOUT_CODE_MAX_ATTEMPTS;
-      await this.prisma.emailLoginCode.update({
+      await withSecurityWrite(this.prisma, async (tx) => tx.emailLoginCode.update({
         where: { id: activeCode.id },
         data: {
           attempts: { increment: 1 },
@@ -209,7 +210,7 @@ export class PayoutService {
           // retried indefinitely against a live code.
           ...(spent ? { usedAt: now } : {}),
         },
-      });
+      }));
       throw new BadRequestException(
         spent
           ? 'Too many incorrect codes. Request a new payout code to try again.'
@@ -247,7 +248,7 @@ export class PayoutService {
     actorUserId: string,
     challengeCodeId: string,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    return withSecurityTransaction(this.prisma, async (tx) => {
       /*
         Claim the code inside the same transaction that creates the payout, with
         the same predicate it was found by. `updateMany` reporting one row is
@@ -395,7 +396,7 @@ export class PayoutService {
     const codeHash = await this.passwordService.hashPassword(code);
     const expiresAt = new Date(now.getTime() + PAYOUT_CODE_TTL_MS);
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       // Requesting again supersedes anything still in flight, so a brand who
       // changed the amount cannot confirm the previous one by accident.
       await tx.emailLoginCode.updateMany({

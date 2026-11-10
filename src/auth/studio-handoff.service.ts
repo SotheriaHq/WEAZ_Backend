@@ -45,6 +45,8 @@ const ALLOWED_STUDIO_PATHS = [
 type RequestUser = {
   id: string;
   type?: string | null;
+  authVersion?: number;
+  sid?: string;
 };
 
 @Injectable()
@@ -135,16 +137,22 @@ export class StudioHandoffService {
       })
       .catch(() => undefined);
 
-    await this.prisma.studioHandoffCode.create({
-      data: {
-        id,
-        codeHash,
-        userId: user.id,
-        intendedPath: normalizedPath,
-        userAgent: req.headers['user-agent'] ?? null,
-        ipAddress: this.extractClientIp(req),
-        expiresAt,
-      },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "_id" FROM "User" WHERE "_id" = ${user.id}::uuid FOR UPDATE`;
+      const authority = await tx.user.findUnique({ where: { id: user.id }, select: { authVersion: true, status: true, type: true } });
+      if (!authority || authority.status !== 'ACTIVE' || authority.type !== 'BRAND' || authority.authVersion !== user.authVersion || !user.sid) {
+        throw new UnauthorizedException('Source session is no longer valid');
+      }
+      const source = await tx.refreshToken.findFirst({ where: { id: user.sid, userId: user.id,
+        sessionVersion: 1, issuedAuthVersion: authority.authVersion, riskState: 'NORMAL', expiresAt: { gt: new Date() },
+        OR: [{ parentSessionId: null }, { parentSession: { userId: user.id, expiresAt: { gt: new Date() },
+          sessionVersion: 1, issuedAuthVersion: authority.authVersion, riskState: 'NORMAL' } }] } });
+      if (!source) throw new UnauthorizedException('Source session is no longer valid');
+      await tx.studioHandoffCode.create({ data: {
+        id, codeHash, userId: user.id, intendedPath: normalizedPath,
+        sourceSessionId: source.id, sourceAuthVersion: authority.authVersion,
+        userAgent: req.headers['user-agent'] ?? null, ipAddress: this.extractClientIp(req), expiresAt,
+      } });
     });
 
     return {
@@ -189,25 +197,11 @@ export class StudioHandoffService {
       throw new UnauthorizedException('User account is not active');
     }
 
-    const claim = await this.prisma.studioHandoffCode.updateMany({
-      where: {
-        id: handoff.id,
-        usedAt: null,
-        expiresAt: { gt: new Date() },
-      },
-      data: { usedAt: new Date() },
-    });
-
-    if (claim.count !== 1) {
-      throw new UnauthorizedException(
-        'Studio handoff code has already been used',
-      );
-    }
-
     const tokens = await this.tokenService.generateWebSessionForUserId(
       handoff.userId,
       req,
       res,
+      handoff.id,
     );
 
     return {

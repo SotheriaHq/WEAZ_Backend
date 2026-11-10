@@ -70,6 +70,7 @@ describe('AuthService Google auth foundation', () => {
 
   const createService = () => {
     mockPrisma = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       user: {
         findUnique: jest.fn(),
         create: jest.fn(),

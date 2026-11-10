@@ -30,7 +30,7 @@ function fixture(targetType = 'POST', initialCount = 1) {
   };
   const emit = jest.fn();
   const service: any = Object.assign(Object.create(CommentsV2Service.prototype), {
-    prisma, events: { server: { to: () => ({ emit }) } },
+    prisma, events: { emitAuthorized: emit },
     assertTargetExists: jest.fn(async () => ({ ownerId: 'owner' })),
   });
   return { service, prisma, tx, comment, targetUpdate, emit, counts: () => ({ count, replies }) };

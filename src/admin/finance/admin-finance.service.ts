@@ -1,3 +1,4 @@
+import { withSecurityWrite, withSecurityTransaction } from 'src/auth/access/transactional-enforcement';
 import {
   BadRequestException,
   Injectable,
@@ -1708,7 +1709,7 @@ export class AdminFinanceService {
         throw new NotFoundException('Escrow hold not found');
       }
 
-      const updated = await this.prisma.$transaction(async (tx) => {
+      const updated = await withSecurityTransaction(this.prisma, async (tx) => {
         const released =
           await this.standardOrderEscrowService.releaseFinalPortionNow(
             tx,
@@ -1768,7 +1769,7 @@ export class AdminFinanceService {
       throw new NotFoundException('Custom-order held allocation not found');
     }
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await withSecurityTransaction(this.prisma, async (tx) => {
       const released = await tx.customOrderLedgerAllocation.update({
         where: { id },
         data: {
@@ -1836,7 +1837,7 @@ export class AdminFinanceService {
       throw new BadRequestException('Freeze reason is required');
     }
 
-    const updated = await this.prisma.$transaction((tx) =>
+    const updated = await withSecurityTransaction(this.prisma, (tx) =>
       this.standardOrderEscrowService.freezeHold(
         tx,
         hold.orderId!,
@@ -1870,7 +1871,7 @@ export class AdminFinanceService {
       throw new NotFoundException('Escrow hold not found');
     }
 
-    const updated = await this.prisma.$transaction((tx) =>
+    const updated = await withSecurityTransaction(this.prisma, (tx) =>
       this.standardOrderEscrowService.unfreezeHold(tx, hold.orderId!),
     );
 
@@ -2159,7 +2160,7 @@ export class AdminFinanceService {
       newState?: unknown;
     },
   ) {
-    await (this.prisma as any).adminAuditLog.create({
+    await withSecurityWrite(this.prisma, async (tx) => (tx as any).adminAuditLog.create({
       data: {
         id: uuidv4(),
         actorUserId: actorId,
@@ -2171,7 +2172,7 @@ export class AdminFinanceService {
         ipAddress: req.socket?.remoteAddress ?? null,
         userAgent: req.headers['user-agent'] ?? null,
       },
-    });
+    }));
   }
 
   private roundMoney(value: number) {

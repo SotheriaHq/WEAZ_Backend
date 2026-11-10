@@ -13,7 +13,6 @@ import {
   ForbiddenException,
   ValidationPipe,
 } from '@nestjs/common';
-import { SkipThrottle } from '@nestjs/throttler';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { Role, UserStatus, UserType } from '@prisma/client';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
@@ -31,13 +30,6 @@ import { UpdateUserStatusDto } from './dto/update-user-status.dto';
 import { ReviewReactivationRequestDto } from './dto/review-reactivation-request.dto';
 import { ReissueTempPasswordDto } from './dto/reissue-temp-password.dto';
 import { resolveSearchQuery } from 'src/common/utils/search-query';
-
-const SKIP_ALL_THROTTLERS = {
-  default: true,
-  short: true,
-  medium: true,
-  long: true,
-} as const;
 
 @ApiTags('admin/users')
 @ApiBearerAuth()
@@ -83,7 +75,6 @@ export class AdminUsersController {
   }
 
   @Get('reactivation-requests')
-  @SkipThrottle(SKIP_ALL_THROTTLERS)
   @Roles(Role.SuperAdmin, Role.Admin)
   @RequirePermissions(ADMIN_PERMISSIONS.USERS_READ)
   @ApiOperation({
@@ -104,7 +95,6 @@ export class AdminUsersController {
   }
 
   @Patch('reactivation-requests/:requestId')
-  @SkipThrottle(SKIP_ALL_THROTTLERS)
   @Roles(Role.SuperAdmin, Role.Admin)
   @RequirePermissions(ADMIN_PERMISSIONS.USERS_DEACTIVATE)
   @ApiOperation({ summary: 'Approve or reject a reactivation request' })

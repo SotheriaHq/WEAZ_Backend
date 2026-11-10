@@ -20,6 +20,7 @@ import {
 
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { withSecurityTransaction } from '../auth/access/transactional-enforcement';
 
 /**
  * The visit: the last step of brand verification.
@@ -186,32 +187,37 @@ export class PhysicalVerificationService {
    * act from picking up your own work, and they carry different permissions.
    */
   async assign(id: string, agentId: string, assignedById: string) {
-    const current = await this.mustBeInStatus(id, [
-      PhysicalVerificationStatus.PENDING_ASSIGNMENT,
-      PhysicalVerificationStatus.ASSIGNED,
-    ]);
-
-    const agent = await this.prisma.user.findUnique({
-      where: { id: agentId },
-      select: { id: true, status: true, role: true },
-    });
-    if (!agent) throw new NotFoundException('Agent not found');
-    if (agent.status !== 'ACTIVE') {
-      throw new ForbiddenException(
-        'Cannot assign a visit to an inactive account',
+    const updated = await this.visitTransaction(id, async (tx) => {
+      await this.mustBeInStatus(
+        id,
+        [
+          PhysicalVerificationStatus.PENDING_ASSIGNMENT,
+          PhysicalVerificationStatus.ASSIGNED,
+        ],
+        tx,
       );
-    }
+      const agent = await tx.user.findUnique({
+        where: { id: agentId },
+        select: { id: true, status: true, role: true },
+      });
+      if (!agent) throw new NotFoundException('Agent not found');
+      if (agent.status !== 'ACTIVE') {
+        throw new ForbiddenException(
+          'Cannot assign a visit to an inactive account',
+        );
+      }
 
-    const updated = await this.prisma.brandPhysicalVerification.update({
-      where: { id },
-      data: {
-        assignedAgentId: agentId,
-        assignedById,
-        assignedAt: new Date(),
-        claimedAt: null,
-        status: PhysicalVerificationStatus.ASSIGNED,
-      },
-      include: { brand: { select: { id: true, name: true, ownerId: true } } },
+      return tx.brandPhysicalVerification.update({
+        where: { id },
+        data: {
+          assignedAgentId: agentId,
+          assignedById,
+          assignedAt: new Date(),
+          claimedAt: null,
+          status: PhysicalVerificationStatus.ASSIGNED,
+        },
+        include: { brand: { select: { id: true, name: true, ownerId: true } } },
+      });
     });
 
     await this.notifications.create(
@@ -228,7 +234,6 @@ export class PhysicalVerificationService {
       },
     );
 
-    void current;
     return this.getDetail(id);
   }
 
@@ -241,16 +246,18 @@ export class PhysicalVerificationService {
    */
   async claim(id: string, agentId: string) {
     // Conditional update, so two agents claiming at once cannot both win.
-    const result = await this.prisma.brandPhysicalVerification.updateMany({
-      where: { id, status: PhysicalVerificationStatus.PENDING_ASSIGNMENT },
-      data: {
-        assignedAgentId: agentId,
-        assignedById: null,
-        claimedAt: new Date(),
-        assignedAt: new Date(),
-        status: PhysicalVerificationStatus.ASSIGNED,
-      },
-    });
+    const result = await withSecurityTransaction(this.prisma, (tx) =>
+      tx.brandPhysicalVerification.updateMany({
+        where: { id, status: PhysicalVerificationStatus.PENDING_ASSIGNMENT },
+        data: {
+          assignedAgentId: agentId,
+          assignedById: null,
+          claimedAt: new Date(),
+          assignedAt: new Date(),
+          status: PhysicalVerificationStatus.ASSIGNED,
+        },
+      }),
+    );
     if (result.count !== 1) {
       throw new ConflictException(
         'This visit has already been assigned to someone else',
@@ -267,16 +274,6 @@ export class PhysicalVerificationService {
    * the agent knows every possible outcome the moment they propose.
    */
   async proposeVisit(id: string, agentId: string, input: ProposeVisitInput) {
-    const current = await this.mustBeInStatus(id, [
-      PhysicalVerificationStatus.ASSIGNED,
-      PhysicalVerificationStatus.SCHEDULE_PROPOSED,
-      PhysicalVerificationStatus.RESCHEDULE_REQUESTED,
-      PhysicalVerificationStatus.SCHEDULE_CONFIRMED,
-      // Reviving a postponed visit is proposing times again.
-      PhysicalVerificationStatus.ON_HOLD,
-    ]);
-    this.mustOwnVisit(current, agentId);
-
     const slots = this.normalizeSlots(input.slots);
     if (slots.length < 2) {
       throw new BadRequestException(
@@ -284,19 +281,33 @@ export class PhysicalVerificationService {
       );
     }
 
-    const updated = await this.prisma.brandPhysicalVerification.update({
-      where: { id },
-      data: {
-        proposedSlots: slots,
-        scheduleProposedAt: new Date(),
-        scheduleProposedById: agentId,
-        status: PhysicalVerificationStatus.SCHEDULE_PROPOSED,
-        // A fresh offer clears the previous answer; the brand answers again.
-        brandResponse: null,
-        brandRespondedAt: null,
-        selectedSlotAt: null,
-      },
-      include: { brand: { select: { id: true, name: true, ownerId: true } } },
+    const updated = await this.visitTransaction(id, async (tx) => {
+      const current = await this.mustBeInStatus(
+        id,
+        [
+          PhysicalVerificationStatus.ASSIGNED,
+          PhysicalVerificationStatus.SCHEDULE_PROPOSED,
+          PhysicalVerificationStatus.RESCHEDULE_REQUESTED,
+          PhysicalVerificationStatus.SCHEDULE_CONFIRMED,
+          PhysicalVerificationStatus.ON_HOLD,
+        ],
+        tx,
+      );
+      this.mustOwnVisit(current, agentId);
+      return tx.brandPhysicalVerification.update({
+        where: { id },
+        data: {
+          proposedSlots: slots,
+          scheduleProposedAt: new Date(),
+          scheduleProposedById: agentId,
+          status: PhysicalVerificationStatus.SCHEDULE_PROPOSED,
+          // A fresh offer clears the previous answer; the brand answers again.
+          brandResponse: null,
+          brandRespondedAt: null,
+          selectedSlotAt: null,
+        },
+        include: { brand: { select: { id: true, name: true, ownerId: true } } },
+      });
     });
 
     await this.notifications.create(
@@ -331,66 +342,106 @@ export class PhysicalVerificationService {
     id: string,
     input: BrandVisitReplyInput,
   ) {
-    const row = await this.prisma.brandPhysicalVerification.findUnique({
-      where: { id },
-      include: { brand: { select: { id: true, name: true, ownerId: true } } },
-    });
-    if (!row) throw new NotFoundException('Physical verification not found');
-    if (row.brand.ownerId !== ownerId) {
-      throw new ForbiddenException('This visit belongs to another brand');
-    }
-    if (row.status !== PhysicalVerificationStatus.SCHEDULE_PROPOSED) {
-      throw new ConflictException(
-        'There is no visit request waiting for an answer right now',
+    const result = await this.visitTransaction(id, async (tx) => {
+      const row = await tx.brandPhysicalVerification.findUnique({
+        where: { id },
+        include: { brand: { select: { id: true, name: true, ownerId: true } } },
+      });
+      if (!row) throw new NotFoundException('Physical verification not found');
+      if (row.brand.ownerId !== ownerId) {
+        throw new ForbiddenException('This visit belongs to another brand');
+      }
+      if (row.status !== PhysicalVerificationStatus.SCHEDULE_PROPOSED) {
+        throw new ConflictException(
+          'There is no visit request waiting for an answer right now',
+        );
+      }
+
+      const now = new Date();
+
+      if (input.response === PhysicalVerificationBrandResponse.DECLINED) {
+        await tx.brandPhysicalVerification.update({
+          where: { id },
+          data: {
+            brandResponse: PhysicalVerificationBrandResponse.DECLINED,
+            brandRespondedAt: now,
+            declineReason: input.note ?? null,
+            status: PhysicalVerificationStatus.DECLINED,
+            decidedAt: now,
+          },
+        });
+        await tx.brand.update({
+          where: { id: row.brandId },
+          data: {
+            verificationStatus: BrandVerificationStatus.REJECTED,
+            verificationReviewedAt: now,
+            verificationRejectionReason: 'Physical verification declined',
+            verificationRejectionCount: { increment: 1 },
+          },
+        });
+        return { declined: true as const, row };
+      }
+
+      const offered = this.normalizeSlots(
+        Array.isArray(row.proposedSlots) ? (row.proposedSlots as string[]) : [],
       );
-    }
-
-    const now = new Date();
-
-    if (input.response === PhysicalVerificationBrandResponse.DECLINED) {
-      return this.declineVisit(row, input.note ?? null, now);
-    }
-
-    const offered = this.normalizeSlots(
-      Array.isArray(row.proposedSlots) ? (row.proposedSlots as string[]) : [],
-    );
-    const picked = String(input.selectedSlot ?? '').trim();
-    if (!picked) {
-      throw new BadRequestException('Choose one of the times offered');
-    }
-    /*
+      const picked = String(input.selectedSlot ?? '').trim();
+      if (!picked) {
+        throw new BadRequestException('Choose one of the times offered');
+      }
+      /*
       The chosen slot must be one that was actually offered. Without this the
       brand could name any time at all and an agent would be committed to a
       day they never said they were free.
     */
-    if (!offered.includes(picked)) {
-      throw new BadRequestException(
-        'That time was not one of the options offered. Choose from the list.',
-      );
-    }
+      if (!offered.includes(picked)) {
+        throw new BadRequestException(
+          'That time was not one of the options offered. Choose from the list.',
+        );
+      }
 
-    const isReschedule =
-      input.response === PhysicalVerificationBrandResponse.RESCHEDULE_REQUESTED;
-    if (isReschedule && row.rescheduleCount >= MAX_RESCHEDULES) {
-      throw new ConflictException(
-        'No reschedules remain on this visit. Contact the reviewer.',
-      );
-    }
+      const isReschedule =
+        input.response ===
+        PhysicalVerificationBrandResponse.RESCHEDULE_REQUESTED;
+      if (isReschedule && row.rescheduleCount >= MAX_RESCHEDULES) {
+        throw new ConflictException(
+          'No reschedules remain on this visit. Contact the reviewer.',
+        );
+      }
 
-    const updated = await this.prisma.brandPhysicalVerification.update({
-      where: { id },
-      data: {
-        brandResponse: input.response,
-        brandRespondedAt: now,
-        brandResponseNote: input.note ?? null,
-        selectedSlotAt: new Date(picked),
-        rescheduleCount: isReschedule ? { increment: 1 } : undefined,
-        status: isReschedule
-          ? PhysicalVerificationStatus.RESCHEDULE_REQUESTED
-          : PhysicalVerificationStatus.SCHEDULE_CONFIRMED,
-      },
-      include: { brand: { select: { id: true, name: true, ownerId: true } } },
+      const updated = await tx.brandPhysicalVerification.update({
+        where: { id },
+        data: {
+          brandResponse: input.response,
+          brandRespondedAt: now,
+          brandResponseNote: input.note ?? null,
+          selectedSlotAt: new Date(picked),
+          rescheduleCount: isReschedule ? { increment: 1 } : undefined,
+          status: isReschedule
+            ? PhysicalVerificationStatus.RESCHEDULE_REQUESTED
+            : PhysicalVerificationStatus.SCHEDULE_CONFIRMED,
+        },
+        include: { brand: { select: { id: true, name: true, ownerId: true } } },
+      });
+      return { declined: false as const, updated, picked, isReschedule };
     });
+
+    if (result.declined) {
+      if (result.row.brand.ownerId)
+        await this.notifications.create(
+          result.row.brand.ownerId,
+          NotificationType.VERIFICATION_VISIT_DECLINED,
+          {
+            payload: {
+              physicalVerificationId: id,
+              brandId: result.row.brandId,
+              targetUrl: '/studio/verification',
+            },
+          },
+        );
+      return this.getForBrandOwner(ownerId);
+    }
+    const { updated, picked, isReschedule } = result;
 
     if (updated.assignedAgentId) {
       await this.notifications.create(
@@ -411,7 +462,7 @@ export class PhysicalVerificationService {
       );
     }
 
-    return this.getDetail(id);
+    return this.getForBrandOwner(ownerId);
   }
 
   /**
@@ -435,25 +486,29 @@ export class PhysicalVerificationService {
     agentId: string,
     input: { decision: 'ACCEPTED' | 'DECLINED'; note?: string },
   ) {
-    const current = await this.mustBeInStatus(id, [
-      PhysicalVerificationStatus.RESCHEDULE_REQUESTED,
-    ]);
-    this.mustOwnVisit(current, agentId);
-
     const accepted = input.decision === 'ACCEPTED';
-    const updated = await this.prisma.brandPhysicalVerification.update({
-      where: { id },
-      data: {
-        status: accepted
-          ? PhysicalVerificationStatus.SCHEDULE_CONFIRMED
-          : PhysicalVerificationStatus.ON_HOLD,
-        // A postponed visit has no date. Leaving the brand's pick in place
-        // would show a confirmed appointment nobody is coming to.
-        selectedSlotAt: accepted ? current.selectedSlotAt : null,
-        proposedSlots: accepted ? current.proposedSlots : Prisma.DbNull,
-        decisionNotes: input.note ?? current.decisionNotes,
-      },
-      include: { brand: { select: { id: true, name: true, ownerId: true } } },
+    const { updated, current } = await this.visitTransaction(id, async (tx) => {
+      const current = await this.mustBeInStatus(
+        id,
+        [PhysicalVerificationStatus.RESCHEDULE_REQUESTED],
+        tx,
+      );
+      this.mustOwnVisit(current, agentId);
+      const updated = await tx.brandPhysicalVerification.update({
+        where: { id },
+        data: {
+          status: accepted
+            ? PhysicalVerificationStatus.SCHEDULE_CONFIRMED
+            : PhysicalVerificationStatus.ON_HOLD,
+          // A postponed visit has no date. Leaving the brand's pick in place
+          // would show a confirmed appointment nobody is coming to.
+          selectedSlotAt: accepted ? current.selectedSlotAt : null,
+          proposedSlots: accepted ? current.proposedSlots : Prisma.DbNull,
+          decisionNotes: input.note ?? current.decisionNotes,
+        },
+        include: { brand: { select: { id: true, name: true, ownerId: true } } },
+      });
+      return { updated, current };
     });
 
     await this.notifications.create(
@@ -478,74 +533,61 @@ export class PhysicalVerificationService {
     return this.getDetail(id);
   }
 
-  /** Refusing the visit fails the attempt. */
-  private async declineVisit(
-    row: { id: string; brandId: string; brand: { ownerId: string } },
-    note: string | null,
-    now: Date,
-  ) {
-    await this.prisma.$transaction(async (tx) => {
-      await tx.brandPhysicalVerification.update({
-        where: { id: row.id },
-        data: {
-          brandResponse: PhysicalVerificationBrandResponse.DECLINED,
-          brandRespondedAt: now,
-          declineReason: note,
-          status: PhysicalVerificationStatus.DECLINED,
-          decidedAt: now,
-        },
-      });
-      await tx.brand.update({
-        where: { id: row.brandId },
-        data: {
-          verificationStatus: BrandVerificationStatus.REJECTED,
-          verificationReviewedAt: now,
-          verificationRejectionReason: 'Physical verification declined',
-          verificationRejectionCount: { increment: 1 },
-        },
-      });
-    });
-
-    if (row.brand.ownerId) {
-      await this.notifications.create(
-        row.brand.ownerId,
-        NotificationType.VERIFICATION_VISIT_DECLINED,
-        {
-          payload: {
-            physicalVerificationId: row.id,
-            brandId: row.brandId,
-            targetUrl: '/studio/verification',
-          },
-        },
-      );
-    }
-
-    return this.getDetail(row.id);
-  }
-
   /** Evidence from the visit. */
   async addProof(id: string, agentId: string, input: RecordProofInput) {
-    const current = await this.mustBeInStatus(id, [
-      PhysicalVerificationStatus.SCHEDULE_CONFIRMED,
-      PhysicalVerificationStatus.RESCHEDULE_REQUESTED,
-      PhysicalVerificationStatus.ASSIGNED,
-      PhysicalVerificationStatus.VISIT_COMPLETED,
-    ]);
-    this.mustOwnVisit(current, agentId);
-
     const fileKey = String(input.fileKey ?? '').trim();
     if (!fileKey) throw new BadRequestException('A file is required');
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
+      // Keep assignment/status and file ownership stable until the proof is
+      // recorded. File deletion takes this same FileUpload row lock.
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "_id" FROM "BrandPhysicalVerification"
+        WHERE "_id" = ${id}::uuid FOR UPDATE
+      `);
+      const current = await this.mustBeInStatus(
+        id,
+        [
+          PhysicalVerificationStatus.SCHEDULE_CONFIRMED,
+          PhysicalVerificationStatus.RESCHEDULE_REQUESTED,
+          PhysicalVerificationStatus.ASSIGNED,
+          PhysicalVerificationStatus.VISIT_COMPLETED,
+        ],
+        tx,
+      );
+      this.mustOwnVisit(current, agentId);
+      const [file] = await tx.$queryRaw<
+        Array<{
+          originalName: string;
+          mimeType: string;
+          size: number;
+          processingStatus: string;
+          originalDeletedAt: Date | null;
+        }>
+      >(Prisma.sql`
+        SELECT "originalName", "mimeType", "size", "processingStatus", "originalDeletedAt"
+        FROM "FileUpload"
+        WHERE "s3Key" = ${fileKey} AND "userId" = ${agentId}::uuid
+        FOR UPDATE
+      `);
+      if (
+        !file ||
+        file.processingStatus !== 'READY' ||
+        file.originalDeletedAt
+      ) {
+        throw new BadRequestException(
+          'Choose a completed file uploaded by you',
+        );
+      }
       await tx.physicalVerificationProof.create({
         data: {
           id: randomUUID(),
           physicalVerificationId: id,
           kind: input.kind ?? PhysicalVerificationProofKind.OTHER,
           fileKey,
-          fileName: input.fileName ?? null,
-          mimeType: input.mimeType ?? null,
-          sizeBytes: input.sizeBytes ?? null,
+          fileName: file.originalName,
+          mimeType: file.mimeType,
+          sizeBytes: file.size,
           caption: input.caption ?? null,
           uploadedById: agentId,
         },
@@ -565,12 +607,19 @@ export class PhysicalVerificationService {
   }
 
   async removeProof(id: string, proofId: string, agentId: string) {
-    const current = await this.mustBeInStatus(id, [
-      PhysicalVerificationStatus.VISIT_COMPLETED,
-    ]);
-    this.mustOwnVisit(current, agentId);
-    await this.prisma.physicalVerificationProof.deleteMany({
-      where: { id: proofId, physicalVerificationId: id },
+    await withSecurityTransaction(this.prisma, async (tx) => {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "_id" FROM "BrandPhysicalVerification" WHERE "_id" = ${id}::uuid FOR UPDATE`,
+      );
+      const current = await this.mustBeInStatus(
+        id,
+        [PhysicalVerificationStatus.VISIT_COMPLETED],
+        tx,
+      );
+      this.mustOwnVisit(current, agentId);
+      await tx.physicalVerificationProof.deleteMany({
+        where: { id: proofId, physicalVerificationId: id },
+      });
     });
     return this.getDetail(id);
   }
@@ -593,19 +642,6 @@ export class PhysicalVerificationService {
       failureReason?: string;
     },
   ) {
-    const current = await this.mustBeInStatus(id, [
-      PhysicalVerificationStatus.VISIT_COMPLETED,
-    ]);
-    this.mustOwnVisit(current, agentId);
-
-    const proofCount = await this.prisma.physicalVerificationProof.count({
-      where: { physicalVerificationId: id },
-    });
-    if (proofCount < MIN_PROOFS_FOR_DECISION) {
-      throw new BadRequestException(
-        `Attach at least ${MIN_PROOFS_FOR_DECISION} pieces of proof before recording a verdict`,
-      );
-    }
     if (
       input.outcome === 'FAILED' &&
       !String(input.failureReason ?? '').trim()
@@ -613,57 +649,78 @@ export class PhysicalVerificationService {
       throw new BadRequestException('A failed visit needs a reason');
     }
 
-    const now = new Date();
     const passed = input.outcome === 'PASSED';
+    const { row, now } = await withSecurityTransaction(
+      this.prisma,
+      async (tx) => {
+        await tx.$queryRaw(
+          Prisma.sql`SELECT "_id" FROM "BrandPhysicalVerification" WHERE "_id" = ${id}::uuid FOR UPDATE`,
+        );
+        const current = await this.mustBeInStatus(
+          id,
+          [PhysicalVerificationStatus.VISIT_COMPLETED],
+          tx,
+        );
+        this.mustOwnVisit(current, agentId);
+        const proofCount = await tx.physicalVerificationProof.count({
+          where: { physicalVerificationId: id },
+        });
+        if (proofCount < MIN_PROOFS_FOR_DECISION) {
+          throw new BadRequestException(
+            `Attach at least ${MIN_PROOFS_FOR_DECISION} pieces of proof before recording a verdict`,
+          );
+        }
+        const row = await tx.brandPhysicalVerification.findUniqueOrThrow({
+          where: { id },
+          include: {
+            brand: { select: { id: true, name: true, ownerId: true } },
+          },
+        });
+        const now = new Date();
+        await tx.brandPhysicalVerification.update({
+          where: { id },
+          data: {
+            status: passed
+              ? PhysicalVerificationStatus.PASSED
+              : PhysicalVerificationStatus.FAILED,
+            decidedAt: now,
+            decidedById: agentId,
+            decisionNotes: input.notes ?? null,
+            failureReason: passed ? null : (input.failureReason ?? null),
+          },
+        });
 
-    const row = await this.prisma.brandPhysicalVerification.findUniqueOrThrow({
-      where: { id },
-      include: { brand: { select: { id: true, name: true, ownerId: true } } },
-    });
+        await tx.brand.update({
+          where: { id: row.brandId },
+          data: passed
+            ? {
+                verificationStatus: BrandVerificationStatus.APPROVED,
+                verificationReviewedAt: now,
+                verificationBrandNameAtApproval: row.brand.name,
+                verificationRejectionReason: null,
+              }
+            : {
+                verificationStatus: BrandVerificationStatus.REJECTED,
+                verificationReviewedAt: now,
+                verificationRejectionReason:
+                  input.failureReason ?? 'Physical verification failed',
+                verificationRejectionCount: { increment: 1 },
+              },
+        });
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.brandPhysicalVerification.update({
-        where: { id },
-        data: {
-          status: passed
-            ? PhysicalVerificationStatus.PASSED
-            : PhysicalVerificationStatus.FAILED,
-          decidedAt: now,
-          decidedById: agentId,
-          decisionNotes: input.notes ?? null,
-          failureReason: passed ? null : (input.failureReason ?? null),
-        },
-      });
-
-      await tx.brand.update({
-        where: { id: row.brandId },
-        data: passed
-          ? {
-              verificationStatus: BrandVerificationStatus.APPROVED,
-              verificationReviewedAt: now,
-              verificationBrandNameAtApproval: row.brand.name,
-              verificationRejectionReason: null,
-            }
-          : {
-              verificationStatus: BrandVerificationStatus.REJECTED,
-              verificationReviewedAt: now,
-              verificationRejectionReason:
-                input.failureReason ?? 'Physical verification failed',
-              verificationRejectionCount: { increment: 1 },
-            },
-      });
-
-      await tx.brandVerificationAttempt.update({
-        where: { id: row.attemptId },
-        data: {
-          status: passed
-            ? BrandVerificationStatus.APPROVED
-            : BrandVerificationStatus.REJECTED,
-          reviewedAt: now,
-          reviewedById: agentId,
-        },
-      });
-    });
+        await tx.brandVerificationAttempt.update({
+          where: { id: row.attemptId },
+          data: {
+            status: passed
+              ? BrandVerificationStatus.APPROVED
+              : BrandVerificationStatus.REJECTED,
+            reviewedAt: now,
+            reviewedById: agentId,
+          },
+        });
+        return { row, now };
+      },
+    );
 
     this.telegramEvents?.record(
       verificationDecision({
@@ -704,11 +761,24 @@ export class PhysicalVerificationService {
 
   /* ── helpers ─────────────────────────────────────────────────────────── */
 
+  private visitTransaction<T>(
+    id: string,
+    work: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return withSecurityTransaction(this.prisma, async (tx) => {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "_id" FROM "BrandPhysicalVerification" WHERE "_id" = ${id}::uuid FOR UPDATE`,
+      );
+      return work(tx);
+    });
+  }
+
   private async mustBeInStatus(
     id: string,
     allowed: PhysicalVerificationStatus[],
+    client: Prisma.TransactionClient = this.prisma,
   ) {
-    const row = await this.prisma.brandPhysicalVerification.findUnique({
+    const row = await client.brandPhysicalVerification.findUnique({
       where: { id },
     });
     if (!row) throw new NotFoundException('Physical verification not found');

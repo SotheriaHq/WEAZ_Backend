@@ -120,8 +120,8 @@ export class DesignsController {
 
   @UseGuards(JwtAuthGuard)
   @Get('my/drafts')
-  async getMyDraftDesigns(@Req() req: any) {
-    return this.designsService.getMyDraftDesigns(req.user.id);
+  async getMyDraftDesigns(@Req() req: any, @Query('cursor') cursor?: string, @Query('limit') limit?: string) {
+    return this.designsService.getMyDraftDesigns(req.user.id, { cursor, limit });
   }
 
   @UseGuards(OptionalJwtAuthGuard)

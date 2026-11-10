@@ -1,48 +1,46 @@
 import { ConfigService } from '@nestjs/config';
-import { EventsGateway } from './events.gateway';
-import { NotificationRealtimeBusService } from './notification-realtime-bus.service';
+import { NotificationRealtimeBusService, type NotificationRealtimeBusEvent } from './notification-realtime-bus.service';
 
-describe('NotificationRealtimeBusService', () => {
-  it('falls back to local Socket.io emit when Redis publisher is unavailable', async () => {
-    const emit = jest.fn();
-    const to = jest.fn().mockReturnValue({ emit });
-    const service = new NotificationRealtimeBusService(
-      { get: jest.fn() } as unknown as ConfigService,
-      { server: { to } } as unknown as EventsGateway,
-    );
+const id = '11111111-1111-4111-8111-111111111111';
+const frame = (room = `USER:${id}`): NotificationRealtimeBusEvent => ({ event: 'notification.created', room, payload: { id: 'notice' } });
+const setup = () => new NotificationRealtimeBusService({ get: () => undefined } as unknown as ConfigService);
 
-    await expect(
-      service.publishOrEmit({
-        event: 'notification.created',
-        room: 'USER:user-id',
-        payload: { id: 'notification-id', isRead: false },
-      }),
-    ).resolves.toBe(true);
-
-    expect(to).toHaveBeenCalledWith('USER:user-id');
-    expect(emit).toHaveBeenCalledWith('notification.created', {
-      id: 'notification-id',
-      isRead: false,
-    });
+describe('authorized realtime fanout bus', () => {
+  it('passes local fallback through the registered authorization gate', async () => {
+    const service = setup(), delivery = jest.fn().mockResolvedValue(true); service.registerLocalDelivery(delivery);
+    await expect(service.publishOrEmit(frame())).resolves.toBe(true);
+    expect(delivery).toHaveBeenCalledWith(frame()); await service.onModuleDestroy();
   });
-
-  it('rejects malformed bus events before emitting locally', async () => {
-    const emit = jest.fn();
-    const to = jest.fn().mockReturnValue({ emit });
-    const service = new NotificationRealtimeBusService(
-      { get: jest.fn() } as unknown as ConfigService,
-      { server: { to } } as unknown as EventsGateway,
-    );
-
-    await expect(
-      service.publishOrEmit({
-        event: 'notification.created',
-        room: 'COLLECTION:collection-id',
-        payload: { id: 'notification-id' },
-      }),
-    ).resolves.toBe(false);
-
-    expect(to).not.toHaveBeenCalled();
-    expect(emit).not.toHaveBeenCalled();
+  it('fails closed without a registered delivery gate', async () => {
+    const service = setup(); await expect(service.publishOrEmit(frame())).resolves.toBe(false);
+    await service.onModuleDestroy();
+  });
+  it('rejects malformed rooms, cross-scope events and oversized payloads before dispatch', async () => {
+    const service = setup(), delivery = jest.fn(); service.registerLocalDelivery(delivery);
+    for (const value of [frame('USER:invalid'), frame(`USER:${id}:extra`), frame(`COLLECTION:${id}`),
+      { ...frame(), event: 'arbitrary.server.event' }, { ...frame(), payload: { large: 'a'.repeat(262145) } }])
+      await expect(service.publishOrEmit(value as NotificationRealtimeBusEvent)).resolves.toBe(false);
+    expect(delivery).not.toHaveBeenCalled(); await service.onModuleDestroy();
+  });
+  it('supports content updates and keeps unavailable delivery from falling back to a raw broadcast', async () => {
+    const service = setup(), delivery = jest.fn().mockResolvedValue(false); service.registerLocalDelivery(delivery);
+    const event: NotificationRealtimeBusEvent = { event: 'comment.created', room: `DESIGN:${id}`, payload: { commentId: id } };
+    await expect(service.publishOrEmit(event)).resolves.toBe(false); expect(delivery).toHaveBeenCalledTimes(1);
+    delivery.mockRejectedValueOnce(new Error('Authority unavailable'));
+    await expect(service.publishOrEmit(event)).resolves.toBe(false); expect(delivery).toHaveBeenCalledTimes(2);
+    await service.onModuleDestroy();
+  });
+  it('serializes each room and shutdown releases queued work', async () => {
+    const service = setup(); const releases: Array<(value: boolean) => void> = [];
+    const delivery = jest.fn(() => new Promise<boolean>(resolve => releases.push(resolve)));
+    service.registerLocalDelivery(delivery);
+    const first = service.publishOrEmit(frame()); await Promise.resolve(); await Promise.resolve();
+    const second = service.publishOrEmit({ ...frame(), payload: { id: 'second' } });
+    await Promise.resolve(); await Promise.resolve(); expect(delivery).toHaveBeenCalledTimes(1);
+    releases[0](true); await first; await Promise.resolve(); await Promise.resolve();
+    expect(delivery).toHaveBeenCalledTimes(2);
+    const queued = service.publishOrEmit(frame()); await service.onModuleDestroy();
+    await expect(queued).resolves.toBe(false); releases[1](true); await second;
+    await expect(service.publishOrEmit(frame())).resolves.toBe(false);
   });
 });

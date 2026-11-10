@@ -1,3 +1,4 @@
+import { withSecurityTransaction } from 'src/auth/access/transactional-enforcement';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { SystemConfigService } from 'src/admin/system-config/system-config.service';
@@ -276,7 +277,7 @@ export class CommissionService {
     };
 
     if (client === this.prisma) {
-      return this.prisma.$transaction((tx) => performWrite(tx));
+      return withSecurityTransaction(this.prisma, (tx) => performWrite(tx));
     }
 
     return performWrite(client);

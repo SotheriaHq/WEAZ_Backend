@@ -7,6 +7,7 @@ import { TokenService } from './helper/general.helper';
 import { ConfigService } from '@nestjs/config';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { StudioHandoffService } from './studio-handoff.service';
+import { SecuritySessionsService } from './security-sessions.service';
 
 describe('AuthController', () => {
   let controller: AuthController;
@@ -33,6 +34,7 @@ describe('AuthController', () => {
         { provide: TokenService, useValue: { rotateTokens: jest.fn() } },
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: NotificationsService, useValue: { create: jest.fn() } },
+        { provide: SecuritySessionsService, useValue: {} },
         {
           provide: StudioHandoffService,
           useValue: {

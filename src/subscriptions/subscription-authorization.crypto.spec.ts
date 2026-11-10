@@ -50,4 +50,31 @@ describe('subscription recurring authorization storage', () => {
     ).toBeNull();
     expect(decryptSubscriptionAuthorization(encrypted, 'brand-one')).toBeNull();
   });
+
+  it('rejects truncated tags, extra envelope components and noncanonical encoding', () => {
+    const encrypted = encryptSubscriptionAuthorization(
+      'AUTH_fixture',
+      'brand-one',
+    )!;
+    const parts = encrypted.split('.');
+    for (const length of [4, 8, 12, 15]) {
+      const shortened = [...parts];
+      shortened[2] = Buffer.from(parts[2], 'base64')
+        .subarray(0, length)
+        .toString('base64');
+      expect(
+        decryptSubscriptionAuthorization(shortened.join('.'), 'brand-one'),
+      ).toBeNull();
+    }
+    const noncanonical = [...parts];
+    noncanonical[1] += '=';
+    for (const value of [
+      `${encrypted}.`,
+      `${encrypted}.extra`,
+      noncanonical.join('.'),
+      'x'.repeat(16385),
+    ]) {
+      expect(decryptSubscriptionAuthorization(value, 'brand-one')).toBeNull();
+    }
+  });
 });

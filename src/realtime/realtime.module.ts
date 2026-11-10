@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { EventsGateway } from './events.gateway';
+import { NotificationRealtimeBusService } from './notification-realtime-bus.service';
 
 /**
  * The ONLY place `EventsGateway` is provided. Import this module; never list the
@@ -19,7 +20,7 @@ import { EventsGateway } from './events.gateway';
  * `realtime.module.spec.ts` fails if a module provides the gateway again.
  */
 @Module({
-  providers: [EventsGateway],
-  exports: [EventsGateway],
+  providers: [EventsGateway, NotificationRealtimeBusService],
+  exports: [EventsGateway, NotificationRealtimeBusService],
 })
 export class RealtimeModule {}

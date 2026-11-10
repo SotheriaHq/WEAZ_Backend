@@ -9,13 +9,17 @@ import {
   OnGatewayInit,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger } from '@nestjs/common';
+import { Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { applyRealtimeSecurityHeaders } from 'src/common/middleware/security-headers';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { CollectionVisibility } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { AuthJwtClaims } from 'src/auth/dto/auth-response.dto';
+import { resolveCurrentPrincipal } from 'src/auth/access/current-principal';
+import { getJwtVerificationSecrets } from 'src/common/config/jwt-secrets';
 import * as jwt from 'jsonwebtoken';
+import { contentAudience, resourceUuid, type ContentTarget } from 'src/common/content-audience';
+import { authorizedSockets } from './socket-authority';
+import { NotificationRealtimeBusService, type NotificationRealtimeBusEvent, type NotificationRealtimeEventName } from './notification-realtime-bus.service';
 
 const defaultWsOrigins = [
   'http://localhost:3000',
@@ -38,11 +42,12 @@ const wsAllowedOrigins = [
     credentials: true,
   },
 })
-export class EventsGateway
-  implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
-{
+export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, OnModuleDestroy, OnModuleInit {
   @WebSocketServer() server!: Server;
   private readonly logger = new Logger(EventsGateway.name);
+  private unregisterDelivery?: () => void;
+  private closed = false;
+  private readonly expiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly joinWindowMs = 10_000;
   private readonly maxJoinRequestsPerWindow = 30;
   private readonly maxRoomsPerSocket = 120;
@@ -54,7 +59,12 @@ export class EventsGateway
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    private readonly realtimeBus: NotificationRealtimeBusService,
   ) {}
+
+  onModuleInit() {
+    this.unregisterDelivery = this.realtimeBus.registerLocalDelivery(event => this.emitAuthorizedLocal(event));
+  }
 
   /**
    * Engine.IO answers `/socket.io/` on the raw HTTP server, before Express,
@@ -64,34 +74,58 @@ export class EventsGateway
    */
   afterInit(server: Server) {
     server?.engine?.on?.('headers', applyRealtimeSecurityHeaders);
+    // Namespace middleware finishes identity verification before the client can
+    // receive `connect` and immediately send its first room join.
+    server.use(async (client, next) => {
+      const userId = await this.authenticateSocket(client);
+      if (!userId) return next(new Error('Unauthorized'));
+      client.data.userId = userId;
+      next();
+    });
   }
 
   async handleConnection(client: Socket) {
-    const userId = await this.authenticateSocket(client);
+    const userId = client.data?.userId && client.data?.principalClaims ? client.data.userId : await this.authenticateSocket(client);
     if (!userId) {
       client.emit('join.denied', { reason: 'unauthorized' });
       client.disconnect(true);
       return;
     }
+    if (!client.connected) return;
     client.data.userId = userId;
+    this.scheduleExpiry(client);
+  }
+
+  private scheduleExpiry(client: Socket) {
+    const previous = this.expiryTimers.get(client.id);
+    if (previous) clearTimeout(previous);
+    const remaining = client.data.accessExpiresAt - Date.now();
+    if (remaining <= 0) { client.disconnect(true); return; }
+    const timer = setTimeout(() => {
+      this.expiryTimers.delete(client.id);
+      this.scheduleExpiry(client);
+    }, Math.min(remaining, 2_147_483_647));
+    timer.unref();
+    this.expiryTimers.set(client.id, timer);
   }
 
   handleDisconnect(client: Socket) {
     this.joinCounters.delete(client.id);
+    const timer = this.expiryTimers.get(client.id);
+    if (timer) clearTimeout(timer);
+    this.expiryTimers.delete(client.id);
+  }
+
+  onModuleDestroy() {
+    this.closed = true;
+    this.unregisterDelivery?.();
+    for (const timer of this.expiryTimers.values()) clearTimeout(timer);
+    this.expiryTimers.clear();
+    this.joinCounters.clear();
   }
 
   private get accessTokenCookieName(): string {
     return this.configService.get<string>('ACCESS_TOKEN_COOKIE', 'accessToken');
-  }
-
-  private get accessTokenSecret(): string {
-    const secret = this.configService.get<string>('JWT_ACCESS_SECRET');
-    if (!secret) {
-      throw new Error(
-        'JWT_ACCESS_SECRET must be configured for websocket auth',
-      );
-    }
-    return secret;
   }
 
   private extractCookieValue(cookieHeader: string | undefined, key: string) {
@@ -127,18 +161,16 @@ export class EventsGateway
       const rawToken = this.extractHandshakeToken(client);
       if (!rawToken) return null;
 
-      const claims = jwt.verify(
-        rawToken,
-        this.accessTokenSecret,
-      ) as AuthJwtClaims;
-      if (!claims?.sub) return null;
-
-      const user = await this.prisma.user.findUnique({
-        where: { id: claims.sub },
-        select: { id: true, isActive: true },
-      });
-      if (!user || user.isActive === 'Inactive') return null;
-      return user.id;
+      let claims: (AuthJwtClaims & jwt.JwtPayload) | undefined;
+      for (const secret of getJwtVerificationSecrets(this.configService)) {
+        try { claims = jwt.verify(rawToken, secret, { algorithms: ['HS256'] }) as AuthJwtClaims & jwt.JwtPayload; break; }
+        catch { /* Try the explicitly configured rotation key. */ }
+      }
+      if (!claims?.sub || !Number.isFinite(claims.exp)) return null;
+      const principal = await resolveCurrentPrincipal(this.prisma, claims);
+      client.data.principalClaims = claims;
+      client.data.accessExpiresAt = claims.exp * 1000;
+      return principal.id;
     } catch {
       return null;
     }
@@ -173,34 +205,6 @@ export class EventsGateway
     );
   }
 
-  private async canViewCollection(collectionId: string, userId?: string) {
-    // Guard invalid/empty ids early
-    if (!this.isValidUuid(collectionId)) return false;
-    try {
-      const c = await this.prisma.collection.findUnique({
-        where: { id: collectionId },
-        select: { ownerId: true, status: true, visibility: true },
-      });
-      if (!c || c.status !== 'PUBLISHED') return false;
-      if (c.visibility === CollectionVisibility.PUBLIC) return true;
-      if (userId && userId === c.ownerId) return true;
-      if (userId) {
-        const access = await this.prisma.collectionAccess.findUnique({
-          where: { collectionId_viewerId: { collectionId, viewerId: userId } },
-          select: { state: true },
-        });
-        return access?.state === 'APPROVED';
-      }
-      return false;
-    } catch (err: any) {
-      // Suppress noisy P2023 errors; treat as not viewable.
-      this.logger.debug(
-        `canViewCollection failed for id='${collectionId}': ${err?.code ?? err}`,
-      );
-      return false;
-    }
-  }
-
   @SubscribeMessage('join')
   handleJoin(
     @MessageBody() data: { room: string },
@@ -208,7 +212,11 @@ export class EventsGateway
   ) {
     const run = async () => {
       try {
-        const room = data?.room?.trim();
+        if (typeof data?.room === 'string' && data.room.length > 64) {
+          client.emit('join.denied', { reason: 'invalid_room' });
+          return;
+        }
+        const room = typeof data?.room === 'string' ? data.room.trim() : '';
         const userId = client.data?.userId as string | undefined;
         if (!room) return; // silently ignore blank
         if (!userId) {
@@ -219,6 +227,15 @@ export class EventsGateway
           client.emit('join.denied', { room, reason: 'rate_limited' });
           return;
         }
+        try {
+          if (!client.data.principalClaims || client.data.accessExpiresAt <= Date.now()) throw new Error('expired');
+          await resolveCurrentPrincipal(this.prisma, client.data.principalClaims);
+        } catch {
+          client.emit('join.denied', { reason: 'unauthorized' });
+          client.disconnect(true);
+          return;
+        }
+        if (!client.connected) return;
         if (!this.hasRoomCapacity(client, room)) {
           client.emit('join.denied', { room, reason: 'room_limit' });
           return;
@@ -233,45 +250,12 @@ export class EventsGateway
           client.emit('joined', { room });
           return;
         }
-        // COLLECTION / COLLECTION_MEDIA scoped joins
-        const [type, id] = room.split(':');
-        if (type === 'COLLECTION') {
-          if (!this.isValidUuid(id)) {
-            client.emit('join.denied', { room });
-            return;
-          }
-          const ok = await this.canViewCollection(id, userId);
-          if (!ok) return client.emit('join.denied', { room });
-          client.join(room);
-          client.emit('joined', { room });
-          return;
-        }
-        if (type === 'COLLECTION_MEDIA') {
-          if (!this.isValidUuid(id)) {
-            client.emit('join.denied', { room });
-            return;
-          }
-          const media = await this.prisma.collectionMedia
-            .findUnique({ where: { id }, select: { collectionId: true } })
-            .catch((e) => {
-              this.logger.debug(
-                `Lookup media failed id='${id}': ${e?.code ?? e}`,
-              );
-              return null;
-            });
-          if (!media) return client.emit('join.denied', { room });
-          const ok = await this.canViewCollection(media.collectionId, userId);
-          if (!ok) return client.emit('join.denied', { room });
-          client.join(room);
-          client.emit('joined', { room });
-          return;
-        }
-        if (type === 'COMMENT') {
-          if (!this.isValidUuid(id)) {
-            client.emit('join.denied', { room });
-            return;
-          }
-          client.join(room);
+        const [type, id, extra] = room.split(':');
+        if (!extra && ['POST', 'COLLECTION', 'COLLECTION_MEDIA', 'DESIGN', 'PRODUCT', 'COMMENT'].includes(type) && this.isValidUuid(id)) {
+          const viewers = await contentAudience(this.prisma, type as ContentTarget, id, [userId]);
+          if (!viewers.has(userId) || !client.connected || !this.hasRoomCapacity(client, room))
+            return client.emit('join.denied', { room });
+          await client.join(room);
           client.emit('joined', { room });
           return;
         }
@@ -281,7 +265,7 @@ export class EventsGateway
         this.logger.warn(`Join failed: ${error?.message ?? error}`);
       }
     };
-    void run();
+    return run();
   }
 
   /**
@@ -300,22 +284,74 @@ export class EventsGateway
    * lookup throws should cost that user's receipt, not everyone's.
    */
   async getConnectedUserIds(userIds: string[]): Promise<string[]> {
-    if (!this.server || userIds.length === 0) return [];
-    const unique = Array.from(new Set(userIds.filter(Boolean)));
-    const connected: string[] = [];
-    await Promise.all(
-      unique.map(async (userId) => {
-        try {
-          const sockets = await this.server.in(`USER:${userId}`).fetchSockets();
-          if (sockets.length > 0) connected.push(userId);
-        } catch (error: any) {
-          this.logger.debug(
-            `Presence lookup failed for ${userId}: ${error?.message ?? error}`,
-          );
+    if (!this.server || this.closed) return [];
+    const unique = [...new Set(userIds.filter(id => resourceUuid.test(id)))];
+    const connected = new Set<string>(); let pending: Socket[] = [];
+    const check = async () => {
+      for (const socket of await authorizedSockets(this.prisma, pending)) connected.add(socket.data.userId);
+      pending = [];
+    };
+    try {
+      for (const userId of unique) {
+        for (const batch of this.socketBatches(`USER:${userId}`)) {
+          for (const socket of batch) {
+            if (connected.has(userId) || socket.data.userId !== userId) continue;
+            pending.push(socket); if (pending.length === 100) await check();
+          }
         }
-      }),
-    );
-    return connected;
+      }
+      if (pending.length) await check();
+    } catch { return []; } // An unavailable authority store cannot prove presence.
+    return [...connected];
+  }
+
+  @SubscribeMessage('leave')
+  async handleLeave(@MessageBody() data: { room: string }, @ConnectedSocket() client: Socket) {
+    const room = typeof data?.room === 'string' && data.room.length <= 64 ? data.room : '';
+    const [type, id, extra] = room.split(':');
+    // Leaving grants no authority and never touches another socket's rooms.
+    if (extra || !['USER', 'POST', 'COLLECTION', 'COLLECTION_MEDIA', 'DESIGN', 'PRODUCT', 'COMMENT'].includes(type) ||
+      !resourceUuid.test(id) || !client.rooms.has(room)) return;
+    await client.leave(room);
+    if (client.connected) client.emit('left', { room });
+  }
+
+  private *socketBatches(room: string): Generator<Socket[]> {
+    const members = this.server.sockets.adapter.rooms.get(room);
+    if (!members) return;
+    const iterator = members.values(); let remaining = members.size;
+    // Bounded cursor: concurrent joins cannot extend a delivery indefinitely.
+    while (remaining > 0) {
+      const batch: Socket[] = [];
+      while (remaining > 0 && batch.length < 100) {
+        remaining--;
+        const next = iterator.next(); if (next.done) { remaining = 0; break; }
+        const socket = this.server.sockets.sockets.get(next.value); if (socket) batch.push(socket);
+      }
+      if (batch.length) yield batch;
+    }
+  }
+
+  async emitAuthorized(room: string, event: NotificationRealtimeEventName, payload: Record<string, unknown>): Promise<boolean> {
+    try { return await this.realtimeBus.publishOrEmit({ room, event, payload }); }
+    catch { this.logger.warn('Realtime delivery unavailable; persisted data remains authoritative'); return false; }
+  }
+
+  private async emitAuthorizedLocal(frame: NotificationRealtimeBusEvent): Promise<boolean> {
+    if (!this.server || this.closed) return false;
+    const [type, id] = frame.room.split(':');
+    for (const batch of this.socketBatches(frame.room)) {
+      const viewers = [...new Set<string>(batch.map(socket => socket.data.userId).filter(id => typeof id === 'string'))];
+      const audience = type === 'USER' ? new Set([id]) : await contentAudience(this.prisma, type as ContentTarget, id, viewers);
+      // Session verification is the last awaited boundary before local delivery.
+      const eligible = await authorizedSockets(this.prisma, batch);
+      if (this.closed) return false;
+      for (const socket of eligible) {
+        if (socket.connected && socket.rooms.has(frame.room) && socket.data.accessExpiresAt > Date.now() && audience.has(socket.data.userId))
+          socket.emit(frame.event, frame.payload);
+      }
+    }
+    return true; // No eligible recipients is handled, never a raw-broadcast fallback.
   }
 
   emitThread(
@@ -328,9 +364,7 @@ export class EventsGateway
     },
   ) {
     const room = `${payload.contentType}:${payload.contentId}`;
-    this.server
-      .to(room)
-      .emit(event, { ...payload, version: 1, ts: Date.now() });
+    void this.emitAuthorized(room, event, { ...payload, version: 1, ts: Date.now() });
   }
 
   // Comment events (rooms may be target rooms or COMMENT:{id} for threads on a comment)
@@ -339,8 +373,6 @@ export class EventsGateway
     room: string,
     payload: any,
   ) {
-    this.server
-      .to(room)
-      .emit(event, { ...payload, version: 1, ts: Date.now() });
+    void this.emitAuthorized(room, event, { ...payload, version: 1, ts: Date.now() });
   }
 }

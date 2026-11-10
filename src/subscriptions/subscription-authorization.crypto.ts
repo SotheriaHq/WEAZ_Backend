@@ -22,7 +22,9 @@ export function encryptSubscriptionAuthorization(
   const encryptionKey = key();
   if (!encryptionKey || !value) return null;
   const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', encryptionKey, iv);
+  const cipher = createCipheriv('aes-256-gcm', encryptionKey, iv, {
+    authTagLength: 16,
+  });
   cipher.setAAD(Buffer.from(`wiez-subscription:${brandId}`));
   const encrypted = Buffer.concat([
     cipher.update(value, 'utf8'),
@@ -43,17 +45,29 @@ export function decryptSubscriptionAuthorization(
   const encryptionKey = key();
   if (!encryptionKey || !value) return null;
   try {
+    if (value.length > 16384) return null;
     const [version, iv, tag, encrypted, extra] = value.split('.');
-    if (version !== 'v1' || !iv || !tag || !encrypted || extra) return null;
-    const decipher = createDecipheriv(
-      'aes-256-gcm',
-      encryptionKey,
-      Buffer.from(iv, 'base64'),
-    );
+    if (version !== 'v1' || !iv || !tag || !encrypted || extra !== undefined)
+      return null;
+    const nonce = Buffer.from(iv, 'base64'),
+      authTag = Buffer.from(tag, 'base64'),
+      ciphertext = Buffer.from(encrypted, 'base64');
+    if (
+      nonce.length !== 12 ||
+      authTag.length !== 16 ||
+      !ciphertext.length ||
+      nonce.toString('base64') !== iv ||
+      authTag.toString('base64') !== tag ||
+      ciphertext.toString('base64') !== encrypted
+    )
+      return null;
+    const decipher = createDecipheriv('aes-256-gcm', encryptionKey, nonce, {
+      authTagLength: 16,
+    });
     decipher.setAAD(Buffer.from(`wiez-subscription:${brandId}`));
-    decipher.setAuthTag(Buffer.from(tag, 'base64'));
+    decipher.setAuthTag(authTag);
     return Buffer.concat([
-      decipher.update(Buffer.from(encrypted, 'base64')),
+      decipher.update(ciphertext),
       decipher.final(),
     ]).toString('utf8');
   } catch {
