@@ -745,6 +745,8 @@ export class AdminBrandsService {
           actorId,
           payload: {
             brandId,
+            // The push greets the brand by name ("Wiez <brand> 🎉").
+            brandName: brand.name,
             documentsApprovedAt: new Date().toISOString(),
             targetUrl: '/studio/verification',
           },

@@ -75,6 +75,141 @@ const CONTENT_REVIEW_PRESENTATION: Record<
   },
 };
 
+/*
+ * Brand verification, one line per step — and each says what comes NEXT.
+ *
+ * Every VERIFICATION_* type used to share "There's news on your brand
+ * verification". The owner approved a brand's documents on SIT and the brand
+ * got exactly that: no word that the documents passed, nor that a physical
+ * visit is the next phase (owner, Nov 2026: "educate users on the next
+ * verification step"). Good news opens with "Wiez 🎉"; the rest with the
+ * usual wave. Agent- and admin-facing steps say which brand-side event
+ * happened. None of these names a brand or a document.
+ */
+const VERIFICATION_PRESENTATION: Record<
+  string,
+  { title: string; hiddenBody: string }
+> = {
+  VERIFICATION_SUBMITTED: {
+    title: 'Verification submitted 📝',
+    hiddenBody:
+      'Wiez 👋 Your verification request is in. We’ll tell you when review starts.',
+  },
+  VERIFICATION_IN_REVIEW: {
+    title: 'Verification in review 🔎',
+    hiddenBody:
+      'Wiez 👋 Your brand documents are being reviewed. We’ll tell you the outcome.',
+  },
+  VERIFICATION_INFO_REQUESTED: {
+    title: 'More information needed 📎',
+    hiddenBody:
+      'Wiez 👋 Your verification needs a little more information. Open WIEZ to see what to add.',
+  },
+  VERIFICATION_INFO_RESUBMITTED: {
+    title: 'Verification updated 📎',
+    hiddenBody: 'Wiez 👋 A brand sent the verification updates you asked for.',
+  },
+  VERIFICATION_PHYSICAL_REQUIRED: {
+    title: 'Documents approved 🎉',
+    hiddenBody:
+      'Wiez 🎉 Your brand documents are approved. Last step: a short verification visit — we’ll send you times to choose from.',
+  },
+  VERIFICATION_APPROVED: {
+    title: 'Verification approved 🎉',
+    hiddenBody: 'Wiez 🎉 Your brand verification is approved.',
+  },
+  VERIFICATION_VISIT_PROPOSED: {
+    title: 'Pick a visit time 📅',
+    hiddenBody:
+      'Wiez 👋 Times for your verification visit are ready. Open WIEZ to choose one.',
+  },
+  VERIFICATION_VISIT_CONFIRMED: {
+    title: 'Visit confirmed 📅',
+    hiddenBody: 'Wiez 👋 A brand confirmed its verification visit time.',
+  },
+  VERIFICATION_VISIT_RESCHEDULE_REQUESTED: {
+    title: 'New visit time requested 📅',
+    hiddenBody:
+      'Wiez 👋 A brand asked for a different verification visit time.',
+  },
+  VERIFICATION_VISIT_RESCHEDULE_ACCEPTED: {
+    title: 'Visit time confirmed 📅',
+    hiddenBody: 'Wiez 👋 Your new verification visit time is confirmed.',
+  },
+  VERIFICATION_VISIT_RESCHEDULE_DECLINED: {
+    title: 'Visit postponed',
+    hiddenBody:
+      'Wiez 👋 Your verification visit is postponed. New times will be offered.',
+  },
+  VERIFICATION_VISIT_DECLINED: {
+    title: 'Visit declined',
+    hiddenBody:
+      'Wiez 👋 The verification visit was declined, so verification didn’t complete.',
+  },
+  VERIFICATION_VISIT_REMINDER: {
+    title: 'Visit coming up 📅',
+    hiddenBody:
+      'Wiez 👋 A verification visit is coming up. Open WIEZ for the time.',
+  },
+  VERIFICATION_VISIT_RESPONSE_DUE: {
+    title: 'Visit needs your answer 📅',
+    hiddenBody: 'Wiez 👋 A verification visit is waiting on your answer.',
+  },
+  VERIFICATION_VISIT_OVERDUE: {
+    title: 'Visit outcome missing',
+    hiddenBody:
+      'Wiez 👋 A verification visit has passed with no outcome recorded.',
+  },
+  VERIFICATION_VISIT_ASSIGNED: {
+    title: 'Visit assigned 🧭',
+    hiddenBody: 'Wiez 👋 A verification visit was assigned to you.',
+  },
+  VERIFICATION_PHYSICAL_PASSED: {
+    title: 'You’re verified 🎉',
+    hiddenBody: 'Wiez 🎉 Your brand is verified.',
+  },
+  VERIFICATION_PHYSICAL_FAILED: {
+    title: 'Visit didn’t pass',
+    hiddenBody:
+      'Wiez 👋 Your verification visit didn’t pass. Open WIEZ to see why.',
+  },
+  VERIFICATION_REJECTED: {
+    title: 'Verification not approved',
+    hiddenBody:
+      'Wiez 👋 Your brand verification wasn’t approved this time. Open WIEZ to see why.',
+  },
+  VERIFICATION_CANCELLED: {
+    title: 'Verification cancelled',
+    hiddenBody: 'Wiez 👋 Your verification request was cancelled.',
+  },
+  VERIFICATION_CANCELLED_ADMIN: {
+    title: 'Verification withdrawn',
+    hiddenBody: 'Wiez 👋 A brand cancelled its verification request.',
+  },
+  VERIFICATION_COOLDOWN_EXPIRED: {
+    title: 'Ready to apply again ✅',
+    hiddenBody: 'Wiez 👋 You can submit your brand verification again.',
+  },
+  VERIFICATION_NUDGE: {
+    title: 'Get verified ✅',
+    hiddenBody:
+      'Wiez 👋 Verifying your brand adds a stronger trust signal to your store.',
+  },
+  VERIFICATION_SLA_WARNING: {
+    title: 'Review deadline close ⏳',
+    hiddenBody: 'Wiez 👋 A verification review is close to its deadline.',
+  },
+  VERIFICATION_SLA_BREACH: {
+    title: 'Review deadline passed ⏳',
+    hiddenBody: 'Wiez 👋 A verification review has passed its deadline.',
+  },
+  VERIFICATION_REVIEW_DELAYED: {
+    title: 'Review taking longer ⏳',
+    hiddenBody:
+      'Wiez 👋 Your verification review is taking longer than expected. We’ll tell you the outcome.',
+  },
+};
+
 /**
  * Resolve the OS channel, the bold title and the preview-off body for a
  * notification type. With previews on, the descriptive body comes from the
@@ -104,6 +239,11 @@ export function getPushPresentation(type: NotificationType): PushPresentation {
     };
   }
 
+  const verification = VERIFICATION_PRESENTATION[value];
+  if (verification) {
+    return { channelId: PUSH_CHANNEL_IDS.system, ...verification };
+  }
+  // A verification step added later without its own line above.
   if (value.startsWith('VERIFICATION_')) {
     return {
       channelId: PUSH_CHANNEL_IDS.system,

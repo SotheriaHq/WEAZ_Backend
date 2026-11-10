@@ -5,6 +5,7 @@ import {
   contentReviewPushBody,
   type ContentReviewCopyInput,
 } from 'src/content-integrity/content-review-copy';
+import { wiezGreeting } from './wiez-voice';
 
 /** What the content-review copy needs, read from any (old or new) payload. */
 function contentReviewCopyInput(n: any): ContentReviewCopyInput {
@@ -1232,11 +1233,20 @@ export class NotificationRegistry {
       type: NT_VERIFICATION_PHYSICAL_REQUIRED,
       schema: Joi.object({
         brandId: Joi.string().required(),
+        brandName: Joi.string().allow(null, '').optional(),
         documentsApprovedAt: Joi.string().optional(),
         targetUrl: Joi.string().optional(),
       }),
+      /*
+        Says what passed AND what happens next (owner, Nov 2026: "we are
+        supposed to move to the next which is physical, but the system did not
+        indicate like a next phase thing"). The brand does nothing until an
+        agent proposes times, so the next step is to expect them.
+      */
       formatter: () =>
-        'Your documents were accepted. A physical verification visit is the last step.',
+        'Your brand documents are approved. Last step: a short physical verification visit. We’ll send you times to choose from in WIEZ.',
+      pushFormatter: (n: any) =>
+        `${wiezGreeting(n?.payload?.brandName, '🎉')} Your brand documents are approved. Last step: a short verification visit — we’ll send you times to choose from.`,
     });
 
     registry.register({

@@ -23,7 +23,8 @@ describe('push copy: every notification type speaks for itself', () => {
     const presentation = getPushPresentation(type);
     expect(presentation.isFallback).not.toBe(true);
     expect(presentation.title).not.toBe('WIEZ');
-    expect(presentation.hiddenBody).toMatch(/^Wiez 👋 /);
+    // Good news opens with 🎉 (documents approved, verified); the rest wave.
+    expect(presentation.hiddenBody).toMatch(/^Wiez (👋|🎉) /);
     expect(presentation.hiddenBody).not.toMatch(GENERIC);
   });
 
@@ -100,5 +101,65 @@ describe('Wiez is how WIEZ says hello', () => {
     expect(wiezGreeting('Ebi')).toBe('Wiez Ebi 👋');
     expect(wiezGreeting('  ')).toBe('Wiez 👋');
     expect(wiezGreeting(null)).toBe('Wiez 👋');
+  });
+
+  it('celebrates good news with 🎉', () => {
+    expect(wiezGreeting('Ebi', '🎉')).toBe('Wiez Ebi 🎉');
+    expect(wiezGreeting(undefined, '🎉')).toBe('Wiez 🎉');
+  });
+});
+
+/*
+ * Brand verification says which step happened and what comes next (owner,
+ * Nov 2026: the brand whose documents were approved got "There's news on
+ * your brand verification", with no word that a physical visit is next).
+ */
+describe('brand verification pushes say what happened and what is next', () => {
+  const verificationTypes = Object.values(NotificationType).filter((type) =>
+    String(type).startsWith('VERIFICATION_'),
+  );
+
+  const physicalRequired = NotificationType.VERIFICATION_PHYSICAL_REQUIRED;
+
+  it('every verification step has its own preview-off line', () => {
+    const lines = verificationTypes.map(
+      (type) => getPushPresentation(type).hiddenBody,
+    );
+    expect(new Set(lines).size).toBe(lines.length);
+    for (const line of lines) {
+      expect(line).not.toBe('Wiez 👋 There’s news on your brand verification.');
+    }
+  });
+
+  it('documents approved: celebrates and names the visit as the last step', () => {
+    const presentation = getPushPresentation(physicalRequired);
+    expect(presentation.title).toBe('Documents approved 🎉');
+    expect(presentation.hiddenBody).toMatch(
+      /^Wiez 🎉 Your brand documents are approved\. Last step: a short verification visit/,
+    );
+
+    const config =
+      NotificationRegistry.createDefault().getConfig(physicalRequired)!;
+    const notification = {
+      payload: { brandId: 'b1', brandName: "Ebi's Lines" },
+    };
+    expect(config.pushFormatter!(notification)).toBe(
+      "Wiez Ebi's Lines 🎉 Your brand documents are approved. Last step: a short verification visit — we’ll send you times to choose from.",
+    );
+    expect(config.formatter(notification)).toMatch(
+      /approved\. Last step: a short physical verification visit\. We’ll send you times/,
+    );
+  });
+
+  it('accepts the brand name in the payload', () => {
+    const config =
+      NotificationRegistry.createDefault().getConfig(physicalRequired)!;
+    const { error } = config.schema.validate({
+      brandId: 'b1',
+      brandName: "Ebi's Lines",
+      documentsApprovedAt: 'x',
+      targetUrl: '/studio/verification',
+    });
+    expect(error).toBeUndefined();
   });
 });
