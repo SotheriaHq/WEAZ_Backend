@@ -636,19 +636,26 @@ describe('paid custom-order intake entitlement', () => {
       ),
     };
   }
-  it('offers Thread capacity without granting intake to an unsubscribed brand', async () => {
+  /*
+    Owner, Nov 2026: a free account takes ONE Active custom order at a time.
+    No paid plan in force (none, past due, cancelled, expired) = the free
+    plan. Intake opens for it; verification, owner status and blocks still
+    decide.
+  */
+  it('puts an unsubscribed brand on the free plan: intake open, one Active', async () => {
     const h = setup();
     expect(await h.service.capacity(h.prisma, 'brand', now)).toMatchObject({
-      tierKey: 'THREAD',
-      active: 2,
+      tierKey: 'FREE',
+      active: 1,
       inDelivery: 2,
-      intakeAllowed: false,
+      queueJumpAllowed: false,
+      intakeAllowed: true,
     });
     expect(h.prisma.$queryRaw).toHaveBeenCalledTimes(1);
     expect(h.prisma.subscriptionTier.findUnique).not.toHaveBeenCalled();
   });
   it.each(['PAST_DUE', 'CANCELLED'])(
-    'blocks intake for %s while retaining the agreement capacity',
+    'treats a %s agreement as the free plan',
     async (status) => {
       const h = setup({
         status,
@@ -656,43 +663,73 @@ describe('paid custom-order intake entitlement', () => {
         tier,
       });
       expect(await h.service.capacity(h.prisma, 'brand', now)).toMatchObject({
-        active: 2,
-        intakeAllowed: false,
+        tierKey: 'FREE',
+        active: 1,
+        intakeAllowed: true,
       });
     },
   );
-  it('grants intake only through the exact unexpired paid period', async () => {
+  it('a lapsed Aru agreement lends the free plan no queue-jump', async () => {
+    const h = setup(
+      { status: 'CANCELLED', currentPeriodEnd: new Date(+now + 1000) },
+      { tierKey: 'ARU', maxActive: 4, maxInDelivery: 5, queueJumpAllowed: true },
+    );
+    expect(await h.service.capacity(h.prisma, 'brand', now)).toMatchObject({
+      tierKey: 'FREE',
+      active: 1,
+      queueJumpAllowed: false,
+    });
+  });
+  it('applies the paid tier through the exact unexpired period, then the free plan', async () => {
     const h = setup({
       status: 'ACTIVE',
       currentPeriodEnd: new Date(+now + 1),
       tier,
     });
+    expect(await h.service.capacity(h.prisma, 'brand', now)).toMatchObject({
+      tierKey: 'THREAD',
+      active: 2,
+      intakeAllowed: true,
+    });
     expect(
-      (await h.service.capacity(h.prisma, 'brand', now)).intakeAllowed,
-    ).toBe(true);
-    expect(
-      (await h.service.capacity(h.prisma, 'brand', new Date(+now + 1)))
-        .intakeAllowed,
-    ).toBe(false);
+      await h.service.capacity(h.prisma, 'brand', new Date(+now + 1)),
+    ).toMatchObject({ tierKey: 'FREE', active: 1, intakeAllowed: true });
   });
   it.each([
     { owner: { status: 'SUSPENDED' } },
     { verificationStatus: 'PENDING' },
     { customOrderIntakeBlockedAt: now },
-  ])('keeps safety enforcement for paid brands %j', async (patch) => {
-    const h = setup(
+  ])('keeps safety enforcement for paid and free brands %j', async (patch) => {
+    const paid = setup(
       { status: 'ACTIVE', currentPeriodEnd: new Date(+now + 1000), tier },
       patch,
     );
+    const free = setup(null, patch);
     expect(
-      (await h.service.capacity(h.prisma, 'brand', now)).intakeAllowed,
+      (await paid.service.capacity(paid.prisma, 'brand', now)).intakeAllowed,
+    ).toBe(false);
+    expect(
+      (await free.service.capacity(free.prisma, 'brand', now)).intakeAllowed,
     ).toBe(false);
   });
-  it('preserves a current admin capacity override without opening unpaid intake', async () => {
+  it('a capacity campaign raises paid tiers but never the free plan', async () => {
+    const free = setup(null, { deltaActive: 2 });
+    const paid = setup(
+      { status: 'ACTIVE', currentPeriodEnd: new Date(+now + 1000), tier },
+      { deltaActive: 2 },
+    );
+    expect(
+      (await free.service.capacity(free.prisma, 'brand', now)).active,
+    ).toBe(1);
+    expect(
+      (await paid.service.capacity(paid.prisma, 'brand', now)).active,
+    ).toBe(4);
+  });
+  it('a current admin capacity override still wins on the free plan', async () => {
     const h = setup(null, { activeOrderCapOverride: 8 });
     expect(await h.service.capacity(h.prisma, 'brand', now)).toMatchObject({
       active: 8,
-      intakeAllowed: false,
+      intakeAllowed: true,
     });
   });
 });

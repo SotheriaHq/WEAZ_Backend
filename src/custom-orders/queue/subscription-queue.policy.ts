@@ -31,6 +31,22 @@ export const SUBSCRIPTION_TIERS: readonly TierCapacity[] = [
   { key: 'IGWE', name: 'Igwe', monthlyPriceNgn: 50_000, maxActive: 6, maxInDelivery: 5, maxUpNext: 1, queueJumpAllowed: true },
 ];
 
+/**
+ * A brand with no paid plan in force — never subscribed, lapsed, past due or
+ * cancelled — is on the free plan: ONE Active custom order at a time (owner,
+ * Nov 2026; it used to inherit Thread's two, with intake closed). Only the
+ * Active seat was set; delivery follows the entry tier (Thread, two) and
+ * there is no queue-jumping, whatever plan the brand last held. Capacity
+ * campaigns do not apply to it; a per-brand admin override does.
+ */
+export const FREE_PLAN_CAPACITY = {
+  key: 'FREE',
+  name: 'Free',
+  maxActive: 1,
+  maxInDelivery: 2,
+  queueJumpAllowed: false,
+} as const;
+
 const TIER_BY_KEY = new Map(SUBSCRIPTION_TIERS.map((tier) => [tier.key, tier]));
 
 export function tierCapacity(key: TierKey): TierCapacity {
