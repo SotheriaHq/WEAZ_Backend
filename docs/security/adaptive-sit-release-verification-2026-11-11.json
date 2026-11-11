@@ -99,7 +99,44 @@
     "webStatus": "production deployment and cache purge succeeded for fa7fe09 (run42987687649)",
     "nativeBuildRun": 42986923842,
     "webMerge": "fa7fe09c0c730de99a458e63254c03a7c5692245",
-    "nativeBuildStatus": "in_progress"
+    "nativeBuildStatus": "in_progress",
+    "browserFixture": {
+      "checkedAt": "2026-11-11T08:42:29.537Z",
+      "viewports": [
+        {
+          "width": 375,
+          "height": 900,
+          "keyboardFocusTabEscape": true,
+          "backClosesInPlace": true,
+          "lightAndDark": true,
+          "dialogFitsViewport": true,
+          "closeReachableByScrolling": true,
+          "pageErrors": 0
+        },
+        {
+          "width": 768,
+          "height": 900,
+          "keyboardFocusTabEscape": true,
+          "backClosesInPlace": true,
+          "lightAndDark": true,
+          "dialogFitsViewport": true,
+          "closeReachableByScrolling": true,
+          "pageErrors": 0
+        },
+        {
+          "width": 1440,
+          "height": 900,
+          "keyboardFocusTabEscape": true,
+          "backClosesInPlace": true,
+          "lightAndDark": true,
+          "dialogFitsViewport": true,
+          "closeReachableByScrolling": true,
+          "pageErrors": 0
+        }
+      ],
+      "scope": "actual UI fixture; no live API or physical-device acceptance",
+      "visualBaseline": "none: pixel regression comparison inconclusive"
+    }
   },
   "latestOperationalCheck": {
     "checkedAt": "2026-11-11T08:31:11.573Z",
