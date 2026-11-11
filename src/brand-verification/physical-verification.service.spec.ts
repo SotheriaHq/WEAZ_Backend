@@ -51,6 +51,8 @@ describe('PhysicalVerificationService', () => {
       },
       brand: { update: jest.fn() },
       brandVerificationAttempt: { update: jest.fn() },
+      // No paid plan by default: the brand's view asks whether a video call is allowed.
+      brandSubscription: { count: jest.fn(async () => 0) },
       user: {
         findUnique: jest.fn(async () => ({
           id: 'agent_1',
@@ -448,5 +450,142 @@ describe('PhysicalVerificationService', () => {
         slots: [futureSlot(-2), futureSlot(-1), futureSlot(4)],
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  /*
+    Free brands may verify by live video call (owner, Nov 2026). Proof stays
+    required; brands on a paid plan are visited in person.
+  */
+  describe('video call (free plan)', () => {
+    const freePlan = () => ({ brandSubscription: { count: jest.fn(async () => 0) } });
+    const paidPlan = () => ({ brandSubscription: { count: jest.fn(async () => 1) } });
+    const callTimes = () => [futureSlot(2), futureSlot(3)];
+
+    it('a free brand can swap the visit for a video call: times cleared, agent told', async () => {
+      const { service, prisma, notifications } = buildService(freePlan());
+      prisma.brandPhysicalVerification.findUnique.mockResolvedValue(
+        proposedRow({ mode: 'IN_PERSON' }),
+      );
+      jest.spyOn(service, 'getForBrandOwner').mockResolvedValue({ id: 'pv_1' } as any);
+
+      await service.requestVideoCall('owner_1', 'pv_1', 'No day works for me');
+
+      const data = prisma.brandPhysicalVerification.update.mock.calls[0][0].data;
+      expect(data).toMatchObject({
+        mode: 'VIDEO_CALL',
+        selectedSlotAt: null,
+        brandResponse: null,
+        status: PhysicalVerificationStatus.ASSIGNED,
+      });
+      expect(data.videoCallRequestedAt).toBeInstanceOf(Date);
+      expect(notifications.create).toHaveBeenCalledWith(
+        'agent_1',
+        'VERIFICATION_VIDEO_CALL_REQUESTED',
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            physicalVerificationId: 'pv_1',
+            note: 'No day works for me',
+          }),
+        }),
+      );
+    });
+
+    it('a brand on a paid plan is visited in person', async () => {
+      const { service, prisma } = buildService(paidPlan());
+      prisma.brandPhysicalVerification.findUnique.mockResolvedValue(
+        proposedRow({ mode: 'IN_PERSON' }),
+      );
+      await expect(service.requestVideoCall('owner_1', 'pv_1')).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(prisma.brandPhysicalVerification.update).not.toHaveBeenCalled();
+    });
+
+    it('no switch once the check has taken place', async () => {
+      const { service, prisma } = buildService(freePlan());
+      prisma.brandPhysicalVerification.findUnique.mockResolvedValue(
+        proposedRow({ mode: 'IN_PERSON', status: PhysicalVerificationStatus.VISIT_COMPLETED }),
+      );
+      await expect(service.requestVideoCall('owner_1', 'pv_1')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+    });
+
+    it('another brand cannot switch it', async () => {
+      const { service, prisma } = buildService(freePlan());
+      prisma.brandPhysicalVerification.findUnique.mockResolvedValue(
+        proposedRow({ mode: 'IN_PERSON' }),
+      );
+      await expect(service.requestVideoCall('owner_2', 'pv_1')).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+    });
+
+    it('call times need an https link and the free plan', async () => {
+      const free = buildService(freePlan());
+      free.prisma.brandPhysicalVerification.findUnique.mockResolvedValue(
+        proposedRow({ status: PhysicalVerificationStatus.ASSIGNED, mode: 'VIDEO_CALL' }),
+      );
+      await expect(
+        free.service.proposeVisit('pv_1', 'agent_1', { slots: callTimes(), mode: 'VIDEO_CALL' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(
+        free.service.proposeVisit('pv_1', 'agent_1', {
+          slots: callTimes(),
+          mode: 'VIDEO_CALL',
+          meetingUrl: 'http://meet.example.com/abc',
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      await free.service.proposeVisit('pv_1', 'agent_1', {
+        slots: callTimes(),
+        mode: 'VIDEO_CALL',
+        meetingUrl: 'https://meet.google.com/abc-defg-hij',
+      });
+      const data = free.prisma.brandPhysicalVerification.update.mock.calls.at(-1)[0].data;
+      expect(data).toMatchObject({
+        mode: 'VIDEO_CALL',
+        meetingUrl: 'https://meet.google.com/abc-defg-hij',
+      });
+      expect(free.notifications.create).toHaveBeenCalledWith(
+        'owner_1',
+        NotificationType.VERIFICATION_VISIT_PROPOSED,
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            mode: 'VIDEO_CALL',
+            meetingUrl: 'https://meet.google.com/abc-defg-hij',
+          }),
+        }),
+      );
+
+      const paid = buildService(paidPlan());
+      paid.prisma.brandPhysicalVerification.findUnique.mockResolvedValue(
+        proposedRow({ status: PhysicalVerificationStatus.ASSIGNED }),
+      );
+      await expect(
+        paid.service.proposeVisit('pv_1', 'agent_1', {
+          slots: callTimes(),
+          mode: 'VIDEO_CALL',
+          meetingUrl: 'https://meet.google.com/abc-defg-hij',
+        }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('a verdict on a video call still needs the proof floor', async () => {
+      const { service, prisma } = buildService({
+        ...freePlan(),
+        physicalVerificationProof: {
+          count: jest.fn(async () => MIN_PROOFS_FOR_DECISION - 1),
+          create: jest.fn(),
+          deleteMany: jest.fn(),
+        },
+      });
+      prisma.brandPhysicalVerification.findUnique.mockResolvedValue(
+        proposedRow({ status: PhysicalVerificationStatus.VISIT_COMPLETED, mode: 'VIDEO_CALL' }),
+      );
+      await expect(
+        service.decide('pv_1', 'agent_1', { outcome: 'PASSED' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
   });
 });

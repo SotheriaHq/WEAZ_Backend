@@ -97,6 +97,8 @@ describe('SubscriptionsService boundary and payment invariants', () => {
       operationalAlert: { upsert: jest.fn(), updateMany: jest.fn() },
       notification: { createMany: jest.fn() },
       emailOutbox: { createMany: jest.fn() },
+      // Billing notices also queue a push (owner, Nov 2026: on all fronts).
+      pushOutbox: { createMany: jest.fn() },
     };
     access = {
       assertBrandOwnerAndResolve: jest

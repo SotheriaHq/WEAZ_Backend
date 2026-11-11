@@ -29,6 +29,7 @@ import { CustomOrderFinanceSyncService } from 'src/finance/custom-order-finance-
 import { LedgerService } from 'src/finance/ledger.service';
 import {
   canRetainPosition,
+  FREE_PLAN_CAPACITY,
   preActiveRefund,
   QUEUE_WAIT_MS,
   RETAIN_CLOSE_MS,
@@ -101,28 +102,45 @@ export class CustomOrderQueueService {
         brand.activeOrderCapOverrideUntil > now)
         ? brand.activeOrderCapOverride
         : null;
+    const entitled = Boolean(
+      agreement?.status === 'ACTIVE' && agreement.currentPeriodEnd > now,
+    );
+    /*
+      No paid plan in force = the free plan (owner, Nov 2026): custom orders
+      open, ONE Active at a time. Previously such a brand could not take
+      custom orders at all, and its capacity read as Thread's two. A lapsed
+      Aru/Igwe agreement no longer lends its queue-jump either.
+    */
+    const plan = entitled
+      ? {
+          key: tier.key as string,
+          maxActive: tier.maxActive,
+          maxInDelivery: tier.maxInDelivery,
+          queueJumpAllowed:
+            ['ARU', 'IGWE'].includes(tier.key) && tier.queueJumpAllowed,
+        }
+      : FREE_PLAN_CAPACITY;
+    // A capacity campaign raises (or lowers) PAID tiers for its window. The
+    // free plan stays at exactly one; only a per-brand admin override moves it.
     const active =
       override ??
-      (tier.maxActive === null
+      (plan.maxActive === null
         ? null
-        : Math.max(0, tier.maxActive + context.deltaActive));
+        : Math.max(
+            0,
+            plan.maxActive + (entitled ? context.deltaActive : 0),
+          ));
     const safetyAllowed =
       brand.verificationStatus === 'APPROVED' &&
       brand.owner.status === 'ACTIVE';
-    const entitled =
-      Boolean(
-        agreement?.status === 'ACTIVE' && agreement.currentPeriodEnd > now,
-      );
     return {
       brand,
       agreement,
-      tierKey: tier.key,
+      tierKey: plan.key,
       active,
-      inDelivery: tier.maxInDelivery,
-      queueJumpAllowed:
-        ['ARU', 'IGWE'].includes(tier.key) && tier.queueJumpAllowed,
-      intakeAllowed:
-        entitled && safetyAllowed && !brand.customOrderIntakeBlockedAt,
+      inDelivery: plan.maxInDelivery,
+      queueJumpAllowed: plan.queueJumpAllowed,
+      intakeAllowed: safetyAllowed && !brand.customOrderIntakeBlockedAt,
       safetyAllowed,
     };
   }
@@ -161,13 +179,14 @@ export class CustomOrderQueueService {
     if (!buyer || buyer.type !== 'REGULAR' || buyer.status !== 'ACTIVE') {
       throw new ForbiddenException('Only an eligible shopper may order from this brand');
     }
-    const now = new Date();
     for (let offset = 0; offset < ids.length; offset += 500) {
       const batch = ids.slice(offset, offset + 500);
+      // Same rule as `capacity`: a free brand takes custom orders too (one
+      // Active at a time, enforced at admission), so intake no longer needs a
+      // paid agreement — only verification, an active owner and no block.
       const rows = await this.prisma.$queryRaw<Array<{ id: string; ownerId: string; tierConfigured: boolean; intakeAllowed: boolean }>>(Prisma.sql`
         SELECT brand."_id" AS id, brand."ownerId", tier.key IS NOT NULL AS "tierConfigured",
-          COALESCE(agreement.status = 'ACTIVE' AND agreement."currentPeriodEnd" > ${now}
-            AND brand."verificationStatus" = 'APPROVED' AND owner.status = 'ACTIVE'
+          COALESCE(brand."verificationStatus" = 'APPROVED' AND owner.status = 'ACTIVE'
             AND brand."customOrderIntakeBlockedAt" IS NULL, FALSE) AS "intakeAllowed"
         FROM "Brand" brand JOIN "User" owner ON owner."_id" = brand."ownerId"
         LEFT JOIN LATERAL (

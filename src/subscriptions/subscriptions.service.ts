@@ -77,6 +77,19 @@ import {
   loadSubscriptionRenewalContext,
 } from './subscription-renewal-query';
 import {
+  DOWNGRADE_WINDOWS_DAYS,
+  PLAN_ENDING_WINDOWS_DAYS,
+  RECOVERY_WINDOWS_DAYS,
+  daysUntil,
+  downgradeReminder,
+  planEndedNotice,
+  planEndingReminder,
+  recoveryReminder,
+  reminderWindow,
+  renewalCancelledNotice,
+  renewalFailedNotice,
+} from './subscription-notices';
+import {
   loadSubscriptionVerificationInvoice,
   SubscriptionVerificationInvoice,
 } from './subscription-invoice-query';
@@ -132,9 +145,13 @@ export class SubscriptionsService {
     message: string,
   ) {
     const [brand] = await tx.$queryRaw<
-      Array<{ ownerId: string; email: string | null }>
+      Array<{
+        ownerId: string;
+        email: string | null;
+        notificationSettings: unknown;
+      }>
     >(Prisma.sql`
-      SELECT b."ownerId", u.email FROM "Brand" b
+      SELECT b."ownerId", u.email, u."notificationSettings" FROM "Brand" b
       JOIN "User" u ON u."_id" = b."ownerId"
       WHERE b."_id" = ${brandId}::uuid
     `);
@@ -158,6 +175,44 @@ export class SubscriptionsService {
       ],
       skipDuplicates: true,
     });
+    /*
+      Push as well (owner, Nov 2026: a plan ending must reach the owner "on
+      all fronts"). Same id as the inbox row, so a retried sweep never sends
+      it twice. Billing notices are ADMIN_ACTION, which already bypasses quiet
+      hours; the owner's push switch and preview setting still apply.
+    */
+    const pushSettings =
+      (
+        brand.notificationSettings as {
+          push?: { enabled?: boolean; showPreview?: boolean; sound?: boolean };
+        } | null
+      )?.push ?? {};
+    if (pushSettings.enabled !== false) {
+      const showPreview = pushSettings.showPreview !== false;
+      await tx.pushOutbox.createMany({
+        data: [
+          {
+            id: notificationId,
+            notificationId,
+            recipientId: brand.ownerId,
+            type: NotificationType.ADMIN_ACTION,
+            title: showPreview ? heading : 'Plan update 💳',
+            body: showPreview
+              ? message
+              : 'Wiez 👋 There’s an update on your WIEZ plan. Open WIEZ to review it.',
+            dataJson: {
+              notificationId,
+              type: NotificationType.ADMIN_ACTION,
+              ...payload,
+            },
+            channelId: 'system',
+            collapseId: `subscription-${brandId}`,
+            sound: pushSettings.sound !== false,
+          },
+        ],
+        skipDuplicates: true,
+      });
+    }
     if (!brand.email) return;
     const base = String(
       process.env.WEB_APP_URL ?? process.env.FRONTEND_URL ?? 'https://wiez.com',
@@ -1592,12 +1647,16 @@ export class SubscriptionsService {
           scheduledPriceSnapshotNgn: null,
         },
       });
+      const cancelled = renewalCancelledNotice(
+        current.tierKey,
+        current.currentPeriodEnd,
+      );
       await this.notifyBilling(
         tx,
         resolved.brandId,
         `cancel-${current.id}-${current.currentPeriodEnd.toISOString()}`,
-        'Subscription renewal cancelled',
-        'Future subscription renewal is cancelled. Access continues through the current paid-period end; already-paid shopper orders continue.',
+        cancelled.heading,
+        cancelled.message,
       );
       // An already submitted provider transaction is reconciled, never hidden by deletion.
       await tx.brandSubscriptionInvoice.updateMany({
@@ -1678,6 +1737,120 @@ export class SubscriptionsService {
       }
     }
     await this.processCompensations(now);
+    // Warnings change by the day, so a quarter-hourly pass is plenty.
+    if (now.getUTCMinutes() % 15 === 0) {
+      try {
+        await this.remindPlanEndings(now);
+      } catch {
+        this.logger.warn('Plan ending reminders require attention');
+      }
+    }
+  }
+
+  /*
+    Warn before a plan ends or shrinks (owner, Nov 2026: "ensure the user is
+    notified as much as possible … at least be aware on all fronts").
+
+     - renewal cancelled: 7, 3 and 1 day(s) before the paid period ends;
+     - renewal failed: 3 and 1 day(s) before the recovery window closes;
+     - lower tier scheduled: 3 and 1 day(s) before it takes over.
+
+    Each goes to the inbox, push and email (notifyBilling). The event key
+    carries the window, so each warning is sent once however often this runs.
+  */
+  private async remindPlanEndings(now: Date) {
+    const day = 86_400_000;
+    const within = (days: number) => new Date(now.getTime() + days * day);
+    const [ending, recovering, downgrading] = await Promise.all([
+      this.prisma.brandSubscription.findMany({
+        where: {
+          status: 'ACTIVE',
+          cancelAtPeriodEnd: true,
+          currentPeriodEnd: { gt: now, lte: within(7) },
+        },
+        orderBy: { currentPeriodEnd: 'asc' },
+        take: 100,
+        select: { id: true, brandId: true, tierKey: true, currentPeriodEnd: true },
+      }),
+      this.prisma.brandSubscription.findMany({
+        where: { status: 'PAST_DUE', recoveryUntil: { gt: now, lte: within(3) } },
+        orderBy: { recoveryUntil: 'asc' },
+        take: 100,
+        select: { id: true, brandId: true, tierKey: true, recoveryUntil: true },
+      }),
+      this.prisma.brandSubscription.findMany({
+        where: {
+          status: 'ACTIVE',
+          cancelAtPeriodEnd: false,
+          scheduledTierKey: { not: null },
+          currentPeriodEnd: { gt: now, lte: within(3) },
+        },
+        orderBy: { currentPeriodEnd: 'asc' },
+        take: 100,
+        select: {
+          id: true,
+          brandId: true,
+          tierKey: true,
+          scheduledTierKey: true,
+          currentPeriodEnd: true,
+        },
+      }),
+    ]);
+    const send = async (
+      brandId: string,
+      key: string,
+      notice: { heading: string; message: string },
+    ) => {
+      try {
+        await this.prisma.$transaction((tx) =>
+          this.notifyBilling(tx, brandId, key, notice.heading, notice.message),
+        );
+      } catch {
+        this.logger.warn(`Plan reminder requires attention key=${key}`);
+      }
+    };
+    for (const row of ending) {
+      const window = reminderWindow(
+        daysUntil(row.currentPeriodEnd, now),
+        PLAN_ENDING_WINDOWS_DAYS,
+      );
+      if (window === null) continue;
+      await send(
+        row.brandId,
+        `ending-${row.id}-${row.currentPeriodEnd.toISOString()}-${window}d`,
+        planEndingReminder(row.tierKey, row.currentPeriodEnd, now),
+      );
+    }
+    for (const row of recovering) {
+      if (!row.recoveryUntil) continue;
+      const window = reminderWindow(
+        daysUntil(row.recoveryUntil, now),
+        RECOVERY_WINDOWS_DAYS,
+      );
+      if (window === null) continue;
+      await send(
+        row.brandId,
+        `recovery-${row.id}-${row.recoveryUntil.toISOString()}-${window}d`,
+        recoveryReminder(row.tierKey, row.recoveryUntil, now),
+      );
+    }
+    for (const row of downgrading) {
+      const window = reminderWindow(
+        daysUntil(row.currentPeriodEnd, now),
+        DOWNGRADE_WINDOWS_DAYS,
+      );
+      if (window === null) continue;
+      await send(
+        row.brandId,
+        `downgrade-${row.id}-${row.currentPeriodEnd.toISOString()}-${window}d`,
+        downgradeReminder(
+          row.tierKey,
+          row.scheduledTierKey,
+          row.currentPeriodEnd,
+          now,
+        ),
+      );
+    }
   }
 
   private async prepareRenewal(id: string, brandId: string, now: Date) {
@@ -1699,12 +1872,14 @@ export class SubscriptionsService {
           where: { id },
           data: { status: 'CANCELLED' },
         });
+        // The brand falls back to the free plan, not to no intake.
+        const ended = planEndedNotice(current.tierKey);
         await this.notifyBilling(
           tx,
           brandId,
           `ended-${id}-${current.currentPeriodEnd.toISOString()}`,
-          'Subscription paid period ended',
-          'Your paid subscription period has ended and new custom-order intake is paused. Existing paid shopper obligations continue. A new agreement uses current pricing after the recovery window.',
+          ended.heading,
+          ended.message,
         );
         return;
       }
@@ -1715,12 +1890,16 @@ export class SubscriptionsService {
           recoveryUntil: recoveryDeadline(current.currentPeriodEnd),
         },
       });
+      const failed = renewalFailedNotice(
+        current.tierKey,
+        recoveryDeadline(current.currentPeriodEnd),
+      );
       await this.notifyBilling(
         tx,
         brandId,
         `past-due-${id}-${current.currentPeriodEnd.toISOString()}`,
-        'Subscription renewal needs attention',
-        'Your paid period has ended. New custom-order intake is paused while your existing paid orders continue. Recover the renewal within seven days at the existing agreed price, or review a new agreement after that window.',
+        failed.heading,
+        failed.message,
       );
       if (current.scheduledTierKey && !targetTier)
         throw new NotFoundException('Scheduled subscription tier not found.');

@@ -1,6 +1,8 @@
 import {
   IsArray,
   IsEnum,
+  IsIn,
+  IsUrl,
   IsISO8601,
   IsInt,
   IsOptional,
@@ -31,6 +33,25 @@ export class ProposeVisitDto {
   @IsISO8601({ strict: false }, { each: true })
   slots!: string[];
 
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+
+  /** VIDEO_CALL: call times instead of a visit (free brands only). */
+  @IsOptional()
+  @IsIn(['IN_PERSON', 'VIDEO_CALL'])
+  mode?: 'IN_PERSON' | 'VIDEO_CALL';
+
+  /** The call link, required for VIDEO_CALL. https only. */
+  @IsOptional()
+  @IsUrl({ protocols: ['https'], require_protocol: true })
+  @MaxLength(500)
+  meetingUrl?: string;
+}
+
+/** A free brand asking for a video call instead of a visit. */
+export class RequestVideoCallDto {
   @IsOptional()
   @IsString()
   @MaxLength(500)

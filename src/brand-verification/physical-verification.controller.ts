@@ -26,6 +26,7 @@ import {
   BrandVisitReplyDto,
   DecidePhysicalVerificationDto,
   ProposeVisitDto,
+  RequestVideoCallDto,
   RescheduleResponseDto,
 } from './dto/physical-verification.dto';
 
@@ -104,6 +105,8 @@ export class PhysicalVerificationAdminController {
     return this.service.proposeVisit(id, actorId(req), {
       slots: dto.slots,
       note: dto.note,
+      mode: dto.mode,
+      meetingUrl: dto.meetingUrl,
     });
   }
 
@@ -189,5 +192,17 @@ export class PhysicalVerificationBrandController {
       selectedSlot: dto.selectedSlot,
       note: dto.note,
     });
+  }
+
+  @Post(':id/video-call')
+  @ApiOperation({
+    summary: 'Free plan: ask for a live video call instead of a visit',
+  })
+  async requestVideoCall(
+    @Param('id') id: string,
+    @Body() dto: RequestVideoCallDto,
+    @Req() req: AuthedRequest,
+  ) {
+    return this.service.requestVideoCall(actorId(req), id, dto.note);
   }
 }

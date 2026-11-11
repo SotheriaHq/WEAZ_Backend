@@ -747,6 +747,9 @@ export class AdminBrandsService {
             brandId,
             // The push greets the brand by name ("Wiez <brand> 🎉").
             brandName: brand.name,
+            // Free brands are told they may choose a live video call.
+            videoCallAllowed:
+              await this.physicalVerification.videoCallAllowed(brandId),
             documentsApprovedAt: new Date().toISOString(),
             targetUrl: '/studio/verification',
           },
