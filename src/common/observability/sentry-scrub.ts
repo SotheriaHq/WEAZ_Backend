@@ -29,7 +29,7 @@ const SAFE_HEADERS = new Set([
 
 /** Keys whose values are never reported, whatever they hold. */
 const SENSITIVE_KEY =
-  /pass(word|code)?|secret|token|authori[sz]ation|cookie|signature|api[-_]?key|private[-_]?key|cvv|card[-_]?number|account[-_]?number|refresh/i;
+  /pass(word|code)?|secret|token|authori[sz]ation|cookie|signature|api[-_]?key|private[-_]?key|cvv|card[-_]?number|account[-_]?number|refresh|proof|recovery[-_]?codes?|credential|nonce|ciphertext/i;
 const EXACT_SENSITIVE_KEY = /^(code|otp|pin|auth|key|email)$/i;
 
 function isSensitiveKey(key: string): boolean {
@@ -40,6 +40,7 @@ function isSensitiveKey(key: string): boolean {
 export function redactSensitiveText(value: string): string {
   return (
     value
+      .replace(/otpauth:\/\/[^\s"'<>]+/gi, '<authenticator-enrollment>')
       // These segments are checkout recovery credentials, not resource IDs.
       .replace(
         /(\/custom-orders\/(?:checkout-sessions\/)?resume\/)[^\s/?#"'<>),;]+/gi,

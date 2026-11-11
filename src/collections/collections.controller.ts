@@ -427,8 +427,8 @@ export class CollectionsController {
     status: 200,
     description: 'List of draft collections for current user',
   })
-  async getMyDrafts(@Req() req: any) {
-    return this.collectionsService.getMyDraftCollections(req.user.id);
+  async getMyDrafts(@Req() req: any, @Query('cursor') cursor?: string, @Query('limit') limit?: string) {
+    return this.collectionsService.getMyDraftCollections(req.user.id, { cursor, limit });
   }
 
   @UseGuards(JwtAuthGuard)

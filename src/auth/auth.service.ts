@@ -1,3 +1,7 @@
+import { withSecurityWrite, withSecurityTransaction } from 'src/auth/access/transactional-enforcement';
+import { lockSecurityAccount } from './access/lock-security-account';
+import { getLiveSecurityContext } from './access/security-request-context';
+import { assertCurrentSelfCommand } from './access/current-self-command';
 import {
   BadRequestException,
   ConflictException,
@@ -613,8 +617,7 @@ export class AuthService {
       const createdAt = new Date();
       const brandId = signupDto.type === UserType.BRAND ? uuidv4() : null;
 
-      const user = await this.prisma
-        .$transaction(async (tx) => {
+      const user = await withSecurityTransaction(this.prisma, async (tx) => {
           const createdUser = await tx.user.create({
             data: {
               id: uuidv4(),
@@ -965,8 +968,7 @@ export class AuthService {
       }
     };
 
-    const user = await this.prisma
-      .$transaction(async (tx) => {
+    const user = await withSecurityTransaction(this.prisma, async (tx) => {
         const existingIdentity = await tx.authIdentity.findUnique({
           where: {
             provider_providerSubject: {
@@ -1062,6 +1064,7 @@ export class AuthService {
             // signed up first and is waiting for the real owner to arrive.
             // Google just proved the owner; whatever was set before that proof
             // stops working, exactly as a password reset would.
+            await lockSecurityAccount(tx, existingUser.id);
             await tx.refreshToken.deleteMany({
               where: { userId: existingUser.id },
             });
@@ -1438,7 +1441,7 @@ export class AuthService {
     const now = new Date();
     const expiresAt = new Date(now.getTime() + EMAIL_LOGIN_CODE_TTL_MS);
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       await tx.emailLoginCode.updateMany({
         where: {
           userId: user.id,
@@ -1552,7 +1555,7 @@ export class AuthService {
       submittedCode,
     ).catch(() => false);
     if (!valid) {
-      await this.prisma.emailLoginCode.update({
+      await withSecurityWrite(this.prisma, async (tx) => tx.emailLoginCode.update({
         where: { id: activeCode.id },
         data: {
           attempts: { increment: 1 },
@@ -1560,12 +1563,12 @@ export class AuthService {
             ? { usedAt: now }
             : {}),
         },
-      });
+      }));
       throw new BadRequestException('Invalid or expired verification code');
     }
 
     if (purpose === LoginCodePurpose.DIRECT_LOGIN) {
-      await this.prisma.$transaction(async (tx) => {
+      await withSecurityTransaction(this.prisma, async (tx) => {
         const claimed = await tx.emailLoginCode.updateMany({
           where: { id: activeCode.id, usedAt: null, expiresAt: { gt: now } },
           data: { usedAt: now },
@@ -1613,7 +1616,7 @@ export class AuthService {
     const tokenHash = this.hashSetupToken(rawSetupToken);
     const expiresAt = new Date(now.getTime() + PASSWORD_SETUP_TOKEN_TTL_MS);
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       const claimedCode = await tx.emailLoginCode.updateMany({
         where: {
           id: activeCode.id,
@@ -1712,8 +1715,9 @@ export class AuthService {
 
     const password = await this.passwordService.hashPassword(newPassword);
 
-    await this.prisma.$transaction(
-      async (tx) => {
+    await withSecurityTransaction(
+      this.prisma, async (tx) => {
+        await lockSecurityAccount(tx, setupToken.userId);
         const claimedToken = await tx.passwordSetupToken.updateMany({
           where: {
             id: setupToken.id,
@@ -1807,7 +1811,7 @@ export class AuthService {
       throw new BadRequestException('Google sign-in is already linked.');
     }
 
-    const { count: linked } = await this.prisma.authIdentity.createMany({
+    const { count: linked } = await withSecurityWrite(this.prisma, async (tx) => tx.authIdentity.createMany({
       data: [
         {
           userId: user.id,
@@ -1818,7 +1822,7 @@ export class AuthService {
         },
       ],
       skipDuplicates: true,
-    });
+    }));
     if (linked === 0) {
       const winner = await this.prisma.authIdentity.findUnique({
         where: {
@@ -1850,11 +1854,9 @@ export class AuthService {
     userId: string,
     currentRawRefreshToken?: string | null,
   ) {
-    const currentSessionId = this.extractRefreshSessionId(
-      currentRawRefreshToken,
-    );
+    const currentSessionId = currentRawRefreshToken ?? null;
     const sessions = await this.prisma.refreshToken.findMany({
-      where: { userId },
+      where: { userId, sessionVersion: 1, expiresAt: { gt: new Date() } },
       orderBy: { lastUsedAt: 'desc' },
       take: 25,
       select: {
@@ -1886,18 +1888,21 @@ export class AuthService {
     sessionId: string,
     currentRawRefreshToken?: string | null,
   ) {
-    const currentSessionId = this.extractRefreshSessionId(
-      currentRawRefreshToken,
-    );
+    const currentSessionId = currentRawRefreshToken ?? null;
     if (currentSessionId && sessionId === currentSessionId) {
       throw new BadRequestException('Use logout to end the current session');
     }
 
-    const result = await this.prisma.refreshToken.deleteMany({
-      where: { id: sessionId, userId },
+    return withSecurityTransaction(this.prisma, async (tx) => {
+      await tx.$queryRaw`SELECT "_id" FROM "User" WHERE "_id" = ${userId}::uuid FOR UPDATE`;
+      const finish = await assertCurrentSelfCommand(tx, userId, currentSessionId ?? undefined);
+      const current = await tx.refreshToken.findFirst({ where: { id: currentSessionId, userId }, select: { parentSessionId: true } });
+      if (!current) throw new UnauthorizedException('Session is no longer valid');
+      if (sessionId === current.parentSessionId) throw new BadRequestException('Use logout to end the source of your current Studio session');
+      const result = await tx.refreshToken.deleteMany({ where: { id: sessionId, userId } });
+      finish();
+      return { success: result.count > 0 };
     });
-
-    return { success: result.count > 0 };
   }
 
   async logoutOtherSessions(
@@ -2101,10 +2106,10 @@ export class AuthService {
     }
     void (async () => {
       const nextHash = await this.passwordService.hashPassword(plainPassword);
-      await this.prisma.user.update({
+      await withSecurityWrite(this.prisma, async (tx) => tx.user.update({
         where: { id: userId },
         data: { password: nextHash },
-      });
+      }));
     })().catch((error) => {
       this.logger.warn(
         `Password rehash skipped for ${userId}: ${error?.message ?? error}`,
@@ -2327,7 +2332,7 @@ export class AuthService {
     }
 
     try {
-      const updatedUser = await this.prisma.$transaction(async (tx) => {
+      const updatedUser = await withSecurityTransaction(this.prisma, async (tx) => {
         const existingUser = await tx.user.findUnique({
           where: { id: userId },
           select: {
@@ -2423,12 +2428,12 @@ export class AuthService {
       return { message: 'Email already verified' };
     }
 
-    await this.prisma.user.update({
+    await withSecurityWrite(this.prisma, async (tx) => tx.user.update({
       where: { id: user.id },
       // Keep token so repeated clicks remain idempotent and return
       // "Email already verified" instead of confusing invalid-link errors.
       data: { isEmailVerified: true },
-    });
+    }));
 
     try {
       await this.notifications.create(user.id, NotificationType.SIGNUP, {
@@ -2469,10 +2474,10 @@ export class AuthService {
       this.emailVerificationHelper.generateVerificationCode();
 
     if (!user.emailVerificationCode) {
-      await this.prisma.user.update({
+      await withSecurityWrite(this.prisma, async (tx) => tx.user.update({
         where: { id: user.id },
         data: { emailVerificationCode: verificationToken },
-      });
+      }));
     }
 
     const verificationLink =
@@ -2545,10 +2550,10 @@ export class AuthService {
     if (user.isEmailVerified) return { message: 'Email already verified' };
     if (!user.emailVerificationCode || user.emailVerificationCode !== code)
       throw new BadRequestException('Invalid verification code');
-    await this.prisma.user.update({
+    await withSecurityWrite(this.prisma, async (tx) => tx.user.update({
       where: { id: userId },
       data: { isEmailVerified: true, emailVerificationCode: null },
-    });
+    }));
     try {
       await this.notifications.create(userId, NotificationType.SIGNUP, {
         payload: { action: 'EMAIL_VERIFIED', targetUrl: '/' },
@@ -2568,10 +2573,10 @@ export class AuthService {
     if (user.isEmailVerified) return { message: 'Email already verified' };
     if (!user.emailVerificationCode || user.emailVerificationCode !== code)
       throw new BadRequestException('Invalid verification code');
-    await this.prisma.user.update({
+    await withSecurityWrite(this.prisma, async (tx) => tx.user.update({
       where: { email },
       data: { isEmailVerified: true, emailVerificationCode: null },
-    });
+    }));
     try {
       await this.notifications.create(user.id, NotificationType.SIGNUP, {
         payload: { action: 'EMAIL_VERIFIED', targetUrl: '/' },
@@ -2668,7 +2673,7 @@ export class AuthService {
     const now = new Date();
     const expiresAt = new Date(now.getTime() + EMAIL_LOGIN_CODE_TTL_MS);
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       // Requesting again supersedes any code still in flight, so a user who
       // mistypes the number cannot confirm the previous one by accident.
       await tx.emailLoginCode.updateMany({
@@ -2741,7 +2746,7 @@ export class AuthService {
     ).catch(() => false);
 
     if (!valid) {
-      await this.prisma.emailLoginCode.update({
+      await withSecurityWrite(this.prisma, async (tx) => tx.emailLoginCode.update({
         where: { id: activeCode.id },
         data: {
           attempts: { increment: 1 },
@@ -2751,13 +2756,13 @@ export class AuthService {
             ? { usedAt: now }
             : {}),
         },
-      });
+      }));
       throw new BadRequestException('Invalid or expired verification code');
     }
 
     const phoneNumber = activeCode.pendingValue;
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       // Claim the code first: `updateMany` with the same predicate makes the
       // write atomic, so two concurrent confirmations cannot both succeed.
       const claimed = await tx.emailLoginCode.updateMany({
@@ -2835,14 +2840,14 @@ export class AuthService {
     const tokenHash = createHash('sha256').update(rawToken).digest('hex');
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
 
-    await this.prisma.user.update({
+    await withSecurityWrite(this.prisma, async (tx) => tx.user.update({
       where: { id: userId },
       data: {
         pendingEmail: normalizedEmail,
         pendingEmailTokenHash: tokenHash,
         pendingEmailExpiresAt: expiresAt,
       },
-    } as any);
+    } as any));
 
     const confirmLink = buildEmailChangeConfirmationLink(rawToken);
     const emailContent = emailTemplates.confirmEmailChangeEmail(
@@ -2896,7 +2901,7 @@ export class AuthService {
     const previousEmail = user.email;
     const nextEmail = user.pendingEmail;
 
-    await this.prisma.user.update({
+    await withSecurityWrite(this.prisma, async (tx) => tx.user.update({
       where: { id: user.id },
       data: {
         email: nextEmail,
@@ -2905,7 +2910,7 @@ export class AuthService {
         pendingEmailExpiresAt: null,
         isEmailVerified: true,
       },
-    } as any);
+    } as any));
 
     const changedEmail = emailTemplates.emailChangedSecurityAlertEmail(
       previousEmail,
@@ -3005,7 +3010,8 @@ export class AuthService {
       randomBytes(32).toString('hex'),
     );
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
+        await lockSecurityAccount(tx, userId);
       await tx.refreshToken.deleteMany({ where: { userId } });
       await tx.user.update({
         where: { id: userId },
@@ -3025,7 +3031,6 @@ export class AuthService {
       } as any);
     });
 
-    await this.tokenService.revokeRefreshToken(currentRawRefreshToken);
 
     return { message: 'Your account has been deleted.' };
   }
@@ -3064,8 +3069,8 @@ export class AuthService {
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        return await this.prisma.$transaction(
-          async (tx) => {
+        return await withSecurityTransaction(
+          this.prisma, async (tx) => {
             const existingPending =
               await tx.accountReactivationRequest.findFirst({
                 where: { userId: user.id, status: 'PENDING' },
@@ -3143,8 +3148,8 @@ export class AuthService {
       const expiresAt = new Date(now.getTime() + PASSWORD_RESET_TOKEN_TTL_MS);
 
       try {
-        const shouldCreateToken = await this.prisma.$transaction(
-          async (tx) => {
+        const shouldCreateToken = await withSecurityTransaction(
+          this.prisma, async (tx) => {
             const latestActiveToken = await tx.passwordResetToken.findFirst({
               where: {
                 userId: user.id,
@@ -3306,8 +3311,9 @@ export class AuthService {
     const password = await this.passwordService.hashPassword(newPassword);
     const now = new Date();
 
-    await this.prisma.$transaction(
-      async (tx) => {
+    await withSecurityTransaction(
+      this.prisma, async (tx) => {
+        await lockSecurityAccount(tx, resetToken.userId);
         const claimedToken = await tx.passwordResetToken.updateMany({
           where: {
             id: resetToken.id,
@@ -3414,8 +3420,8 @@ export class AuthService {
       const expiresAt = new Date(now.getTime() + PASSWORD_RESET_TOKEN_TTL_MS);
 
       try {
-        const shouldCreateToken = await this.prisma.$transaction(
-          async (tx) => {
+        const shouldCreateToken = await withSecurityTransaction(
+          this.prisma, async (tx) => {
             const latestActiveToken = await tx.passwordResetToken.findFirst({
               where: {
                 userId: user.id,
@@ -3589,8 +3595,9 @@ export class AuthService {
     const password = await this.passwordService.hashPassword(newPassword);
     const now = new Date();
 
-    await this.prisma.$transaction(
-      async (tx) => {
+    await withSecurityTransaction(
+      this.prisma, async (tx) => {
+        await lockSecurityAccount(tx, resetToken.userId);
         const claimedToken = await tx.passwordResetToken.updateMany({
           where: {
             id: resetToken.id,
@@ -3655,7 +3662,9 @@ export class AuthService {
     userId: string,
     currentPassword: string | undefined,
     newPassword: string,
-    currentRawRefreshToken?: string | null,
+    currentSessionId?: string | null,
+    request?: Request,
+    response?: Response,
   ) {
     if (!newPassword) {
       throw new BadRequestException('New password is required');
@@ -3720,37 +3729,38 @@ export class AuthService {
 
     const password = await this.passwordService.hashPassword(newPassword);
 
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        password,
-        passwordCredentialStatus: PasswordCredentialStatus.ENABLED,
-        mustResetPassword: false,
-        authVersion: { increment: 1 },
-        ...this.loginLockout.getPasswordResetClearData(false),
-      },
-    });
-    await this.tokenService.revokeOtherRefreshTokens(
-      userId,
-      currentRawRefreshToken,
-    );
-
+    if (!currentSessionId || !request || !response)
+      throw new UnauthorizedException('A current sign-in session is required to change your password.');
+    const operation = getLiveSecurityContext()?.operation;
+    if (!operation || operation.actor.id !== userId || operation.actor.sid !== currentSessionId ||
+      operation.policy.scope !== 'SELF' || operation.policy.sensitivity !== 'CRITICAL_CHANGE' ||
+      operation.policy.action !== 'account.security.change' || operation.method !== 'POST' ||
+      !['/auth/change-password', '/auth/admin/change-password'].includes(operation.route))
+      throw new ForbiddenException('Verify this exact password change before continuing.');
     const passwordChangedEmail =
       emailTemplates.passwordChangedSecurityAlertEmail(
         this.emailService.getAppName(),
       );
-    await this.sendScenarioEmailIfAllowed({
-      userId,
-      to: user.email,
-      scenarioKey: 'auth.password.changed',
-      subject: passwordChangedEmail.subject,
-      html: passwordChangedEmail.html,
-      text: passwordChangedEmail.text,
-      priority: EmailPriority.P0_SECURITY,
-      idempotencyKey: `auth:password-changed:${userId}:${Date.now()}`,
-    });
-
-    return { message: 'Password updated successfully' };
+    const shouldNotify = await this.notifications.canSendScenarioEmail(userId, 'auth.password.changed');
+    const rotation = await withSecurityTransaction(this.prisma, tx =>
+      this.tokenService.rotatePasswordSessionInTransaction(tx, userId, currentSessionId, request, async current => {
+        const credential = await tx.user.findUnique({ where: { id: userId }, select: { password: true } });
+        if (!credential || credential.password !== user.password)
+          throw new UnauthorizedException('Account security changed. Sign in again.');
+        await tx.user.update({ where: { id: userId }, data: {
+          password, passwordCredentialStatus: PasswordCredentialStatus.ENABLED, mustResetPassword: false,
+          authVersion: { increment: 1 }, ...this.loginLockout.getPasswordResetClearData(false),
+        } });
+        if (shouldNotify) {
+          const queued = await this.emailService.send(user.email, passwordChangedEmail.subject,
+            passwordChangedEmail.html, passwordChangedEmail.text, { recipientUserId: userId,
+              scenarioKey: 'auth.password.changed', priority: EmailPriority.P0_SECURITY,
+              idempotencyKey: `auth:password-changed:${userId}:${current.authVersion + 1}` }, tx);
+          if (queued.dispatchStatus !== 'QUEUED')
+            throw new ServiceUnavailableException('The password-change notice could not be saved. No change was committed.');
+        }
+      }));
+    return this.tokenService.deliverPasswordSessionRotation(rotation, request, response);
   }
 
   async completeAdminFirstLoginReset(
@@ -3828,7 +3838,8 @@ export class AuthService {
     }
 
     const password = await this.passwordService.hashPassword(newPassword);
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
+        await lockSecurityAccount(tx, user.id);
       await tx.refreshToken.deleteMany({ where: { userId: user.id } });
       await tx.user.update({
         where: { id: user.id },

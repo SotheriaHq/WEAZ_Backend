@@ -1,3 +1,4 @@
+import { withSecurityWrite, withSecurityTransaction } from 'src/auth/access/transactional-enforcement';
 import {
   BadRequestException,
   ConflictException,
@@ -129,7 +130,7 @@ export class SettlementPolicyService {
     const normalized = this.normalizeInput(input);
     this.validateInput(normalized);
 
-    return this.prisma.$transaction(async (tx) => {
+    return withSecurityTransaction(this.prisma, async (tx) => {
       await this.assertNoDuplicateActiveDefaultPolicy(tx, normalized);
       await this.assertNoOverlappingActivePolicy(tx, normalized);
 
@@ -161,7 +162,7 @@ export class SettlementPolicyService {
     const normalized = this.normalizeInput(input, existing);
     this.validateInput(normalized);
 
-    return this.prisma.$transaction(async (tx) => {
+    return withSecurityTransaction(this.prisma, async (tx) => {
       await this.assertNoDuplicateActiveDefaultPolicy(tx, normalized, id);
       await this.assertNoOverlappingActivePolicy(tx, normalized, id);
 
@@ -195,7 +196,7 @@ export class SettlementPolicyService {
     );
     this.validateInput(normalized);
 
-    return this.prisma.$transaction(async (tx) => {
+    return withSecurityTransaction(this.prisma, async (tx) => {
       await this.assertNoDuplicateActiveDefaultPolicy(tx, normalized, id);
       await this.assertNoOverlappingActivePolicy(tx, normalized, id);
 
@@ -217,14 +218,14 @@ export class SettlementPolicyService {
       throw new NotFoundException('Settlement policy not found');
     }
 
-    return this.prisma.settlementPolicy.update({
+    return withSecurityWrite(this.prisma, async (tx) => tx.settlementPolicy.update({
       where: { id },
       data: {
         isActive: false,
         effectiveTo: new Date(),
         updatedById: actorId,
       },
-    });
+    }));
   }
 
   async resolveActivePolicy(params: {
@@ -359,7 +360,7 @@ export class SettlementPolicyService {
         }
 
         try {
-          await this.prisma.settlementPolicy.create({ data: seed.data });
+          await withSecurityWrite(this.prisma, async (tx) => tx.settlementPolicy.create({ data: seed.data }));
         } catch (error: any) {
           if (!this.isUniqueViolation(error)) {
             throw error;

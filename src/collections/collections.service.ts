@@ -1,4 +1,7 @@
 import { lockForTransaction } from 'src/common/transaction-lock.util';
+import { draftListPage, draftListCursor, type DraftListOptions } from './draft-list-query';
+import { canViewContent, canViewStoreContent } from 'src/common/content-audience';
+import { rememberReadResource, type AuthorizedDisplayFile } from 'src/auth/access/read-resource-context';
 import {
   BULK_IMPORT_BATCH_SIZE,
   claimBulkImport,
@@ -1315,50 +1318,7 @@ export class CollectionsService {
     collectionId: string,
     requesterId?: string,
   ): Promise<boolean> {
-    const c = (await this.prisma.collection.findUnique({
-      where: { id: collectionId },
-      select: {
-        ownerId: true,
-        status: true,
-        visibility: true,
-        isAvailableInStore: true,
-        saleMinPrice: true,
-        saleMaxPrice: true,
-        deletedAt: true,
-      } as any,
-    } as any)) as any;
-    // Not found
-    if (!c) return false;
-
-    if (c.deletedAt) return false;
-
-    // Owner can always view their own collection (draft or published)
-    if (requesterId && requesterId === c.ownerId) return true;
-
-    // For non-owners, only published collections are viewable
-    if (c.status !== 'PUBLISHED') return false;
-
-    // Public collections are always viewable
-    if (c.visibility === CollectionVisibility.PUBLIC) return true;
-
-    // For other private collections, check access approval
-    if (requesterId) {
-      const access = await this.prisma.collectionAccess.findFirst({
-        where: {
-          viewerId: requesterId,
-          state: 'APPROVED',
-          collection: {
-            ownerId: c.ownerId,
-            visibility: CollectionVisibility.PRIVATE,
-            status: 'PUBLISHED',
-            deletedAt: null,
-          },
-        },
-        select: { id: true },
-      } as any);
-      return Boolean(access);
-    }
-    return false;
+    return canViewContent(this.prisma, 'COLLECTION', collectionId, requesterId);
   }
 
   private async canViewMedia(mediaId: string, requesterId?: string) {
@@ -6214,7 +6174,8 @@ export class CollectionsService {
         )
       : [];
     const mediaSignedUrls = mediaFileIds.length
-      ? await this.uploadService.getBatchAuthorizedDisplayUrls(mediaFileIds)
+      ? await this.uploadService.getBatchAuthorizedDisplayUrls(mediaFileIds,
+          mediaFileIds.map(fileId => ({ fileId, source: { type: 'COLLECTION', id, viewer: requesterId } })))
       : new Map<string, string>();
 
     const mappedMedias = Array.isArray(medias)
@@ -6273,20 +6234,7 @@ export class CollectionsService {
     collectionId: string,
     requesterId?: string,
   ): Promise<boolean> {
-    const c = await this.prisma.storeCollection.findUnique({
-      where: { id: collectionId },
-      select: {
-        ownerId: true,
-        status: true,
-        visibility: true,
-        deletedAt: true,
-      },
-    });
-    if (!c) return false;
-    if (c.deletedAt) return false;
-    if (requesterId && requesterId === c.ownerId) return true;
-    if (c.status !== 'PUBLISHED') return false;
-    return c.visibility === CollectionVisibility.PUBLIC;
+    return canViewStoreContent(this.prisma, collectionId, requesterId);
   }
 
   private async getStoreCollection(id: string, requesterId?: string) {
@@ -6379,29 +6327,20 @@ export class CollectionsService {
   /**
    * PHASE 6: Get draft collections for current user
    */
-  async getMyDraftCollections(userId: string) {
-    const publishedTitleRows = await this.prisma.collection.findMany({
-      where: {
-        ownerId: userId,
-        status: 'PUBLISHED',
-        deletedAt: null,
-      },
-      select: { title: true },
-    });
-    const publishedTitles = publishedTitleRows
-      .map((item) => item.title?.trim())
-      .filter((title): title is string => Boolean(title));
-
+  async getMyDraftCollections(userId: string, options: DraftListOptions = {}) {
+    const { limit, query } = draftListPage(userId, options);
+    const candidates = await this.prisma.$queryRaw<Array<{ id: string; createdAt: Date; coverMediaId: string | null }>>(query);
+    const hasMore = candidates.length > limit;
+    const page = candidates.slice(0, limit);
     const items = await this.prisma.collection.findMany({
       where: {
+        id: { in: page.map(row => row.id) },
+        ...(options.domain ? { domain: options.domain } : {}),
         ownerId: userId,
         status: 'DRAFT',
         deletedAt: null,
-        ...(publishedTitles.length > 0
-          ? { title: { notIn: publishedTitles } }
-          : {}),
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       select: {
         id: true,
         title: true,
@@ -6411,6 +6350,7 @@ export class CollectionsService {
         createdAt: true,
         coverMediaId: true,
         medias: {
+          where: { id: { in: page.flatMap(row => row.coverMediaId ? [row.coverMediaId] : []) } },
           include: { file: true },
           orderBy: { orderIndex: 'asc' },
         },
@@ -6433,9 +6373,15 @@ export class CollectionsService {
     // so the public signer rejected all of them and every draft card rendered a
     // broken image. See UploadService.getBatchAuthorizedDisplayUrls.
     const signedUrlMap =
-      await this.uploadService.getBatchAuthorizedDisplayUrls(fileIds);
+      await this.uploadService.getBatchAuthorizedDisplayUrls(fileIds, items.flatMap(c => {
+        rememberReadResource({ type: 'COLLECTION', id: c.id, viewer: userId });
+        const fileId = this.resolveCoverMedia(c.medias, c.coverMediaId ?? null)?.fileUploadId;
+        return fileId ? [{ fileId, source: { type: 'COLLECTION' as const, id: c.id, viewer: userId } }] : [];
+      }));
 
     return {
+      hasMore,
+      nextCursor: hasMore && page.length ? draftListCursor(userId, page[page.length - 1]) : null,
       items: items.map((c) => {
         const cover = this.resolveCoverMedia(c.medias, c.coverMediaId ?? null);
         const coverFileId = cover?.fileUploadId ?? null;
@@ -6713,7 +6659,11 @@ export class CollectionsService {
     const fileIds = new Set<string>();
     const logoFileIds = new Set<string>();
     const coverFileIdByCollection = new Map<string, string>();
+    const authorizedFiles: AuthorizedDisplayFile[] = [];
     data.forEach((c) => {
+      const source = { type: 'COLLECTION' as const, id: c.id, viewer: requesterId,
+        allowDeletedByOwner: shouldIncludeDeleted || shouldOnlyDeleted };
+      rememberReadResource(source);
       // Cover image (prefer coverMediaId)
       const preferredCover = c.coverMediaId
         ? c.medias?.find((m: any) => m.id === c.coverMediaId)
@@ -6721,6 +6671,7 @@ export class CollectionsService {
       if (preferredCover?.file?.id) {
         fileIds.add(preferredCover.file.id);
         coverFileIdByCollection.set(c.id, preferredCover.file.id);
+        authorizedFiles.push({ fileId: preferredCover.file.id, source });
       }
       // Brand logo
       const owner = this.mapCollectionOwner(c.owner);
@@ -6739,6 +6690,7 @@ export class CollectionsService {
     // any collection shared with an approved viewer) rendered broken images.
     const signedUrlMap = await this.uploadService.getBatchAuthorizedDisplayUrls(
       Array.from(fileIds),
+      authorizedFiles,
     );
     // Card avatars render tiny: prefer the 256px AVATAR variant over the
     // original upload; the signed original stays as fallback.
@@ -7094,7 +7046,10 @@ export class CollectionsService {
 
     const fileIds = new Set<string>();
     const logoFileIds = new Set<string>();
+    const authorizedFiles: AuthorizedDisplayFile[] = [];
     data.forEach((c: any) => {
+      rememberReadResource({ type: 'STORE_COLLECTION', id: c.id, viewer: requesterId,
+        allowDeletedByOwner: shouldIncludeDeleted || shouldOnlyDeleted });
       const owner = this.mapCollectionOwner(c.owner);
       const ownerLogoFileId =
         owner?.profileImageFile?.id ?? owner?.profileImageId;
@@ -7132,7 +7087,12 @@ export class CollectionsService {
                     )
                     .filter(Boolean)
                 : [];
-              return thumbnail ? [thumbnail, ...images] : images;
+              const candidates = thumbnail ? [thumbnail, ...images] : images;
+              for (const candidate of candidates) {
+                if (isUuid(candidate)) authorizedFiles.push({ fileId: candidate,
+                  source: { type: 'PRODUCT', id: product.id, viewer: requesterId } });
+              }
+              return candidates;
             })
             .filter((value: string) => value.length > 0),
         ),
@@ -7183,6 +7143,7 @@ export class CollectionsService {
     // see, so unpublished covers must still resolve for their owner.
     const signedUrlMap = await this.uploadService.getBatchAuthorizedDisplayUrls(
       Array.from(fileIds),
+      authorizedFiles,
     );
     // Card avatars render tiny: prefer the 256px AVATAR variant over the
     // original upload; the signed original stays as fallback.

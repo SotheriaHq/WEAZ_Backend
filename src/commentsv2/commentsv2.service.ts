@@ -20,8 +20,6 @@ import { NotificationsQueueService } from 'src/queue/notifications.queue.service
 import { CreateCommentV2Dto, ListQueryDto } from './dto';
 import {
   NotificationType,
-  CollectionVisibility,
-  AccessState,
   UserType,
   PatchStatus,
   PatchMode,
@@ -32,6 +30,7 @@ import {
   resolveRequiredProfileField,
 } from 'src/common/user-profile-source.helper';
 import { canonicalBrandProfileSelect } from 'src/common/brand-profile-source.helper';
+import { canViewContent } from 'src/common/content-audience';
 
 function escapeHtml(input: string): string {
   return input
@@ -91,69 +90,19 @@ export class CommentsV2Service {
   }
 
   private async canViewCollection(collectionId: string, requesterId?: string) {
-    const c = await this.prisma.collection.findUnique({
-      where: { id: collectionId },
-      select: { ownerId: true, status: true, visibility: true },
-    });
-    if (!c || c.status !== 'PUBLISHED') return false;
-    if (c.visibility === CollectionVisibility.PUBLIC) return true;
-    if (requesterId && requesterId === c.ownerId) return true;
-    if (requesterId) {
-      const access = await this.prisma.collectionAccess.findUnique({
-        where: {
-          collectionId_viewerId: { collectionId, viewerId: requesterId },
-        },
-        select: { state: true },
-      });
-      return access?.state === AccessState.APPROVED;
-    }
-    return false;
+    return canViewContent(this.prisma, 'COLLECTION', collectionId, requesterId);
   }
 
   private async canViewMedia(mediaId: string, requesterId?: string) {
-    const m = await this.prisma.collectionMedia.findUnique({
-      where: { id: mediaId },
-      select: { collectionId: true },
-    });
-    if (!m) return false;
-    return this.canViewCollection(m.collectionId, requesterId);
+    return canViewContent(this.prisma, 'COLLECTION_MEDIA', mediaId, requesterId);
   }
 
   private async canViewDesign(designId: string, requesterId?: string) {
-    // Designs are DESIGN-domain collections; a design's id is its collection id.
-    const design = await this.prisma.collection.findUnique({
-      where: { id: designId },
-      select: {
-        ownerId: true,
-        status: true,
-        visibility: true,
-      },
-    });
-    if (!design) return false;
-    if (requesterId && requesterId === design.ownerId) return true;
-    if (design.status !== 'PUBLISHED') return false;
-    if (design.visibility === CollectionVisibility.PUBLIC) return true;
-    if (!requesterId) return false;
-    return this.canViewCollection(designId, requesterId);
+    return canViewContent(this.prisma, 'DESIGN', designId, requesterId);
   }
 
   private async canViewProduct(productId: string, requesterId?: string) {
-    const product = await this.prisma.product.findUnique({
-      where: { id: productId },
-      select: {
-        brand: { select: { ownerId: true } },
-        isActive: true,
-        deletedAt: true,
-        archivedAt: true,
-        publishAt: true,
-      },
-    });
-    if (!product) return false;
-    if (requesterId && requesterId === product.brand.ownerId) return true;
-    if (product.deletedAt || product.archivedAt || !product.isActive)
-      return false;
-    if (product.publishAt && product.publishAt > new Date()) return false;
-    return true;
+    return canViewContent(this.prisma, 'PRODUCT', productId, requesterId);
   }
 
   private async assertTargetExists(
@@ -298,7 +247,7 @@ export class CommentsV2Service {
     // Emit realtime with enriched payload so clients can patch incrementally without refetch
     const room = `${targetType}:${targetId}`;
     try {
-      this.events.server?.to(room).emit('comment.created', {
+      await this.events.emitAuthorized(room, 'comment.created', {
         targetType,
         targetId,
         commentId: created.id,
@@ -733,7 +682,7 @@ export class CommentsV2Service {
     }));
 
     const room = `COMMENT:${commentId}`;
-    this.events.server?.to(room).emit('comment.threaded', {
+    await this.events.emitAuthorized(room, 'comment.threaded', {
       commentId,
       userId,
       threadCount: threaded.threadCount,
@@ -804,7 +753,7 @@ export class CommentsV2Service {
 
     const room = `${c.targetType}:${c.targetId}`;
     try {
-      this.events.server?.to(room).emit('comment.deleted', {
+      await this.events.emitAuthorized(room, 'comment.deleted', {
         commentId,
         at: Date.now(),
         targetType: c.targetType,

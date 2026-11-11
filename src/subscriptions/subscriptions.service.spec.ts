@@ -47,11 +47,23 @@ describe('SubscriptionsService boundary and payment invariants', () => {
       $queryRaw: jest
         .fn()
         .mockImplementation(async (query: any) =>
-          query.sql?.includes('FROM "BrandSubscriptionInvoice" i')
-            ? invoiceRows(query)
-            : [],
+          query.sql?.includes('clock_timestamp()')
+            ? [{ now }]
+            : query.sql?.includes('FROM "BrandSubscriptionInvoice" i')
+              ? invoiceRows(query)
+              : [],
         ),
       $executeRaw: jest.fn(),
+      brandSubscriptionQuote: {
+        create: jest.fn(({ data }) => ({
+          id: '11111111-1111-4111-8111-111111111111',
+          ...data,
+        })),
+      },
+      brandSubscriptionCheckoutCommand: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
       brandSubscription: {
         findFirst: jest.fn().mockResolvedValue(current()),
         findUnique: jest.fn().mockResolvedValue(null),

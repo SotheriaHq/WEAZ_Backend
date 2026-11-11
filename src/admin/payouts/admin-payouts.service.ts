@@ -1,3 +1,5 @@
+import { withSecurityWrite, withSecurityTransaction } from 'src/auth/access/transactional-enforcement';
+import { securityRequestContext } from 'src/auth/access/security-request-context';
 import {
   BadGatewayException,
   BadRequestException,
@@ -252,7 +254,7 @@ export class AdminPayoutsService {
     actorRole: Role,
     req: Request,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    return withSecurityTransaction(this.prisma, async (tx) => {
       await this.lockPayoutForUpdate(tx, payoutId);
       const payout = await tx.payout.findUnique({
         where: { id: payoutId },
@@ -314,7 +316,7 @@ export class AdminPayoutsService {
     req: Request,
     reason?: string,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    return withSecurityTransaction(this.prisma, async (tx) => {
       await this.lockPayoutForUpdate(tx, payoutId);
       const payout = await tx.payout.findUnique({
         where: { id: payoutId },
@@ -367,7 +369,7 @@ export class AdminPayoutsService {
     actorRole: Role,
     req: Request,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    return withSecurityTransaction(this.prisma, async (tx) => {
       await this.lockPayoutForUpdate(tx, payoutId);
       const payout = await tx.payout.findUnique({
         where: { id: payoutId },
@@ -503,7 +505,7 @@ export class AdminPayoutsService {
     req: Request,
   ) {
     this.assertTransferExecutionEnabled();
-    const intent = await this.prisma.$transaction(async (tx) => {
+    const intent = await withSecurityTransaction(this.prisma, async (tx) => {
       await this.lockPayoutForUpdate(tx, payoutId);
       const current = await tx.payout.findUnique({
         where: { id: payoutId },
@@ -634,7 +636,7 @@ export class AdminPayoutsService {
       throw new BadRequestException(
         'OTP is required to finalize this transfer',
       );
-    const intent = await this.prisma.$transaction(async (tx) => {
+    const intent = await withSecurityTransaction(this.prisma, async (tx) => {
       await this.lockPayoutForUpdate(tx, payoutId);
       const current = await tx.payout.findUnique({
         where: { id: payoutId },
@@ -685,7 +687,7 @@ export class AdminPayoutsService {
   }
 
   async getProviderStatus(payoutId: string, actorId: string, actorRole: Role) {
-    const intent = await this.prisma.$transaction(async (tx) => {
+    const intent = await withSecurityTransaction(this.prisma, async (tx) => {
       await this.lockPayoutForUpdate(tx, payoutId);
       const current = await tx.payout.findUnique({
         where: { id: payoutId },
@@ -770,6 +772,43 @@ export class AdminPayoutsService {
     });
   }
 
+  /** Verify the committed command immediately before contacting the provider. */
+  private async assertCommittedTransferCommand(
+    payoutId: string, token: string, path: string,
+    init: RequestInit & { bodyJson?: Record<string, unknown> },
+    source: 'provider-initiate' | 'provider-finalize' | 'provider-fetch',
+  ) {
+    await securityRequestContext.exit(() => this.prisma.$transaction(async (tx) => {
+      await this.lockPayoutForUpdate(tx, payoutId);
+      const owned = await tx.$queryRaw<Array<{ id: string }>>`SELECT "_id" AS id FROM "Payout"
+        WHERE "_id"=${payoutId}::uuid AND "transferLeaseToken"=${token}::uuid
+          AND "transferLockedAt">=clock_timestamp() AT TIME ZONE 'UTC'-INTERVAL '10 minutes'`;
+      if (!owned.length) throw new ConflictException({ code: 'PAYOUT_TRANSFER_INTENT_CHANGED',
+        message: 'This transfer request changed. Refresh its status before retrying.' });
+      const current = await tx.payout.findUnique({ where: { id: payoutId }, select: {
+        id: true, amount: true, currency: true, providerTransferReference: true,
+        providerTransferCode: true, providerRecipientCode: true,
+      } });
+      if (!current) throw new NotFoundException('Payout not found');
+      const body = init.bodyJson;
+      const minorAmount = Math.round(this.roundMoney(Number(current.amount)) * 100);
+      const lookupPaths = [current.providerTransferCode ? `/transfer/${encodeURIComponent(current.providerTransferCode)}` : null,
+        current.providerTransferReference ? `/transfer/verify/${encodeURIComponent(current.providerTransferReference)}` : null];
+      const matches = source === 'provider-fetch'
+        ? init.method === 'GET' && lookupPaths.includes(path)
+        : source === 'provider-finalize'
+          ? init.method === 'POST' && path === '/transfer/finalize_transfer' && Boolean(current.providerTransferCode) &&
+            body?.transfer_code === current.providerTransferCode && typeof body?.otp === 'string' && body.otp.trim().length > 0
+          : source === 'provider-initiate' && init.method === 'POST' && path === '/transfer' &&
+            body?.source === 'balance' && Number.isSafeInteger(minorAmount) && minorAmount > 0 && body.amount === minorAmount &&
+            current.currency.toUpperCase() === 'NGN' && body.currency === 'NGN' &&
+            Boolean(current.providerRecipientCode) && body.recipient === current.providerRecipientCode &&
+            Boolean(current.providerTransferReference) && body.reference === current.providerTransferReference;
+      if (!matches) throw new ConflictException({ code: 'PAYOUT_TRANSFER_DETAILS_CHANGED',
+        message: 'The approved transfer details changed. Refresh its status before retrying.' });
+    }));
+  }
+
   private async executeTransferIntent(
     payoutId: string,
     token: string,
@@ -777,10 +816,15 @@ export class AdminPayoutsService {
     init: RequestInit & { bodyJson?: Record<string, unknown> },
     source: 'provider-initiate' | 'provider-finalize' | 'provider-fetch',
   ) {
+    await this.assertCommittedTransferCommand(payoutId, token, path, init, source);
     try {
       // No database transaction, source lock or connection is held over HTTP.
       const payload = await this.callPaystack(path, init);
-      return await this.prisma.$transaction(async (tx) => {
+      // Admission already committed the approved payout and transfer lease.
+      // Recording its provider result is service recovery, not a new human
+      // mutation. A signed-out/expired initiating session must not lose that
+      // result. Authority here is restricted by the locked payout/lease fence.
+      return await securityRequestContext.exit(() => this.prisma.$transaction(async (tx) => {
         await this.lockPayoutForUpdate(tx, payoutId);
         const current = await tx.payout.findUnique({
           where: { id: payoutId },
@@ -811,10 +855,12 @@ export class AdminPayoutsService {
           where: { id: payoutId },
           data: { transferLeaseToken: null, transferLockedAt: null },
         });
-        return updated;
-      });
+        return { ...updated, transferLeaseToken: null, transferLockedAt: null };
+      }));
     } catch (error) {
-      await this.prisma.$transaction(async (tx) => {
+      // The same committed-intent fence permits marking an uncertain outcome
+      // after HTTP cancellation, without resubmitting money or spending proof.
+      await securityRequestContext.exit(() => this.prisma.$transaction(async (tx) => {
         await this.lockPayoutForUpdate(tx, payoutId);
         const affected =
           await tx.$executeRaw`UPDATE "Payout" SET "transferLeaseToken"=NULL, "transferLockedAt"=NULL,
@@ -833,7 +879,7 @@ export class AdminPayoutsService {
                 'Provider outcome unconfirmed; no automatic resubmission.',
             },
           });
-      });
+      }));
       throw error;
     }
   }
@@ -913,7 +959,7 @@ export class AdminPayoutsService {
   ): Promise<void> {
     const providerPayload = this.asObject(job.payload?.data) ?? job.payload;
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       await this.lockPayoutForUpdate(tx, job.payoutId);
       const current = await tx.payout.findUnique({
         where: { id: job.payoutId },
@@ -1049,7 +1095,7 @@ export class AdminPayoutsService {
     }
 
     try {
-      await (this.prisma as any).payoutEvent.create({
+      await withSecurityWrite(this.prisma, async (tx) => (tx as any).payoutEvent.create({
         data: {
           id: uuidv4(),
           payoutId: payout.id,
@@ -1061,7 +1107,7 @@ export class AdminPayoutsService {
           providerEventReceivedAt: new Date(),
           payload,
         },
-      });
+      }));
     } catch (error: any) {
       const message = String(error?.message || '');
       if (

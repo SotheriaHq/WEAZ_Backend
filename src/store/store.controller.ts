@@ -762,6 +762,8 @@ export class StoreController {
   )
   @UseInterceptors(IdempotencyInterceptor)
   @Patch('store/payment-account')
+  // Provider writes and bank resolution: cap each authenticated caller's attempts.
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
   async updateStorePaymentAccount(
     @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
     dto: UpdateStorePaymentAccountDto,

@@ -14,6 +14,11 @@ datasource db {
 }
 
 model User {
+  mfaRecoveryRequests SecurityMfaRecoveryRequest[]
+  mfaRecoveryReviews SecurityMfaRecoveryReview[]
+  securityFactors SecurityFactor[]
+  securityRecoveryCodes SecurityRecoveryCode[]
+  securityStepUpChallenges SecurityStepUpChallenge[]
   runwayAffinityCache RunwayAffinityCache?
   runwayFeedSessions RunwayFeedSession[]
   id                       String                        @id @map("_id") @db.Uuid
@@ -25,6 +30,7 @@ model User {
   passwordCredentialStatus PasswordCredentialStatus      @default(ENABLED)
   createdAt                DateTime                      @default(now())
   updatedAt                DateTime                      @updatedAt
+  securitySessionHistory SecuritySessionHistory[]
   refreshTokens            RefreshToken[]
   subscriptionNoticeReceipts SubscriptionNoticeReceipt[]
   studioHandoffCodes       StudioHandoffCode[]
@@ -325,6 +331,22 @@ model Comment {
 }
 
 model RefreshToken {
+  riskState SecurityRiskState @default(NORMAL)
+  riskScore Int @default(0)
+  riskSequence BigInt @default(0)
+  riskObservedAt DateTime @default(now())
+  riskReasons String[] @default([])
+  strongAuthenticatedAt DateTime?
+  strongAuthVersion Int?
+  stepUpChallenges SecurityStepUpChallenge[]
+  sessionVersion Int @default(0)
+  issuedAuthVersion Int @default(-1)
+  deviceKey String?
+  deviceName String?
+  parentSessionId String? @db.Uuid
+  parentSession RefreshToken? @relation("SessionChildren", fields: [parentSessionId], references: [id], onDelete: Cascade)
+  childSessions RefreshToken[] @relation("SessionChildren")
+  handoffs StudioHandoffCode[]
   id            String    @id @map("_id") @db.Uuid
   tokenHash     String    @unique
   userId        String    @db.Uuid
@@ -337,11 +359,36 @@ model RefreshToken {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
+  @@index([userId, deviceKey, createdAt])
+  @@index([parentSessionId])
   @@index([userId, createdAt])
   @@index([expiresAt])
 }
 
+// Credential-free session history, retained for 30 days after a session ends.
+model SecuritySessionHistory {
+  id String @id @db.Uuid
+  userId String @db.Uuid
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceKey String?
+  deviceName String?
+  userAgent String?
+  ipAddressMasked String?
+  parentSessionId String? @db.Uuid
+  createdAt DateTime
+  lastUsedAt DateTime
+  expiresAt DateTime
+  endedAt DateTime?
+  endedReason String?
+  @@index([userId, deviceKey, createdAt])
+  @@index([endedAt])
+  @@index([expiresAt])
+}
+
 model StudioHandoffCode {
+  sourceAuthVersion Int?
+  sourceSessionId String? @db.Uuid
+  sourceSession RefreshToken? @relation(fields: [sourceSessionId], references: [id], onDelete: Cascade)
   id           String    @id @map("_id") @db.Uuid
   codeHash     String    @unique
   userId       String    @db.Uuid
@@ -354,6 +401,7 @@ model StudioHandoffCode {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
+  @@index([sourceSessionId])
   @@index([userId, createdAt])
   @@index([expiresAt])
   @@index([usedAt])
@@ -1452,6 +1500,8 @@ model Collection {
   @@index([status, pendingCategorySuggestionId]) // PHASE 1: Fast lookup of drafts waiting for category approval
   @@index([ownerId, status, createdAt]) // PHASE 1: User's draft management
   @@index([ownerId, domain, status, createdAt])
+  @@index([ownerId, status, createdAt, id])
+  @@index([ownerId, domain, status, createdAt, id])
   @@index([categoryTypeId])
   @@index([deletedAt])
   @@index([deleteExpiresAt])
@@ -2878,6 +2928,10 @@ model Brand {
 
   policy         StorePolicy?
   paymentAccount StorePaymentAccount?
+  payoutBankClaims StorePayoutBankClaim[]
+  paymentAccountSyncs StorePaymentAccountSync[]
+  subscriptionQuotes BrandSubscriptionQuote[]
+  payoutRecipientRetirements StorePayoutRecipientRetirement[]
 
   // Review aggregates (cached, recomputed async)
   avgRating       Float @default(0)
@@ -3098,6 +3152,8 @@ model BrandSubscription {
   cancelRequestedAt DateTime?
   recoveryUntil DateTime?
   scheduledTierKey SubscriptionTierKey?
+  /// Approved recurring price of the scheduled plan; never reprice from the catalogue.
+  scheduledPriceSnapshotNgn Int?
   providerAuthorizationCode String?
   providerCustomerEmail String?
   providerAuthorizationJson Json?
@@ -3168,8 +3224,56 @@ model BrandSubscriptionInvoice {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   captures BrandSubscriptionPaymentCapture[]
+  checkoutQuotes BrandSubscriptionQuote[]
+  checkoutCommands BrandSubscriptionCheckoutCommand[]
   @@unique([subscriptionId, periodStart])
   @@index([status, nextAttemptAt])
+}
+
+/// One approved provider instruction. Uncertain dispatch is reconciled, never replayed.
+model BrandSubscriptionCheckoutCommand {
+  id String @id @default(uuid()) @db.Uuid
+  invoiceId String @db.Uuid
+  invoice BrandSubscriptionInvoice @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  reference String @unique
+  commandCiphertext String
+  state String @default("READY")
+  leaseToken String? @db.Uuid
+  leaseUntil DateTime?
+  dispatchedAt DateTime?
+  nextAttemptAt DateTime? @default(now())
+  lastError String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([state, nextAttemptAt])
+  @@index([invoiceId, createdAt])
+}
+
+// A five-minute owner-visible offer; consuming it never creates a second payment.
+model BrandSubscriptionQuote {
+  id String @id @default(uuid()) @db.Uuid
+  brandId String @db.Uuid
+  brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  actorId String @db.Uuid
+  tierKey SubscriptionTierKey
+  kind String
+  amount Decimal @db.Decimal(12, 2)
+  monthlyPriceNgn Decimal @db.Decimal(12, 2)
+  currency String @default("NGN")
+  agreementFingerprint String?
+  periodStart DateTime
+  periodEnd DateTime
+  expiresAt DateTime
+  usedAt DateTime?
+  usedByRequestId String? @db.Uuid
+  invoiceId String? @db.Uuid
+  invoice BrandSubscriptionInvoice? @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now())
+
+  @@index([brandId, actorId, expiresAt])
+  // Expired unused offers have a partial expiry index in the migration.
+  @@index([invoiceId])
 }
 
 /// Every provider capture is retained separately, including duplicate and late
@@ -3291,6 +3395,12 @@ model BrandVerificationAttempt {
   @@unique([brandId, attemptNumber])
   @@index([brandId, submittedAt])
   @@index([submittedAt])
+  @@index([ownerPhotoKey])
+  @@index([idDocumentFrontKey])
+  @@index([idDocumentBackKey])
+  @@index([cacCertificateKey])
+  @@index([authorityProofKey])
+  @@index([letterOfConfirmationKey])
 }
 
 /// The last step of verification: somebody goes and looks.
@@ -3390,6 +3500,7 @@ model PhysicalVerificationProof {
   createdAt              DateTime                      @default(now())
 
   @@index([physicalVerificationId, createdAt])
+  @@index([fileKey])
 }
 
 model VerificationRejectionReason {
@@ -3469,6 +3580,8 @@ model StorePaymentAccount {
   accountName                 String?
   accountNumberEncrypted      String?
   accountNumberLast4          String?
+  bankClaimFingerprint         String?                   @unique
+  bankClaim                   StorePayoutBankClaim?      @relation(fields: [bankClaimFingerprint], references: [fingerprint], onDelete: NoAction)
   isAccountResolved           Boolean                   @default(false)
   accountResolvedAt           DateTime?
   subaccountCode              String?                   @unique
@@ -3486,6 +3599,69 @@ model StorePaymentAccount {
   updatedAt                   DateTime                  @updatedAt
 
   @@index([status, updatedAt])
+}
+
+// Bank identity uses a separate, stable HMAC key, never a plaintext account number.
+model StorePayoutBankClaim {
+  fingerprint String @id
+  keyId String
+  brandId String @db.Uuid
+  brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  recipientCode String? @unique
+  paymentAccount StorePaymentAccount?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([brandId])
+}
+
+// One release gate; readers share the lock, preparation requires exclusive access.
+model StorePayoutIdentityState {
+  id String @id
+  keyId String?
+  ready Boolean @default(false)
+  updatedAt DateTime @updatedAt
+}
+
+// Provider commands are admitted with approval, then executed outside DB transactions.
+model StorePaymentAccountSync {
+  id String @id @default(uuid()) @db.Uuid
+  brandId String @db.Uuid
+  brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  bankFingerprint String
+  commandDigest String
+  commandEncrypted String
+  actorId String @db.Uuid
+  operationDigest String?
+  stage String @default("ADMITTED")
+  leaseToken String? @db.Uuid
+  leaseExpiresAt DateTime?
+  subaccountEncrypted String?
+  recipientEncrypted String?
+  failureCode String?
+  finishedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([brandId, createdAt])
+  @@index([finishedAt, leaseExpiresAt])
+}
+
+// Deactivation is deferred until no pending payout still depends on the old recipient.
+model StorePayoutRecipientRetirement {
+  recipientCode String @id
+  brandId String @db.Uuid
+  brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  bankFingerprint String?
+  replacementCode String
+  leaseToken String? @db.Uuid
+  leaseExpiresAt DateTime?
+  retiredAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([retiredAt, leaseExpiresAt])
+  @@index([bankFingerprint, retiredAt])
 }
 
 model SystemTag {
@@ -4904,6 +5080,7 @@ model Payout {
   @@index([status, createdAt])
   @@index([assignedAdminId, status])
   @@index([providerTransferStatus, createdAt])
+  @@index([providerRecipientCode, status])
 }
 
 model PayoutEvent {
@@ -6345,6 +6522,7 @@ model ProductReview {
   reports      ProductReviewReport[]
 
   @@unique([userId, productId, activeReviewKey])
+  @@index([mediaIds], type: Gin)
   @@index([productId, status, createdAt])
   @@index([brandId, status, createdAt])
   @@index([orderItemId])
@@ -6841,4 +7019,140 @@ model StorageObjectDeletion {
   leaseUntil    DateTime?
   createdAt     DateTime  @default(now())
   @@index([nextAttemptAt, leaseUntil])
+}
+
+
+enum SecurityRiskState {
+  NORMAL
+  CHALLENGE
+  REVOKED
+}
+
+enum SecurityFactorKind {
+  TOTP
+  PASSKEY
+}
+
+enum SecurityActionSensitivity {
+  SENSITIVE_READ
+  CRITICAL_CHANGE
+}
+
+model SecurityFactor {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind SecurityFactorKind
+  label String
+  createdBySessionId String @db.Uuid
+  replacesFactorId String? @db.Uuid
+  recoveryRequestId String? @db.Uuid
+  recoveryRequest SecurityMfaRecoveryRequest? @relation(fields: [recoveryRequestId, userId], references: [id, userId], onDelete: NoAction, onUpdate: NoAction)
+  replacementOf SecurityFactor? @relation("SecurityFactorReplacement", fields: [replacesFactorId, userId], references: [id, userId], onDelete: NoAction, onUpdate: NoAction)
+  replacements SecurityFactor[] @relation("SecurityFactorReplacement")
+  secretCiphertext String?
+  credentialId String? @unique
+  publicKey Bytes?
+  counter BigInt @default(0)
+  transports String[] @default([])
+  lastUsedStep BigInt @default(-1)
+  verifiedAt DateTime?
+  expiresAt DateTime?
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  recoveryCodes SecurityRecoveryCode[]
+  @@unique([id, userId])
+  @@index([replacesFactorId, userId])
+  @@index([recoveryRequestId, userId])
+  @@index([userId, kind, revokedAt])
+  @@index([expiresAt])
+}
+
+enum SecurityMfaRecoveryStatus {
+  PENDING_REVIEW
+  NEEDS_INFORMATION
+  APPROVED
+  REJECTED
+  CANCELLED
+  EXPIRED
+  COMPLETED
+}
+
+enum SecurityMfaRecoveryDecision {
+  APPROVE
+  REQUEST_INFORMATION
+  REJECT
+}
+
+model SecurityMfaRecoveryRequest {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  authVersion Int
+  status SecurityMfaRecoveryStatus @default(PENDING_REVIEW)
+  revision Int @default(1)
+  reason String @db.VarChar(1000)
+  publicMessage String? @db.VarChar(1000)
+  expiresAt DateTime
+  approvedUntil DateTime?
+  completedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  reviews SecurityMfaRecoveryReview[]
+  pendingFactors SecurityFactor[]
+  @@unique([id, userId])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@index([expiresAt])
+}
+
+model SecurityMfaRecoveryReview {
+  id String @id @default(uuid()) @db.Uuid
+  requestId String @db.Uuid
+  request SecurityMfaRecoveryRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  revision Int
+  reviewerId String? @db.Uuid
+  reviewer User? @relation(fields: [reviewerId], references: [id], onDelete: SetNull)
+  reviewerAuthVersion Int
+  decision SecurityMfaRecoveryDecision
+  evidenceReference String @db.VarChar(200)
+  createdAt DateTime @default(now())
+  @@unique([requestId, revision, reviewerId])
+  @@index([reviewerId])
+}
+
+model SecurityRecoveryCode {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  factorId String @db.Uuid
+  factor SecurityFactor @relation(fields: [factorId], references: [id], onDelete: Cascade)
+  codeHash String @unique
+  usedAt DateTime?
+  createdAt DateTime @default(now())
+  @@index([userId, usedAt])
+}
+
+model SecurityStepUpChallenge {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId String @db.Uuid
+  session RefreshToken @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  authVersion Int
+  operationDigest String
+  method String
+  route String
+  sensitivity SecurityActionSensitivity
+  nonce String
+  proofHash String?
+  usedByRequestId String? @db.Uuid
+  verifiedAt DateTime?
+  usedAt DateTime?
+  attempts Int @default(0)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  @@index([userId, sessionId, operationDigest, expiresAt])
+  @@index([expiresAt])
 }

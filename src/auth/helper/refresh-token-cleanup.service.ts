@@ -20,6 +20,11 @@ export class RefreshTokenCleanupService {
         );
       }
 
+      const historyCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      await this.prisma.securitySessionHistory.deleteMany({ where: { OR: [
+        { endedAt: { lt: historyCutoff } }, { endedAt: null, expiresAt: { lt: historyCutoff } },
+      ] } });
+
       const passwordResetResult =
         await this.prisma.passwordResetToken.deleteMany({
           where: {

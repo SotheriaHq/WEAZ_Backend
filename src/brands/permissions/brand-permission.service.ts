@@ -1,3 +1,5 @@
+import { withSecurityTransaction } from 'src/auth/access/transactional-enforcement';
+import { effectiveBrandPermissions } from './effective-brand-permissions';
 import {
   BadRequestException,
   ForbiddenException,
@@ -161,49 +163,7 @@ export class BrandPermissionService {
     userId: string,
     brandId: string,
   ): Promise<string[]> {
-    const brand = await this.resolveBrand(brandId);
-    if (brand.ownerId === userId) {
-      return [...BRAND_PERMISSION_CODES];
-    }
-
-    const membership = await this.prisma.brandMember.findUnique({
-      where: {
-        brandId_userId: {
-          brandId: brand.id,
-          userId,
-        },
-      },
-      select: {
-        id: true,
-        brandId: true,
-        userId: true,
-        role: true,
-        status: true,
-        permissionGrants: {
-          select: { permissionCode: true },
-          orderBy: { createdAt: 'asc' },
-        },
-      },
-    });
-
-    if (!membership || membership.status !== BrandMemberStatus.ACTIVE) {
-      return [];
-    }
-
-    if (membership.role === BrandMemberRole.OWNER) {
-      return [...BRAND_PERMISSION_CODES];
-    }
-
-    const explicitPermissions = membership.permissionGrants
-      .map((grant) => grant.permissionCode)
-      .filter((code): code is BrandPermissionCode =>
-        KNOWN_BRAND_PERMISSION_CODES.has(code as BrandPermissionCode),
-      );
-
-    return this.sortPermissions([
-      ...ROLE_DEFAULT_PERMISSIONS[membership.role],
-      ...explicitPermissions,
-    ]);
+    return effectiveBrandPermissions(this.prisma, userId, brandId);
   }
 
   /** SQL counterpart of getEffectivePermissions for bounded, joined resource reads. */
@@ -317,7 +277,7 @@ export class BrandPermissionService {
       );
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       await tx.brandPermissionGrant.deleteMany({
         where: { brandMemberId: member.id },
       });

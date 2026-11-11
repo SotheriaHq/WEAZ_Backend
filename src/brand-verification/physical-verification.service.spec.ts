@@ -51,6 +51,8 @@ describe('PhysicalVerificationService', () => {
       },
       brand: { update: jest.fn() },
       brandVerificationAttempt: { update: jest.fn() },
+      // No paid plan by default: the brand's view asks whether a video call is allowed.
+      brandSubscription: { count: jest.fn(async () => 0) },
       user: {
         findUnique: jest.fn(async () => ({
           id: 'agent_1',
@@ -58,6 +60,7 @@ describe('PhysicalVerificationService', () => {
           role: 'Admin',
         })),
       },
+      $queryRaw: jest.fn(async () => []),
       $transaction: jest.fn(async (cb: any) => cb(prisma)),
       ...overrides,
     };
@@ -72,6 +75,70 @@ describe('PhysicalVerificationService', () => {
       .mockResolvedValue({ id: 'pv_1' } as any);
     return { service, prisma, notifications };
   };
+
+  describe('visit evidence ownership', () => {
+    const visit = {
+      id: 'pv_1',
+      status: PhysicalVerificationStatus.ASSIGNED,
+      assignedAgentId: 'agent_1',
+      visitCompletedAt: null,
+    };
+
+    it('rejects a missing or another uploader’s file key before creating evidence', async () => {
+      const { service, prisma } = buildService();
+      prisma.brandPhysicalVerification.findUnique.mockResolvedValue(visit);
+      prisma.$queryRaw.mockResolvedValue([]);
+      await expect(service.addProof('pv_1', 'agent_1', {
+        fileKey: 'another-user/private.jpg',
+      })).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.physicalVerificationProof.create).not.toHaveBeenCalled();
+      expect(prisma.brandPhysicalVerification.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { processingStatus: 'PENDING', originalDeletedAt: null },
+      { processingStatus: 'PROCESSING', originalDeletedAt: null },
+      { processingStatus: 'FAILED', originalDeletedAt: null },
+      { processingStatus: 'READY', originalDeletedAt: new Date() },
+    ])('rejects unavailable evidence: %j', async (state) => {
+      const { service, prisma } = buildService();
+      prisma.brandPhysicalVerification.findUnique.mockResolvedValue(visit);
+      prisma.$queryRaw.mockResolvedValueOnce([{ id: visit.id }])
+        .mockResolvedValueOnce([{ originalName: 'photo.jpg', mimeType: 'image/jpeg', size: 100, ...state }]);
+      await expect(service.addProof('pv_1', 'agent_1', { fileKey: 'own/photo.jpg' }))
+        .rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.physicalVerificationProof.create).not.toHaveBeenCalled();
+    });
+
+    it('uses stored metadata and locks the current visit and uploader-owned file', async () => {
+      const { service, prisma } = buildService();
+      prisma.brandPhysicalVerification.findUnique.mockResolvedValue(visit);
+      prisma.$queryRaw.mockResolvedValueOnce([{ id: visit.id }])
+        .mockResolvedValueOnce([{ originalName: 'photo.jpg', mimeType: 'image/jpeg', size: 100,
+          processingStatus: 'READY', originalDeletedAt: null }]);
+      await service.addProof('pv_1', 'agent_1', { fileKey: ' own/photo.jpg ',
+        fileName: 'spoofed.html', mimeType: 'text/html', sizeBytes: 0, caption: 'Workspace' });
+      const visitLock = prisma.$queryRaw.mock.calls[0][0];
+      expect(visitLock.text).toContain('FOR UPDATE');
+      expect(visitLock.values).toEqual(['pv_1']);
+      const fileLock = prisma.$queryRaw.mock.calls[1][0];
+      expect(fileLock.text).toContain('FOR UPDATE');
+      expect(fileLock.values).toEqual(['own/photo.jpg', 'agent_1']);
+      expect(prisma.physicalVerificationProof.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+        physicalVerificationId: 'pv_1', fileKey: 'own/photo.jpg', uploadedById: 'agent_1',
+        fileName: 'photo.jpg', mimeType: 'image/jpeg', sizeBytes: 100, caption: 'Workspace',
+      }) });
+    });
+
+    it('checks the locked visit assignment before touching any file', async () => {
+      const { service, prisma } = buildService();
+      prisma.brandPhysicalVerification.findUnique.mockResolvedValue({ ...visit, assignedAgentId: 'another-agent' });
+      await expect(service.addProof('pv_1', 'agent_1', { fileKey: 'own/photo.jpg' }))
+        .rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(prisma.physicalVerificationProof.create).not.toHaveBeenCalled();
+    });
+  });
 
   const proposedRow = (extra: Record<string, any> = {}) => ({
     id: 'pv_1',
@@ -119,6 +186,22 @@ describe('PhysicalVerificationService', () => {
       NotificationType.VERIFICATION_VISIT_CONFIRMED,
       expect.anything(),
     );
+  });
+
+  it('returns the canonical brand projection without agent identity or private evidence after a reply', async () => {
+    const { service, prisma } = buildService();
+    const row = proposedRow();
+    prisma.brandPhysicalVerification.findUnique.mockResolvedValue(row);
+    prisma.brandPhysicalVerification.findFirst.mockResolvedValue({ ...row,
+      status: PhysicalVerificationStatus.SCHEDULE_CONFIRMED, createdAt: new Date(), _count: { proofs: 0 } });
+    const result = await service.submitBrandReply('owner_1', 'pv_1', {
+      response: PhysicalVerificationBrandResponse.AGREED, selectedSlot: row.proposedSlots[0],
+    });
+    expect(result).toMatchObject({ canRespond: false, remainingReschedules: MAX_RESCHEDULES });
+    const body = JSON.parse(JSON.stringify(result));
+    expect(body).not.toHaveProperty('assignedAgentId');
+    expect(body).not.toHaveProperty('proofs');
+    expect(service.getDetail).not.toHaveBeenCalled();
   });
 
   it('counts a reschedule and stops at the budget', async () => {

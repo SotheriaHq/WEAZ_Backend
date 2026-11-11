@@ -1103,7 +1103,7 @@ async function main() {
       for (let index = 0; index < 26; index++) {
         const renewalOwner = await prisma.user.create({ data: { id: randomUUID(), username: `renewal-${randomUUID()}`, email: `${randomUUID()}@example.invalid` } });
         const renewalBrand = await prisma.brand.create({ data: { id: randomUUID(), ownerId: renewalOwner.id, name: 'Renewal query fixture' } });
-        const renewalAgreement = await prisma.brandSubscription.create({ data: { brandId: renewalBrand.id, tierKey: 'THREAD', status: 'ACTIVE', priceSnapshotNgn: 10000, currentPeriodStart: new Date(+renewalNow - 31 * 86400000), currentPeriodEnd: new Date(+renewalNow - 86400000), scheduledTierKey: index % 2 ? 'ARU' : null, providerCustomerEmail: renewalOwner.email } });
+        const renewalAgreement = await prisma.brandSubscription.create({ data: { brandId: renewalBrand.id, tierKey: 'THREAD', status: 'ACTIVE', priceSnapshotNgn: 10000, currentPeriodStart: new Date(+renewalNow - 31 * 86400000), currentPeriodEnd: new Date(+renewalNow - 86400000), scheduledTierKey: index % 2 ? 'ARU' : null, scheduledPriceSnapshotNgn: index % 2 ? 30000 : null, providerCustomerEmail: renewalOwner.email } });
         renewalAgreements.push({ ...renewalAgreement, fixtureOwnerId: renewalOwner.id });
       }
       queries.length = 0;

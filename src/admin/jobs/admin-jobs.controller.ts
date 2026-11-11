@@ -13,11 +13,11 @@ import { RolesGuard } from 'src/auth/guard/role.guard';
 import { Roles } from 'src/auth/decorator/roles.decorator';
 import { CollectionSchedulerService } from 'src/collections/collection-scheduler.service';
 import { ClockService } from 'src/common/clock/clock.service';
+import { ReadOnlyResponse } from 'src/auth/decorator/read-only-response.decorator';
 
-const isHardProduction =
-  String(process.env.APP_ENV ?? '')
-    .trim()
-    .toLowerCase() === 'production';
+const manualJobsAllowed = () => ['local', 'development', 'test', 'sit', 'uat'].includes(
+  String(process.env.APP_ENV ?? '').trim().toLowerCase(),
+);
 
 /**
  * Non-production-only manual job triggers for QA / SIT / local testing.
@@ -51,7 +51,7 @@ export class AdminJobsController {
       'Returns 403 in production (APP_ENV=production).',
   })
   async runCollectionDraftExpiry() {
-    if (isHardProduction) {
+    if (!manualJobsAllowed()) {
       throw new ForbiddenException(
         'Manual job triggers are not available in production.',
       );
@@ -61,6 +61,7 @@ export class AdminJobsController {
   }
 
   @Post('clock-state')
+  @ReadOnlyResponse()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'NON-PROD ONLY: Return current ClockService effective state',
@@ -69,7 +70,7 @@ export class AdminJobsController {
       'Returns 403 in production (APP_ENV=production).',
   })
   clockState() {
-    if (isHardProduction) {
+    if (!manualJobsAllowed()) {
       throw new ForbiddenException(
         'Clock state endpoint is not available in production.',
       );

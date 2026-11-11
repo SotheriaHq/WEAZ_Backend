@@ -8,7 +8,6 @@ import { NotificationRegistry } from './notifications.registry';
 import { EmailOutboxDispatcherService } from './email-outbox-dispatcher.service';
 import { PushDeviceTokensService } from './push-device-tokens.service';
 import { PushNotificationsService } from './push-notifications.service';
-import { NotificationRealtimeBusService } from 'src/realtime/notification-realtime-bus.service';
 
 @Module({
   imports: [CacheModule.register(), RealtimeModule],
@@ -21,7 +20,6 @@ import { NotificationRealtimeBusService } from 'src/realtime/notification-realti
     EmailOutboxDispatcherService,
     PushDeviceTokensService,
     PushNotificationsService,
-    NotificationRealtimeBusService,
   ],
   controllers: [NotificationsController, NotificationsEmailWebhookController],
   exports: [

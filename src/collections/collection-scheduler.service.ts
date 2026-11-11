@@ -13,6 +13,9 @@ import {
 } from './config/draft-expiry.config';
 import { ClockEffectiveState } from 'src/common/clock/clock.types';
 import { DRAFT_REASON_UPLOAD_INCOMPLETE } from './design-sizing';
+import { deleteDetachedContentFiles } from 'src/upload/file-deletion-query';
+import { withSecurityTransaction, enforceAdministrativeTransaction } from 'src/auth/access/transactional-enforcement';
+import { getLiveSecurityContext } from 'src/auth/access/security-request-context';
 
 const ABANDONED_UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -66,6 +69,7 @@ export class CollectionSchedulerService {
    * manual trigger. Returns a summary of what was processed.
    */
   async runDraftCleanup(): Promise<DraftCleanupSummary> {
+    await this.assertManualAuthority();
     const clockState = this.clock.getEffectiveState();
 
     if (!this.config.CLEANUP_ENABLED) {
@@ -204,7 +208,7 @@ export class CollectionSchedulerService {
       },
     }));
     if (events.length) {
-      const results = await this.notifications.createEvents(events);
+      const results = await this.createExpiryEvents(events);
       results.forEach((result, index) => {
         if (result.status === 'rejected')
           this.logger.error(
@@ -265,6 +269,7 @@ export class CollectionSchedulerService {
           },
         });
       } catch (error) {
+        await this.assertManualAuthority();
         this.logger.error(
           `Failed to clean up expired draft ${draft.id}:`,
           error,
@@ -272,7 +277,7 @@ export class CollectionSchedulerService {
       }
     }
     if (events.length) {
-      const results = await this.notifications.createEvents(events);
+      const results = await this.createExpiryEvents(events);
       for (const result of results)
         if (result.status === 'rejected')
           this.logger.error(
@@ -314,6 +319,7 @@ export class CollectionSchedulerService {
         if (await this.deleteExpiredCollection(id, 'DRAFT', activityBefore))
           deleted++;
       } catch (error) {
+        await this.assertManualAuthority();
         this.logger.error(`Failed to remove abandoned upload ${id}:`, error);
       }
     }
@@ -329,7 +335,7 @@ export class CollectionSchedulerService {
     const ttlMs = this.config.PRESIGN_TTL_HOURS * 60 * 60 * 1000;
     const expiryThreshold = new Date(Date.now() - ttlMs);
 
-    const deleted = await this.prisma.$transaction(async (tx) => {
+    const deleted = await withSecurityTransaction(this.prisma, async (tx) => {
       const rows = await tx.$queryRaw<
         Array<{ id: string; s3Key: string; finalizeTargetKey: string | null }>
       >`
@@ -381,6 +387,7 @@ export class CollectionSchedulerService {
         if (await this.deleteExpiredCollection(entry.id, 'SOFT', now))
           deleted++;
       } catch (error) {
+        await this.assertManualAuthority();
         this.logger.error(
           `Failed to hard-delete collection ${entry.id}:`,
           error,
@@ -395,53 +402,71 @@ export class CollectionSchedulerService {
     mode: 'DRAFT' | 'SOFT',
     cutoff: Date,
   ): Promise<boolean> {
-    return this.prisma.$transaction(async (tx) => {
+    return withSecurityTransaction(this.prisma, async (tx) => {
       const eligibility =
         mode === 'DRAFT'
           ? Prisma.sql`status = 'DRAFT' AND "deletedAt" IS NULL AND
             ("lastActivityAt" <= ${cutoff} OR ("lastActivityAt" IS NULL AND "createdAt" <= ${cutoff}))`
           : Prisma.sql`"deletedAt" IS NOT NULL AND "deleteExpiresAt" <= ${cutoff}`;
-      // Lock and recheck the aggregate, then join all of its immutable storage keys.
+      // Lock and recheck the aggregate. Shared evidence must outlive the draft.
       const rows = await tx.$queryRaw<
         Array<{
           id: string;
           fileId: string | null;
-          s3Key: string | null;
-          variantKey: string | null;
+          userId: string | null;
         }>
       >(Prisma.sql`
         WITH claimed AS (
           SELECT "_id" FROM "Collection" WHERE "_id" = ${id}::uuid AND ${eligibility}
           FOR UPDATE SKIP LOCKED
         )
-        SELECT claimed."_id" AS id, file."_id" AS "fileId", file."s3Key", variant."s3Key" AS "variantKey"
+        SELECT DISTINCT claimed."_id" AS id, file."_id" AS "fileId", file."userId"
         FROM claimed
         LEFT JOIN "CollectionMedia" media ON media."collectionId" = claimed."_id"
         LEFT JOIN "FileUpload" file ON file."_id" = media."fileUploadId"
-        LEFT JOIN "FileVariant" variant ON variant."fileUploadId" = file."_id"
+        ORDER BY "fileId"
       `);
       if (!rows.length) return false;
-      const fileIds = [
-        ...new Set(rows.flatMap((row) => (row.fileId ? [row.fileId] : []))),
-      ];
-      const keys = [
-        ...new Set(
-          rows
-            .flatMap((row) => [row.s3Key, row.variantKey])
-            .filter((key): key is string => Boolean(key)),
-        ),
-      ];
+      const files = rows.flatMap((row) =>
+        row.fileId && row.userId
+          ? [{ id: row.fileId, userId: row.userId }]
+          : [],
+      );
       await tx.collectionMedia.deleteMany({ where: { collectionId: id } });
-      if (fileIds.length)
-        await tx.fileUpload.deleteMany({ where: { id: { in: fileIds } } });
+      for (let offset = 0; offset < files.length; offset += 500) {
+        // A live processing lease rolls back the detachment too, so the next
+        // cleanup run can retry the whole aggregate rather than orphan a job.
+        await deleteDetachedContentFiles(
+          tx,
+          files.slice(offset, offset + 500),
+          {
+            requireIdle: true,
+          },
+        );
+      }
       await tx.collection.delete({ where: { id } });
-      if (keys.length)
-        await tx.storageObjectDeletion.createMany({
-          data: keys.map((s3Key) => ({ s3Key })),
-          skipDuplicates: true,
-        });
       return true;
     });
+  }
+
+  /** Cron keeps its system authority. A human-triggered job retains the live
+   * operator identity and stops instead of swallowing an authority failure. */
+  private async assertManualAuthority(): Promise<void> {
+    const context = getLiveSecurityContext();
+    if (!context) return;
+    await this.prisma.$transaction(tx => enforceAdministrativeTransaction(tx, context.operation));
+    getLiveSecurityContext();
+  }
+
+  private async createExpiryEvents(events: NotificationEvent[]): Promise<PromiseSettledResult<unknown>[]> {
+    if (!getLiveSecurityContext()) return this.notifications.createEvents(events);
+    const results: PromiseSettledResult<unknown>[] = [];
+    for (let offset = 0; offset < events.length; offset += 25) {
+      const batch = events.slice(offset, offset + 25);
+      await withSecurityTransaction(this.prisma, tx => this.notifications.stageDraftExpiryEvents(tx, batch));
+      results.push(...batch.map(() => ({ status: 'fulfilled' as const, value: undefined })));
+    }
+    return results;
   }
 
   @Cron(CronExpression.EVERY_5_MINUTES)

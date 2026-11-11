@@ -1,3 +1,4 @@
+import { withSecurityWrite, withSecurityTransaction } from 'src/auth/access/transactional-enforcement';
 import { lockForTransaction } from 'src/common/transaction-lock.util';
 import {
   BadRequestException,
@@ -314,7 +315,7 @@ export class BrandStaffService {
     }
 
     const token = randomBytes(32).toString('hex');
-    const invite = await this.prisma.$transaction(async (tx) => {
+    const invite = await withSecurityTransaction(this.prisma, async (tx) => {
       await lockForTransaction(tx, `staff-invite-${brandId}-${email}`);
       const duplicatePending = await tx.brandStaffInvite.findFirst({
         where: {
@@ -400,13 +401,13 @@ export class BrandStaffService {
       throw new BadRequestException('Only pending invites can be cancelled');
     }
 
-    const updated = await this.prisma.brandStaffInvite.update({
+    const updated = await withSecurityWrite(this.prisma, async (tx) => tx.brandStaffInvite.update({
       where: { id: invite.id },
       data: {
         status: BrandStaffInviteStatus.CANCELLED,
         cancelledAt: new Date(),
       },
-    });
+    }));
     await this.adminAuditService.safeLog({
       actorUserId,
       action: BRAND_STAFF_AUDIT_ACTIONS.INVITE_CANCEL,
@@ -434,10 +435,10 @@ export class BrandStaffService {
       throw new BadRequestException('This invite can no longer be accepted');
     }
     if (invite.expiresAt <= new Date()) {
-      await this.prisma.brandStaffInvite.update({
+      await withSecurityWrite(this.prisma, async (tx) => tx.brandStaffInvite.update({
         where: { id: invite.id },
         data: { status: BrandStaffInviteStatus.EXPIRED },
-      });
+      }));
       throw new BadRequestException('This invite has expired');
     }
 
@@ -462,7 +463,7 @@ export class BrandStaffService {
       );
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    return withSecurityTransaction(this.prisma, async (tx) => {
       const existingMember = await tx.brandMember.findUnique({
         where: {
           brandId_userId: {
@@ -552,14 +553,14 @@ export class BrandStaffService {
       );
     }
 
-    const updated = await this.prisma.brandStaffInvite.update({
+    const updated = await withSecurityWrite(this.prisma, async (tx) => tx.brandStaffInvite.update({
       where: { id: invite.id },
       data: {
         status: BrandStaffInviteStatus.REJECTED,
         invitedUserId: user.id,
         rejectedAt: new Date(),
       },
-    });
+    }));
     await this.adminAuditService.safeLog({
       actorUserId,
       action: BRAND_STAFF_AUDIT_ACTIONS.INVITE_REJECT,
@@ -594,11 +595,11 @@ export class BrandStaffService {
       await this.brandAccessService.assertNotLastOwner(brandId, member.id);
     }
 
-    const updated = await this.prisma.brandMember.update({
+    const updated = await withSecurityWrite(this.prisma, async (tx) => tx.brandMember.update({
       where: { id: member.id },
       data: { role },
       include: { user: { select: STAFF_USER_SELECT } },
-    });
+    }));
     await this.adminAuditService.safeLog({
       actorUserId,
       action: BRAND_STAFF_AUDIT_ACTIONS.ROLE_UPDATE,
@@ -636,7 +637,7 @@ export class BrandStaffService {
       await this.brandAccessService.assertNotLastOwner(brandId, member.id);
     }
 
-    const updated = await this.prisma.brandMember.update({
+    const updated = await withSecurityWrite(this.prisma, async (tx) => tx.brandMember.update({
       where: { id: member.id },
       data: {
         status,
@@ -645,7 +646,7 @@ export class BrandStaffService {
           : {}),
       },
       include: { user: { select: STAFF_USER_SELECT } },
-    });
+    }));
     await this.adminAuditService.safeLog({
       actorUserId,
       action: BRAND_STAFF_AUDIT_ACTIONS.STATUS_UPDATE,

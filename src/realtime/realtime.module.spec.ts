@@ -3,6 +3,7 @@ import { join, relative } from 'path';
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import { EventsGateway } from './events.gateway';
 import { RealtimeModule } from './realtime.module';
+import { NotificationRealtimeBusService } from './notification-realtime-bus.service';
 
 const SRC_ROOT = join(__dirname, '..');
 
@@ -24,9 +25,11 @@ describe('RealtimeModule', () => {
   it('is the only module that provides EventsGateway', () => {
     expect(Reflect.getMetadata(MODULE_METADATA.PROVIDERS, RealtimeModule)).toEqual([
       EventsGateway,
+      NotificationRealtimeBusService,
     ]);
     expect(Reflect.getMetadata(MODULE_METADATA.EXPORTS, RealtimeModule)).toEqual([
       EventsGateway,
+      NotificationRealtimeBusService,
     ]);
 
     const offenders = listModuleFiles(SRC_ROOT)

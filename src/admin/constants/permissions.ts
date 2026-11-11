@@ -14,6 +14,7 @@ export const ADMIN_PERMISSIONS = {
   USERS_ROLE_ASSIGN_USER: 'users.role.assign_user',
   USERS_DATA_EXPORT: 'users.data_export',
   USERS_DATA_WIPE: 'users.data_wipe',
+  USERS_MFA_RECOVER: 'users.mfa_recover',
 
   // Brands
   BRANDS_READ: 'brands.read',
@@ -161,10 +162,10 @@ export const SUPERADMIN_ONLY_PERMISSIONS: AdminPermissionCode[] = [
   ADMIN_PERMISSIONS.DISPUTES_HANDOVER_APPROVE,
 ];
 
-/** Default permissions granted to new Admin accounts (all except SuperAdmin-only) */
+/** MFA recovery is deliberately opt-in; ordinary admin creation must not grant account takeover powers. */
 export const DEFAULT_ADMIN_PERMISSIONS: AdminPermissionCode[] =
   ALL_PERMISSION_CODES.filter(
-    (code) => !SUPERADMIN_ONLY_PERMISSIONS.includes(code),
+    (code) => !SUPERADMIN_ONLY_PERMISSIONS.includes(code) && code !== ADMIN_PERMISSIONS.USERS_MFA_RECOVER,
   );
 
 /**

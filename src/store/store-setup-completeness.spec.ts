@@ -33,7 +33,7 @@ const methodBody = (source: string, signature: string): string => {
   if (start === -1) {
     throw new Error(`Could not find "${signature}" — did it get renamed?`);
   }
-  const lines = source.slice(start).split('\n');
+  const lines = source.slice(start).split(/\r?\n/);
   const end = lines.findIndex((line, index) => index > 0 && line === '  }');
   if (end === -1) {
     throw new Error(`Could not find the end of "${signature}"`);

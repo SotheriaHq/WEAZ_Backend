@@ -68,7 +68,7 @@ function reactionFixture(kind: 'post' | 'collection' | 'media' | 'comment' | 'le
   });
   const type = { post: PostsService, collection: CollectionsService, media: CollectionsService, comment: CommentsV2Service, legacy: CommentsService }[kind];
   const service: any = Object.assign(Object.create(type.prototype), {
-    prisma, analytics: undefined, notifications: undefined, events: {}, logger: { warn: jest.fn() },
+    prisma, analytics: undefined, notifications: undefined, events: { emitAuthorized: jest.fn(async () => undefined) }, logger: { warn: jest.fn() },
     canViewCollection: jest.fn(async () => true), canViewMedia: jest.fn(async () => true),
   });
   const toggle = (userId: string, reactionType: ReactionType = ReactionType.THREAD) =>

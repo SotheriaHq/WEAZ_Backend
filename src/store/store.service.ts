@@ -1,3 +1,9 @@
+import { withSecurityWrite, withSecurityTransaction } from 'src/auth/access/transactional-enforcement';
+import { assertOperationBrand } from 'src/auth/access/operation-brand-binding';
+import { StorePaymentAccountSynchronizer, STORE_PAYMENT_PROVIDER_STATUS } from './store-payment-account-sync';
+import { getLiveSecurityContext, securityRequestContext } from 'src/auth/access/security-request-context';
+import { lockCurrentSecurityActor } from 'src/auth/access/security-actor';
+import { assertMandatoryAdaptiveScope } from 'src/auth/access/transactional-enforcement';
 import { lockForTransaction } from 'src/common/transaction-lock.util';
 import {
   BulkImportCheckpoint,
@@ -924,7 +930,7 @@ export class StoreService {
     collectionIds: readonly string[],
   ) {
     if (!collectionIds.length) return;
-    await this.prisma.$transaction((tx) =>
+    await withSecurityTransaction(this.prisma, (tx) =>
       refreshCollectionPriceRanges(tx, collectionIds),
     );
   }
@@ -1044,6 +1050,7 @@ export class StoreService {
       }
     }
 
+    if (brand) assertOperationBrand(brand.id);
     return brand;
   }
 
@@ -1095,7 +1102,7 @@ export class StoreService {
       },
     );
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       await tx.$queryRaw`
         SELECT 1
         FROM "Product"
@@ -1219,7 +1226,7 @@ export class StoreService {
       productId,
       BRAND_PERMISSIONS.CATALOG_DELETE,
     );
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       await lockContentReviewTarget(tx, { productId });
       const product = await tx.product.findUniqueOrThrow({
         where: { id: productId },
@@ -1287,7 +1294,7 @@ export class StoreService {
     }
     if (new Set(ids).size !== ids.length)
       throw new BadRequestException('Media IDs must be unique');
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       await lockContentReviewTarget(tx, { productId });
       const product = await tx.product.findUniqueOrThrow({
         where: { id: productId },
@@ -1361,7 +1368,7 @@ export class StoreService {
     mediaId: string,
   ) {
     await this.assertBrandOwnsProduct(brandOwnerId, productId);
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       await lockContentReviewTarget(tx, { productId });
       const product = await tx.product.findUniqueOrThrow({
         where: { id: productId },
@@ -2088,10 +2095,10 @@ export class StoreService {
       .filter((product) => !failed.has(product.id))
       .map((product) => product.id);
     if (handled.length)
-      await this.prisma.product.updateMany({
+      await withSecurityWrite(this.prisma, async (tx) => tx.product.updateMany({
         where: { id: { in: handled }, publishNotifiedAt: null },
         data: { publishNotifiedAt: new Date() },
-      });
+      }));
   }
 
   // ==================== PRODUCTS ====================
@@ -2117,15 +2124,15 @@ export class StoreService {
       take: 500,
     });
     if (drafts.length)
-      await this.prisma.product.deleteMany({
+      await withSecurityWrite(this.prisma, async (tx) => tx.product.deleteMany({
         where: { AND: [expired, { id: { in: drafts.map((row) => row.id) } }] },
-      });
+      }));
   }
 
   @Cron(CronExpression.EVERY_5_MINUTES)
   async handleScheduledProductPublishNotifications() {
     const now = new Date();
-    await this.prisma.product.updateMany({
+    await withSecurityWrite(this.prisma, async (tx) => tx.product.updateMany({
       where: {
         isActive: false,
         publicationStatus: CollectionStatus.PUBLISHED,
@@ -2134,7 +2141,7 @@ export class StoreService {
         publishAt: { lte: now },
       },
       data: { isActive: true },
-    });
+    }));
 
     if (!this.notifications && !this.notificationsQueue) return;
     const candidates = await loadProductPublications(this.prisma, now);
@@ -2157,7 +2164,7 @@ export class StoreService {
 
     const discontinuedEvents: NotificationEvent[] = [];
     for (const product of productsToDiscontinue) {
-      const updated = await this.prisma.product.updateMany({
+      const updated = await withSecurityWrite(this.prisma, async (tx) => tx.product.updateMany({
         where: {
           id: product.id,
           deletedAt: null,
@@ -2169,7 +2176,7 @@ export class StoreService {
           customOrderOutOfStockDiscontinueAt: { lte: now },
         },
         data: { isActive: false },
-      });
+      }));
 
       if (updated.count === 0 || !product.ownerId) {
         continue;
@@ -2208,7 +2215,7 @@ export class StoreService {
       .filter((_, index) => reminderOutcomes[index]?.status === 'fulfilled')
       .map((event) => event.opts!.payload!.productId as string);
     if (notifiedProductIds.length) {
-      await this.prisma.product.updateMany({
+      await withSecurityWrite(this.prisma, async (tx) => tx.product.updateMany({
         where: {
           id: { in: notifiedProductIds },
           deletedAt: null,
@@ -2220,7 +2227,7 @@ export class StoreService {
           customOrderOutOfStockDiscontinueAt: { gt: now },
         },
         data: { customOrderOutOfStockReminderSentAt: now },
-      });
+      }));
     }
   }
 
@@ -2460,8 +2467,8 @@ export class StoreService {
     let contentSubmissionId: string | null = null;
 
     const product = await retryProductCreation((attempt) =>
-      this.prisma.$transaction(
-        async (tx) => {
+      withSecurityTransaction(
+        this.prisma, async (tx) => {
           contentSubmissionId = null;
           if (checkpoint) {
             const saved = await lockBulkImportCheckpoint(tx, checkpoint);
@@ -2856,7 +2863,7 @@ export class StoreService {
       }));
 
     let submissionId: string | null = null;
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await withSecurityTransaction(this.prisma, async (tx) => {
       const mediaValidation = this.contentIntegrity
         ? await this.contentIntegrity.assertProductHasPublishableMedia(
             tx,
@@ -3315,7 +3322,7 @@ export class StoreService {
 
     let membershipChanged = false;
     let updateSubmissionId: string | null = null;
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await withSecurityTransaction(this.prisma, async (tx) => {
       if (resolvedCollectionId !== undefined) {
         let finalCollectionId = resolvedCollectionId;
         if (finalCollectionId === null) {
@@ -3853,7 +3860,7 @@ export class StoreService {
         )
       : null;
 
-    const duplicated = await this.prisma.$transaction(async (tx) => {
+    const duplicated = await withSecurityTransaction(this.prisma, async (tx) => {
       const sourceCollections = Array.isArray(product.collections)
         ? product.collections
         : [];
@@ -4098,7 +4105,7 @@ export class StoreService {
       product.tags ?? [],
     );
 
-    const archived = await this.prisma.product.update({
+    const archived = await withSecurityWrite(this.prisma, async (tx) => tx.product.update({
       where: { id: productId, deletedAt: null, archivedAt: null },
       data: {
         archivedAt: now,
@@ -4117,7 +4124,7 @@ export class StoreService {
             },
           }
         : {}),
-    });
+    }));
 
     const effects = await loadProductRemovalEffects(this.prisma, productId);
     await this.recalculateCollectionPriceRanges(effects.collectionIds);
@@ -4194,7 +4201,7 @@ export class StoreService {
       product.tags ?? [],
     );
 
-    const restored = await this.prisma.product.update({
+    const restored = await withSecurityWrite(this.prisma, async (tx) => tx.product.update({
       where: { id: productId },
       data: {
         archivedAt: null,
@@ -4208,7 +4215,7 @@ export class StoreService {
         brand: { select: { id: true, name: true, logo: true, currency: true } },
         variants: true,
       },
-    });
+    }));
 
     const restoredCollectionIds = Array.isArray(restored.collections)
       ? restored.collections.map((c) => c.collectionId)
@@ -4321,7 +4328,7 @@ export class StoreService {
       refund: { amount: Prisma.Decimal; currency: string } | null;
     }> = [];
 
-    const deleted = await this.prisma.$transaction(async (tx) => {
+    const deleted = await withSecurityTransaction(this.prisma, async (tx) => {
       // Checkout locks this row before reserving stock, so a sale either
       // commits before this check or sees the product as deleted.
       const [current] = await tx.$queryRaw<Array<{ deletedAt: Date | null }>>`
@@ -4847,7 +4854,7 @@ export class StoreService {
       product.tags ?? [],
     );
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       await tx.cartItem.deleteMany({ where: { productId } });
       await tx.wishlistItem.deleteMany({ where: { productId } });
       await tx.productVariant.deleteMany({ where: { productId } });
@@ -6227,7 +6234,7 @@ export class StoreService {
       product.tags ?? [],
     );
 
-    const restored = await this.prisma.product.update({
+    const restored = await withSecurityWrite(this.prisma, async (tx) => tx.product.update({
       where: { id: productId },
       data: { deletedAt: null, isActive: false },
       include: {
@@ -6235,7 +6242,7 @@ export class StoreService {
         brand: { select: { id: true, name: true, logo: true, currency: true } },
         variants: true,
       },
-    });
+    }));
 
     const nextIndexedTags = this.getIndexedProductTags(
       restored,
@@ -6858,9 +6865,9 @@ export class StoreService {
     });
 
     if (unavailableItemIds.length > 0) {
-      await this.prisma.cartItem.deleteMany({
+      await withSecurityWrite(this.prisma, async (tx) => tx.cartItem.deleteMany({
         where: { id: { in: unavailableItemIds } },
-      });
+      }));
     }
 
     const cartItems = availableItems.map((item) => {
@@ -7179,18 +7186,18 @@ export class StoreService {
       };
     }
 
-    await this.prisma.wishlistItem.createMany({
+    await withSecurityWrite(this.prisma, async (tx) => tx.wishlistItem.createMany({
       data: [{ id: uuidv4(), userId, productId: dto.productId }],
       skipDuplicates: true,
-    });
+    }));
 
     return { success: true, message: 'Added to wishlist', isWishlisted: true };
   }
 
   async removeFromWishlist(userId: string, productId: string) {
-    const deleted = await this.prisma.wishlistItem.deleteMany({
+    const deleted = await withSecurityWrite(this.prisma, async (tx) => tx.wishlistItem.deleteMany({
       where: { userId, productId },
-    });
+    }));
 
     return {
       success: true,
@@ -8287,7 +8294,7 @@ export class StoreService {
     }
 
     const previousStatus = order.status;
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       await tx.order.update({
         where: { id: orderId },
         data: {
@@ -8774,13 +8781,13 @@ export class StoreService {
     const newName = dto.newName.trim();
     if (!newName) throw new BadRequestException('Store name cannot be empty');
 
-    await this.prisma.brand.update({
+    await withSecurityWrite(this.prisma, async (tx) => tx.brand.update({
       where: { id: brand.id },
       data: {
         name: newName,
         storeNameLastChangedAt: now,
       },
-    });
+    }));
 
     return this.getStoreGeneralSettings(ownerId);
   }
@@ -8859,18 +8866,23 @@ export class StoreService {
   private decryptStorePaymentValue(value?: string | null) {
     if (!value) return null;
     try {
-      const [ivText, tagText, encryptedText] = value.split('.');
-      if (!ivText || !tagText || !encryptedText) return null;
+      if (value.length > 4096) return null;
+      const [ivText, tagText, encryptedText, extra] = value.split('.');
+      if (!ivText || !tagText || !encryptedText || extra !== undefined) return null;
+      const iv = Buffer.from(ivText, 'base64'), tag = Buffer.from(tagText, 'base64'), encrypted = Buffer.from(encryptedText, 'base64');
+      if (iv.length !== 12 || tag.length !== 16 || !encrypted.length || iv.toString('base64') !== ivText ||
+        tag.toString('base64') !== tagText || encrypted.toString('base64') !== encryptedText) return null;
       for (const key of this.getStorePaymentAccountDecryptionKeys()) {
         try {
           const decipher = createDecipheriv(
             'aes-256-gcm',
             key,
-            Buffer.from(ivText, 'base64'),
+            iv,
+            { authTagLength: 16 },
           );
-          decipher.setAuthTag(Buffer.from(tagText, 'base64'));
+          decipher.setAuthTag(tag);
           return Buffer.concat([
-            decipher.update(Buffer.from(encryptedText, 'base64')),
+            decipher.update(encrypted),
             decipher.final(),
           ]).toString('utf8');
         } catch {
@@ -8946,6 +8958,7 @@ export class StoreService {
       ...rest,
       headers: requestHeaders,
       body: bodyJson ? JSON.stringify(bodyJson) : rest.body,
+      signal: rest.signal ?? AbortSignal.timeout(20_000),
     });
 
     let payload: any = null;
@@ -8956,9 +8969,11 @@ export class StoreService {
     }
 
     if (!response.ok || payload?.status === false) {
-      throw new BadRequestException(
+      const error = new BadRequestException(
         String(payload?.message || 'Paystack request failed'),
       );
+      Object.defineProperty(error, STORE_PAYMENT_PROVIDER_STATUS, { value: response.status });
+      throw error;
     }
 
     return (payload?.data ?? payload) as T;
@@ -8973,127 +8988,6 @@ export class StoreService {
       return digits;
     }
     return `${'*'.repeat(Math.max(0, digits.length - 4))}${digits.slice(-4)}`;
-  }
-
-  private sanitizePaystackSnapshot(value: unknown): Prisma.JsonValue | null {
-    if (Array.isArray(value)) {
-      return value.map((entry) =>
-        this.sanitizePaystackSnapshot(entry),
-      ) as Prisma.JsonValue;
-    }
-
-    if (value && typeof value === 'object') {
-      const output: Record<string, Prisma.JsonValue> = {};
-      for (const [key, entry] of Object.entries(
-        value as Record<string, unknown>,
-      )) {
-        if (key === 'account_number') {
-          output[key] = this.maskAccountNumber(String(entry ?? ''));
-          continue;
-        }
-        output[key] = this.sanitizePaystackSnapshot(entry);
-      }
-      return output as Prisma.JsonValue;
-    }
-
-    if (
-      value === null ||
-      typeof value === 'string' ||
-      typeof value === 'number' ||
-      typeof value === 'boolean'
-    ) {
-      return value as Prisma.JsonValue;
-    }
-
-    return null;
-  }
-
-  private buildStorePaymentMetadata(params: {
-    existingMetadata?: unknown;
-    resolvedAccountNumber?: string | null;
-    paystackBankId?: number | null;
-    subaccountPayload?: Record<string, any> | null;
-    transferRecipientPayload?: Record<string, any> | null;
-    lastProviderSyncAt?: Date | null;
-    lastSuccessfulSyncAt?: Date | null;
-    syncMode: 'INITIAL_SETUP' | 'RESYNC' | 'BANK_DETAILS_UPDATE';
-  }): Prisma.JsonObject {
-    const existing =
-      params.existingMetadata &&
-      typeof params.existingMetadata === 'object' &&
-      !Array.isArray(params.existingMetadata)
-        ? { ...(params.existingMetadata as Record<string, unknown>) }
-        : {};
-
-    return {
-      ...existing,
-      provider: 'PAYSTACK',
-      resolvedAccountNumber:
-        params.resolvedAccountNumber != null
-          ? this.maskAccountNumber(params.resolvedAccountNumber)
-          : ((existing['resolvedAccountNumber'] as
-              | Prisma.JsonValue
-              | undefined) ?? null),
-      paystackBankId:
-        params.paystackBankId != null
-          ? params.paystackBankId
-          : ((existing['paystackBankId'] as number | null | undefined) ?? null),
-      lastProviderSyncAt:
-        params.lastProviderSyncAt?.toISOString() ??
-        (existing['lastProviderSyncAt'] as string | null | undefined) ??
-        null,
-      lastSuccessfulSyncAt:
-        params.lastSuccessfulSyncAt?.toISOString() ??
-        (existing['lastSuccessfulSyncAt'] as string | null | undefined) ??
-        null,
-      syncMode: params.syncMode,
-      providerSyncVersion: 2,
-      subaccountResponseSnapshot:
-        params.subaccountPayload != null
-          ? this.sanitizePaystackSnapshot(params.subaccountPayload)
-          : ((existing['subaccountResponseSnapshot'] as
-              | Prisma.JsonValue
-              | undefined) ?? null),
-      transferRecipientResponseSnapshot:
-        params.transferRecipientPayload != null
-          ? this.sanitizePaystackSnapshot(params.transferRecipientPayload)
-          : ((existing['transferRecipientResponseSnapshot'] as
-              | Prisma.JsonValue
-              | undefined) ?? null),
-    };
-  }
-
-  private async withStorePaymentAccountSyncLock<T>(
-    brandId: string,
-    operation: () => Promise<T>,
-  ): Promise<T> {
-    if (typeof (this.prisma as any)?.$transaction !== 'function') {
-      return operation();
-    }
-
-    const lockKey = this.buildStorePaymentAccountLockKey(brandId);
-
-    return (this.prisma as any).$transaction(
-      async (tx: any) => {
-        // pg_advisory_xact_lock returns a Postgres void type; use executeRaw to
-        // avoid result deserialization errors in Prisma.
-        if (typeof tx?.$executeRaw === 'function') {
-          await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
-        }
-        return operation();
-      },
-      {
-        maxWait: 120000,
-        timeout: 180000,
-      },
-    );
-  }
-
-  private buildStorePaymentAccountLockKey(brandId: string): bigint {
-    const digest = createHash('sha256')
-      .update(`store-payment-account:${brandId}`)
-      .digest();
-    return digest.readBigInt64BE(0);
   }
 
   private summarizePaymentAccount(account: any) {
@@ -9247,18 +9141,18 @@ export class StoreService {
     return this.isLocalOrDevRuntime() && this.isStorePaymentTestBypassEnabled();
   }
 
-  private shouldAcceptTestAccountAsValidForSetup(params: {
-    bankCode: string;
-    syncError: string | null;
-  }) {
-    if (!params.syncError) return false;
-    if (!this.isTestAccountBypassEligible(params.bankCode)) return false;
-
-    return /account details are invalid/i.test(params.syncError);
-  }
-
   private shouldBypassPaystackSyncForDevTestAccount(bankCode: string) {
     return this.isTestAccountBypassEligible(bankCode);
+  }
+
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async retireUnusedPayoutRecipients() {
+    // Nothing to decrypt/call unless an admitted retirement exists.
+    if (!(await this.prisma.storePayoutRecipientRetirement.count({ where: { retiredAt: null } }))) return;
+    const sync = new StorePaymentAccountSynchronizer(this.prisma,
+      (path, options) => this.callPaystack(path, options),
+      [this.getStorePaymentAccountEncryptionKey(), ...this.getStorePaymentAccountDecryptionKeys()]);
+    await sync.retireUnusedRecipients();
   }
 
   async listSupportedPaymentBanks() {
@@ -9507,480 +9401,35 @@ export class StoreService {
       throw new NotFoundException('Brand not found');
     }
 
-    return this.withStorePaymentAccountSyncLock(brand.id, async () => {
-      const existingAccount =
-        await this.getStorePaymentAccountModel().findUnique({
-          where: { brandId: brand.id },
-        });
-
-      const providedBankCode = String(dto.bankCode || '').trim();
-      const providedAccountNumber = String(dto.accountNumber || '').trim();
-      const decryptedExistingAccountNumber = this.decryptStorePaymentValue(
-        existingAccount?.accountNumberEncrypted,
-      );
-      const bankCode =
-        providedBankCode || String(existingAccount?.bankCode || '').trim();
-      const accountNumber =
-        providedAccountNumber ||
-        String(decryptedExistingAccountNumber || '').trim();
-
-      if (!bankCode) {
-        throw new BadRequestException('Select the settlement bank first');
-      }
-      if (!/^\d{10}$/.test(accountNumber)) {
-        throw new BadRequestException(
-          'Account number must be a valid 10-digit NUBAN',
-        );
-      }
-
-      const bankDetailsChanged =
-        !existingAccount ||
-        bankCode !== String(existingAccount?.bankCode || '').trim() ||
-        (providedAccountNumber.length > 0 &&
-          accountNumber !==
-            String(decryptedExistingAccountNumber || '').trim());
-      const syncMode: 'INITIAL_SETUP' | 'RESYNC' | 'BANK_DETAILS_UPDATE' =
-        !existingAccount
-          ? 'INITIAL_SETUP'
-          : bankDetailsChanged
-            ? 'BANK_DETAILS_UPDATE'
-            : 'RESYNC';
-
-      const banks = await this.listSupportedPaymentBanks();
-      const selectedBank = banks.find((bank) => bank.code === bankCode);
-      if (!selectedBank) {
-        this.throwUnsupportedBankCode(bankCode);
-      }
-
-      if (this.shouldBypassPaystackSyncForDevTestAccount(bankCode)) {
-        const syncTimestamp = new Date();
-        const nextAccountName =
-          String(dto.primaryContactName || '').trim() ||
-          String(existingAccount?.accountName || '').trim() ||
-          brand.name;
-        const nextPrimaryContactName =
-          String(dto.primaryContactName || '').trim() ||
-          existingAccount?.primaryContactName ||
-          nextAccountName;
-        const nextPrimaryContactEmail =
-          String(dto.primaryContactEmail || '').trim() ||
-          existingAccount?.primaryContactEmail ||
-          owner?.email ||
-          null;
-        const nextPrimaryContactPhone = this.resolvePrimaryContactPhone(
-          dto.primaryContactPhone,
-          existingAccount?.primaryContactPhone,
-          owner?.userProfile?.phoneNumber,
-        );
-        const accountNumberEncrypted =
-          this.encryptStorePaymentValue(accountNumber);
-        const lastSuccessfulSyncAt = syncTimestamp;
-        const metadata = this.buildStorePaymentMetadata({
-          existingMetadata: existingAccount?.metadata,
-          resolvedAccountNumber: accountNumber,
-          paystackBankId: null,
-          subaccountPayload: null,
-          transferRecipientPayload: null,
-          lastProviderSyncAt: syncTimestamp,
-          lastSuccessfulSyncAt,
-          syncMode: !existingAccount ? 'INITIAL_SETUP' : 'RESYNC',
-        });
-
-        await this.getStorePaymentAccountModel().upsert({
-          where: { brandId: brand.id },
-          create: {
-            id: uuidv4(),
-            brandId: brand.id,
-            status: 'ACTIVE',
-            provider: 'PAYSTACK',
-            countryCode: 'NG',
-            currency: 'NGN',
-            businessName: brand.name,
-            primaryContactName: nextPrimaryContactName,
-            primaryContactEmail: nextPrimaryContactEmail,
-            primaryContactPhone: nextPrimaryContactPhone,
-            bankCode,
-            bankName: selectedBank.name,
-            accountName: nextAccountName,
-            accountNumberEncrypted,
-            accountNumberLast4: accountNumber.slice(-4),
-            isAccountResolved: true,
-            accountResolvedAt: syncTimestamp,
-            subaccountCode: existingAccount?.subaccountCode ?? null,
-            subaccountId: existingAccount?.subaccountId ?? null,
-            subaccountActive: Boolean(existingAccount?.subaccountActive),
-            subaccountVerified: Boolean(existingAccount?.subaccountVerified),
-            subaccountLastSyncAt: existingAccount?.subaccountLastSyncAt ?? null,
-            transferRecipientCode:
-              existingAccount?.transferRecipientCode ?? null,
-            transferRecipientId: existingAccount?.transferRecipientId ?? null,
-            transferRecipientActive: Boolean(
-              existingAccount?.transferRecipientActive,
-            ),
-            transferRecipientLastSyncAt:
-              existingAccount?.transferRecipientLastSyncAt ?? null,
-            lastSyncError: null,
-            metadata,
-          },
-          update: {
-            status: 'ACTIVE',
-            provider: 'PAYSTACK',
-            countryCode: 'NG',
-            currency: 'NGN',
-            businessName: brand.name,
-            primaryContactName: nextPrimaryContactName,
-            primaryContactEmail: nextPrimaryContactEmail,
-            primaryContactPhone: nextPrimaryContactPhone,
-            bankCode,
-            bankName: selectedBank.name,
-            accountName: nextAccountName,
-            accountNumberEncrypted,
-            accountNumberLast4: accountNumber.slice(-4),
-            isAccountResolved: true,
-            accountResolvedAt: syncTimestamp,
-            subaccountCode: existingAccount?.subaccountCode ?? null,
-            subaccountId: existingAccount?.subaccountId ?? null,
-            subaccountActive: Boolean(existingAccount?.subaccountActive),
-            subaccountVerified: Boolean(existingAccount?.subaccountVerified),
-            subaccountLastSyncAt: existingAccount?.subaccountLastSyncAt ?? null,
-            transferRecipientCode:
-              existingAccount?.transferRecipientCode ?? null,
-            transferRecipientId: existingAccount?.transferRecipientId ?? null,
-            transferRecipientActive: Boolean(
-              existingAccount?.transferRecipientActive,
-            ),
-            transferRecipientLastSyncAt:
-              existingAccount?.transferRecipientLastSyncAt ?? null,
-            lastSyncError: null,
-            metadata,
-          },
-        });
-
-        this.logger.warn(
-          `Accepted dev test account setup for bank 001 without provider sync (${brand.id}).`,
-        );
-
-        return this.getStorePaymentAccount(ownerId);
-      }
-
-      const resolved = await this.callPaystack<{
-        account_number: string;
-        account_name: string;
-        bank_id?: number;
-      }>(
-        `/bank/resolve?account_number=${encodeURIComponent(accountNumber)}&bank_code=${encodeURIComponent(bankCode)}`,
-        { method: 'GET' },
-      );
-
-      const primaryContactName =
-        String(dto.primaryContactName || '').trim() ||
-        existingAccount?.primaryContactName ||
-        `${owner?.userProfile?.firstName ?? ''} ${owner?.userProfile?.lastName ?? ''}`.trim() ||
-        brand.name;
-      const primaryContactEmail =
-        String(dto.primaryContactEmail || '').trim() ||
-        existingAccount?.primaryContactEmail ||
-        owner?.email ||
-        null;
-      const primaryContactPhone = this.resolvePrimaryContactPhone(
-        dto.primaryContactPhone,
-        existingAccount?.primaryContactPhone,
-        owner?.userProfile?.phoneNumber,
-      );
-
-      let subaccountPayload: any = null;
-      let transferRecipientPayload: any = null;
-      let syncError: string | null = null;
-      const syncTimestamp = new Date();
-      let rollbackTransferRecipientCode: string | null = null;
-
-      try {
-        const subaccountBody = {
-          business_name: brand.name,
-          bank_code: bankCode,
-          account_number: accountNumber,
-          percentage_charge: 0,
-          primary_contact_name: primaryContactName || undefined,
-          primary_contact_email: primaryContactEmail || undefined,
-          primary_contact_phone: primaryContactPhone || undefined,
-          settlement_schedule: 'manual',
-          description: `WIEZ brand settlement account for ${brand.name}`,
-          metadata: {
-            wiezBrandId: brand.id,
-            wiezOwnerId: ownerId,
-          },
-        };
-
-        subaccountPayload = existingAccount?.subaccountCode
-          ? await this.callPaystack(
-              `/subaccount/${encodeURIComponent(existingAccount.subaccountCode)}`,
-              {
-                method: 'PUT',
-                bodyJson: subaccountBody,
-              },
-            )
-          : await this.callPaystack('/subaccount', {
-              method: 'POST',
-              bodyJson: subaccountBody,
-            });
-
-        const transferRecipientCreateBody = {
-          type: 'nuban',
-          name: resolved.account_name,
-          account_number: accountNumber,
-          bank_code: bankCode,
-          currency: 'NGN',
-          active: true,
-          metadata: {
-            wiezBrandId: brand.id,
-            wiezOwnerId: ownerId,
-          },
-        };
-
-        const existingRecipientCode =
-          String(existingAccount?.transferRecipientCode ?? '').trim() || null;
-
-        if (!existingRecipientCode) {
-          transferRecipientPayload = await this.callPaystack(
-            '/transferrecipient',
-            {
-              method: 'POST',
-              bodyJson: transferRecipientCreateBody,
-            },
-          );
-        } else {
-          let existingRecipientPayload: any = null;
-          try {
-            existingRecipientPayload = await this.callPaystack(
-              `/transferrecipient/${encodeURIComponent(existingRecipientCode)}`,
-              { method: 'GET' },
-            );
-          } catch (error: any) {
-            this.logger.warn(
-              `Failed to fetch existing transfer recipient ${existingRecipientCode}: ${String(error?.message || error)}`,
-            );
-          }
-
-          const existingDetails =
-            existingRecipientPayload &&
-            typeof existingRecipientPayload.details === 'object' &&
-            !Array.isArray(existingRecipientPayload.details)
-              ? existingRecipientPayload.details
-              : null;
-          const existingBankCode = String(
-            existingDetails?.bank_code ?? '',
-          ).trim();
-          const existingAccountNumber = String(
-            existingDetails?.account_number ?? '',
-          )
-            .replace(/\D+/g, '')
-            .trim();
-
-          const canReuseRecipient =
-            Boolean(existingRecipientPayload) &&
-            existingBankCode === bankCode &&
-            existingAccountNumber === accountNumber;
-
-          if (canReuseRecipient) {
-            const updatedRecipient = await this.callPaystack(
-              `/transferrecipient/${encodeURIComponent(existingRecipientCode)}`,
-              {
-                method: 'PUT',
-                bodyJson: {
-                  name: resolved.account_name,
-                  email: primaryContactEmail || undefined,
-                },
-              },
-            );
-
-            transferRecipientPayload = {
-              ...existingRecipientPayload,
-              ...updatedRecipient,
-              recipient_code:
-                updatedRecipient?.recipient_code ?? existingRecipientCode,
-              id:
-                updatedRecipient?.id ??
-                existingRecipientPayload?.id ??
-                existingAccount?.transferRecipientId ??
-                null,
-              active:
-                updatedRecipient?.active ??
-                existingRecipientPayload?.active ??
-                true,
-            };
-          } else {
-            transferRecipientPayload = await this.callPaystack(
-              '/transferrecipient',
-              {
-                method: 'POST',
-                bodyJson: transferRecipientCreateBody,
-              },
-            );
-
-            const nextRecipientCode = String(
-              transferRecipientPayload?.recipient_code ?? '',
-            ).trim();
-            if (
-              nextRecipientCode &&
-              nextRecipientCode !== existingRecipientCode
-            ) {
-              rollbackTransferRecipientCode = nextRecipientCode;
-              try {
-                await this.callPaystack(
-                  `/transferrecipient/${encodeURIComponent(existingRecipientCode)}`,
-                  { method: 'DELETE' },
-                );
-                rollbackTransferRecipientCode = null;
-              } catch (error: any) {
-                throw new Error(
-                  `Failed to deactivate old transfer recipient ${existingRecipientCode}: ${String(
-                    error?.message || error,
-                  )}`,
-                );
-              }
-            }
-          }
-        }
-      } catch (error: any) {
-        if (rollbackTransferRecipientCode) {
-          try {
-            await this.callPaystack(
-              `/transferrecipient/${encodeURIComponent(rollbackTransferRecipientCode)}`,
-              { method: 'DELETE' },
-            );
-          } catch (cleanupError: any) {
-            this.logger.error(
-              `Failed to rollback new transfer recipient ${rollbackTransferRecipientCode}: ${String(cleanupError?.message || cleanupError)}`,
-            );
-          }
-        }
-
-        syncError =
-          error?.response?.data?.message ||
-          error?.message ||
-          'Unable to sync the Paystack payment account';
-      }
-
-      const providerSyncSucceeded =
-        Boolean(subaccountPayload?.subaccount_code) &&
-        Boolean(transferRecipientPayload?.recipient_code);
-      const devTestAccountAccepted =
-        this.shouldAcceptTestAccountAsValidForSetup({
-          bankCode,
-          syncError,
-        });
-      const effectiveSyncError = devTestAccountAccepted ? null : syncError;
-
-      if (devTestAccountAccepted) {
-        this.logger.warn(
-          `Accepted test-bank payout account setup in local/dev after provider validation failure (${bankCode}).`,
-        );
-      }
-
-      const syncSucceeded = providerSyncSucceeded || devTestAccountAccepted;
-      const nextStatus = syncSucceeded
-        ? 'ACTIVE'
-        : effectiveSyncError
-          ? 'SYNC_ERROR'
-          : 'PENDING_SYNC';
-      const lastSuccessfulSyncAt = syncSucceeded ? syncTimestamp : null;
-      const canonicalSyncState = providerSyncSucceeded
-        ? {
-            subaccountCode: subaccountPayload?.subaccount_code ?? null,
-            subaccountId:
-              subaccountPayload?.id != null
-                ? String(subaccountPayload.id)
-                : null,
-            subaccountActive: Boolean(subaccountPayload?.active),
-            subaccountVerified: Boolean(subaccountPayload?.is_verified),
-            subaccountLastSyncAt: syncTimestamp,
-            transferRecipientCode:
-              transferRecipientPayload?.recipient_code ?? null,
-            transferRecipientId:
-              transferRecipientPayload?.id != null
-                ? String(transferRecipientPayload.id)
-                : null,
-            transferRecipientActive: Boolean(transferRecipientPayload?.active),
-            transferRecipientLastSyncAt: syncTimestamp,
-          }
-        : {
-            subaccountCode: existingAccount?.subaccountCode ?? null,
-            subaccountId: existingAccount?.subaccountId ?? null,
-            subaccountActive: Boolean(existingAccount?.subaccountActive),
-            subaccountVerified: Boolean(existingAccount?.subaccountVerified),
-            subaccountLastSyncAt: existingAccount?.subaccountLastSyncAt ?? null,
-            transferRecipientCode:
-              existingAccount?.transferRecipientCode ?? null,
-            transferRecipientId: existingAccount?.transferRecipientId ?? null,
-            transferRecipientActive: Boolean(
-              existingAccount?.transferRecipientActive,
-            ),
-            transferRecipientLastSyncAt:
-              existingAccount?.transferRecipientLastSyncAt ?? null,
-          };
-      const metadata = this.buildStorePaymentMetadata({
-        existingMetadata: existingAccount?.metadata,
-        resolvedAccountNumber: resolved.account_number,
-        paystackBankId: resolved.bank_id ?? null,
-        subaccountPayload,
-        transferRecipientPayload,
-        lastProviderSyncAt: syncTimestamp,
-        lastSuccessfulSyncAt,
-        syncMode,
-      });
-
-      await this.getStorePaymentAccountModel().upsert({
-        where: { brandId: brand.id },
-        create: {
-          id: uuidv4(),
-          brandId: brand.id,
-          status: nextStatus,
-          provider: 'PAYSTACK',
-          countryCode: 'NG',
-          currency: 'NGN',
-          businessName: brand.name,
-          primaryContactName: primaryContactName || null,
-          primaryContactEmail: primaryContactEmail,
-          primaryContactPhone: primaryContactPhone,
-          bankCode,
-          bankName: selectedBank.name,
-          accountName: resolved.account_name,
-          accountNumberEncrypted: this.encryptStorePaymentValue(accountNumber),
-          accountNumberLast4: accountNumber.slice(-4),
-          isAccountResolved: true,
-          accountResolvedAt: syncTimestamp,
-          ...canonicalSyncState,
-          lastSyncError: effectiveSyncError,
-          metadata,
-        },
-        update: {
-          status: nextStatus,
-          provider: 'PAYSTACK',
-          countryCode: 'NG',
-          currency: 'NGN',
-          businessName: brand.name,
-          primaryContactName: primaryContactName || null,
-          primaryContactEmail: primaryContactEmail,
-          primaryContactPhone: primaryContactPhone,
-          bankCode,
-          bankName: selectedBank.name,
-          accountName: resolved.account_name,
-          accountNumberEncrypted: this.encryptStorePaymentValue(accountNumber),
-          accountNumberLast4: accountNumber.slice(-4),
-          isAccountResolved: true,
-          accountResolvedAt: syncTimestamp,
-          ...canonicalSyncState,
-          lastSyncError: effectiveSyncError,
-          metadata,
-        },
-      });
-
-      if (effectiveSyncError) {
-        throw new BadRequestException(effectiveSyncError);
-      }
-
-      return this.getStorePaymentAccount(ownerId);
-    });
+    const existingAccount = await this.prisma.storePaymentAccount.findUnique({ where: { brandId: brand.id } });
+    const bankCode = String(dto.bankCode || existingAccount?.bankCode || '').trim();
+    const accountNumber = String(dto.accountNumber || this.decryptStorePaymentValue(existingAccount?.accountNumberEncrypted) || '').trim();
+    if (!bankCode || !/^\d{10}$/.test(accountNumber)) {
+      throw new BadRequestException('Select a bank and enter a valid 10-digit NUBAN');
+    }
+    const banks = await this.listSupportedPaymentBanks();
+    const selectedBank = banks.find((bank) => bank.code === bankCode);
+    if (!selectedBank) this.throwUnsupportedBankCode(bankCode);
+    const synchronizer = new StorePaymentAccountSynchronizer(this.prisma,
+      (path, options) => this.callPaystack(path, options),
+      [this.getStorePaymentAccountEncryptionKey(), ...this.getStorePaymentAccountDecryptionKeys()]);
+    await synchronizer.synchronize({ brandId: brand.id, actorId: ownerId, businessName: brand.name,
+      bankCode, bankName: selectedBank!.name, accountNumber,
+      primaryContactName: String(dto.primaryContactName || '').trim() || existingAccount?.primaryContactName ||
+        `${owner?.userProfile?.firstName ?? ''} ${owner?.userProfile?.lastName ?? ''}`.trim() || brand.name,
+      primaryContactEmail: String(dto.primaryContactEmail || '').trim() || existingAccount?.primaryContactEmail || owner?.email || null,
+      primaryContactPhone: this.resolvePrimaryContactPhone(dto.primaryContactPhone, existingAccount?.primaryContactPhone, owner?.userProfile?.phoneNumber),
+      previous: existingAccount ? { updatedAt: existingAccount.updatedAt.toISOString(), subaccountCode: existingAccount.subaccountCode,
+        recipientCode: existingAccount.transferRecipientCode, bankFingerprint: existingAccount.bankClaimFingerprint } : null,
+      devBypass: this.shouldBypassPaystackSyncForDevTestAccount(bankCode),
+    }, (value) => this.encryptStorePaymentValue(value));
+    // Provider outcomes must persist after logout, but a revoked caller must not receive the account response.
+    const context = getLiveSecurityContext();
+    if (context) await securityRequestContext.exit(() => this.prisma.$transaction(async (tx) => {
+      await lockCurrentSecurityActor(tx, context.operation.actor);
+      await assertMandatoryAdaptiveScope(tx, context.operation);
+    }));
+    return this.getStorePaymentAccount(ownerId);
   }
 
   private toMoney(value: unknown) {
@@ -10815,7 +10264,7 @@ export class StoreService {
       );
     }
 
-    const updated = await this.prisma.brand.update({
+    const updated = await withSecurityWrite(this.prisma, async (tx) => tx.brand.update({
       where: { id: brand.id },
       data: {
         workingHours: schedule as unknown as Prisma.InputJsonValue,
@@ -10827,7 +10276,7 @@ export class StoreService {
         timezone: true,
         businessHoursConfiguredAt: true,
       },
-    });
+    }));
 
     return {
       statusCode: 200,
@@ -10904,14 +10353,14 @@ export class StoreService {
       });
     }
 
-    await this.prisma.brand.update({
+    await withSecurityWrite(this.prisma, async (tx) => tx.brand.update({
       where: { id: brand.id },
       data: {
         isStoreOpen: true,
         // Durable publish marker — the ONLY thing that unlocks the studio.
         ...(brand.storePublishedAt ? {} : { storePublishedAt: new Date() }),
       },
-    });
+    }));
 
     const nextIndexedTags = this.getIndexedBrandTags(
       { isStoreOpen: true, tags: brand.tags ?? [] },
@@ -10978,10 +10427,10 @@ export class StoreService {
       brand.tags ?? [],
     );
 
-    await this.prisma.brand.update({
+    await withSecurityWrite(this.prisma, async (tx) => tx.brand.update({
       where: { id: brand.id },
       data: { isStoreOpen: false },
-    });
+    }));
 
     if (previousIndexedTags.length > 0 && this.systemTags) {
       await this.systemTags.syncTags(previousIndexedTags, []);
@@ -11045,7 +10494,7 @@ export class StoreService {
       return this.getStoreStatus(ownerUserId);
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       await tx.brand.update({
         where: { id: brand.id },
         data: updateData,
@@ -11229,11 +10678,11 @@ export class StoreService {
       return this.getStorePolicies(ownerId);
     }
 
-    await this.prisma.storePolicy.upsert({
+    await withSecurityWrite(this.prisma, async (tx) => tx.storePolicy.upsert({
       where: { brandId: brand.id },
       create: createData,
       update: updateData,
-    });
+    }));
 
     return this.getStorePolicies(ownerId);
   }
