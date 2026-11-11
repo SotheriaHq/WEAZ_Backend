@@ -10,9 +10,10 @@ import { Role } from '@prisma/client';
 import { AdminPermissionCode } from '../constants/permissions';
 import { ADMIN_PERMISSIONS_KEY } from '../decorators/require-permissions.decorator';
 import { MonitoringService } from 'src/monitoring/monitoring.service';
+import { SessionRiskService } from 'src/auth/access/session-risk.service';
 
 /**
- * Guard that checks admin permissions embedded in the JWT payload.
+ * Guard that checks current admin permissions resolved by authentication.
  * SuperAdmin always bypasses (implicit full access).
  * Must be used AFTER JwtAuthGuard and RolesGuard.
  */
@@ -22,6 +23,7 @@ export class AdminPermissionGuard implements CanActivate {
     private reflector: Reflector,
     @Optional()
     private readonly monitoring?: MonitoringService,
+    @Optional() private readonly sessionRisk?: SessionRiskService,
   ) {}
 
   canActivate(context: ExecutionContext): boolean {
@@ -45,7 +47,7 @@ export class AdminPermissionGuard implements CanActivate {
       return true;
     }
 
-    // Read permissions from JWT payload (set during token generation)
+    // Read current permissions attached by the authentication boundary
     const userPermissions: string[] = user.permissions ?? [];
 
     const hasRequired = requiredPermissions.every((perm) =>
@@ -53,6 +55,7 @@ export class AdminPermissionGuard implements CanActivate {
     );
 
     if (!hasRequired) {
+      if (user.id && user.sid) void this.sessionRisk?.recordDenied(user).catch(() => undefined);
       this.emitDeniedAlert(
         context,
         user,

@@ -76,7 +76,7 @@ describe('Socket.IO transport responses', () => {
     http = createServer();
     io = new Server(http);
     // The real gateway hook, on a real Engine.IO server.
-    new EventsGateway({} as never, {} as never).afterInit(io);
+    new EventsGateway({} as never, {} as never, {} as never).afterInit(io);
     await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
     port = (http.address() as AddressInfo).port;
   });

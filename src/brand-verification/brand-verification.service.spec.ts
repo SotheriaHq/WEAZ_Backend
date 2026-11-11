@@ -42,6 +42,7 @@ describe('BrandVerificationService', () => {
       findUnique: jest.fn(),
     },
     $transaction: jest.fn((callback) => callback(prisma)),
+    $queryRaw: jest.fn(async () => []),
   };
 
   /** A brand whose store is finished, so store readiness does not block submit. */
@@ -77,10 +78,18 @@ describe('BrandVerificationService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    prisma.fileUpload.findMany.mockImplementation(async ({ where }: any) => (where.s3Key.in as string[]).map((s3Key) => ({
-      id: `file-${s3Key}`, s3Key, mimeType: 'image/jpeg', size: 100, sha256: null,
-      createdAt: new Date('2026-05-05T00:00:00.000Z'), fileType: 'BRAND_VERIFICATION',
-    })));
+    prisma.fileUpload.findMany.mockImplementation(async ({ where }: any) =>
+      (where.s3Key.in as string[]).map((s3Key) => ({
+        id: `file-${s3Key}`,
+        s3Key,
+        userId: 'owner-1',
+        mimeType: 'image/jpeg',
+        size: 100,
+        sha256: null,
+        createdAt: new Date('2026-05-05T00:00:00.000Z'),
+        fileType: 'BRAND_VERIFICATION',
+      })),
+    );
     prisma.$transaction.mockImplementation((callback: any) => callback(prisma));
   });
 
@@ -106,7 +115,9 @@ describe('BrandVerificationService', () => {
     });
     prisma.brandVerificationAttempt.findFirst.mockResolvedValue(null);
     prisma.brand.findUnique.mockResolvedValue(storeReadyBrand);
-    prisma.storePaymentAccount.findUnique.mockResolvedValue({ status: 'ACTIVE' });
+    prisma.storePaymentAccount.findUnique.mockResolvedValue({
+      status: 'ACTIVE',
+    });
     prisma.fileUpload.findFirst.mockResolvedValue({
       id: 'file-1',
       s3Key: 'key',
@@ -443,7 +454,11 @@ describe('BrandVerificationService', () => {
         {} as any,
         notifications as any,
         emailService as any,
-        { get: jest.fn((key: string) => (key === 'NODE_ENV' ? 'test' : undefined)) } as any,
+        {
+          get: jest.fn((key: string) =>
+            key === 'NODE_ENV' ? 'test' : undefined,
+          ),
+        } as any,
         physicalVerificationStub as any,
       );
       const savedAt = new Date('2026-08-05T10:00:00.000Z');
@@ -502,6 +517,14 @@ describe('BrandVerificationService', () => {
   });
 
   describe('resubmitInfo', () => {
+    const correctionEvidence = {
+      ownerPhotoKey: 'owner-photo',
+      idDocumentFrontKey: 'front-document',
+      cacCertificateKey: 'cac-document',
+      letterOfConfirmationKey: 'original-letter',
+      authorityType: VerificationAuthorityType.LEGAL_OWNER,
+      idDocumentType: VerificationIdDocumentType.INTERNATIONAL_PASSPORT,
+    };
     it('maps letterKey onto its attempt column instead of handing the client name to Prisma', async () => {
       // The wizard sends `letterKey` on every submission, but the attempt
       // column is `letterOfConfirmationKey`. The blind `Object.entries(dto)`
@@ -527,6 +550,7 @@ describe('BrandVerificationService', () => {
         id: 'attempt-1',
         attemptNumber: 1,
         reviewedById: 'admin-1',
+        ...correctionEvidence,
       });
       prisma.brandVerificationAttempt.create.mockResolvedValue({});
       prisma.brand.update.mockResolvedValue({});
@@ -537,8 +561,7 @@ describe('BrandVerificationService', () => {
         idDocumentExpiryDate: '2031-01-31',
       });
 
-      const data =
-        prisma.brandVerificationAttempt.create.mock.calls[0][0].data;
+      const data = prisma.brandVerificationAttempt.create.mock.calls[0][0].data;
       expect(data).not.toHaveProperty('letterKey');
       expect(data.letterOfConfirmationKey).toBe('new-letter-key');
       // Same E.164 form the brand and profile records get.
@@ -570,6 +593,7 @@ describe('BrandVerificationService', () => {
         id: 'attempt-1',
         attemptNumber: 1,
         reviewedById: 'admin-1',
+        ...correctionEvidence,
         createdAt: new Date('2026-08-01T00:00:00.000Z'),
         updatedAt: new Date('2026-08-02T00:00:00.000Z'),
         ownerLegalFirstName: 'Ada',
@@ -626,6 +650,7 @@ describe('BrandVerificationService', () => {
         id: 'attempt-1',
         attemptNumber: 1,
         reviewedById: 'admin-1',
+        ...correctionEvidence,
       });
       prisma.brandVerificationAttempt.create.mockResolvedValue({});
       prisma.brand.update.mockResolvedValue({});

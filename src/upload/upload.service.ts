@@ -1,3 +1,7 @@
+import { UploadReadAccess } from './upload-read-access';
+import { readResourceContext, rememberReadResource, type FileReadSource,
+  type AuthorizedDisplayFile, type FileReadResource } from 'src/auth/access/read-resource-context';
+import { getLiveSecurityContext } from 'src/auth/access/security-request-context';
 import { loadActiveDisplayVariants } from './variant-display.util';
 import { assertCompleteRasterImage } from '../media-processing/image-content-security';
 import {
@@ -309,13 +313,21 @@ export class UploadService {
    * image pipeline never flipped processingStatus to READY (common for older
    * product/design uploads that still have a valid s3Key).
    */
-  private isDisplayableStoredFile(file: any): boolean {
-    if (!file || file.originalDeletedAt) return false;
-    const key = typeof file.s3Key === 'string' ? file.s3Key.trim() : '';
-    if (!key) return false;
-    const status = String(file.processingStatus ?? 'READY').toUpperCase();
-    return status !== 'FAILED';
+  private readAccessPolicy() {
+    return new UploadReadAccess(this.prisma,
+      String(this.configService.get('FEATURE_PRIVATE_COLLECTIONS') ?? 'true') !== 'false', this.brandPermissions);
   }
+
+  private rememberFileRead(file: Pick<FileUpload, 'id' | 's3Key' | 'assetVersion'>,
+    publicOnly: boolean, user?: { id?: string; role?: string | null }, variantKey?: string, expectedFileType?: string,
+    source?: FileReadSource) {
+    rememberReadResource({ type: 'FILE', id: file.id, key: file.s3Key, assetVersion: file.assetVersion,
+      viewer: publicOnly ? undefined : user?.id, role: publicOnly ? undefined : user?.role ?? undefined,
+      publicOnly, variantKey, expectedFileType, source,
+      privateCollectionsEnabled: String(this.configService.get('FEATURE_PRIVATE_COLLECTIONS') ?? 'true') !== 'false' });
+  }
+
+  private isDisplayableStoredFile(file: any): boolean { return this.readAccessPolicy().isDisplayableStoredFile(file); }
 
   /**
    * Shared Prisma include for public URL authorization checks.
@@ -344,143 +356,10 @@ export class UploadService {
    * point `isPublicDesignFile` at the new relation; the design/store split in the
    * predicates already reflects the intended end state.
    */
-  private publicFileAccessInclude() {
-    return {
-      collectionMedias: {
-        include: {
-          collection: {
-            select: {
-              id: true,
-              domain: true,
-              status: true,
-              visibility: true,
-              deletedAt: true,
-            },
-          },
-        },
-      },
-      productMedias: {
-        include: {
-          product: {
-            select: {
-              id: true,
-              isActive: true,
-              publicationStatus: true,
-              deletedAt: true,
-            },
-          },
-        },
-      },
-      userProfileImages: {
-        select: { id: true },
-      },
-      userProfileBanners: {
-        select: { id: true },
-      },
-    } as const;
-  }
+  private publicFileAccessInclude() { return this.readAccessPolicy().publicFileAccessInclude(); }
 
-  /**
-   * Shared publish gate for a `Collection`-backed row of either domain. Split out
-   * so the design and store predicates below stay one line each and cannot drift
-   * apart by accident — if the two domains ever need different rules, override in
-   * the caller rather than adding a flag here.
-   */
-  private isAnonymouslySignableCollectionRow(collection: any): boolean {
-    // Only published + public rows are anonymously signable. In-review, draft,
-    // rejected and private previews must go through the authenticated
-    // signed-url paths; that is what stops unapproved content from leaking when
-    // a fileId or S3 key escapes.
-    return Boolean(
-      collection &&
-        collection.status === 'PUBLISHED' &&
-        collection.visibility === 'PUBLIC' &&
-        !collection.deletedAt,
-    );
-  }
-
-  private collectionMediasForDomain(file: any, domain: 'DESIGN' | 'STORE') {
-    const medias = Array.isArray(file?.collectionMedias)
-      ? file.collectionMedias
-      : [];
-    // `domain` is the design/store boundary. A CollectionMedia row with no
-    // domain loaded is NOT assumed to be either — failing closed here keeps a
-    // partial select from silently widening public access.
-    return medias.filter((media: any) => media?.collection?.domain === domain);
-  }
-
-  /**
-   * Design media. Reads `collectionMedias` filtered to `domain = DESIGN` only
-   * because the physical DesignMedia table move is still deferred — designs are a
-   * separate domain with their own endpoints (`/designs/*`), and this predicate is
-   * the design rule, not the collection rule. Repoint the read here when the
-   * dedicated relation exists.
-   */
-  private isPublicDesignFile(file: any): boolean {
-    return this.collectionMediasForDomain(file, 'DESIGN').some((media: any) =>
-      this.isAnonymouslySignableCollectionRow(media?.collection),
-    );
-  }
-
-  /**
-   * Store-collection media — a curated group of products under `/collections/*`,
-   * a different thing from a design. Kept separate from `isPublicDesignFile` so
-   * the two can diverge without untangling them again.
-   */
-  private isPublicStoreCollectionFile(file: any): boolean {
-    return this.collectionMediasForDomain(file, 'STORE').some((media: any) =>
-      this.isAnonymouslySignableCollectionRow(media?.collection),
-    );
-  }
-
-  private isPublicProductFile(file: any): boolean {
-    const medias = Array.isArray(file?.productMedias) ? file.productMedias : [];
-    return medias.some((media: any) => {
-      const product = media?.product;
-      if (!product || product.deletedAt) return false;
-      // Active listed products (or explicitly published) may be shown on Market.
-      if (product.isActive === false) return false;
-      const status = String(product.publicationStatus ?? '').toUpperCase();
-      // Only fully published catalog products may be anonymously signed.
-      if (status && status !== 'PUBLISHED') {
-        return false;
-      }
-      return true;
-    });
-  }
-
-  private isPublicIdentityFile(file: any): boolean {
-    const profileImages = Array.isArray(file?.userProfileImages)
-      ? file.userProfileImages
-      : [];
-    const profileBanners = Array.isArray(file?.userProfileBanners)
-      ? file.userProfileBanners
-      : [];
-
-    return profileImages.length > 0 || profileBanners.length > 0;
-  }
-
-  private canReturnPublicFileUrl(file: any): boolean {
-    if (!this.isDisplayableStoredFile(file)) return false;
-    if (
-      [
-        'DOCUMENT',
-        'BRAND_VERIFICATION',
-        'MESSAGE_IMAGE',
-        'MESSAGE_DOCUMENT',
-      ].includes(file.fileType)
-    )
-      return false;
-    // Intentionally no bare POST_IMAGE/POST_VIDEO prefix bypass: that allowed
-    // draft/in-review media to be signed anonymously when a key/fileId leaked.
-    return Boolean(
-      file.isPublic ||
-        this.isPublicDesignFile(file) ||
-        this.isPublicStoreCollectionFile(file) ||
-        this.isPublicProductFile(file) ||
-        this.isPublicIdentityFile(file),
-    );
-  }
+  /** Admission and response completion share the same domain predicates. */
+  private canReturnPublicFileUrl(file: any): boolean { return this.readAccessPolicy().canReturnPublicFileUrl(file); }
 
   async uploadFile(
     file: Express.Multer.File,
@@ -862,14 +741,15 @@ export class UploadService {
       normalizedRole === 'Admin' || normalizedRole === 'SuperAdmin';
     if (
       !isOwner &&
-      !isAdmin &&
       !this.canReturnPublicFileUrl(file) &&
       (!userId ||
-        !(await this.loadSharedViewerFileIds([file.id], userId)).has(file.id))
+        (!(await this.loadSharedViewerFileIds([file.id], userId)).has(file.id) &&
+          !(isAdmin && (await this.readAccessPolicy().loadAdministratorFileIds([file.id], userId)).has(file.id))))
     ) {
       throw new BadRequestException('File not found');
     }
 
+    this.rememberFileRead(file, false, { id: userId, role });
     const command = new GetObjectCommand({
       Bucket: this.bucketName,
       Key: file.s3Key,
@@ -893,6 +773,7 @@ export class UploadService {
       return null;
     }
 
+    this.rememberFileRead(file, true);
     const stablePublicUrl = this.getStablePublicDisplayUrl(file);
     if (stablePublicUrl) {
       return stablePublicUrl;
@@ -1008,7 +889,7 @@ export class UploadService {
       variants.map((variant) => [variant.s3Key, variant]),
     );
     const sharedIds =
-      user?.id && !['Admin', 'SuperAdmin'].includes(user.role ?? '')
+      user?.id
         ? await this.loadSharedViewerFileIds(
             files
               .filter(
@@ -1019,6 +900,10 @@ export class UploadService {
             user.id,
           )
         : new Set<string>();
+    const adminIds = user?.id && ['Admin', 'SuperAdmin'].includes(user.role ?? '')
+      ? await this.readAccessPolicy().loadAdministratorFileIds(files.filter(file =>
+        file.userId !== user.id && !this.canReturnPublicFileUrl(file) && !sharedIds.has(file.id)).map(file => file.id), user.id)
+      : new Set<string>();
     const urls = new Map<string, string>();
     await Promise.all(
       uniqueKeys.map(async (key) => {
@@ -1031,9 +916,9 @@ export class UploadService {
         const isPublic = this.canReturnPublicFileUrl(file);
         const isOwnerOrAdmin =
           user?.id &&
-          (file.userId === user.id ||
-            ['Admin', 'SuperAdmin'].includes(user.role ?? ''));
+          (file.userId === user.id || adminIds.has(file.id));
         if (!isPublic && !isOwnerOrAdmin && !sharedIds.has(file.id)) return;
+        this.rememberFileRead(file, !user?.id, user, variant ? key : undefined);
         const gatewayUrl = isPublic
           ? this.getStablePublicDisplayUrl({ s3Key: key })
           : null;
@@ -1058,54 +943,7 @@ export class UploadService {
     }));
   }
 
-  private async loadSharedViewerFileIds(
-    fileIds: string[],
-    viewerId: string,
-  ): Promise<Set<string>> {
-    const ids = [...new Set(fileIds)].filter((id) =>
-      /^[0-9a-f-]{36}$/i.test(id),
-    );
-    if (!ids.length) return new Set();
-    const privateCollectionsEnabled =
-      String(
-        this.configService.get('FEATURE_PRIVATE_COLLECTIONS') ?? 'true',
-      ) !== 'false';
-    const brandRead =
-      this.brandPermissions?.buildPermissionPredicate(
-        viewerId,
-        BRAND_PERMISSIONS.MESSAGES_READ,
-        Prisma.sql`resolved_brand."_id"`,
-        Prisma.sql`resolved_brand."ownerId"`,
-      ) ?? Prisma.sql`FALSE`;
-    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-      SELECT file."_id" AS id FROM "FileUpload" file
-      WHERE file."_id" IN (${Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`))})
-        AND (
-          (${privateCollectionsEnabled} AND EXISTS (
-            SELECT 1 FROM "CollectionMedia" media
-            JOIN "Collection" target ON target."_id" = media."collectionId"
-            JOIN "CollectionAccess" approval ON approval."viewerId" = ${viewerId}::uuid AND approval.state = 'APPROVED'
-            JOIN "Collection" granted ON granted."_id" = approval."collectionId" AND granted."ownerId" = target."ownerId"
-            WHERE media."fileUploadId" = file."_id"
-              AND target.status = 'PUBLISHED' AND target.visibility = 'PRIVATE' AND target."deletedAt" IS NULL
-              AND granted.status = 'PUBLISHED' AND granted.visibility = 'PRIVATE' AND granted."deletedAt" IS NULL
-          )) OR EXISTS (
-            SELECT 1 FROM "MessageAttachment" attachment
-            JOIN "Message" message ON message.id = attachment."messageId"
-            JOIN "MessageThread" thread ON thread.id = message."threadId"
-            LEFT JOIN "Order" standard_order ON standard_order."_id" = thread."orderId"
-            LEFT JOIN "CustomOrder" custom_order ON custom_order.id = thread."customOrderId"
-            LEFT JOIN "Brand" resolved_brand ON resolved_brand."_id" = COALESCE(thread."brandId", standard_order."brandId", custom_order."brandId")
-              OR resolved_brand."ownerId" = COALESCE(thread."brandId", standard_order."brandId", custom_order."brandId")
-            WHERE attachment."fileUploadId" = file."_id" AND message."visibilityState" = 'VISIBLE'
-              AND (EXISTS (SELECT 1 FROM "MessageThreadParticipant" participant
-                WHERE participant."threadId" = message."threadId" AND participant."userId" = ${viewerId}::uuid)
-                OR ${brandRead})
-          )
-        )
-    `);
-    return new Set(rows.map((row) => row.id));
-  }
+  private async loadSharedViewerFileIds(fileIds: string[], viewerId: string): Promise<Set<string>> { return this.readAccessPolicy().loadSharedViewerFileIds(fileIds, viewerId); }
 
   async getPublicSignedUrlByKey(s3Key: string): Promise<string | null> {
     const normalizedKey = typeof s3Key === 'string' ? s3Key.trim() : '';
@@ -1147,6 +985,7 @@ export class UploadService {
       return null;
     }
 
+    this.rememberFileRead(sourceFile, true, undefined, variant ? normalizedKey : undefined);
     const stablePublicUrl = this.getStablePublicDisplayUrl({
       s3Key: normalizedKey,
       s3Url: directFile?.s3Url,
@@ -1195,12 +1034,16 @@ export class UploadService {
     const file = await this.prisma.fileUpload.findUnique({
       where: { s3Key: normalizedKey },
       select: {
+        id: true,
+        assetVersion: true,
         s3Key: true,
         fileType: true,
         processingStatus: true,
         originalDeletedAt: true,
       },
     });
+    const actor = getLiveSecurityContext()?.operation.actor;
+    if (file && actor && !(await this.readAccessPolicy().loadAdministratorFileIds([file.id], actor.id)).has(file.id)) return null;
     return this.signVerificationReviewFile(file);
   }
 
@@ -1219,14 +1062,18 @@ export class UploadService {
       const files = await this.prisma.fileUpload.findMany({
         where: { s3Key: { in: valid.slice(offset, offset + 50) } },
         select: {
+          id: true,
+          assetVersion: true,
           s3Key: true,
           fileType: true,
           processingStatus: true,
           originalDeletedAt: true,
         },
       });
+      const actor = getLiveSecurityContext()?.operation.actor;
+      const permitted = actor ? await this.readAccessPolicy().loadAdministratorFileIds(files.map(file => file.id), actor.id) : undefined;
       await Promise.all(
-        files.map(async (file) => {
+        files.filter(file => !permitted || permitted.has(file.id)).map(async (file) => {
           const signed = await this.signVerificationReviewFile(file);
           if (signed) urls.set(file.s3Key, signed);
         }),
@@ -1238,7 +1085,7 @@ export class UploadService {
   private async signVerificationReviewFile(
     file: Pick<
       FileUpload,
-      's3Key' | 'fileType' | 'processingStatus' | 'originalDeletedAt'
+      'id' | 'assetVersion' | 's3Key' | 'fileType' | 'processingStatus' | 'originalDeletedAt'
     > | null,
   ): Promise<string | null> {
     if (!file || !this.isDisplayableStoredFile(file)) return null;
@@ -1249,6 +1096,9 @@ export class UploadService {
       return null;
     }
 
+    // The review route already supplies its required permissions to the
+    // adaptive boundary; retain its actual actor for the final file check.
+    this.rememberFileRead(file, false, getLiveSecurityContext()?.operation.actor, undefined, FileType.BRAND_VERIFICATION);
     const command = new GetObjectCommand({
       Bucket: this.bucketName,
       Key: file.s3Key,
@@ -1291,14 +1141,15 @@ export class UploadService {
     const isAdmin = role === 'Admin' || role === 'SuperAdmin';
     const isOwner = file.userId === user.id;
     if (
-      !isAdmin &&
       !isOwner &&
       !this.canReturnPublicFileUrl(file) &&
-      !(await this.loadSharedViewerFileIds([file.id], user.id)).has(file.id)
+      !(await this.loadSharedViewerFileIds([file.id], user.id)).has(file.id) &&
+      !(isAdmin && (await this.readAccessPolicy().loadAdministratorFileIds([file.id], user.id)).has(file.id))
     ) {
       return null;
     }
 
+    this.rememberFileRead(file, false, user, variant ? normalizedKey : undefined);
     const signKey =
       variant?.s3Key ||
       (typeof file.s3Key === 'string' && file.s3Key.trim()) ||
@@ -1336,6 +1187,7 @@ export class UploadService {
   private async resolveBatchDisplayUrls(
     fileIds: string[],
     trustCallerAuthorization: boolean,
+    authorizations: readonly AuthorizedDisplayFile[] = [],
   ): Promise<Map<string, string>> {
     if (!fileIds || fileIds.length === 0) {
       return new Map<string, string>();
@@ -1347,6 +1199,12 @@ export class UploadService {
     });
 
     const urlMap = new Map<string, string>();
+
+    const sources = new Map<string, FileReadSource[]>();
+    for (const authorization of authorizations) {
+      const entries = sources.get(authorization.fileId) ?? [];
+      entries.push(authorization.source); sources.set(authorization.fileId, entries);
+    }
 
     const chunkSize = 25;
     for (let i = 0; i < files.length; i += chunkSize) {
@@ -1363,6 +1221,16 @@ export class UploadService {
             ) {
               return null;
             }
+          }
+
+          const fileSources = trustCallerAuthorization ? sources.get(file.id) : undefined;
+          if (fileSources?.length) {
+            for (const source of fileSources)
+              this.rememberFileRead(file, false, { id: source.viewer }, undefined, undefined, source);
+          } else if (isAnonymouslyPublic) {
+            this.rememberFileRead(file, true);
+          } else if (readResourceContext.getStore()) {
+            throw new ForbiddenException('Current content authorization is required for private media.');
           }
 
           if (isAnonymouslyPublic) {
@@ -1413,8 +1281,9 @@ export class UploadService {
    */
   async getBatchAuthorizedDisplayUrls(
     fileIds: string[],
+    authorizations: readonly AuthorizedDisplayFile[] = [],
   ): Promise<Map<string, string>> {
-    return this.resolveBatchDisplayUrls(fileIds, true);
+    return this.resolveBatchDisplayUrls(fileIds, true, authorizations);
   }
 
   /**
@@ -1423,7 +1292,9 @@ export class UploadService {
    * outranks AVIF: these are single-URL payloads rendered as plain <img>, and
    * AVIF breaks on iOS Safari < 16.4. Returns URLs only for files that already
    * have the variant — callers keep the original display URL as fallback, so
-   * access checks stay with the original-file batch.
+   * Private catalogue constraints are inherited from the original-file batch.
+   * Standalone callers must satisfy current public/owner/shared or guarded
+   * administrator-review access; a variant is never its own authorization.
    */
   async getBatchVariantDisplayUrls(
     fileIds: string[],
@@ -1433,6 +1304,25 @@ export class UploadService {
       return new Map<string, string>();
     }
 
+    const scope = readResourceContext.getStore();
+    if (scope && !scope.open) throw new ForbiddenException('This request ended. Start it again.');
+    const requested = new Set(fileIds);
+    const inherited = new Map<string, FileReadResource[]>();
+    for (const resource of scope?.resources.values() ?? []) {
+      if (resource.type !== 'FILE' || !requested.has(resource.id)) continue;
+      const entries = inherited.get(resource.id) ?? [];
+      entries.push(resource); inherited.set(resource.id, entries);
+    }
+    const files = await this.prisma.fileUpload.findMany({ where: { id: { in: [...requested] } },
+      include: this.publicFileAccessInclude() });
+    const parents = new Map(files.map(file => [file.id, file]));
+    const operation = scope ? getLiveSecurityContext()?.operation : undefined;
+    const review = operation?.policy.scope === 'ADMIN' && operation.actor.id === scope?.actor?.id &&
+      operation.requiredAdminPermissions.length > 0 ? operation.actor : undefined;
+    const sharedIds = scope?.actor ? files.filter(file => !inherited.has(file.id) &&
+      file.userId !== scope.actor!.id && !this.canReturnPublicFileUrl(file)).map(file => file.id) : [];
+    const shared = sharedIds.length ? await this.loadSharedViewerFileIds(sharedIds, scope!.actor!.id) : new Set<string>();
+    const adminIds = review ? await this.readAccessPolicy().loadAdministratorFileIds(sharedIds.filter(id => !shared.has(id)), review.id) : new Set<string>();
     const rows = await loadActiveDisplayVariants(
       this.prisma,
       fileIds,
@@ -1458,8 +1348,22 @@ export class UploadService {
 
     const urlMap = new Map<string, string>();
     for (const [id, row] of bestByFile) {
+      const parent = parents.get(id);
+      if (!parent || !this.isDisplayableStoredFile(parent)) continue;
       const key = typeof row?.s3Key === 'string' ? row.s3Key.trim() : '';
       if (!key) continue;
+      if (scope) {
+        const constraints = inherited.get(id);
+        if (constraints?.length) {
+          for (const constraint of constraints) rememberReadResource({ ...constraint, variantKey: key });
+        } else if (this.canReturnPublicFileUrl(parent)) {
+          this.rememberFileRead(parent, true, undefined, key);
+        } else if (scope.actor && (parent.userId === scope.actor.id || shared.has(id))) {
+          this.rememberFileRead(parent, false, { id: scope.actor.id }, key);
+        } else if (review && adminIds.has(id)) {
+          this.rememberFileRead(parent, false, review, key);
+        } else continue;
+      }
       const url =
         this.getPublicDisplayUrl({
           s3Key: key,
@@ -2106,6 +2010,7 @@ export class UploadService {
           : null;
       if (!mapped) continue;
       if ((variants as any)[mapped]) continue;
+      this.rememberFileRead(file, false, { id: userId }, row.s3Key);
       (variants as any)[mapped] = {
         url: await this.getTemporarySignedDisplayUrl(
           { s3Key: row.s3Key },
@@ -2117,6 +2022,7 @@ export class UploadService {
       } as VariantView;
     }
 
+    this.rememberFileRead(file, false, { id: userId });
     const fallbackUrl = await this.getTemporarySignedDisplayUrl(file, 3600);
     return {
       fileId: file.id,

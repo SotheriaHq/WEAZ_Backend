@@ -362,7 +362,7 @@ export class MessagingSideEffectsService {
       new Set(recipientIds.filter(Boolean)),
     );
     for (const recipientId of uniqueRecipientIds) {
-      this.events?.server?.to(`USER:${recipientId}`).emit('thread.updated', {
+      void this.events?.emitAuthorized(`USER:${recipientId}`, 'thread.updated', {
         threadId: thread.id,
         contextType: thread.contextType,
         orderId: thread.orderId,
@@ -385,7 +385,7 @@ export class MessagingSideEffectsService {
       new Set(recipientIds.filter(Boolean)),
     );
     for (const recipientId of uniqueRecipientIds) {
-      this.events?.server?.to(`USER:${recipientId}`).emit('message.created', {
+      void this.events?.emitAuthorized(`USER:${recipientId}`, 'message.created', {
         threadId: thread.id,
         messageId: message.id,
         senderRole: message.senderRole,
@@ -426,7 +426,7 @@ export class MessagingSideEffectsService {
     deliveredToUserIds: string[],
   ) {
     if (!senderUserId || messageIds.length === 0) return;
-    this.events?.server?.to(`USER:${senderUserId}`).emit('message.delivered', {
+    void this.events?.emitAuthorized(`USER:${senderUserId}`, 'message.delivered', {
       threadId: thread.id,
       contextType: thread.contextType,
       orderId: thread.orderId,
@@ -454,13 +454,13 @@ export class MessagingSideEffectsService {
     };
 
     // Emit to the reader themselves
-    this.events?.server?.to(`USER:${actorId}`).emit('message.read', payload);
+    void this.events?.emitAuthorized(`USER:${actorId}`, 'message.read', payload);
 
     // Also emit to all other participants so senders can update their tick status
     if (broadcastToParticipantIds?.length) {
       for (const pid of broadcastToParticipantIds) {
         if (pid !== actorId) {
-          this.events?.server?.to(`USER:${pid}`).emit('message.read', payload);
+          void this.events?.emitAuthorized(`USER:${pid}`, 'message.read', payload);
         }
       }
     }

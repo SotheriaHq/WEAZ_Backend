@@ -4,7 +4,11 @@ import { Prisma } from '@prisma/client';
 type Db = Prisma.TransactionClient;
 type Scope =
   | { kind: 'OWNED'; fileId: string; userId: string; required: boolean }
-  | { kind: 'DETACHED'; files: ReadonlyArray<{ id: string; userId: string }> }
+  | {
+      kind: 'DETACHED';
+      files: ReadonlyArray<{ id: string; userId: string }>;
+      requireIdle: boolean;
+    }
   | { kind: 'ORPHAN_MESSAGE'; cutoff: Date; take: number };
 
 // Includes nullable/implicit relations whose ON DELETE behavior would otherwise
@@ -17,6 +21,14 @@ const references = Prisma.sql`
   UNION ALL SELECT 1 FROM "UserProfile" WHERE "bannerImageId" = f."_id"
   UNION ALL SELECT 1 FROM "_PostImages" WHERE "A" = f."_id"
   UNION ALL SELECT 1 FROM "Post" WHERE "videoId" = f."_id"
+  UNION ALL SELECT 1 FROM "PhysicalVerificationProof" WHERE "fileKey" = f."s3Key"
+  UNION ALL SELECT 1 FROM "BrandVerificationAttempt" WHERE "ownerPhotoKey" = f."s3Key"
+  UNION ALL SELECT 1 FROM "BrandVerificationAttempt" WHERE "idDocumentFrontKey" = f."s3Key"
+  UNION ALL SELECT 1 FROM "BrandVerificationAttempt" WHERE "idDocumentBackKey" = f."s3Key"
+  UNION ALL SELECT 1 FROM "BrandVerificationAttempt" WHERE "cacCertificateKey" = f."s3Key"
+  UNION ALL SELECT 1 FROM "BrandVerificationAttempt" WHERE "authorityProofKey" = f."s3Key"
+  UNION ALL SELECT 1 FROM "BrandVerificationAttempt" WHERE "letterOfConfirmationKey" = f."s3Key"
+  UNION ALL SELECT 1 FROM "ProductReview" WHERE "mediaIds" @> ARRAY[f."_id"::text]
 `;
 
 const processingIdle = Prisma.sql`(f."processingLeaseUntil" IS NULL
@@ -62,7 +74,11 @@ async function deleteFiles(tx: Db, scope: Scope) {
   `);
   if (owned && scope.required && rows.some((row) => row.inUse))
     throw new BadRequestException('File is still in use');
-  if (owned && scope.required && rows.some((row) => !row.idle))
+  if (
+    ((owned && scope.required) ||
+      (scope.kind === 'DETACHED' && scope.requireIdle)) &&
+    rows.some((row) => !row.idle)
+  )
     throw new ConflictException(
       'File is currently being processed. Try again shortly.',
     );
@@ -101,11 +117,16 @@ export async function deleteOwnedFile(
 export async function deleteDetachedContentFiles(
   tx: Db,
   files: ReadonlyArray<{ id: string; userId: string }>,
+  options: { requireIdle?: boolean } = {},
 ) {
   if (!files.length) return 0;
   if (files.length > 500)
     throw new Error('Detached file cleanup exceeds 500 identities');
-  return deleteFiles(tx, { kind: 'DETACHED', files });
+  return deleteFiles(tx, {
+    kind: 'DETACHED',
+    files,
+    requireIdle: options.requireIdle ?? false,
+  });
 }
 
 export async function deleteOrphanedMessageFiles(

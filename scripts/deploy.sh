@@ -63,6 +63,7 @@ LIVENESS_URL="${LIVENESS_URL:-https://api.weaz.me/healthz}"
 READINESS_URL="${READINESS_URL:-https://api.weaz.me/ready}"
 LAST_GOOD_SHA_FILE="${LAST_GOOD_SHA_FILE:-$APP_DIR/.deploy-last-good-sha}"
 RELEASE_TAG_FILE="${RELEASE_TAG_FILE:-$APP_DIR/.deploy-release-tag}"
+SCHEMA_REPAIR_FILE="${SCHEMA_REPAIR_FILE:-$APP_DIR/.deploy-schema-repair-required}"
 ECOSYSTEM_FILE="$APP_DIR/ecosystem.config.js"
 
 # Set once the PM2 restart has happened, which is the moment a failure stops
@@ -82,6 +83,11 @@ DEPLOY_OK=0
 # would have rolled back to the exact commit it was trying to escape. On SIT the
 # file read 0b07c8a while 0b07c8a was HEAD, which is what gave it away.
 PREVIOUS_GOOD_SHA="$(cat "$LAST_GOOD_SHA_FILE" 2>/dev/null || true)"
+if [ -f "$SCHEMA_REPAIR_FILE" ]; then
+  # A prior attempt may already have applied its schema. Zero pending
+  # migrations on this retry does not make the old binary safe to restart.
+  SCHEMA_CHANGE_ATTEMPTED=1
+fi
 
 probe_url() {
   curl -fsS --max-time 10 "$1" >/dev/null
@@ -195,6 +201,7 @@ export GIT_SHA="$deployed_sha"
 echo "==> Deploying $deployed_sha as $release_tag"
 
 echo "==> [3/11] Installing dependencies (npm ci)"
+node scripts/check-adaptive-runtime.cjs
 # Stop old writers before dependency replacement, schema changes and owner-token
 # cutovers. PM2 sends the configured graceful shutdown signal and waits for the
 # existing kill_timeout. This also frees the small host's memory for npm/build.
@@ -235,8 +242,14 @@ if ! [[ "$pending_migrations" =~ ^[0-9]+$ ]]; then
 fi
 if [ "$pending_migrations" -gt 0 ]; then
   SCHEMA_CHANGE_ATTEMPTED=1
+  printf '%s\n' "$deployed_sha" > "$SCHEMA_REPAIR_FILE.pending"
+  mv "$SCHEMA_REPAIR_FILE.pending" "$SCHEMA_REPAIR_FILE"
 fi
 npx prisma migrate deploy
+
+# Prepare the stable, unique bank reservation before accepting payout-account
+# updates. The operation is idempotent and refuses unknown keys/conflicts.
+TS_NODE_TRANSPILE_ONLY=1 node scripts/prepare-payout-bank-claims.cjs --apply
 
 echo "==> [7/11] Seeding platform data (idempotent)"
 TS_NODE_TRANSPILE_ONLY=1 npm run prisma:seed
@@ -297,8 +310,9 @@ wait_for_probe "$READINESS_URL" "readiness" || {
   exit 1
 }
 
-DEPLOY_OK=1
 # Only NOW is this release known good, which is the whole point of the file.
 echo "$deployed_sha" > "$LAST_GOOD_SHA_FILE"
+rm -f "$SCHEMA_REPAIR_FILE"
+DEPLOY_OK=1
 echo "==> Deploy complete. Release=$release_tag SHA=$deployed_sha"
 pm2 status

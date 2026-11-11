@@ -63,6 +63,15 @@ jobs:
         run: |
           npm test -- src/auth/guard/auth-intent.coverage.spec.ts src/auth/guard/auth-intent.guard.spec.ts src/auth/auth-verification-security.spec.ts src/queue/queue.config.spec.ts --runInBand
           node scripts/verify-redis-rate-limit.cjs
+      - name: Adaptive access and payout-account boundaries
+        run: npm test -- src/auth/access src/realtime src/upload/file-read-response.spec.ts src/brand-verification/physical-verification.service.spec.ts src/collections/collections.service.spec.ts src/dev-tools/metadata-only-upload.storage.spec.ts src/common/content-audience.spec.ts src/common/read-content-access.spec.ts src/store/store-payment-account-sync.spec.ts src/store/store.service.spec.ts src/store/store.controller.spec.ts src/admin/payouts/payout-outcome-authority.spec.ts --runInBand
+      - name: Security runtime configuration preflight contracts
+        run: node --test scripts/check-adaptive-runtime.test.cjs
+      - name: Adaptive access real database and Redis verification
+        env:
+          DATABASE_URL: postgresql://postgres:ci-disposable-only@localhost:5432/postgres
+          REDIS_URL: redis://127.0.0.1:6379/15
+        run: npm run test:adaptive-access-postgres
       - name: Shared deployment lock regression
         run: |
           bash scripts/verify-deploy-lock.sh

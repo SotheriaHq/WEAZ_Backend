@@ -15,6 +15,9 @@ import { SubscriptionTierKey } from '@prisma/client';
 import { Transform } from 'class-transformer';
 
 export class SubscriptionCheckoutDto {
+  @IsUUID()
+  quoteId: string;
+
   @IsEnum(SubscriptionTierKey)
   tierKey: SubscriptionTierKey;
 

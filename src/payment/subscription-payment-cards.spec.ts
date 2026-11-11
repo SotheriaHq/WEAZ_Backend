@@ -71,6 +71,19 @@ describe('subscription card storage and deletion boundaries', () => {
       }).reusable,
     ).toBe(false);
   });
+
+  it('rejects weakened or malformed saved-card authorization envelopes', () => {
+    const encrypted = (service as any).encryptSavedPaymentMethodAuthorizationCode('AUTH_fixture');
+    const parts = encrypted.split('.');
+    for (const length of [4, 8, 12, 15]) {
+      const shortened = [...parts]; shortened[1] = Buffer.from(parts[1], 'base64').subarray(0, length).toString('base64');
+      expect((service as any).decryptSavedPaymentMethodAuthorizationCode(shortened.join('.'))).toBeNull();
+    }
+    const noncanonical = [...parts]; noncanonical[0] += '=';
+    for (const value of [`${encrypted}.`, `${encrypted}.extra`, noncanonical.join('.'), 'x'.repeat(16385)]) {
+      expect((service as any).decryptSavedPaymentMethodAuthorizationCode(value)).toBeNull();
+    }
+  });
   it('rejects renaming another user’s card and prevents PAN in nicknames', async () => {
     await expect(
       service.renameSavedPaymentCard('outsider', 'card-one', 'Business'),
@@ -305,5 +318,20 @@ describe('checkout card saving', () => {
     await expect(
       (service as any).resolveSavedPaystackAuthorization('buyer', 'attempt-1'),
     ).rejects.toThrow('no longer available');
+  });
+
+  it('resolves subscription credentials and their version from one canonical card read', async () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    const card = { id, buyerId: 'buyer', status: 'ACTIVE', expMonth: '12', expYear: '2040',
+      providerAuthorizationCodeEncrypted: (service as any).encryptSavedPaymentMethodAuthorizationCode('AUTH_fixture'),
+      providerAuthorizationMeta: { reusable: true, authorizationEmail: 'bound@example.invalid' } };
+    prisma.savedPaymentMethod.findFirst.mockResolvedValue(card);
+    const resolved = await service.getSubscriptionSavedCard('buyer', id);
+    expect(resolved).toEqual({ authorizationCode: 'AUTH_fixture', authorizationEmail: 'bound@example.invalid',
+      savedPaymentMethodId: id, credentialVersion: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(prisma.savedPaymentMethod.findFirst).toHaveBeenCalledTimes(1);
+    expect(prisma.savedPaymentMethod.update).not.toHaveBeenCalled();
+    prisma.savedPaymentMethod.findFirst.mockResolvedValue({ ...card, providerAuthorizationMeta: { reusable: true } });
+    await expect(service.getSubscriptionSavedCard('buyer', id)).rejects.toThrow('Reauthorize');
   });
 });

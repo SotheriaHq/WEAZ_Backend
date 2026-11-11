@@ -172,9 +172,7 @@ export class NotificationsService {
           payload: realtimePayload,
         });
         if (!emitted) {
-          this.events.server
-            ?.to(`USER:${recipientId}`)
-            .emit(event, realtimePayload);
+          await this.events.emitAuthorized(`USER:${recipientId}`, event, realtimePayload);
         }
       } catch (error) {
         this.logger.warn(
@@ -519,9 +517,7 @@ export class NotificationsService {
         payload,
       });
       if (!emitted) {
-        this.events.server
-          ?.to(`USER:${recipientId}`)
-          .emit('notification.deleted', payload);
+        await this.events.emitAuthorized(`USER:${recipientId}`, 'notification.deleted', payload);
       }
     } catch {
       // Ignore realtime emit errors for deletion path.
@@ -1923,6 +1919,12 @@ export class NotificationsService {
     ]);
   }
 
+  /** Bounded manual cleanup intents commit with the operator authority check;
+   * channel workers deliver them later without provider I/O in this transaction. */
+  async stageDraftExpiryEvents(tx: Prisma.TransactionClient, events: NotificationEvent[]): Promise<number> {
+    return this.stageSystemDecisionEvents(tx, events, [NotificationType.COLLECTION_DELETED]);
+  }
+
   /** Persist decision, inbox and channel intent atomically; never call providers inside a transaction. */
   private async stageSystemDecisionEvents(
     tx: Prisma.TransactionClient,
@@ -2452,9 +2454,7 @@ export class NotificationsService {
           payload: realtimePayload,
         });
         if (!emitted) {
-          this.events.server
-            ?.to(`USER:${recipientId}`)
-            .emit('notification.created', realtimePayload);
+          await this.events.emitAuthorized(`USER:${recipientId}`, 'notification.created', realtimePayload);
         }
         this.logger.debug('Notification event emitted successfully');
       } catch (error) {

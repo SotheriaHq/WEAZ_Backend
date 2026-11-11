@@ -1,3 +1,4 @@
+import { withSecurityWrite } from 'src/auth/access/transactional-enforcement';
 import {
   ConflictException,
   ForbiddenException,
@@ -49,14 +50,14 @@ export class ReconciliationService {
     actorId?: string | null;
     filtersJson?: Prisma.InputJsonValue;
   }) {
-    const run = await (this.prisma as any).reconciliationRun.create({
+    const run = await withSecurityWrite(this.prisma, async (tx) => (tx as any).reconciliationRun.create({
       data: {
         scope: params.scope,
         status: RECONCILIATION_RUN_STATUS.RUNNING,
         startedById: params.actorId ?? null,
         filtersJson: params.filtersJson ?? Prisma.JsonNull,
       },
-    });
+    }));
 
     try {
       const summary =
@@ -66,7 +67,7 @@ export class ReconciliationService {
             ? await this.reconcilePayouts(run.id)
             : await this.reconcileLedgerIntegrity(run.id);
 
-      return (this.prisma as any).reconciliationRun.update({
+      return withSecurityWrite(this.prisma, async (tx) => (tx as any).reconciliationRun.update({
         where: { id: run.id },
         data: {
           status: RECONCILIATION_RUN_STATUS.COMPLETED,
@@ -79,16 +80,16 @@ export class ReconciliationService {
             orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
           },
         },
-      });
+      }));
     } catch (error) {
-      await (this.prisma as any).reconciliationRun.update({
+      await withSecurityWrite(this.prisma, async (tx) => (tx as any).reconciliationRun.update({
         where: { id: run.id },
         data: {
           status: RECONCILIATION_RUN_STATUS.FAILED,
           errorMessage: (error as Error).message,
           failedAt: new Date(),
         },
-      });
+      }));
       throw error;
     }
   }
@@ -146,14 +147,14 @@ export class ReconciliationService {
       );
     }
 
-    return (this.prisma as any).reconciliationItem.update({
+    return withSecurityWrite(this.prisma, async (tx) => (tx as any).reconciliationItem.update({
       where: { id: itemId },
       data: {
         assignedAdminId: actorId,
         assignedAt: item.assignedAdminId ? item.assignedAt : new Date(),
         releasedAt: null,
       },
-    });
+    }));
   }
 
   async releaseItem(
@@ -171,14 +172,14 @@ export class ReconciliationService {
 
     this.assertOwnership(item.assignedAdminId, actorId, actorRole);
 
-    return (this.prisma as any).reconciliationItem.update({
+    return withSecurityWrite(this.prisma, async (tx) => (tx as any).reconciliationItem.update({
       where: { id: itemId },
       data: {
         assignedAdminId: null,
         releasedAt: new Date(),
         resolutionNote: resolutionNote?.trim() || item.resolutionNote,
       },
-    });
+    }));
   }
 
   async resolveItem(
@@ -196,7 +197,7 @@ export class ReconciliationService {
 
     this.assertOwnership(item.assignedAdminId, actorId, actorRole);
 
-    return (this.prisma as any).reconciliationItem.update({
+    return withSecurityWrite(this.prisma, async (tx) => (tx as any).reconciliationItem.update({
       where: { id: itemId },
       data: {
         status: RECONCILIATION_ITEM_STATUS.RESOLVED,
@@ -204,7 +205,7 @@ export class ReconciliationService {
         resolvedAt: new Date(),
         resolutionNote: resolutionNote.trim(),
       },
-    });
+    }));
   }
 
   private async loadLedgerByReference(type: 'PAYMENT_RECEIVED' | 'PAYOUT_DISBURSED', referenceType: string, ids: string[]) {
@@ -401,7 +402,7 @@ export class ReconciliationService {
 
   private async writeItems(items: Record<string, unknown>[]) {
     if (items.length === 0) return;
-    await (this.prisma as any).reconciliationItem.createMany({ data: items });
+    await withSecurityWrite(this.prisma, async (tx) => (tx as any).reconciliationItem.createMany({ data: items }));
   }
 
   private buildSummary(statuses: ReconciliationItemStatus[]) {

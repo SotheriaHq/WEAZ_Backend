@@ -20,6 +20,10 @@ const guards = (n) =>
     .filter((d) => call(d, 'UseGuards'))
     .flatMap((d) => d.expression.arguments.map((a) => a.getText()));
 const has = (n, name) => decs(n).some((d) => call(d, name));
+const adminPermissions = n => decs(n).find(d => call(d, 'RequirePermissions'))
+  ?.expression.arguments.map(argument => argument.getText()) ?? [];
+const roles = n => decs(n).find(d => call(d, 'Roles'))
+  ?.expression.arguments.map(argument => argument.getText()) ?? [];
 const route = (n) =>
   decs(n)
     .filter(
@@ -60,6 +64,10 @@ for (const f of files) {
           public: has(m, 'IsPublic') || has(cls, 'IsPublic'),
           throttle: has(m, 'Throttle') || has(cls, 'Throttle'),
           skipThrottle: has(m, 'SkipThrottle') || has(cls, 'SkipThrottle'),
+          readOnlyResponse: r.verb === 'POST' && (has(m, 'ReadOnlyResponse') || has(cls, 'ReadOnlyResponse')),
+          adminPermissions: has(m, 'RequirePermissions') ? adminPermissions(m) : adminPermissions(cls),
+          roles: has(m, 'Roles') ? roles(m) : roles(cls),
+          rolesDeclared: has(m, 'Roles') || has(cls, 'Roles'),
         });
       }
     }

@@ -1,4 +1,10 @@
 import {
+  withSecurityWrite,
+  withSecurityTransaction,
+} from 'src/auth/access/transactional-enforcement';
+import { lockSecurityAccount } from 'src/auth/access/lock-security-account';
+import { deleteDetachedContentFiles } from 'src/upload/file-deletion-query';
+import {
   Injectable,
   BadRequestException,
   ForbiddenException,
@@ -89,7 +95,7 @@ export class AdminUsersService {
 
     const userId = uuidv4();
 
-    const user = await this.prisma.$transaction(async (tx) => {
+    const user = await withSecurityTransaction(this.prisma, async (tx) => {
       const created = await tx.user.create({
         data: {
           id: userId,
@@ -211,7 +217,7 @@ export class AdminUsersService {
 
     const previousRole = target.role;
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await withSecurityTransaction(this.prisma, async (tx) => {
       const user = await tx.user.update({
         where: { id: targetUserId },
         data: {
@@ -304,7 +310,7 @@ export class AdminUsersService {
     });
     const currentCodes = currentGrants.map((g) => g.permissionCode);
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       // Remove all current grants
       await tx.adminPermissionGrant.deleteMany({
         where: { userId: targetUserId },
@@ -415,7 +421,7 @@ export class AdminUsersService {
     }
     updateData.authVersion = { increment: 1 };
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await withSecurityTransaction(this.prisma, async (tx) => {
       const user = await tx.user.update({
         where: { id: targetUserId },
         data: updateData,
@@ -498,7 +504,7 @@ export class AdminUsersService {
     const hashedPassword =
       await this.passwordService.hashPassword(tempPassword);
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       await tx.user.update({
         where: { id: targetUserId },
         data: {
@@ -570,7 +576,7 @@ export class AdminUsersService {
     const hashedPassword =
       await this.passwordService.hashPassword(tempPassword);
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       await tx.user.update({
         where: { id: targetUserId },
         data: {
@@ -802,36 +808,39 @@ export class AdminUsersService {
     const adminNote = decision.adminNote?.trim() || null;
 
     if (decision.decision === 'REJECT') {
-      const rejected = await this.prisma.$transaction(async (tx) => {
-        const result = await tx.accountReactivationRequest.update({
-          where: { id: requestId },
-          data: {
-            status: ReactivationRequestStatus.REJECTED,
-            adminNote,
-            reviewedById: actorId,
-            reviewedAt: new Date(),
-          },
-        });
-
-        await (tx as any).adminAuditLog.create({
-          data: {
-            id: uuidv4(),
-            actorUserId: actorId,
-            action: AdminAuditAction.ADMIN_USER_STATUS_UPDATE,
-            targetType: 'AccountReactivationRequest',
-            targetId: requestId,
-            previousState: { status: request.status },
-            newState: {
+      const rejected = await withSecurityTransaction(
+        this.prisma,
+        async (tx) => {
+          const result = await tx.accountReactivationRequest.update({
+            where: { id: requestId },
+            data: {
               status: ReactivationRequestStatus.REJECTED,
               adminNote,
+              reviewedById: actorId,
+              reviewedAt: new Date(),
             },
-            ipAddress: req.socket?.remoteAddress ?? null,
-            userAgent: req.headers['user-agent'] ?? null,
-          },
-        });
+          });
 
-        return result;
-      });
+          await (tx as any).adminAuditLog.create({
+            data: {
+              id: uuidv4(),
+              actorUserId: actorId,
+              action: AdminAuditAction.ADMIN_USER_STATUS_UPDATE,
+              targetType: 'AccountReactivationRequest',
+              targetId: requestId,
+              previousState: { status: request.status },
+              newState: {
+                status: ReactivationRequestStatus.REJECTED,
+                adminNote,
+              },
+              ipAddress: req.socket?.remoteAddress ?? null,
+              userAgent: req.headers['user-agent'] ?? null,
+            },
+          });
+
+          return result;
+        },
+      );
 
       return {
         message: 'Reactivation request rejected',
@@ -855,7 +864,7 @@ export class AdminUsersService {
       );
     }
 
-    const approved = await this.prisma.$transaction(async (tx) => {
+    const approved = await withSecurityTransaction(this.prisma, async (tx) => {
       const updatedUser = await tx.user.update({
         where: { id: request.user.id },
         data: {
@@ -1046,7 +1055,7 @@ export class AdminUsersService {
       }
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       await tx.accountReactivationRequest.updateMany({
         where: { reviewedById: targetUserId },
         data: { reviewedById: null },
@@ -1206,19 +1215,21 @@ export class AdminUsersService {
       attachments: attachmentsByMessageId[message.id] ?? [],
     }));
 
-    await (this.prisma as any).adminAuditLog.create({
-      data: {
-        id: uuidv4(),
-        actorUserId: actorId,
-        action: AdminAuditAction.ADMIN_USER_DATA_EXPORT,
-        targetType: 'User',
-        targetId: userId,
-        previousState: null,
-        newState: { exportedAt: new Date().toISOString() },
-        ipAddress: req.socket?.remoteAddress ?? null,
-        userAgent: req.headers['user-agent'] ?? null,
-      },
-    });
+    await withSecurityWrite(this.prisma, async (tx) =>
+      (tx as any).adminAuditLog.create({
+        data: {
+          id: uuidv4(),
+          actorUserId: actorId,
+          action: AdminAuditAction.ADMIN_USER_DATA_EXPORT,
+          targetType: 'User',
+          targetId: userId,
+          previousState: null,
+          newState: { exportedAt: new Date().toISOString() },
+          ipAddress: req.socket?.remoteAddress ?? null,
+          userAgent: req.headers['user-agent'] ?? null,
+        },
+      }),
+    );
 
     // Strip sensitive fields
     const { password, refreshTokens, authVersion, ...safeUser } = user as any;
@@ -1247,19 +1258,21 @@ export class AdminUsersService {
     if (!user) throw new NotFoundException('User not found');
 
     // Audit BEFORE deletion
-    await (this.prisma as any).adminAuditLog.create({
-      data: {
-        id: uuidv4(),
-        actorUserId: actorId,
-        action: AdminAuditAction.ADMIN_USER_DATA_WIPE,
-        targetType: 'User',
-        targetId: userId,
-        previousState: { email: user.email, status: user.status },
-        newState: { wipedAt: new Date().toISOString() },
-        ipAddress: req.socket?.remoteAddress ?? null,
-        userAgent: req.headers['user-agent'] ?? null,
-      },
-    });
+    await withSecurityWrite(this.prisma, async (tx) =>
+      (tx as any).adminAuditLog.create({
+        data: {
+          id: uuidv4(),
+          actorUserId: actorId,
+          action: AdminAuditAction.ADMIN_USER_DATA_WIPE,
+          targetType: 'User',
+          targetId: userId,
+          previousState: { email: user.email, status: user.status },
+          newState: { wipedAt: new Date().toISOString() },
+          ipAddress: req.socket?.remoteAddress ?? null,
+          userAgent: req.headers['user-agent'] ?? null,
+        },
+      }),
+    );
 
     const counts = {
       orders: 0,
@@ -1274,7 +1287,7 @@ export class AdminUsersService {
       messageAttachmentFilesDeleted: 0,
     };
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
       // Delete related entities
       const orders = await tx.order.deleteMany({ where: { buyerId: userId } });
       counts.orders = orders.count;
@@ -1344,12 +1357,19 @@ export class AdminUsersService {
           counts.messageAttachmentsDeleted = messageAttachmentsDeleted.count;
         }
 
-        if (ownedAttachmentFileIds.length > 0) {
-          const messageAttachmentFilesDeleted = await tx.fileUpload.deleteMany({
-            where: { id: { in: ownedAttachmentFileIds }, userId },
-          });
-          counts.messageAttachmentFilesDeleted =
-            messageAttachmentFilesDeleted.count;
+        ownedAttachmentFileIds.sort();
+        for (
+          let offset = 0;
+          offset < ownedAttachmentFileIds.length;
+          offset += 500
+        ) {
+          counts.messageAttachmentFilesDeleted +=
+            await deleteDetachedContentFiles(
+              tx,
+              ownedAttachmentFileIds
+                .slice(offset, offset + 500)
+                .map((id) => ({ id, userId })),
+            );
         }
       }
 
@@ -1444,7 +1464,8 @@ export class AdminUsersService {
 
     const nowIso = new Date().toISOString();
 
-    await this.prisma.$transaction(async (tx) => {
+    await withSecurityTransaction(this.prisma, async (tx) => {
+      await lockSecurityAccount(tx, targetUserId);
       await tx.adminPermissionGrant.deleteMany({
         where: { userId: targetUserId },
       });

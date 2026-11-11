@@ -1,4 +1,5 @@
 import { IsPublic } from 'src/auth/decorator/is-public.decorator';
+import { ReadOnlyResponse } from 'src/auth/decorator/read-only-response.decorator';
 import {
   Controller,
   Post,
@@ -72,6 +73,7 @@ export class UploadController {
    */
   @IsPublic()
   @Post('public-urls')
+  @ReadOnlyResponse()
   @HttpCode(200)
   @Throttle({ default: { limit: 60, ttl: 60000 } })
   @ApiOperation({
@@ -128,6 +130,7 @@ export class UploadController {
 
   @IsPublic()
   @Post('public-urls-by-source')
+  @ReadOnlyResponse()
   @HttpCode(200)
   @Throttle({ default: { limit: 60, ttl: 60000 } })
   async getPublicSignedUrlsBySource(
@@ -143,6 +146,7 @@ export class UploadController {
   }
 
   @Post('signed-urls-by-source')
+  @ReadOnlyResponse()
   @HttpCode(200)
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 60, ttl: 60000 } })

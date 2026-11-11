@@ -1,4 +1,5 @@
 import { IsPublic } from 'src/auth/decorator/is-public.decorator';
+import { rememberTerminalCommand } from './access/command-response-boundary';
 import {
   BadRequestException,
   Controller,
@@ -17,8 +18,10 @@ import {
   UnauthorizedException,
   UseGuards,
   Query,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
+import { SecuritySessionsService } from './security-sessions.service';
 import { AuthService } from './auth.service';
 import { CreateUserDto } from './dto/create-auth.dto';
 import { TransformInterceptor } from 'src/transform/transform.interceptor';
@@ -86,6 +89,7 @@ export class AuthController {
     private readonly configService: ConfigService,
     private readonly notifications: NotificationsService,
     private readonly studioHandoff: StudioHandoffService,
+    private readonly securitySessions: SecuritySessionsService,
   ) {}
 
   private get accessTokenCookieName(): string {
@@ -327,15 +331,17 @@ export class AuthController {
   @Post('admin/change-password')
   @ApiOperation({ summary: 'Change password for authenticated admin/user' })
   async changeAuthenticatedPassword(
-    @Req() req: Request & { user: { id: string } },
+    @Req() req: Request & { user: { id: string; sid: string } },
     @Body(ValidationPipe) body: ChangeAuthenticatedPasswordDto,
+    @Res({ passthrough: true }) res: Response,
   ) {
-    const refreshToken = req.cookies[this.refreshTokenCookieName];
     return this.authService.changePasswordForAuthenticatedUser(
       req.user.id,
       body.currentPassword,
       body.newPassword,
-      refreshToken,
+      req.user.sid,
+      req,
+      res,
     );
   }
 
@@ -344,15 +350,17 @@ export class AuthController {
   @Post('change-password')
   @ApiOperation({ summary: 'Change password for authenticated user' })
   async changeAuthenticatedPasswordAlias(
-    @Req() req: Request & { user: { id: string } },
+    @Req() req: Request & { user: { id: string; sid: string } },
     @Body(ValidationPipe) body: ChangeAuthenticatedPasswordDto,
+    @Res({ passthrough: true }) res: Response,
   ) {
-    const refreshToken = req.cookies[this.refreshTokenCookieName];
     return this.authService.changePasswordForAuthenticatedUser(
       req.user.id,
       body.currentPassword,
       body.newPassword,
-      refreshToken,
+      req.user.sid,
+      req,
+      res,
     );
   }
 
@@ -471,29 +479,27 @@ export class AuthController {
   }
 
   @Post('logout')
-  @UseGuards(JwtAuthGuard)
+  @IsPublic()
+  @Throttle({ default: { limit: 12, ttl: 60000 } })
   @HttpCode(200)
   @ApiOperation({ summary: 'Logout user' })
   @ApiResponse({ status: 200, description: 'Logout successful' })
   async logout(
-    @Req() req: Request & { user: { id: string } },
-    @Body('refreshToken') bodyRefreshToken: string | undefined,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const refreshToken =
-      req.cookies[this.refreshTokenCookieName] ?? bodyRefreshToken;
-
+    const target = await this.tokenService.revokePresentedSession(req);
     const cookieOptions = this.cookieOptionsFor(res);
 
-    res.clearCookie(this.refreshTokenCookieName, cookieOptions);
-    res.clearCookie(this.accessTokenCookieName, cookieOptions);
-
-    await this.tokenService.revokeRefreshToken(refreshToken);
+    if (target?.clearCookies) {
+      res.clearCookie(this.refreshTokenCookieName, cookieOptions);
+      res.clearCookie(this.accessTokenCookieName, cookieOptions);
+    }
 
     // Emit logout activity without blocking API response.
     const ipAddress = this.extractClientIp(req);
-    void this.notifications
-      .create(req.user.id, NotificationType.LOGOUT, {
+    if (target?.revoked) void this.notifications
+      .create(target.userId, NotificationType.LOGOUT, {
         payload: {
           ip: ipAddress,
           userAgent: req.headers['user-agent'] ?? null,
@@ -506,19 +512,22 @@ export class AuthController {
 
   @Post('logout-all')
   @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
   @HttpCode(200)
   @ApiOperation({ summary: 'Logout user from all devices' })
   @ApiResponse({ status: 200, description: 'All refresh tokens revoked' })
   async logoutAll(
-    @Req() req: Request & { user: { id: string } },
+    @Req() req: Request & { user: { id: string; sid: string; authVersion: number } },
     @Res({ passthrough: true }) res: Response,
   ) {
-    const cookieOptions = this.cookieOptionsFor(res);
-
-    res.clearCookie(this.refreshTokenCookieName, cookieOptions);
-    res.clearCookie(this.accessTokenCookieName, cookieOptions);
-
+    const clearCookies = this.tokenService.cookiesBelongToActor(req, req.user);
     await this.tokenService.revokeAllRefreshTokens(req.user.id);
+    rememberTerminalCommand('LOGOUT_ALL', req.user.id, () => {
+      if (!clearCookies) return;
+      const cookieOptions = this.cookieOptionsFor(res);
+      res.clearCookie(this.refreshTokenCookieName, cookieOptions);
+      res.clearCookie(this.accessTokenCookieName, cookieOptions);
+    });
 
     const ipAddress = this.extractClientIp(req);
     void this.notifications
@@ -684,6 +693,7 @@ export class AuthController {
 
   @Patch('security/devices/:id/revoke')
   @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @ApiOperation({
     summary: 'Revoke a recognized device for the authenticated user',
   })
@@ -694,26 +704,48 @@ export class AuthController {
     return this.authService.revokeTrustedDevice(req.user.id, id);
   }
 
+  @Get('security/session-devices')
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
+  listSessionDevices(@Req() req: Request & { user: { id: string; sid: string } }, @Query('cursor') cursor?: string) {
+    return this.securitySessions.listDevices(req.user.id, req.user.sid, cursor);
+  }
+
+  @Get('security/session-devices/:key/sessions')
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
+  listDeviceSessions(@Req() req: Request & { user: { id: string; sid: string } }, @Param('key') key: string, @Query('cursor') cursor?: string) {
+    return this.securitySessions.listDeviceSessions(req.user.id, req.user.sid, key, cursor);
+  }
+
+  @Post('security/session-devices/:key/revoke')
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  revokeDeviceSessions(@Req() req: Request & { user: { id: string; sid: string } }, @Param('key') key: string) {
+    return this.securitySessions.revokeDevice(req.user.id, req.user.sid, key);
+  }
+
   @Get('security/sessions')
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'List recent login sessions for the authenticated user',
   })
-  async listSecuritySessions(@Req() req: Request & { user: { id: string } }) {
-    const refreshToken = req.cookies[this.refreshTokenCookieName];
+  async listSecuritySessions(@Req() req: Request & { user: { id: string; sid: string } }) {
+    const refreshToken = req.user.sid;
     return this.authService.listSecuritySessions(req.user.id, refreshToken);
   }
 
   @Patch('security/sessions/:id/revoke')
   @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @ApiOperation({
     summary: 'Revoke a login session for the authenticated user',
   })
   async revokeSecuritySession(
-    @Req() req: Request & { user: { id: string } },
-    @Param('id') id: string,
+    @Req() req: Request & { user: { id: string; sid: string } },
+    @Param('id', new ParseUUIDPipe()) id: string,
   ) {
-    const refreshToken = req.cookies[this.refreshTokenCookieName];
+    const refreshToken = req.user.sid;
     return this.authService.revokeSecuritySession(
       req.user.id,
       id,
@@ -723,12 +755,13 @@ export class AuthController {
 
   @Post('security/sessions/logout-others')
   @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @ApiOperation({
     summary:
       'Revoke all other login sessions while preserving the current session',
   })
-  async logoutOtherSessions(@Req() req: Request & { user: { id: string } }) {
-    const refreshToken = req.cookies[this.refreshTokenCookieName];
+  async logoutOtherSessions(@Req() req: Request & { user: { id: string; sid: string } }) {
+    const refreshToken = req.user.sid;
     return this.authService.logoutOtherSessions(req.user.id, refreshToken);
   }
 
@@ -737,10 +770,11 @@ export class AuthController {
   @Post('account/delete')
   @ApiOperation({ summary: 'Permanently delete the authenticated account' })
   async deleteAccount(
-    @Req() req: Request & { user: { id: string } },
+    @Req() req: Request & { user: { id: string; sid: string; authVersion: number } },
     @Body(ValidationPipe) body: DeleteAccountDto,
     @Res({ passthrough: true }) res: Response,
   ) {
+    const clearCookies = this.tokenService.cookiesBelongToActor(req, req.user);
     const refreshToken = req.cookies[this.refreshTokenCookieName];
     const result = await this.authService.deleteOwnAccount(
       req.user.id,
@@ -748,10 +782,12 @@ export class AuthController {
       body.currentPassword,
       refreshToken,
     );
-
-    const cookieOptions = this.cookieOptionsFor(res);
-    res.clearCookie(this.refreshTokenCookieName, cookieOptions);
-    res.clearCookie(this.accessTokenCookieName, cookieOptions);
+    rememberTerminalCommand('ACCOUNT_DELETED', req.user.id, () => {
+      if (!clearCookies) return;
+      const cookieOptions = this.cookieOptionsFor(res);
+      res.clearCookie(this.refreshTokenCookieName, cookieOptions);
+      res.clearCookie(this.accessTokenCookieName, cookieOptions);
+    });
     return result;
   }
 }

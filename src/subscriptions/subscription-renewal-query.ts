@@ -1,6 +1,6 @@
 import { BrandSubscription, Prisma, SubscriptionTier } from '@prisma/client';
 
-/** Current agreement and scheduled tier pricing, read inside the brand lock. */
+/** Current agreement and approved scheduled price, read inside the brand lock. */
 export async function loadSubscriptionRenewalContext(
   tx: Prisma.TransactionClient,
   id: string,
@@ -14,7 +14,7 @@ export async function loadSubscriptionRenewalContext(
     >
   >(Prisma.sql`
     SELECT s.*, t.key AS "scheduledTierFound",
-      t."monthlyPriceNgn" AS "scheduledTierPrice"
+      s."scheduledPriceSnapshotNgn" AS "scheduledTierPrice"
     FROM "BrandSubscription" s
     LEFT JOIN "SubscriptionTier" t ON t.key = s."scheduledTierKey"
     WHERE s.id = ${id}::uuid

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { SecuritySessionsService } from './security-sessions.service';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { PasswordService } from 'src/auth/helper/password.service';
@@ -46,6 +47,7 @@ import { getJwtSigningSecret } from 'src/common/config/jwt-secrets';
   ],
   controllers: [AuthController],
   providers: [
+    SecuritySessionsService,
     AuthService,
     PasswordService,
     TokenService,

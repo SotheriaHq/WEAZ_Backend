@@ -354,11 +354,14 @@ describe('ImageService', () => {
     expect(getSignedUrl).toHaveBeenCalledTimes(1);
   });
 
-  it('allows admin to sign another users display media by file id', async () => {
+  it('allows a current database SuperAdmin to sign another users display media by file id', async () => {
+    const fileId = '41aa3c30-9c8c-4f3c-a96f-263daeb2b121';
+    const adminId = '78fb8743-c567-4837-9957-6d90eb6289b1';
     (service as any).prisma = {
+      $queryRaw: jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: fileId }]),
       fileUpload: {
         findUnique: jest.fn().mockResolvedValue({
-          id: 'file_other',
+          id: fileId,
           s3Key: 'POST_IMAGE/owner_1/file.png',
           processingStatus: 'READY',
           originalDeletedAt: null,
@@ -373,7 +376,7 @@ describe('ImageService', () => {
     };
 
     await expect(
-      service.getSignedUrl('file_other', 'admin_1', 'SuperAdmin'),
+      service.getSignedUrl(fileId, adminId, 'SuperAdmin'),
     ).resolves.toBe('signed-url');
   });
 

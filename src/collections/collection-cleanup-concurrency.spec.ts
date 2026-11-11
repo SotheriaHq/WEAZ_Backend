@@ -10,6 +10,7 @@ describe('collection cleanup transaction and storage outbox', () => {
   beforeEach(() => {
     prisma = {
       $queryRaw: jest.fn(),
+      $executeRaw: jest.fn().mockResolvedValue(2),
       collectionMedia: { deleteMany: jest.fn().mockResolvedValue({ count: 1 }) },
       fileUpload: { deleteMany: jest.fn().mockResolvedValue({ count: 1 }), findMany: jest.fn().mockResolvedValue([]) },
       fileVariant: { findMany: jest.fn().mockResolvedValue([]) },
@@ -32,32 +33,48 @@ describe('collection cleanup transaction and storage outbox', () => {
     const sql = prisma.$queryRaw.mock.calls[0][0].text;
     expect(sql).toContain('FOR UPDATE SKIP LOCKED');
     expect(sql).toContain(mode === 'DRAFT' ? '"lastActivityAt"' : '"deleteExpiresAt"');
-    expect(sql).toContain('LEFT JOIN "FileVariant"');
+    expect(sql).toContain('LEFT JOIN "FileUpload"');
     expect(prisma.collection.delete).not.toHaveBeenCalled();
     expect(prisma.storageObjectDeletion.createMany).not.toHaveBeenCalled();
     expect(uploads.deleteS3ObjectsByKeys).not.toHaveBeenCalled();
   });
 
-  it('deduplicates original/variant keys and commits durable work without calling S3 inside the transaction', async () => {
-    prisma.$queryRaw.mockResolvedValue([
-      { id: 'c', fileId: 'f', s3Key: 'master', variantKey: 'card' },
-      { id: 'c', fileId: 'f', s3Key: 'master', variantKey: 'zoom' },
-    ]);
+  it('queues only currently detached originals/variants without calling storage inside the transaction', async () => {
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ id: 'c', fileId: 'f', userId: 'owner' }])
+      .mockResolvedValueOnce([{ id: 'f' }])
+      .mockResolvedValueOnce([{ id: 'f', inUse: false, idle: true }]);
     await expect((service as any).deleteExpiredCollection('c', 'DRAFT', cutoff)).resolves.toBe(true);
     expect(prisma.fileUpload.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ['f'] } } });
-    expect(prisma.storageObjectDeletion.createMany).toHaveBeenCalledWith({
-      data: [{ s3Key: 'master' }, { s3Key: 'card' }, { s3Key: 'zoom' }], skipDuplicates: true,
-    });
+    expect(prisma.$executeRaw.mock.calls[0][0].text).toContain('INSERT INTO "StorageObjectDeletion"');
+    expect(prisma.$executeRaw.mock.calls[0][0].text).toContain('"FileVariant"');
+    expect(prisma.$executeRaw.mock.calls[0][0].values).toEqual(['f', 'f']);
     expect(uploads.deleteS3ObjectsByKeys).not.toHaveBeenCalled();
   });
 
   it('does not touch S3 or send a deletion notice if database deletion fails', async () => {
-    prisma.$queryRaw.mockResolvedValue([{ id: 'c', fileId: 'shared', s3Key: 'master', variantKey: null }]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ id: 'c', fileId: 'shared', userId: 'owner' }])
+      .mockResolvedValueOnce([{ id: 'shared' }])
+      .mockResolvedValueOnce([{ id: 'shared', inUse: false, idle: true }]);
     prisma.fileUpload.deleteMany.mockRejectedValue(new Error('foreign key prevents shared-file deletion'));
     await expect((service as any).deleteExpiredCollection('c', 'DRAFT', cutoff)).rejects.toThrow('foreign key');
     expect(prisma.storageObjectDeletion.createMany).not.toHaveBeenCalled();
     expect(uploads.deleteS3ObjectsByKeys).not.toHaveBeenCalled();
     expect(notifications.create).not.toHaveBeenCalled();
+    expect(prisma.collection.delete).not.toHaveBeenCalled();
+  });
+
+  it('expires the draft while retaining media still referenced by other content or verification evidence', async () => {
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ id: 'c', fileId: 'shared', userId: 'owner' }])
+      .mockResolvedValueOnce([{ id: 'shared' }])
+      .mockResolvedValueOnce([{ id: 'shared', inUse: true, idle: true }]);
+    await expect((service as any).deleteExpiredCollection('c', 'DRAFT', cutoff)).resolves.toBe(true);
+    expect(prisma.fileUpload.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
+    expect(prisma.collection.delete).toHaveBeenCalledWith({ where: { id: 'c' } });
+    expect(uploads.deleteS3ObjectsByKeys).not.toHaveBeenCalled();
   });
 
   it('uses one leased batch and two reference reads; keeps currently referenced files', async () => {

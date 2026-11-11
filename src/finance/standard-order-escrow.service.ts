@@ -1,3 +1,4 @@
+import { withSecurityTransaction } from 'src/auth/access/transactional-enforcement';
 import { Injectable } from '@nestjs/common';
 import {
   BrandBalanceAdjustmentType,
@@ -296,7 +297,7 @@ export class StandardOrderEscrowService {
         continue;
       }
 
-      const confirmed = await this.prisma.$transaction(async (tx) => {
+      const confirmed = await withSecurityTransaction(this.prisma, async (tx) => {
         const updated = await tx.order.updateMany({
           where: { id: candidate.orderId!, buyerConfirmedDeliveryAt: null },
           data: { buyerConfirmedDeliveryAt: new Date() },
@@ -337,7 +338,7 @@ export class StandardOrderEscrowService {
 
     let released = 0;
     for (const candidate of candidates) {
-      const hold = await this.prisma.$transaction(async (tx) =>
+      const hold = await withSecurityTransaction(this.prisma, async (tx) =>
         this.releaseFinalPortionByHoldId(tx, candidate.id, true),
       );
       if (hold?.secondReleasedAt) released += 1;

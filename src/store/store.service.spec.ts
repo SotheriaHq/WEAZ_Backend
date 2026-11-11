@@ -3,6 +3,8 @@ import { CollectionStatus } from '@prisma/client';
 import { BRAND_PERMISSIONS } from 'src/brands/permissions/brand-permissions';
 import { createCipheriv, createHash, randomBytes } from 'crypto';
 import { StoreService } from './store.service';
+import { StorePaymentAccountSynchronizer } from './store-payment-account-sync';
+import { ConflictException } from '@nestjs/common';
 
 describe('StoreService', () => {
   const originalStorePaymentAccountSecret =
@@ -210,6 +212,14 @@ describe('StoreService', () => {
     );
   });
 
+  it('rejects shortened payout-account authentication tags and appended ciphertext components', () => {
+    const payload = (service as any).encryptStorePaymentValue('0123456789');
+    const parts = payload.split('.');
+    parts[1] = Buffer.from(parts[1], 'base64').subarray(0, 12).toString('base64');
+    expect((service as any).decryptStorePaymentValue(parts.join('.'))).toBeNull();
+    expect((service as any).decryptStorePaymentValue(`${payload}.extra`)).toBeNull();
+  });
+
   it('requires server-resolved product measurements for RTW-plus cart items', () => {
     expect(() =>
       (service as any).resolveCartItemSizing(
@@ -342,143 +352,29 @@ describe('StoreService', () => {
     );
   });
 
-  it('keeps the last known good payout-account state when a sync attempt fails midway', async () => {
-    jest.spyOn(service as any, 'resolveBrandByIdOrOwner').mockResolvedValue({
-      id: 'brand_1',
-      isStoreOpen: true,
-      ownerId: 'owner_1',
-    });
-    jest
-      .spyOn(service as any, 'listSupportedPaymentBanks')
-      .mockResolvedValue([
-        { id: 1, code: '058', name: 'Bank A', currency: 'NGN' },
-      ]);
-    const callPaystackSpy = jest.spyOn(service as any, 'callPaystack');
-    callPaystackSpy.mockImplementation(
-      (path: string, options?: { method?: string }) => {
-        if (path.startsWith('/bank/resolve')) {
-          return Promise.resolve({
-            account_number: '1234567890',
-            account_name: 'Ada Lovelace',
-            bank_id: 1,
-          });
-        }
-
-        if (path === '/subaccount' && options?.method === 'POST') {
-          return Promise.resolve({
-            id: 'sub_new',
-            subaccount_code: 'SUB_NEW',
-            active: true,
-            is_verified: true,
-          });
-        }
-
-        if (path === '/subaccount/SUB_OLD' && options?.method === 'PUT') {
-          return Promise.resolve({
-            id: 'sub_old',
-            subaccount_code: 'SUB_OLD',
-            active: true,
-            is_verified: true,
-          });
-        }
-
-        if (
-          path === '/transferrecipient/TRF_OLD' &&
-          options?.method === 'GET'
-        ) {
-          return Promise.resolve({
-            id: 'recipient_old_remote',
-            recipient_code: 'TRF_OLD',
-            active: true,
-            details: { bank_code: '058', account_number: '1234567890' },
-          });
-        }
-
-        if (
-          path === '/transferrecipient/TRF_OLD' &&
-          options?.method === 'PUT'
-        ) {
-          return Promise.reject(new Error('Transfer recipient update failed'));
-        }
-
-        if (path === '/transferrecipient' && options?.method === 'POST') {
-          return Promise.resolve({
-            id: 'recipient_new',
-            recipient_code: 'TRF_NEW',
-            active: true,
-          });
-        }
-
-        return Promise.reject(new Error(`Unexpected Paystack call: ${path}`));
-      },
-    );
-
-    const encryptedAccountNumber = (service as any).encryptStorePaymentValue(
-      '1234567890',
-    );
-    prisma.brand.findUnique.mockResolvedValue({
-      id: 'brand_1',
-      name: 'Brand One',
-    });
-    prisma.user.findUnique.mockResolvedValue({
-      id: 'owner_1',
-      email: 'owner@example.com',
-      firstName: 'Ada',
-      lastName: 'Lovelace',
-      phoneNumber: '08030000000',
-      isEmailVerified: true,
-    });
-    prisma.storePaymentAccount.findUnique.mockResolvedValue({
-      brandId: 'brand_1',
-      status: 'ACTIVE',
-      provider: 'PAYSTACK',
-      countryCode: 'NG',
-      currency: 'NGN',
-      businessName: 'Brand One',
-      primaryContactName: 'Old Contact',
-      primaryContactEmail: 'old@example.com',
-      primaryContactPhone: '08010000000',
-      bankCode: '058',
-      bankName: 'Bank A',
-      accountName: 'Ada Lovelace',
-      accountNumberEncrypted: encryptedAccountNumber,
-      accountNumberLast4: '7890',
-      isAccountResolved: true,
-      accountResolvedAt: new Date('2026-03-01T00:00:00.000Z'),
-      subaccountCode: 'SUB_OLD',
-      subaccountId: 'sub_old',
-      subaccountActive: true,
-      subaccountVerified: true,
-      subaccountLastSyncAt: new Date('2026-03-01T00:00:00.000Z'),
-      transferRecipientCode: 'TRF_OLD',
-      transferRecipientId: 'recipient_old',
-      transferRecipientActive: true,
-      transferRecipientLastSyncAt: new Date('2026-03-01T00:00:00.000Z'),
-      lastSyncError: null,
-      metadata: { lastSuccessfulSyncAt: '2026-03-01T00:00:00.000Z' },
-    });
-    prisma.storePaymentAccount.upsert.mockResolvedValue({});
-
-    await expect(
-      service.updateStorePaymentAccount('owner_1', {
-        bankCode: '058',
-        accountNumber: '1234567890',
-      } as any),
-    ).rejects.toBeInstanceOf(BadRequestException);
-
-    const upsertArgs = prisma.storePaymentAccount.upsert.mock.calls[0][0];
-    expect(upsertArgs.create.status).toBe('SYNC_ERROR');
-    expect(upsertArgs.update.status).toBe('SYNC_ERROR');
-    expect(upsertArgs.create.subaccountCode).toBe('SUB_OLD');
-    expect(upsertArgs.update.subaccountCode).toBe('SUB_OLD');
-    expect(upsertArgs.create.transferRecipientCode).toBe('TRF_OLD');
-    expect(upsertArgs.update.transferRecipientCode).toBe('TRF_OLD');
-    expect(upsertArgs.create.lastSyncError).toBe(
-      'Transfer recipient update failed',
-    );
-    expect(upsertArgs.update.lastSyncError).toBe(
-      'Transfer recipient update failed',
-    );
+  it('leaves the current account intact when the durable synchronizer reports an uncertain update', async () => {
+    const originalIdentity = process.env.STORE_PAYOUT_IDENTITY_SECRET;
+    process.env.STORE_PAYOUT_IDENTITY_SECRET = randomBytes(32).toString('base64');
+    const syncSpy = jest.spyOn(StorePaymentAccountSynchronizer.prototype, 'synchronize')
+      .mockRejectedValue(new ConflictException({ code: 'PAYOUT_ACCOUNT_SYNC_PENDING', message: 'Still being checked' }));
+    try {
+      jest.spyOn(service as any, 'resolveBrandByIdOrOwner').mockResolvedValue({ id: 'brand_1', ownerId: 'owner_1' });
+      jest.spyOn(service as any, 'listSupportedPaymentBanks').mockResolvedValue([{ id: 1, code: '058', name: 'Bank A', currency: 'NGN' }]);
+      prisma.brand.findUnique.mockResolvedValue({ id: 'brand_1', name: 'Brand One' });
+      prisma.user.findUnique.mockResolvedValue({ id: 'owner_1', email: 'fixture@example.invalid', isEmailVerified: true });
+      prisma.storePaymentAccount.findUnique.mockResolvedValue({ id: 'account_1', brandId: 'brand_1', status: 'ACTIVE',
+        bankCode: '058', accountNumberEncrypted: (service as any).encryptStorePaymentValue('1234567890'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'), transferRecipientCode: 'RCP_OLD', subaccountCode: 'ACCT_OLD', bankClaimFingerprint: 'fixture' });
+      await expect(service.updateStorePaymentAccount('owner_1', { bankCode: '058', accountNumber: '1234567890' }))
+        .rejects.toMatchObject({ status: 409 });
+      expect(prisma.storePaymentAccount.upsert).not.toHaveBeenCalled();
+      expect(syncSpy).toHaveBeenCalledWith(expect.objectContaining({ brandId: 'brand_1', actorId: 'owner_1',
+        bankCode: '058', accountNumber: '1234567890', previous: expect.objectContaining({ recipientCode: 'RCP_OLD' }) }), expect.any(Function));
+    } finally {
+      syncSpy.mockRestore();
+      if (originalIdentity === undefined) delete process.env.STORE_PAYOUT_IDENTITY_SECRET;
+      else process.env.STORE_PAYOUT_IDENTITY_SECRET = originalIdentity;
+    }
   });
 
   it('reports brand profile completeness separately from store setup completeness', async () => {

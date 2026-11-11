@@ -1,3 +1,4 @@
+import { withSecurityWrite, withSecurityTransaction } from 'src/auth/access/transactional-enforcement';
 import {
   ConflictException,
   Injectable,
@@ -448,8 +449,8 @@ export class StandardOrderRefundsService {
     if (!['NEEDS_ATTENTION', 'FAILED'].includes(row.status))
       throw new ConflictException('REFUND_NOT_AWAITING_RECONCILIATION');
     const owner = randomUUID();
-    await this.prisma.$transaction(
-      async (tx) => {
+    await withSecurityTransaction(
+      this.prisma, async (tx) => {
         await this.lockParents(tx, refundId);
         if (!(await claimRefundReconciliation(tx, refundId, owner)))
           throw new ConflictException('REFUND_RECONCILIATION_STATE_CHANGED');
@@ -573,7 +574,7 @@ export class StandardOrderRefundsService {
     simulated: boolean,
     owner: string,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    return withSecurityTransaction(this.prisma, async (tx) => {
       const head = await this.lockParents(tx, id);
       await this.escrow.lockHoldByOrderId(tx, head.orderId);
       await tx.$queryRaw`SELECT id FROM "StandardOrderRefund" WHERE id = ${id}::uuid FOR UPDATE`;
@@ -768,8 +769,8 @@ export class StandardOrderRefundsService {
     statuses: string[],
     work: (tx: Tx) => Promise<boolean>,
   ): Promise<boolean> {
-    return this.prisma.$transaction(
-      async (tx) => {
+    return withSecurityTransaction(
+      this.prisma, async (tx) => {
         await this.lockParents(tx, id);
         if (!(await lockStandardRefundLease(tx, id, owner, statuses)))
           return false;
@@ -785,8 +786,8 @@ export class StandardOrderRefundsService {
     providerRefundId: string,
     code = 'REFUND_SUBMISSION_LEASE_LOST',
   ) {
-    await this.prisma.$transaction(
-      async (tx) => {
+    await withSecurityTransaction(
+      this.prisma, async (tx) => {
         await this.lockParents(tx, id);
         await tx.$queryRaw(
           Prisma.sql`SELECT id FROM "StandardOrderRefund" WHERE id=${id}::uuid FOR UPDATE`,
@@ -888,10 +889,10 @@ export class StandardOrderRefundsService {
             },
           );
         }
-        await this.prisma.standardOrderRefund.updateMany({
+        await withSecurityWrite(this.prisma, async (tx) => tx.standardOrderRefund.updateMany({
           where: { id: row.id, buyerNotifiedAt: null },
           data: { buyerNotifiedAt: new Date() },
-        });
+        }));
         sent += 1;
       } catch {
         this.logger.warn(`Refund notice ${row.id} not yet delivered`);

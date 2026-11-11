@@ -1,7 +1,8 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
-import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
+import { withSecurityTransaction } from 'src/auth/access/transactional-enforcement';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import { Injectable, UnauthorizedException, ConflictException, ServiceUnavailableException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { RefreshToken } from '@prisma/client';
+import { Prisma, RefreshToken } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import * as bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
@@ -9,12 +10,18 @@ import { Request, Response } from 'express';
 import {
   AuthUser,
   authTokenClaimsSelect,
-  authUserSelect,
   buildAuthTokenPayload,
 } from './prisma-select.helper';
 import { ConfigService } from '@nestjs/config';
 import { isNonLocalEnvironment } from 'src/common/utils/web-app-url';
 import { isHttpsRequest } from 'src/common/middleware/security-headers';
+import { getJwtVerificationSecrets } from 'src/common/config/jwt-secrets';
+import { lockSecurityAccount } from '../access/lock-security-account';
+import { lockCurrentSecurityActor, type SecurityActor } from '../access/security-actor';
+import { rememberPasswordCommand } from '../access/command-response-boundary';
+import { getLiveCommandOperation } from '../access/command-response-boundary';
+import { assertCurrentSelfCommand } from '../access/current-self-command';
+import { getLiveSecurityContext } from '../access/security-request-context';
 
 const DEFAULT_ACCESS_TOKEN_COOKIE = 'accessToken';
 const DEFAULT_REFRESH_TOKEN_COOKIE = 'refreshToken';
@@ -23,6 +30,14 @@ const DEFAULT_REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const ADMIN_REFRESH_TOKEN_TTL_MS = 5 * 60 * 60 * 1000; // 5 hours for admin roles
 const ADMIN_ABSOLUTE_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours absolute cap
 const DEFAULT_BCRYPT_ROUNDS = 10;
+
+export type PasswordSessionRotation = {
+  accessToken: string;
+  refreshToken: string;
+  ttl: number;
+  originalActor: SecurityActor;
+  replacementActor: SecurityActor;
+};
 
 /**
  * Prefix marking a refresh-token hash as HMAC-SHA256 rather than legacy bcrypt.
@@ -295,123 +310,111 @@ export class TokenService {
     return role === 'SuperAdmin' || role === 'Admin';
   }
 
+  private securityDevice(req: Request, userId: string) {
+    const raw = req.headers['x-wiez-security-device'];
+    const deviceId = typeof raw === 'string' && /^[a-zA-Z0-9_-]{16,128}$/.test(raw) ? raw : null;
+    const name = req.headers['x-wiez-device-name'];
+    return {
+      deviceKey: deviceId ? createHash('sha256').update(`${userId}:${deviceId}`).digest('hex') : null,
+      deviceName: typeof name === 'string' ? name.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 80).trim() || null : null,
+    };
+  }
+
   private async issueRefreshToken(
-    userId: string,
-    req: Request,
-    ttlMs?: number,
+    userId: string, issuedAuthVersion: number, req: Request, ttlMs: number,
+    tx: Prisma.TransactionClient, parent?: RefreshToken | null,
   ) {
     const sessionId = uuidv4();
     const secret = randomBytes(32).toString('hex');
-    const tokenHash = this.hashRefreshSecret(secret);
-    const expiresAt = new Date(
-      Date.now() + (ttlMs ?? this.refreshTokenTtlMilliseconds),
-    );
-
-    await this.prisma.refreshToken.create({
-      data: {
-        id: sessionId,
-        tokenHash,
-        userId,
-        userAgent: req.headers['user-agent'] ?? null,
-        ipAddress: this.extractClientIp(req),
-        locationLabel: this.describeRequestLocation(req),
-        lastUsedAt: new Date(),
-        expiresAt,
-      },
-    } as any);
-
+    const expiresAt = new Date(Math.min(Date.now() + ttlMs, parent?.expiresAt.getTime() ?? Infinity));
+    const device = parent ? { deviceKey: parent.deviceKey, deviceName: parent.deviceName } : this.securityDevice(req, userId);
+    await tx.refreshToken.create({ data: {
+      id: sessionId, tokenHash: this.hashRefreshSecret(secret), userId, sessionVersion: 1, issuedAuthVersion,
+      ...device, parentSessionId: parent?.id ?? null,
+      userAgent: req.headers['user-agent'] ?? null, ipAddress: this.extractClientIp(req),
+      locationLabel: this.describeRequestLocation(req), lastUsedAt: new Date(), expiresAt,
+    } });
     return `${sessionId}.${secret}`;
   }
 
   private async rotateRefreshToken(
-    currentToken: RefreshToken,
-    req: Request,
-    ttlMs: number,
+    currentToken: RefreshToken, req: Request, ttlMs: number, tx: Prisma.TransactionClient,
+    parent?: RefreshToken | null,
   ) {
     const secret = randomBytes(32).toString('hex');
-    const tokenHash = this.hashRefreshSecret(secret);
-    const expiresAt = new Date(Date.now() + ttlMs);
-
-    await this.prisma.refreshToken.update({
-      where: { id: currentToken.id },
-      data: {
-        tokenHash,
-        userAgent: req.headers['user-agent'] ?? null,
-        ipAddress: this.extractClientIp(req),
-        locationLabel: this.describeRequestLocation(req),
-        lastUsedAt: new Date(),
-        expiresAt,
-      },
-    } as any);
-
+    const expiresAt = new Date(Math.min(Date.now() + ttlMs, parent?.expiresAt.getTime() ?? Infinity));
+    const rotation = await tx.refreshToken.updateMany({
+      where: { id: currentToken.id, tokenHash: currentToken.tokenHash, sessionVersion: 1,
+        issuedAuthVersion: currentToken.issuedAuthVersion, riskState: { not: 'REVOKED' }, expiresAt: { gt: new Date() } },
+      data: { tokenHash: this.hashRefreshSecret(secret), userAgent: req.headers['user-agent'] ?? null,
+        ipAddress: this.extractClientIp(req), locationLabel: this.describeRequestLocation(req), lastUsedAt: new Date(), expiresAt },
+    });
+    if (rotation.count !== 1) throw new ConflictException({ code: 'REFRESH_ROTATED', message: 'This refresh was already consumed. Retry with the current session.' });
     return `${currentToken.id}.${secret}`;
   }
 
+  private async lockAccount(tx: Prisma.TransactionClient, userId: string) {
+    await tx.$queryRaw`SELECT "_id" FROM "User" WHERE "_id" = ${userId}::uuid FOR UPDATE`;
+    const user = await tx.user.findUnique({ where: { id: userId }, select: authTokenClaimsSelect });
+    if (!user || user.status !== 'ACTIVE') throw new UnauthorizedException('User account is not active');
+    return user;
+  }
+
+  private async createBoundSession(userId: string, req: Request, res: Response, handoffId?: string, expectedAuthVersion?: number) {
+    const tokens = await withSecurityTransaction(this.prisma, async (tx) => {
+      // Account-first lock order is shared by refresh, handoff and logout-all.
+      const user = await this.lockAccount(tx, userId);
+      if (!handoffId && (!Number.isSafeInteger(expectedAuthVersion) || expectedAuthVersion !== user.authVersion)) {
+        throw new UnauthorizedException('Account security changed. Please sign in again.');
+      }
+      let parent: RefreshToken | null = null;
+      if (handoffId) {
+        const code = await tx.studioHandoffCode.findUnique({ where: { id: handoffId } });
+        if (!code || code.userId !== userId || code.sourceAuthVersion !== user.authVersion ||
+          !code.sourceSessionId || code.usedAt || code.expiresAt <= new Date() || user.type !== 'BRAND') {
+          throw new UnauthorizedException('Studio handoff is no longer valid');
+        }
+        const source = await tx.refreshToken.findFirst({ where: {
+          id: code.sourceSessionId, userId, sessionVersion: 1, issuedAuthVersion: user.authVersion, riskState: 'NORMAL', expiresAt: { gt: new Date() },
+        } });
+        if (!source) throw new UnauthorizedException('Source session is no longer valid');
+        parent = source.parentSessionId ? await tx.refreshToken.findFirst({ where: {
+          id: source.parentSessionId, userId, sessionVersion: 1, issuedAuthVersion: user.authVersion, riskState: 'NORMAL', expiresAt: { gt: new Date() },
+        } }) : source;
+        if (!parent) throw new UnauthorizedException('Parent session is no longer valid');
+        const claim = await tx.studioHandoffCode.updateMany({ where: {
+          id: code.id, usedAt: null, expiresAt: { gt: new Date() }, sourceAuthVersion: user.authVersion,
+        }, data: { usedAt: new Date() } });
+        if (claim.count !== 1) throw new UnauthorizedException('Studio handoff was already used');
+      }
+      const ttl = this.getRefreshTtlForUser(user);
+      const refreshToken = await this.issueRefreshToken(userId, user.authVersion, req, ttl, tx, parent);
+      const sid = this.parseRefreshToken(refreshToken).sessionId;
+      const accessToken = await this.jwtService.signAsync({ ...buildAuthTokenPayload(user), sid }, {
+        secret: this.accessTokenSecret, expiresIn: this.accessTokenTtlSeconds,
+      });
+      return { accessToken, refreshToken, ttl };
+    });
+    this.attachAuthCookies(res, tokens.accessToken, tokens.refreshToken, tokens.ttl);
+    return tokens;
+  }
+
   private parseRefreshToken(raw: string) {
-    const parts = raw?.split('.');
-    if (!parts || parts.length !== 2 || !parts[0] || !parts[1]) {
+    const parts = typeof raw === 'string' ? raw.split('.') : null;
+    if (!parts || parts.length !== 2 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(parts[0]) || !/^[a-f0-9]{64}$/.test(parts[1])) {
       throw new UnauthorizedException('Malformed refresh token');
     }
     return { sessionId: parts[0], secret: parts[1] };
   }
 
   async generateTokens(user: AuthUser, req: Request, res: Response) {
-    const payload = buildAuthTokenPayload(user);
-    const refreshTtl = this.getRefreshTtlForUser(user);
-    try {
-      const accessToken = await this.jwtService.signAsync(payload, {
-        secret: this.accessTokenSecret,
-        expiresIn: this.accessTokenTtlSeconds,
-      });
-
-      const refreshToken = await this.issueRefreshToken(
-        user.id,
-        req,
-        refreshTtl,
-      );
-
-      this.attachAuthCookies(res, accessToken, refreshToken, refreshTtl);
-
-      return {
-        accessToken,
-        refreshToken: this.isMobileClient(req) ? refreshToken : undefined,
-      };
-    } catch (error: any) {
-      this.logger.error('Token generation failed:', error.message);
-      throw new Error('Failed to generate tokens');
-    }
+    const tokens = await this.createBoundSession(user.id, req, res, undefined, user.authVersion);
+    return { accessToken: tokens.accessToken, refreshToken: this.isMobileClient(req) ? tokens.refreshToken : undefined };
   }
 
-  async generateWebSessionForUserId(
-    userId: string,
-    req: Request,
-    res: Response,
-  ) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: authUserSelect,
-    });
-
-    if (!user) {
-      throw new UnauthorizedException('User not found');
-    }
-    if (user.status !== 'ACTIVE') {
-      throw new UnauthorizedException(
-        'User account is suspended or deactivated',
-      );
-    }
-
-    const payload = buildAuthTokenPayload(user);
-    const refreshTtl = this.getRefreshTtlForUser(user);
-    const accessToken = await this.jwtService.signAsync(payload, {
-      secret: this.accessTokenSecret,
-      expiresIn: this.accessTokenTtlSeconds,
-    });
-    const refreshToken = await this.issueRefreshToken(user.id, req, refreshTtl);
-
-    this.attachAuthCookies(res, accessToken, refreshToken, refreshTtl);
-
-    return { accessToken };
+  async generateWebSessionForUserId(userId: string, req: Request, res: Response, handoffId?: string) {
+    const tokens = await this.createBoundSession(userId, req, res, handoffId);
+    return { accessToken: tokens.accessToken };
   }
 
   async refreshToken(rawRefreshToken: string, req: Request, res: Response) {
@@ -422,7 +425,7 @@ export class TokenService {
         where: { id: sessionId },
       });
 
-      if (!storedToken || storedToken.expiresAt <= new Date()) {
+      if (!storedToken || storedToken.expiresAt <= new Date() || storedToken.riskState === 'REVOKED') {
         throw new UnauthorizedException('Invalid or expired refresh token');
       }
 
@@ -434,66 +437,30 @@ export class TokenService {
         throw new UnauthorizedException('Invalid refresh token');
       }
 
-      // Claims-only projection. This used to load `authUserSelect` — the full
-      // brand profile, every brand membership with its brand join, and the user
-      // profile with both image-file joins — to build a JWT that carries eight
-      // scalar fields and then discard the rest. Refresh returns no user object,
-      // so none of it was ever read.
-      const user = await this.prisma.user.findUnique({
-        where: { id: storedToken.userId },
-        select: authTokenClaimsSelect,
+      if (storedToken.sessionVersion !== 1) throw new UnauthorizedException('Sign in again to secure this session');
+      const tokens = await withSecurityTransaction(this.prisma, async (tx) => {
+        const user = await this.lockAccount(tx, storedToken.userId);
+        if (storedToken.issuedAuthVersion !== user.authVersion)
+          throw new UnauthorizedException('Account security changed. Please sign in again.');
+        if (user.mustResetPassword && this.isAdminRole(user.role)) throw new UnauthorizedException('Password reset required');
+        let parent: RefreshToken | null = null;
+        if (storedToken.parentSessionId) {
+          parent = await tx.refreshToken.findFirst({ where: { id: storedToken.parentSessionId, userId: storedToken.userId,
+            sessionVersion: 1, issuedAuthVersion: user.authVersion, riskState: { not: 'REVOKED' }, expiresAt: { gt: new Date() } } });
+          if (!parent) throw new UnauthorizedException('Parent session is no longer valid');
+        }
+        const origin = parent ?? storedToken;
+        if (this.isAdminRole(user.role) && Date.now() - origin.createdAt.getTime() > ADMIN_ABSOLUTE_SESSION_TTL_MS) {
+          throw new UnauthorizedException('Admin session expired. Please log in again');
+        }
+        const refreshTtl = Math.min(this.getRefreshTtlForUser(user), this.isAdminRole(user.role) ? ADMIN_ABSOLUTE_SESSION_TTL_MS - (Date.now() - origin.createdAt.getTime()) : Infinity);
+        const rotatedRefreshToken = await this.rotateRefreshToken(storedToken, req, refreshTtl, tx, parent);
+        const accessToken = await this.jwtService.signAsync({ ...buildAuthTokenPayload(user), sid: storedToken.id }, {
+          secret: this.accessTokenSecret, expiresIn: this.accessTokenTtlSeconds,
+        });
+        return { accessToken, rotatedRefreshToken, refreshTtl };
       });
-
-      if (!user) {
-        throw new UnauthorizedException('User not found');
-      }
-
-      if (user.status !== 'ACTIVE') {
-        await this.prisma.refreshToken.delete({
-          where: { id: storedToken.id },
-        });
-        throw new UnauthorizedException(
-          'User account is suspended or deactivated',
-        );
-      }
-
-      if (
-        user.mustResetPassword &&
-        (user.role === 'Admin' || user.role === 'SuperAdmin')
-      ) {
-        await this.prisma.refreshToken.delete({
-          where: { id: storedToken.id },
-        });
-        throw new UnauthorizedException(
-          'Password reset required for this admin account',
-        );
-      }
-
-      if (
-        this.isAdminRole(user.role) &&
-        Date.now() - storedToken.createdAt.getTime() >
-          ADMIN_ABSOLUTE_SESSION_TTL_MS
-      ) {
-        await this.prisma.refreshToken.delete({
-          where: { id: storedToken.id },
-        });
-        throw new UnauthorizedException(
-          'Admin session expired. Please log in again',
-        );
-      }
-
-      const payload = buildAuthTokenPayload(user);
-      const accessToken = await this.jwtService.signAsync(payload, {
-        secret: this.accessTokenSecret,
-        expiresIn: this.accessTokenTtlSeconds,
-      });
-
-      const refreshTtl = this.getRefreshTtlForUser(user);
-      const rotatedRefreshToken = await this.rotateRefreshToken(
-        storedToken,
-        req,
-        refreshTtl,
-      );
+      const { accessToken, rotatedRefreshToken, refreshTtl } = tokens;
 
       this.attachAuthCookies(res, accessToken, rotatedRefreshToken, refreshTtl);
 
@@ -504,61 +471,201 @@ export class TokenService {
           : undefined,
       };
     } catch (error: any) {
-      this.logger.error('Refresh token error:', error.message, error.stack);
-      throw new UnauthorizedException(`Refresh token failed: ${error.message}`);
+      if (error instanceof UnauthorizedException || error instanceof ConflictException) throw error;
+      this.logger.error('Session refresh unavailable', { code: error?.code ?? error?.name ?? 'UNKNOWN' });
+      throw new ServiceUnavailableException('Session could not be renewed. Please retry.');
     }
   }
 
-  async revokeRefreshToken(rawRefreshToken?: string | null) {
-    if (!rawRefreshToken) {
-      return;
-    }
+  async revokeCurrentSession(userId: string, sessionId: string) {
+    return withSecurityTransaction(this.prisma, async (tx) => {
+      await this.lockAccount(tx, userId);
+      // A native/root logout revokes its Studio children through the FK. A
+      // Studio child logout does not revoke the native/root session.
+      await tx.refreshToken.deleteMany({ where: { id: sessionId, userId } });
+    });
+  }
 
-    try {
-      const { sessionId } = this.parseRefreshToken(rawRefreshToken);
-      await this.prisma.refreshToken.delete({ where: { id: sessionId } });
-    } catch (error: any) {
-      this.logger.warn('Failed to revoke refresh token:', error.message);
+  /** Revocation-only credential verification. Expiry never grants API access;
+   * an authentic, bound access token may only destroy its own session. */
+  private revocationClaims(raw: unknown): { sub: string; sid: string; authVersion: number } | null {
+    if (typeof raw !== 'string' || raw.length > 16384) return null;
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    for (const secret of getJwtVerificationSecrets(this.configService)) {
+      try {
+        const claims = this.jwtService.verify(raw, { secret, algorithms: ['HS256'], ignoreExpiration: true });
+        if (uuid.test(claims.sub) && uuid.test(claims.sid) && Number.isSafeInteger(claims.authVersion) &&
+          claims.authVersion >= 0 && Number.isSafeInteger(claims.exp)) return claims;
+      } catch { /* A previous signing key may still be accepted during rotation. */ }
     }
+    return null;
+  }
+
+  cookiesBelongToActor(req: Request, actor: { id: string; sid: string; authVersion: number }): boolean {
+    let found = false;
+    const refresh = req.cookies?.[this.refreshTokenCookieName];
+    if (refresh !== undefined) {
+      if (typeof refresh !== 'string') return false;
+      try { if (this.parseRefreshToken(refresh).sessionId !== actor.sid) return false; }
+      catch { return false; }
+      found = true;
+    }
+    const access = req.cookies?.[this.accessTokenCookieName];
+    if (access !== undefined) {
+      const claims = this.revocationClaims(access);
+      if (!claims || claims.sub !== actor.id || claims.sid !== actor.sid || claims.authVersion !== actor.authVersion) return false;
+      found = true;
+    }
+    return found;
+  }
+
+  async revokePresentedSession(req: Request): Promise<{ userId: string; sid: string; revoked: boolean; clearCookies: boolean } | null> {
+    const authorization = req.headers.authorization;
+    let actor: { sub: string; sid: string; authVersion: number } | null = null;
+    let expectedHash: string | undefined;
+    if (authorization !== undefined) {
+      // An explicit account credential must never fall back to another tab's cookies.
+      const bearer = typeof authorization === 'string' ? /^Bearer ([^\s]+)$/i.exec(authorization)?.[1] : null;
+      actor = this.revocationClaims(bearer);
+      if (!actor) return null;
+    } else {
+      const explicitRefresh = req.body && Object.prototype.hasOwnProperty.call(req.body, 'refreshToken');
+      const raw = explicitRefresh ? req.body.refreshToken : req.cookies?.[this.refreshTokenCookieName];
+      if (raw !== undefined) {
+        if (typeof raw !== 'string') return null;
+        let parsed: { sessionId: string; secret: string };
+        try { parsed = this.parseRefreshToken(raw); } catch { return null; }
+        const session = await this.prisma.refreshToken.findUnique({ where: { id: parsed.sessionId } });
+        if (!session || session.sessionVersion !== 1 || session.issuedAuthVersion < 0 ||
+          !(await this.verifyRefreshSecret(parsed.secret, session.tokenHash))) return null;
+        actor = { sub: session.userId, sid: session.id, authVersion: session.issuedAuthVersion };
+        expectedHash = session.tokenHash;
+      } else {
+        actor = this.revocationClaims(req.cookies?.[this.accessTokenCookieName]);
+        if (!actor) return null;
+      }
+    }
+    const target = actor;
+    const result = await withSecurityTransaction(this.prisma, async tx => {
+      await lockSecurityAccount(tx, target.sub);
+      const existing = await tx.refreshToken.findUnique({ where: { id: target.sid },
+        select: { userId: true, issuedAuthVersion: true, sessionVersion: true } });
+      if (existing && (existing.userId !== target.sub || existing.issuedAuthVersion !== target.authVersion || existing.sessionVersion !== 1))
+        return null;
+      return tx.refreshToken.deleteMany({ where: { id: target.sid, userId: target.sub, sessionVersion: 1,
+        issuedAuthVersion: target.authVersion, ...(expectedHash ? { tokenHash: expectedHash } : {}) } });
+    });
+    if (!result) return null;
+    // A consumed refresh credential cannot authorize even revocation after it rotates.
+    if (expectedHash && result.count === 0) return null;
+    const cookieSessions: string[] = [];
+    const refreshCookie = req.cookies?.[this.refreshTokenCookieName];
+    if (typeof refreshCookie === 'string') {
+      try { cookieSessions.push(this.parseRefreshToken(refreshCookie).sessionId); } catch { cookieSessions.push('invalid'); }
+    }
+    const accessCookie = req.cookies?.[this.accessTokenCookieName];
+    if (typeof accessCookie === 'string') cookieSessions.push(this.revocationClaims(accessCookie)?.sid ?? 'invalid');
+    return { userId: target.sub, sid: target.sid, revoked: result.count > 0,
+      clearCookies: cookieSessions.length > 0 && cookieSessions.every(id => id === target.sid) };
   }
 
   async revokeAllRefreshTokens(userId: string) {
-    try {
-      await this.prisma.refreshToken.deleteMany({ where: { userId } });
-      // Increment authVersion so all previously-issued JWTs become invalid immediately
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { authVersion: { increment: 1 } },
-      });
-    } catch (error: any) {
-      this.logger.warn('Failed to revoke all refresh tokens:', error.message);
-    }
+    // One transaction: a failed revocation must never report success.
+    await withSecurityTransaction(this.prisma, async (tx) => {
+      const operation = getLiveSecurityContext()?.operation ?? getLiveCommandOperation();
+      const finish = operation?.policy.scope === 'SELF' || operation?.actor.id === userId
+        ? await assertCurrentSelfCommand(tx, userId) : () => undefined;
+      await tx.user.updateMany({ where: { id: userId }, data: { authVersion: { increment: 1 } } });
+      await tx.refreshToken.deleteMany({ where: { userId } });
+      await tx.studioHandoffCode.deleteMany({ where: { userId } });
+      finish();
+    });
   }
 
-  async revokeOtherRefreshTokens(
-    userId: string,
-    currentRawRefreshToken?: string | null,
-  ) {
-    let currentSessionId: string | null = null;
-    if (currentRawRefreshToken) {
-      try {
-        currentSessionId = this.parseRefreshToken(
-          currentRawRefreshToken,
-        ).sessionId;
-      } catch {
-        currentSessionId = null;
-      }
-    }
-
-    const result = await this.prisma.refreshToken.deleteMany({
-      where: currentSessionId
-        ? { userId, id: { not: currentSessionId } }
-        : { userId },
-    });
-
-    return {
-      revokedCount: result.count,
-      currentSessionId,
+  async revokeOtherRefreshTokens(userId: string, currentSessionId?: string | null, transaction?: Prisma.TransactionClient) {
+    if (!currentSessionId) throw new UnauthorizedException('Current session is required');
+    const work = async (tx: Prisma.TransactionClient) => {
+      const user = await this.lockAccount(tx, userId);
+      const finish = await assertCurrentSelfCommand(tx, userId, currentSessionId);
+      const current = await tx.refreshToken.findFirst({ where: { id: currentSessionId, userId, issuedAuthVersion: user.authVersion,
+        sessionVersion: 1, riskState: { not: 'REVOKED' }, expiresAt: { gt: new Date() },
+        OR: [{ parentSessionId: null }, { parentSession: { userId, issuedAuthVersion: user.authVersion,
+          sessionVersion: 1, riskState: { not: 'REVOKED' }, expiresAt: { gt: new Date() } } }] }, select: { parentSessionId: true } });
+      if (!current) throw new UnauthorizedException('Session is no longer valid');
+      const keep = [currentSessionId, current.parentSessionId].filter((id): id is string => Boolean(id));
+      const result = await tx.refreshToken.deleteMany({ where: { userId, id: { notIn: keep } } });
+      finish();
+      return { revokedCount: result.count, currentSessionId };
     };
+    return transaction ? work(transaction) : withSecurityTransaction(this.prisma, work);
+  }
+
+  /** A verified password change is an explicit authority transition, never an
+   * ordinary refresh adopting whatever account revision happens to exist. */
+  async rotatePasswordSessionInTransaction(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    sessionId: string,
+    req: Request,
+    changePassword: (current: { id: string; authVersion: number; role: string }) => Promise<void>,
+  ): Promise<PasswordSessionRotation> {
+    const before = await this.lockAccount(tx, userId);
+    const originalActor = { id: userId, sid: sessionId, authVersion: before.authVersion, role: before.role };
+    const { session } = await lockCurrentSecurityActor(tx, originalActor);
+    if (session.riskState !== 'NORMAL') throw new UnauthorizedException('Verify this session before changing your password.');
+    if (session.parentSessionId) throw new ConflictException({
+      code: 'PASSWORD_CHANGE_ON_SOURCE_DEVICE_REQUIRED',
+      message: 'Change your password from Password & security in the WIEZ app. Your password has not changed.',
+    });
+    const absoluteExpiresAt = this.isAdminRole(before.role)
+      ? session.createdAt.getTime() + ADMIN_ABSOLUTE_SESSION_TTL_MS : Infinity;
+    if (absoluteExpiresAt <= Date.now()) throw new UnauthorizedException('Admin session expired. Sign in again.');
+    await changePassword(before);
+    const after = await this.lockAccount(tx, userId);
+    if (after.authVersion !== before.authVersion + 1 || after.role !== before.role)
+      throw new ConflictException('Account security changed unexpectedly. No password change was committed.');
+    const now = Date.now();
+    const expiresAt = Math.min(now + this.getRefreshTtlForUser(after), absoluteExpiresAt);
+    const ttl = expiresAt - now;
+    if (ttl <= 0) throw new UnauthorizedException('Admin session expired. Sign in again.');
+    const secret = randomBytes(32).toString('hex');
+    const updated = await tx.refreshToken.updateMany({ where: {
+      id: sessionId, userId, tokenHash: session.tokenHash, issuedAuthVersion: before.authVersion,
+      sessionVersion: 1, riskState: 'NORMAL', parentSessionId: null, expiresAt: { gt: new Date() },
+    }, data: {
+      tokenHash: this.hashRefreshSecret(secret), issuedAuthVersion: after.authVersion,
+      expiresAt: new Date(expiresAt), lastUsedAt: new Date(now),
+      userAgent: req.headers['user-agent'] ?? null, ipAddress: this.extractClientIp(req),
+      locationLabel: this.describeRequestLocation(req), strongAuthenticatedAt: null, strongAuthVersion: null,
+    } });
+    if (updated.count !== 1) throw new ConflictException('This session changed. No password change was committed.');
+    // This one explicit transition has already verified the old actor and
+    // advanced exactly one revision. Ordinary revocation helpers must never
+    // adopt the replacement revision on behalf of an older request.
+    await tx.refreshToken.deleteMany({ where: { userId, id: { not: sessionId } } });
+    await tx.studioHandoffCode.deleteMany({ where: { userId } });
+    await tx.securityStepUpChallenge.deleteMany({ where: { userId } });
+    await tx.securityFactor.deleteMany({ where: { userId, verifiedAt: null } });
+    const replacementActor = { ...originalActor, authVersion: after.authVersion };
+    const accessToken = await this.jwtService.signAsync({ ...buildAuthTokenPayload(after), sid: sessionId }, {
+      secret: this.accessTokenSecret, expiresIn: this.accessTokenTtlSeconds,
+    });
+    return { accessToken, refreshToken: `${sessionId}.${secret}`, ttl, originalActor, replacementActor };
+  }
+
+  async deliverPasswordSessionRotation(rotation: PasswordSessionRotation, req: Request, res: Response) {
+    // Use the explicitly committed replacement binding, not an arbitrary latest
+    // revision. A concurrent logout/role change must withhold the credentials.
+    try {
+      const current = await this.prisma.$transaction(tx => lockCurrentSecurityActor(tx, rotation.replacementActor));
+      if (current.session.riskState !== 'NORMAL') throw new Error('Replacement session requires verification');
+    } catch {
+      throw new ConflictException({ code: 'SECURITY_RESPONSE_WITHHELD',
+        message: 'Your password may have changed, but this session could not be renewed. Sign in with your new password before retrying.' });
+    }
+    const finishHeaders = () => this.attachAuthCookies(res, rotation.accessToken, rotation.refreshToken, rotation.ttl);
+    if (!rememberPasswordCommand(rotation.originalActor, rotation.replacementActor, finishHeaders)) finishHeaders();
+    return { message: 'Password updated successfully', accessToken: rotation.accessToken,
+      ...(this.isMobileClient(req) ? { refreshToken: rotation.refreshToken } : {}) };
   }
 }

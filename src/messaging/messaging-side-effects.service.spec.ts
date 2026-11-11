@@ -43,6 +43,7 @@ describe('MessagingSideEffectsService', () => {
     } as any;
 
     const events = {
+      emitAuthorized: jest.fn().mockResolvedValue(true),
       server: {
         to: jest.fn().mockReturnValue({ emit: jest.fn() }),
       },
