@@ -2,7 +2,7 @@
 
 Status: initial backend/web security release verified on SIT on 11 November 2026; current API/SSH reachability is blocked pending server status confirmation; exact signed-APK and real passkey ceremony acceptance remain open. Native Apple passkeys are deferred by the product owner. iOS keeps authenticator and recovery-code methods; supported web browsers can use website passkeys independently of native Apple setup.
 
-The live website association now returns application/json with the privately signed Android certificate and both handle_all_urls/get_login_creds relations. The live backend reports web and Android passkeys configured. A fresh independent Google Digital Asset Links check on 11 November returned linked=true for both relations. Configuration and association are not proof of a successful device ceremony. Behavioural thresholds remain observational during initial calibration; MFA/authorization enforcement is independent.
+The live website association now returns application/json with the privately signed Android certificate and both handle_all_urls/get_login_creds relations. The initial live backend check reported web and Android passkeys configured. A fresh independent Google Digital Asset Links check on 11 November returned linked=true for both relations. Configuration and association are not proof of a successful device ceremony. Behavioural thresholds remain observational during initial calibration; MFA/authorization enforcement is independent.
 
 ## Configuration and signing
 

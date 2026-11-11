@@ -4,7 +4,7 @@ Status: security changes are merged and the initial SIT release was verified; cu
 
 ## Current SIT release — 11 November 2026
 
-Backend release 4b6d6e8 is deployed through GitHub Actions. Its full quality gate, secret scan and deploy gate pass. The API and worker are online; additive migrations completed, the schema-repair marker is clear, and the existing payout bank claim is prepared. Local additive migration and claim preparation also completed without resetting or reseeding either database.
+Backend release 4b6d6e8 is deployed through GitHub Actions. Its full quality gate, secret scan and deploy gate pass. At the initial successful deployment, the API and worker were online; additive migrations completed, the schema-repair marker is clear, and the existing payout bank claim is prepared. Local additive migration and claim preparation also completed without resetting or reseeding either database.
 
 Web security PR47 is merged; live weaz.me publishes the Android association as JSON with both required relations and the verified release signer. Native security PR56 is merged into SIT8c8c769 and its signed GitHub APK apk-8c8c769 built successfully. The device-session modal refinement is merged in web PR49 (SIT fa7fe09) and native PR58 (SIT4496824); signed APK apk-4496824 is building. Physical screen/ceremony acceptance remains open and is delegated to the owner while the phone is in use; no USB connection is required for ordinary acceptance. Native Apple passkeys remain deferred.
 
