@@ -26,6 +26,8 @@ const { BrandAccessService } = require('../src/brands/brand-access.service');
 const { EmailService } = require('../src/email/email.service');
 
 async function main() {
+  // A fresh CI checkout has no ignored output directory yet.
+  fs.mkdirSync('.tmp', { recursive: true, mode: 0o700 });
   const source = new URL(process.env.DATABASE_URL || '');
   assert(['localhost', '127.0.0.1', '[::1]'].includes(source.hostname), 'A loopback database is required');
   const database = `wiez_adaptive_test_${randomUUID().replaceAll('-', '')}`;
@@ -271,5 +273,8 @@ main().catch((error) => {
   fs.mkdirSync('.tmp', { recursive: true });
   fs.writeFileSync('.tmp/adaptive-access-error.log', String(error?.stack ?? error), { mode: 0o600 });
   console.error(`Adaptive access verification failed (${error?.name ?? 'Error'}). Inspect the private error log.`);
+  // Publish location/code only; error messages can contain credentials or URLs.
+  const frames = String(error?.stack ?? '').split(/\r?\n/).filter(line => /^\s+at /.test(line)).slice(0, 5);
+  console.error(JSON.stringify({ code: /^[A-Z0-9_]{1,30}$/.test(error?.code ?? '') ? error.code : undefined, frames }));
   process.exitCode = 1;
 });
