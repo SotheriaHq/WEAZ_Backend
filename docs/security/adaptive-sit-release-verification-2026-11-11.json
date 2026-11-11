@@ -1,0 +1,114 @@
+{
+  "checkedAt": "2026-11-11T03:04:56.251Z",
+  "scope": "SIT backend and web release verification; physical APK acceptance pending",
+  "backend": {
+    "commit": "4b6d6e8cf885d4457504072cb5a84f31a6d1cc47",
+    "apiAndWorkerOnline": true,
+    "lastGoodMatches": true,
+    "unfinishedMigrations": 0,
+    "schemaRepairMarker": false,
+    "payoutIdentityReady": true,
+    "existingPayoutClaims": 1,
+    "adminVerificationCompleted": true,
+    "requestedTestPasswordPreserved": true,
+    "riskMode": "observe",
+    "qualityGate": "success",
+    "deployGate": "success"
+  },
+  "web": {
+    "securityCommit": "1cea901b462bb7b21234e5e5ff87b53c119fad52",
+    "readinessFixCommit": "c85e27120f27c52ba6414c8410e271f379be8586",
+    "associationHttp": 200,
+    "associationContentType": "application/json",
+    "androidPackage": "com.wiez.wiez",
+    "relations": [
+      "delegate_permission/common.handle_all_urls",
+      "delegate_permission/common.get_login_creds"
+    ],
+    "releaseCertificateSha256": "69159a7f5b76c4fe16f08c4f39a1117238f443658e2df7deb37ce32d4f2d9e04",
+    "googleDigitalAssetLinks": {
+      "checkedAt": "2026-11-11T08:09:42.844Z",
+      "handleAllUrls": true,
+      "getLoginCredentials": true
+    }
+  },
+  "native": {
+    "commit": "8c8c7692f87ef1c684a83b305ae27705c921a434",
+    "tag": "apk-8c8c769",
+    "buildRun": 42947288832,
+    "buildStatus": "success",
+    "physicalAcceptance": "owner-run pending; phone in use, no USB interaction"
+  },
+  "liveSmoke": {
+    "checkedAt": "2026-11-11T02:51:48.738Z",
+    "cases": [
+      "MFA and grouped-session endpoints reject unauthenticated access",
+      "verified admin signs in with the preserved password and bound SID/revision claims",
+      "live MFA status exposes verified setup, configured web/Android passkeys and a five-minute read window",
+      "two actual sign-ins group under one device and list credential-free individual sessions",
+      "logout revokes its existing access token immediately while the other session remains valid"
+    ],
+    "operatorSessionsLoggedOut": true
+  },
+  "localCutover": {
+    "additiveMigrations": "passed",
+    "bankClaimPreparation": "passed",
+    "resetPerformed": false,
+    "seedPerformed": false
+  },
+  "tests": {
+    "realIntegrationCases": 234,
+    "realIntegrationCleanup": true,
+    "separateBackendUnitChecks": 855,
+    "backendUnitSuites": 87,
+    "nativeAndPairedChecks": 78,
+    "nativeSkippedChecks": 0,
+    "webClientCleanupSerialRecheck": 8,
+    "webAndNativeTypechecks": "passed",
+    "nativeBorders": "passed",
+    "nativeDesignFindings": "0/0",
+    "cloudflareReadinessCases": 13,
+    "notes": "Overlapping checkpoints; not a combined unique test count or capacity measurement. GitHub quality gates also cover broader suites."
+  },
+  "reviews": {
+    "clientCuration": "two independent bounded passes",
+    "deploymentReadinessDelta": "two independent bounded passes"
+  },
+  "remaining": [
+    "Current privately signed APK installation and physical screen acceptance",
+    "Supported browser and Android passkey ceremonies",
+    "Private Studio parent-session recovery on current clients",
+    "Live financial-provider charge/failure acceptance is not claimed from synthetic protocol fixtures"
+  ],
+  "deferred": [
+    "Native Apple passkeys",
+    "Behavioural blocking thresholds pending calibration"
+  ],
+  "updatedAt": "2026-11-11T08:31:11.573Z",
+  "modalRefinement": {
+    "webPullRequest": 49,
+    "nativePullRequest": 58,
+    "status": "pushed, CI in progress",
+    "pairedApiAndNativeConfirmationChecks": 24,
+    "nativeRegressionChecks": 73,
+    "skipped": 0,
+    "sourceReviews": "two independent bounded passes; final runtime19 passed in isolated dependencies",
+    "nativeMerge": "4496824db7e4c69594065e11d30035de0e5542fa",
+    "nativeStatus": "merged; all CI gates passed; apk-4496824 building",
+    "actualWebRenderHistoryLazyChecks": 19,
+    "webStatus": "merged after all CI passed; production deployment readiness run42987687649 in progress",
+    "nativeBuildRun": 42986923842,
+    "webMerge": "fa7fe09c0c730de99a458e63254c03a7c5692245",
+    "nativeBuildStatus": "in_progress"
+  },
+  "latestOperationalCheck": {
+    "checkedAt": "2026-11-11T08:31:11.573Z",
+    "api": "connection timeout from Node and browser",
+    "ssh": "TCP22 timeout",
+    "backendDeployRun": 42985982317,
+    "backendDeployCommit": "1833b16ab8f9be05608cb3360f32ba747cadfaa5",
+    "backendDeploy": "failed before SSH script execution (i/o timeout)",
+    "previousSuccessfulRelease": "4b6d6e8cf885d4457504072cb5a84f31a6d1cc47",
+    "ownerAction": "confirm EC2 instance state, status checks, public IPv4; no credentials requested"
+  }
+}
