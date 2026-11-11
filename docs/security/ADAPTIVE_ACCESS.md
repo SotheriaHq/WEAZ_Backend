@@ -1,6 +1,26 @@
 # Adaptive authorization and session risk
 
-Status: implementation in progress, not deployed. Source tests are not evidence that every endpoint, client or provider path is production ready.
+Status: security changes are merged and the initial SIT release was verified; current API/SSH reachability is blocked, and physical client acceptance remains in progress. Source tests are not evidence that every endpoint, client or provider path is production ready.
+
+## Current SIT release — 11 November 2026
+
+Backend release 4b6d6e8 is deployed through GitHub Actions. Its full quality gate, secret scan and deploy gate pass. At the initial successful deployment, the API and worker were online; additive migrations completed, the schema-repair marker is clear, and the existing payout bank claim is prepared. Local additive migration and claim preparation also completed without resetting or reseeding either database.
+
+Web security PR47 is merged; live weaz.me publishes the Android association as JSON with both required relations and the verified release signer. Native security PR56 is merged into SIT8c8c769 and its signed GitHub APK apk-8c8c769 built successfully. The device-session modal refinement is merged in web PR49 (SIT fa7fe09) and native PR58 (SIT4496824); signed APK apk-4496824 built successfully and is published. Physical screen/ceremony acceptance remains open and is delegated to the owner while the phone is in use; no USB connection is required for ordinary acceptance. Native Apple passkeys remain deferred.
+
+Live SIT checks verify unauthenticated denial, verified administrator sign-in with session/revision-bound access tokens, configured MFA status, two sign-ins grouped on one device with credential-free session details, and immediate access-token revocation on logout while another session stays valid. These are bounded smoke checks, not a load/capacity result or full UI acceptance. The managed administrator completed verification through the actual replacement inbox.
+
+Behavioural thresholds run in observation mode for initial calibration. Mandatory current identity, authority, ownership, revocation and factor requirements remain independent of this setting. Country/time alone are not attacker proof; no unconfigured IP-reputation or geolocation provider is claimed. Production retains mandatory MFA and two-reviewer recovery. Only current SuperAdmins in explicitly configured SIT/UAT receive the approved test exception.
+
+Current local verification:234 real PostgreSQL/Redis/HTTP/socket scenarios with cleanup;855 backend tests across87 suites in a separate overlapping run;78 native/paired checks without skips; both client typechecks; native border/design audits; two independent bounded client-curation reviews. GitHub also passes the integrated source/build/lint and broader backend regression gates. Earlier dated component checkpoints below are historical and do not override this release status.
+
+Remaining release acceptance: supported-browser/device MFA setup and passkey ceremonies, private Studio parent-session recovery, and current signed-APK screens. Live financial-provider charge/failure behavior has protocol and signed/transactional fixture evidence; it is not presented as a live-money acceptance test.
+
+
+
+### Current operational blocker
+
+The later SIT backend deployment run42985982317, commit1833b16, failed before its remote script could start: SSH connection timeout. A fresh browser/Node API check and direct SSH check also timed out, while the website remains reachable. The earlier successful deployment and smoke evidence below must not be interpreted as present API availability. Verify EC2 instance state, status checks and its current public address before retrying deployment. No reset, data deletion, firewall bypass or unverified host substitution is part of this check.
 
 ## Product requirements
 
@@ -232,3 +252,5 @@ or grandfathered into new administrator read grants by this change.
 [OWASP MFA guidance](https://cheatsheetseries.owasp.org/cheatsheets/Multifactor_Authentication_Cheat_Sheet.html#changing-mfa-factors) treats factor changes as sensitive and recommends verification with an existing factor and user notification. The implementation separates that permission from the ordinary viewing window. [SimpleWebAuthn server documentation](https://simplewebauthn.dev/docs/packages/server) describes RP/origin, challenge, user-verification and credential-counter checks; real signed fixtures and supported-client acceptance are required in addition to lifecycle tests.
 
 [Paystack single-transfer documentation](https://paystack.com/docs/transfers/single-transfers/) describes a stable transfer reference for reconciliation and retry. Preserve the original reference when resolving an uncertain outcome; never assume a new reference is an idempotent retry. Provider-specific behavior still requires the focused failure/recovery tests above.
+
+11 November operational update: the owner confirmed the AWS account is suspended. Live API/deployment/physical integration acceptance remains deferred until infrastructure is restored or migrated. Locally verifiable work may continue in checklist order. The privately signed APK apk-4496824 passed GitHub build42986923842 and is published; its phone acceptance is not claimed. Do not retry deployments against the suspended server or present historical live checks as current availability.

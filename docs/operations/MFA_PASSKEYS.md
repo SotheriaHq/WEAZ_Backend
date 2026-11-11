@@ -1,6 +1,8 @@
 # Passkeys: web and Android rollout
 
-Status: implementation and local verification only; no mandatory-MFA release. Native Apple passkeys are deferred by the product owner. iOS keeps authenticator and recovery-code methods; supported web browsers can use website passkeys independently of native Apple setup.
+Status: initial backend/web security release verified on SIT on 11 November 2026; current API/SSH reachability is blocked pending server status confirmation; exact signed-APK and real passkey ceremony acceptance remain open. Native Apple passkeys are deferred by the product owner. iOS keeps authenticator and recovery-code methods; supported web browsers can use website passkeys independently of native Apple setup.
+
+The live website association now returns application/json with the privately signed Android certificate and both handle_all_urls/get_login_creds relations. The initial live backend check reported web and Android passkeys configured. A fresh independent Google Digital Asset Links check on 11 November returned linked=true for both relations. Configuration and association are not proof of a successful device ceremony. Behavioural thresholds remain observational during initial calibration; MFA/authorization enforcement is independent.
 
 ## Configuration and signing
 
@@ -35,3 +37,17 @@ Before mandatory rollout, complete the security work queue, integrate the latest
 Evidence belongs in the screen-state matrix and the generated local-verification artifact. Do not infer live readiness from an old test report.
 
 References: [Android Credential Manager prerequisites](https://developer.android.com/identity/credential-manager/prerequisites), [SimpleWebAuthn server verification](https://simplewebauthn.dev/docs/packages/server), [SimpleWebAuthn browser ceremonies](https://simplewebauthn.dev/docs/packages/browser), [native module setup](https://github.com/peterferguson/react-native-passkeys), [OWASP MFA recovery and factor changes](https://cheatsheetseries.owasp.org/cheatsheets/Multifactor_Authentication_Cheat_Sheet.html).
+
+## Owner-run phone checks
+
+The signed build can be installed by the owner while USB debugging is unavailable. Preserve app data; do not uninstall or clear storage. The release record must identify the exact APK/tag being tested. No computer connection is needed for ordinary acceptance.
+
+1. Sign in, then open Settings → Account & Security. Open View sessions for the current installation. The separate window must show Active sessions and Recent sign-in history; Close and Android Back return to the same Settings screen.
+2. Open a second device if available. Sign out one non-current session from its window, then confirm that session loses access while the current phone remains signed in. Never use sign-out-all as a prerequisite to ordinary testing.
+3. From MFA settings, try a cancelled authenticator/passkey setup first. Cancellation must leave the account usable and show no unfinished method as verified. If choosing to enroll a method, save recovery codes privately; never send the code, QR, secret or recovery-code screen in feedback.
+4. On supported Android, create and use a passkey through the system prompt. Test cancel and reopen. If unavailable, verify the screen offers the authenticator/recovery alternative without a crash. Native Apple passkeys remain deferred.
+5. If the system challenges the actual phone session while entering Studio, verify that phone session and resume Studio. A child Studio session must not clear another session's challenge.
+
+For a failure, report APK tag, screen, action, expected result, actual message and time. A screenshot must exclude secrets. Logs can be captured later if these details are insufficient. Owner-run acceptance remains pending until reported; automated checks do not imply a successful biometric ceremony.
+
+11 November operational update: the owner confirmed the AWS account is suspended. Live API/deployment/physical integration acceptance remains deferred until infrastructure is restored or migrated. Locally verifiable work may continue in checklist order. The privately signed APK apk-4496824 passed GitHub build42986923842 and is published; its phone acceptance is not claimed. Do not retry deployments against the suspended server or present historical live checks as current availability.
