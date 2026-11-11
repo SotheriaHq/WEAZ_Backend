@@ -49,3 +49,5 @@ The signed build can be installed by the owner while USB debugging is unavailabl
 5. If the system challenges the actual phone session while entering Studio, verify that phone session and resume Studio. A child Studio session must not clear another session's challenge.
 
 For a failure, report APK tag, screen, action, expected result, actual message and time. A screenshot must exclude secrets. Logs can be captured later if these details are insufficient. Owner-run acceptance remains pending until reported; automated checks do not imply a successful biometric ceremony.
+
+11 November operational update: the owner confirmed the AWS account is suspended. Live API/deployment/physical integration acceptance remains deferred until infrastructure is restored or migrated. Locally verifiable work may continue in checklist order. The privately signed APK apk-4496824 passed GitHub build42986923842 and is published; its phone acceptance is not claimed. Do not retry deployments against the suspended server or present historical live checks as current availability.
