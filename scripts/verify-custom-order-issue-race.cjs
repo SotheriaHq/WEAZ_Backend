@@ -865,15 +865,17 @@ async function main() {
       },
       { timeout: 30000 },
     );
-    assert.equal(
-      (await actualQueue.capacity(prisma, brand.id)).intakeAllowed,
-      false,
-    );
+    // Owner, Nov 2026: an expired agreement falls back to the free plan —
+    // intake stays open with ONE Active seat. The order already Active keeps
+    // it; waiting paid work keeps its place until that seat frees.
+    const lapsedCap = await actualQueue.capacity(prisma, brand.id);
+    assert.equal(lapsedCap.intakeAllowed, true);
+    assert.equal(lapsedCap.active, 1);
     assert.equal(
       await prisma.customOrder.count({
         where: { brandId: brand.id, lane: 'ACTIVE' },
       }),
-      2,
+      1,
     );
     await prisma.user.update({
       where: { id: owner.id },
@@ -890,10 +892,10 @@ async function main() {
       await prisma.customOrder.count({
         where: { brandId: brand.id, lane: 'ACTIVE' },
       }),
-      2,
+      1,
     );
     evidence.cases.push(
-      'expired agreement blocks new intake while already-paid waiting work still promotes; actual cursor sweep performs one fresh capacity JOIN and respects a later owner suspension',
+      'expired agreement falls back to the free plan (intake open, one Active seat; waiting paid work keeps its place); actual cursor sweep performs one fresh capacity JOIN and respects a later owner suspension',
     );
     const priorityOrders = await Promise.all(Array.from({ length: 26 }, () => createOrder()));
     queries.length = 0;
