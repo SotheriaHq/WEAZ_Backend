@@ -14,8 +14,12 @@ type ReadResponse = Events & { destroyed?: boolean; writableEnded?: boolean };
 export function guardReadResponse<T>(source: Observable<T>, validate: () => Promise<void>,
   request: ReadRequest, response: ReadResponse): Observable<T> {
   const ended = () => request.aborted || (response.destroyed && !response.writableEnded);
+  // A disconnect must END the stream with an error, not complete it empty: Nest
+  // reads the handler with lastValueFrom(), and an empty completion surfaces as
+  // EmptyError, i.e. a 500 + Sentry alert for every abandoned page load. The
+  // payload is still never delivered; takeUntil forwards this error.
   const stop = new Observable<void>(subscriber => {
-    const abort = () => subscriber.next();
+    const abort = () => subscriber.error(new ConflictException('This request ended. Start it again.'));
     const close = () => { if (!response.writableEnded) abort(); };
     request.once?.('aborted', abort);
     response.once?.('close', close);
