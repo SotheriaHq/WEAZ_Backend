@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { firstValueFrom, of, Subject } from 'rxjs';
+import { EmptyError, firstValueFrom, lastValueFrom, of, Subject } from 'rxjs';
 import { UnauthorizedException } from '@nestjs/common';
 import { guardReadResponse } from './read-response-boundary';
 
@@ -29,13 +29,23 @@ describe('authenticated read response boundary', () => {
     expect(next).not.toHaveBeenCalled(); expect(error).toHaveBeenCalledWith(expect.objectContaining({ status: 401 }));
     expect(request.listenerCount('aborted')).toBe(0); expect(response.listenerCount('close')).toBe(0);
   });
-  it.each(['aborted', 'close'] as const)('discards a late authorized result and removes listeners after %s', async event => {
-    const { request, response } = lifecycle(), check = deferred(); const next = jest.fn(), complete = jest.fn();
-    guardReadResponse(of({ private: true }), () => check.promise, request, response).subscribe({ next, complete });
+  it.each(['aborted', 'close'] as const)('discards a late authorized result as an ended request (409) and removes listeners after %s', async event => {
+    const { request, response } = lifecycle(), check = deferred();
+    const next = jest.fn(), complete = jest.fn(), error = jest.fn();
+    guardReadResponse(of({ private: true }), () => check.promise, request, response).subscribe({ next, complete, error });
     if (event === 'aborted') request.emit(event); else response.emit(event);
     check.resolve(); await check.promise; await Promise.resolve();
-    expect(next).not.toHaveBeenCalled(); expect(complete).toHaveBeenCalledTimes(1);
+    expect(next).not.toHaveBeenCalled(); expect(complete).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.objectContaining({ status: 409 }));
     expect(request.listenerCount('aborted')).toBe(0); expect(response.listenerCount('close')).toBe(0);
+  });
+  it('never hands Nest an empty stream when the client disconnects mid-read (EmptyError -> 500)', async () => {
+    const { request, response } = lifecycle(), check = deferred();
+    const pending = lastValueFrom(guardReadResponse(of({ private: true }), () => check.promise, request, response));
+    response.emit('close');
+    check.resolve();
+    await expect(pending).rejects.toMatchObject({ status: 409 });
+    await expect(pending).rejects.not.toBeInstanceOf(EmptyError);
   });
   it('does not subscribe a read that was already aborted', async () => {
     const { request, response } = lifecycle(); request.aborted = true;

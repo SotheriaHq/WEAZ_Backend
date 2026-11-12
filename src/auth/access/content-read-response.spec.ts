@@ -34,9 +34,12 @@ describe('read resource request lifetime', () => {
     const request = new EventEmitter(), response = new EventEmitter(); let context: any;
     let resume!: () => void;
     const read = defer(async () => { context = readResourceContext.getStore(); await new Promise<void>(resolve => { resume = resolve; }); return 'body'; });
-    const subscription = guardContentReadResponse(() => read, {} as any, async () => undefined, request, response).subscribe();
+    // A disconnect ends the read with 409 (never an empty stream, which Nest turns into a 500).
+    const error = jest.fn();
+    const subscription = guardContentReadResponse(() => read, {} as any, async () => undefined, request, response).subscribe({ error });
     expect(readResourceContext.getStore()).toBeUndefined();
     request.emit('aborted'); expect(context.open).toBe(false); expect(context.resources.size).toBe(0);
+    expect(error).toHaveBeenCalledWith(expect.objectContaining({ status: 409 }));
     expect(() => readResourceContext.run(context, () => rememberReadResource({ type: 'DESIGN', id: randomUUID() }))).toThrow('request ended');
     resume(); await Promise.resolve(); subscription.unsubscribe();
     expect(request.listenerCount('aborted')).toBe(0); expect(response.listenerCount('close')).toBe(0);

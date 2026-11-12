@@ -244,6 +244,16 @@ describe('AuthService Google auth foundation', () => {
         }),
       }),
     );
+    // Unverified email -> a separate "verify your email" push/in-app item. The
+    // verification email was already sent above, so this one must not email.
+    expect(mockNotifications.create).toHaveBeenCalledWith(
+      'user-1',
+      NotificationType.SIGNUP,
+      expect.objectContaining({
+        payload: expect.objectContaining({ action: 'VERIFY_EMAIL', targetUrl: '/verify-email' }),
+        suppressEmail: true,
+      }),
+    );
     expect(mockTokenService.generateTokens).toHaveBeenCalled();
   });
 

@@ -96,6 +96,27 @@ describe('content review copy', () => {
   });
 });
 
+describe('signup pushes: welcome, verify your email, verified', () => {
+  const signup = NotificationRegistry.createDefault().getConfig(NotificationType.SIGNUP)!;
+  const actions = ['SIGNUP', 'VERIFY_EMAIL', 'EMAIL_VERIFIED'] as const;
+
+  it('each signup moment has its own title and preview-off line, none a security alert', () => {
+    const shown = actions.map((action) => getPushPresentation(NotificationType.SIGNUP, { action }));
+    expect(new Set(shown.map((p) => p.title)).size).toBe(actions.length);
+    expect(new Set(shown.map((p) => p.hiddenBody)).size).toBe(actions.length);
+    for (const p of shown) expect(p.title).not.toMatch(/security/i);
+    expect(shown[1].title).toBe('Verify your email ✉️');
+  });
+
+  it('accepts the verify-email payload and never puts a code in the text', () => {
+    const payload = { action: 'VERIFY_EMAIL', email: 'ada@example.com', displayName: 'Ada', targetUrl: '/verify-email' };
+    expect(signup.schema.validate(payload).error).toBeUndefined();
+    const text = signup.formatter({ payload });
+    expect(text).toBe('Verify your email to enjoy WIEZ. Your code is in your inbox.');
+    expect(text).not.toMatch(/\d/);
+  });
+});
+
 describe('Wiez is how WIEZ says hello', () => {
   it('greets by name, or on its own', () => {
     expect(wiezGreeting('Ebi')).toBe('Wiez Ebi 👋');

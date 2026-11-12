@@ -34,8 +34,27 @@ const SECURITY_TYPES = new Set<string>([
   'LOGIN',
   'LOGOUT',
   'LOGOUT_ALL',
-  'SIGNUP',
 ]);
+
+/**
+ * SIGNUP carries three different moments in `payload.action`. Each gets its own
+ * title and preview-off line (Rule 40) instead of the old shared
+ * "Security alert 🔐", which made a welcome look like a sign-in warning.
+ */
+const SIGNUP_PRESENTATION: Record<string, { title: string; hiddenBody: string }> = {
+  SIGNUP: {
+    title: 'Welcome to WIEZ 👋',
+    hiddenBody: 'Wiez 👋 Your account is ready.',
+  },
+  VERIFY_EMAIL: {
+    title: 'Verify your email ✉️',
+    hiddenBody: 'Wiez 👋 Verify your email to finish setting up.',
+  },
+  EMAIL_VERIFIED: {
+    title: 'Email verified ✅',
+    hiddenBody: 'Wiez 🎉 Your email is verified.',
+  },
+};
 
 const CONTENT_REVIEW_PRESENTATION: Record<
   string,
@@ -221,8 +240,19 @@ const VERIFICATION_PRESENTATION: Record<
  * notification type. With previews on, the descriptive body comes from the
  * registry formatter (or its `pushFormatter`).
  */
-export function getPushPresentation(type: NotificationType): PushPresentation {
+export function getPushPresentation(
+  type: NotificationType,
+  payload?: Record<string, unknown> | null,
+): PushPresentation {
   const value = String(type).toUpperCase();
+
+  if (value === 'SIGNUP') {
+    const action = typeof payload?.action === 'string' ? payload.action : 'SIGNUP';
+    return {
+      channelId: PUSH_CHANNEL_IDS.system,
+      ...(SIGNUP_PRESENTATION[action] ?? SIGNUP_PRESENTATION.SIGNUP),
+    };
+  }
 
   const contentReview = CONTENT_REVIEW_PRESENTATION[value];
   if (contentReview) {

@@ -70,9 +70,13 @@ export class FxMarketRates {
     const rates: Record<string, Observation> = Object.create(null);
     const now = Date.now();
     for (const row of body) {
-      if (!row || row.base !== 'USD' || !/^[A-Z]{3}$/.test(row.quote) || typeof row.rate !== 'number' || !Number.isFinite(row.rate) || row.rate <= 0 || typeof row.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(row.date)) {
+      if (!row || row.base !== 'USD' || typeof row.quote !== 'string' || typeof row.rate !== 'number' || !Number.isFinite(row.rate) || row.rate <= 0 || typeof row.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(row.date)) {
         throw new ServiceUnavailableException('FX_PROVIDER_RESPONSE_INVALID');
       }
+      // Since November 2026 the provider also lists crypto assets (AAVE, ALGO, ...)
+      // whose codes are not three letters. Only ISO-4217-shaped currency codes can
+      // price anything here, so skip the rest instead of rejecting the whole table.
+      if (!/^[A-Z]{3}$/.test(row.quote)) continue;
       const observedAt = Date.parse(`${row.date}T00:00:00Z`);
       if (!Number.isFinite(observedAt) || observedAt > now + 86400000 || now - observedAt > 7 * 86400000) continue;
       if (rates[row.quote]) throw new ServiceUnavailableException('FX_PROVIDER_DUPLICATE_CURRENCY');

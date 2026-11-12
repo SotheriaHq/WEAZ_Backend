@@ -476,6 +476,29 @@ export class AuthService {
     return fallbackIp ? `IP ${fallbackIp}` : 'Unknown location';
   }
 
+  /**
+   * Second signup notification: "verify your email". In-app + push only: the
+   * verification email itself was just sent, so email is suppressed here, and
+   * the code is never included (pushes are readable on the lock screen).
+   */
+  private async queueVerifyEmailNotification(
+    user: { id: string; email: string; isEmailVerified?: boolean | null },
+    displayName?: string,
+  ): Promise<void> {
+    if (user.isEmailVerified) return;
+    await this.notifications
+      .create(user.id, NotificationType.SIGNUP, {
+        payload: {
+          action: 'VERIFY_EMAIL',
+          email: user.email,
+          ...(displayName ? { displayName } : {}),
+          targetUrl: '/verify-email',
+        },
+        suppressEmail: true,
+      })
+      .catch(() => undefined);
+  }
+
   private resolveSignupDisplayName(user: AuthUser): string {
     const brandName = resolveRequiredBrandField(user, 'brandFullName').trim();
     if (brandName) {
@@ -797,6 +820,7 @@ export class AuthService {
           },
         })
         .catch(() => undefined);
+      await this.queueVerifyEmailNotification(user, signupDisplayName);
 
       // Post-commit, fire-and-forget: the account and session already exist.
       this.telegramEvents?.record(
@@ -1283,6 +1307,10 @@ export class AuthService {
           },
         })
         .catch(() => undefined);
+      await this.queueVerifyEmailNotification(
+        user,
+        this.resolveSignupDisplayName(user),
+      );
 
       this.telegramEvents?.record(
         signupSucceeded({

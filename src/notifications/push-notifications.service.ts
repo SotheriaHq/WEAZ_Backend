@@ -359,7 +359,7 @@ export class PushNotificationsService {
   }): PushOutboxPayload {
     const payload = this.toRecord(args.notification.payload);
     const showPreview = args.settings.push.showPreview;
-    const presentation = getPushPresentation(args.notification.type);
+    const presentation = getPushPresentation(args.notification.type, payload);
     // Previews off hides the CONTENT, not the meaning: the per-type line says
     // what kind of thing happened ("Changes requested on one of your uploads").
     const body = showPreview
