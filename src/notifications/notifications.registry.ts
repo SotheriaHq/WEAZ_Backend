@@ -349,7 +349,9 @@ export class NotificationRegistry {
     registry.register({
       type: NotificationType.SIGNUP,
       schema: Joi.object({
-        action: Joi.string().valid('SIGNUP', 'EMAIL_VERIFIED').optional(),
+        action: Joi.string()
+          .valid('SIGNUP', 'VERIFY_EMAIL', 'EMAIL_VERIFIED')
+          .optional(),
         email: Joi.string().email().optional(),
         displayName: Joi.string().optional(),
         username: Joi.string().optional(),
@@ -362,6 +364,10 @@ export class NotificationRegistry {
       formatter: (n: any) => {
         if (n.payload?.action === 'EMAIL_VERIFIED') {
           return 'Your email is verified. Your account is now secured and ready.';
+        }
+        if (n.payload?.action === 'VERIFY_EMAIL') {
+          // Never put the code here: push text is visible on the lock screen.
+          return 'Verify your email to enjoy WIEZ. Your code is in your inbox.';
         }
         return 'Welcome! Your account was created';
       },
