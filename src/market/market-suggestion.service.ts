@@ -1470,10 +1470,9 @@ export class MarketSuggestionService {
     if (product.deletedAt || product.archivedAt || product.isActive === false) {
       return false;
     }
-    if (
-      product.publicationStatus &&
-      product.publicationStatus !== CollectionStatus.PUBLISHED
-    ) {
+    // Fail closed: a missing status is not a published status. Every caller
+    // must select publicationStatus (storeCollectionSelect does).
+    if (product.publicationStatus !== CollectionStatus.PUBLISHED) {
       return false;
     }
     if (product.publishAt && product.publishAt > new Date()) {
