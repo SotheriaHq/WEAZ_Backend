@@ -28,6 +28,7 @@ describe('MarketSuggestionService', () => {
     totalStock: 4,
     customOrderEnabled: false,
     standardCheckoutEnabled: true,
+    publicationStatus: CollectionStatus.PUBLISHED,
     tags: ['aso-oke', 'jacket'],
     gender: 'EVERYBODY',
     viewsCount: 8,
@@ -435,6 +436,140 @@ describe('MarketSuggestionService', () => {
           deletedAt: null,
         }),
       }),
+    );
+  });
+  it('keeps unpublished products and inactive stores or owners out of every product query', async () => {
+    const prisma = createPrisma();
+    const service = new MarketSuggestionService(
+      prisma as any,
+      suppressionService() as any,
+    );
+
+    await service.getSuggestions(
+      {
+        context: MarketSuggestionContext.PRODUCT_DETAIL,
+        targetType: MarketSuggestionTargetType.PRODUCT,
+        targetId: 'product_target',
+      },
+      {},
+    );
+    await service.getSuggestions(
+      {
+        context: MarketSuggestionContext.SEARCH_EMPTY,
+        targetType: MarketSuggestionTargetType.QUERY,
+        query: 'aso oke',
+      },
+      {},
+    );
+    await service.getSuggestions(
+      {
+        context: MarketSuggestionContext.MARKET_SECTION_DETAIL,
+        targetType: MarketSuggestionTargetType.SECTION,
+        sectionKey: 'fresh-drops',
+      },
+      {},
+    );
+    await service.getSuggestions(
+      {
+        context: MarketSuggestionContext.BRAND_DETAIL,
+        targetType: MarketSuggestionTargetType.BRAND,
+        targetId: 'brand_1',
+      },
+      {},
+    );
+
+    const productWheres = prisma.product.findMany.mock.calls.map(
+      (call: any[]) => call[0].where,
+    );
+    expect(productWheres.length).toBeGreaterThan(0);
+    for (const where of productWheres) {
+      // Publication is the moderation gate: drafts, items in review and
+      // rejected items must never reach a public suggestion block.
+      expect(where.publicationStatus).toBe(CollectionStatus.PUBLISHED);
+      expect(where.brand).toEqual(
+        expect.objectContaining({
+          isStoreOpen: true,
+          owner: { status: 'ACTIVE' },
+        }),
+      );
+    }
+    // Collections and brands count only products that pass the same rule,
+    // and their own owners must be active.
+    expect(prisma.storeCollection.findMany).toHaveBeenCalled();
+    for (const call of prisma.storeCollection.findMany.mock.calls) {
+      expect(call[0].where.owner).toEqual(
+        expect.objectContaining({
+          status: 'ACTIVE',
+          brand: { isStoreOpen: true },
+        }),
+      );
+      expect(call[0].where.products.some.product).toEqual(
+        expect.objectContaining({
+          publicationStatus: CollectionStatus.PUBLISHED,
+          brand: { owner: { status: 'ACTIVE' } },
+        }),
+      );
+    }
+    expect(prisma.brand.findMany).toHaveBeenCalled();
+    for (const call of prisma.brand.findMany.mock.calls) {
+      expect(call[0].where.owner).toEqual({ status: 'ACTIVE' });
+      expect(call[0].where.products.some).toEqual(
+        expect.objectContaining({
+          publicationStatus: CollectionStatus.PUBLISHED,
+        }),
+      );
+    }
+  });
+
+  it('chooses collection covers from published products only and drops collections with none', async () => {
+    const draft = product({
+      id: 'draft_product',
+      publicationStatus: CollectionStatus.DRAFT,
+      thumbnail: 'https://cdn.wiez.test/draft.jpg',
+      images: ['https://cdn.wiez.test/draft.jpg'],
+    });
+    const live = product({
+      id: 'live_product',
+      thumbnail: 'https://cdn.wiez.test/live.jpg',
+      images: ['https://cdn.wiez.test/live.jpg'],
+    });
+    const prisma = createPrisma({
+      storeCollection: {
+        findFirst: jest.fn().mockResolvedValue(storeCollection()),
+        findMany: jest.fn().mockResolvedValue([
+          storeCollection({
+            id: 'mixed_collection',
+            products: [{ product: draft }, { product: live }],
+          }),
+          storeCollection({
+            id: 'draft_only_collection',
+            products: [{ product: draft }],
+          }),
+        ]),
+      },
+    });
+    const service = new MarketSuggestionService(
+      prisma as any,
+      suppressionService() as any,
+    );
+
+    const result = await service.getSuggestions(
+      {
+        context: MarketSuggestionContext.COLLECTION_DETAIL,
+        targetType: MarketSuggestionTargetType.COLLECTION,
+        targetId: 'collection_1',
+      },
+      {},
+    );
+
+    const similar = result.blocks.find(
+      (block) => block.blockKey === 'collection-detail-similar-collections',
+    );
+    expect(similar?.items.map((item) => item.sourceId)).toEqual([
+      'mixed_collection',
+    ]);
+    expect(similar?.items[0]?.media?.url).toBe(
+      'https://cdn.wiez.test/live.jpg',
     );
   });
 });
