@@ -680,110 +680,48 @@ describe('NotificationsService', () => {
   });
 
   describe('updateSettings', () => {
-    it('should ignore unknown settings keys and only persist allowed booleans', async () => {
-      mockPrisma.user.findUnique.mockResolvedValue({
-        notificationSettings: null,
-      });
-      mockPrisma.user.update.mockResolvedValue({ id: 'user-id' });
-
-      await service.updateSettings('user-id', {
-        orders: { placed: false },
-        social: { follows: false } as any,
-        bogus: { nope: true },
+    beforeEach(() => {
+      mockPrisma.$queryRaw.mockResolvedValue([{ notificationSettings: null }]);
+    });
+    it('locks the account before merging sanitized keys', async () => {
+      const result = await service.updateSettings('user-id', {
+        orders: { placed: false }, social: { follows: false }, bogus: { nope: true },
       } as any);
-
-      expect(mockPrisma.user.update).toHaveBeenCalledWith({
-        where: { id: 'user-id' },
-        data: {
-          notificationSettings: expect.objectContaining({
-            orders: expect.objectContaining({ placed: false }),
-            social: expect.objectContaining({ follows: false }),
-          }),
-        },
-      });
-
-      const persisted =
-        mockPrisma.user.update.mock.calls[0][0].data.notificationSettings;
-      expect(persisted.bogus).toBeUndefined();
+      expect(result.orders.placed).toBe(false); expect(result.social.follows).toBe(false);
+      expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
+      const sql = mockPrisma.$queryRaw.mock.calls[0][0];
+      expect(sql.values).toEqual(['user-id']); expect(sql.text).toContain('FOR UPDATE');
+      expect(sql.text).not.toContain('user-id');
+      expect(mockPrisma.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(mockPrisma.user.update.mock.invocationCallOrder[0]);
+      expect(mockPrisma.user.update.mock.calls[0][0].data.notificationSettings.bogus).toBeUndefined();
     });
-
-    it('should patch push enabled without replacing other push defaults', async () => {
-      mockPrisma.user.findUnique.mockResolvedValue({
-        notificationSettings: null,
-      });
-      mockPrisma.user.update.mockResolvedValue({ id: 'user-id' });
-
-      const result = await service.updateSettings('user-id', {
-        push: { enabled: false },
-      });
-
-      expect(result.push).toEqual({
-        ...DEFAULT_NOTIFICATION_SETTINGS.push,
-        enabled: false,
-      });
-
-      const persisted =
-        mockPrisma.user.update.mock.calls[0][0].data.notificationSettings;
-      expect(persisted.push).toEqual({
-        ...DEFAULT_NOTIFICATION_SETTINGS.push,
-        enabled: false,
-      });
+    it('preserves effective sibling preferences from an older record', async () => {
+      mockPrisma.$queryRaw.mockResolvedValue([{ notificationSettings: { security: { login: false } } }]);
+      const result = await service.updateSettings('user-id', { security: { login: true } });
+      expect(result.security).toEqual({ login: true, logout: false });
     });
-
-    it('should patch push sound vibration and preview settings', async () => {
-      mockPrisma.user.findUnique.mockResolvedValue({
-        notificationSettings: null,
-      });
-      mockPrisma.user.update.mockResolvedValue({ id: 'user-id' });
-
-      const result = await service.updateSettings('user-id', {
-        push: {
-          sound: false,
-          vibration: false,
-          showPreview: false,
-        },
-      });
-
-      expect(result.push.sound).toBe(false);
-      expect(result.push.vibration).toBe(false);
-      expect(result.push.showPreview).toBe(false);
-      expect(result.push.enabled).toBe(true);
+    it('returns complete normalized defaults after a partial push update', async () => {
+      const result = await service.updateSettings('user-id', { push: { enabled: false } });
+      expect(result.push).toEqual({ ...DEFAULT_NOTIFICATION_SETTINGS.push, enabled: false });
+      expect(result.reviews).toEqual(DEFAULT_NOTIFICATION_SETTINGS.reviews);
     });
-
-    it('should accept valid push quiet hours and null values', async () => {
-      mockPrisma.user.findUnique.mockResolvedValue({
-        notificationSettings: null,
-      });
-      mockPrisma.user.update.mockResolvedValue({ id: 'user-id' });
-
-      const result = await service.updateSettings('user-id', {
-        push: {
-          quietHoursEnabled: true,
-          quietHoursStart: ' 22:30 ',
-          quietHoursEnd: null,
-        },
-      });
-
-      expect(result.push.quietHoursEnabled).toBe(true);
-      expect(result.push.quietHoursStart).toBe('22:30');
-      expect(result.push.quietHoursEnd).toBeNull();
+    it('patches sound, vibration and preview without changing push enabled', async () => {
+      const result = await service.updateSettings('user-id', { push: { sound: false, vibration: false, showPreview: false } });
+      expect(result.push).toEqual({ ...DEFAULT_NOTIFICATION_SETTINGS.push, sound: false, vibration: false, showPreview: false });
     });
-
-    it('should ignore unknown push keys and invalid push values', async () => {
-      mockPrisma.user.findUnique.mockResolvedValue({
-        notificationSettings: null,
-      });
-
-      const result = await service.updateSettings('user-id', {
-        push: {
-          enabled: 'false',
-          quietHoursStart: '24:00',
-          unknown: true,
-        } as any,
-      });
-
+    it('accepts valid quiet hours and explicit null', async () => {
+      const result = await service.updateSettings('user-id', { push: { quietHoursEnabled: true, quietHoursStart: ' 22:30 ', quietHoursEnd: null } });
+      expect(result.push.quietHoursStart).toBe('22:30'); expect(result.push.quietHoursEnd).toBeNull();
+    });
+    it('ignores unknown and invalid values without writing', async () => {
+      const result = await service.updateSettings('user-id', { push: { enabled: 'false', quietHoursStart: '24:00', unknown: true } } as any);
       expect(result.push).toEqual(DEFAULT_NOTIFICATION_SETTINGS.push);
+      expect(mockPrisma.$queryRaw).not.toHaveBeenCalled();
       expect(mockPrisma.user.update).not.toHaveBeenCalled();
+    });
+    it('rejects a missing account instead of returning invented saved preferences', async () => {
+      mockPrisma.$queryRaw.mockResolvedValue([]);
+      await expect(service.updateSettings('user-id', { push: { enabled: false } })).rejects.toThrow('Account not found');
     });
   });
 

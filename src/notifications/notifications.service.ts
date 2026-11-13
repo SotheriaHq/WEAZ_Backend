@@ -621,35 +621,23 @@ export class NotificationsService {
   }
 
   async updateSettings(userId: string, settings: NotificationSettingsPatch) {
-    const sanitizedPatch = this.sanitizeSettingsPatch(settings);
-    const current = await this.getSettings(userId);
-
-    if (Object.keys(sanitizedPatch).length === 0) {
-      return current;
-    }
-
-    const updated = {
-      ...current,
-      ...sanitizedPatch,
-      security: { ...current.security, ...sanitizedPatch.security },
-      push: { ...current.push, ...sanitizedPatch.push },
-      social: { ...current.social, ...sanitizedPatch.social },
-      comments: { ...current.comments, ...sanitizedPatch.comments },
-      tags: { ...current.tags, ...sanitizedPatch.tags },
-      collections: { ...current.collections, ...sanitizedPatch.collections },
-      brand: { ...current.brand, ...sanitizedPatch.brand },
-      orders: { ...current.orders, ...sanitizedPatch.orders },
-      reviews: { ...current.reviews, ...sanitizedPatch.reviews },
-      fit: { ...current.fit, ...sanitizedPatch.fit },
-      messaging: { ...current.messaging, ...sanitizedPatch.messaging },
-    };
-
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { notificationSettings: updated as any },
+    const patch = this.sanitizeSettingsPatch(settings);
+    if (Object.keys(patch).length === 0) return this.getSettings(userId);
+    return this.prisma.$transaction(async tx => {
+      // Read the effective preferences only after acquiring this account's row
+      // lock. Another device must never merge against an earlier snapshot.
+      const rows = await tx.$queryRaw<Array<{ notificationSettings: Prisma.JsonValue }>>(Prisma.sql`
+        SELECT "notificationSettings" FROM "User" WHERE "_id" = ${userId}::uuid FOR UPDATE
+      `);
+      if (!rows[0]) throw new NotFoundException('Account not found');
+      const current = this.normalizeSettings(rows[0].notificationSettings);
+      const updated = { ...current };
+      for (const section of Object.keys(patch) as Array<keyof NotificationSettingsPatch>) {
+        Object.assign(updated, { [section]: { ...current[section], ...patch[section] } });
+      }
+      await tx.user.update({ where: { id: userId }, data: { notificationSettings: updated as unknown as Prisma.InputJsonValue } });
+      return updated;
     });
-
-    return updated;
   }
 
   private sanitizeSettingsPatch(
