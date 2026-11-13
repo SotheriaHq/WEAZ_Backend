@@ -117,7 +117,9 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:ci-disposable-only@localhost:5432/postgres
           REDIS_URL: redis://127.0.0.1:6379/15
-        run: npm run test:adaptive-access-postgres
+        run: |
+          npm run test:adaptive-access-postgres
+          npm run test:notification-settings-postgres
       - name: PostgreSQL ledger and complaint concurrency
         env:
           DATABASE_URL: postgresql://postgres:ci-disposable-only@localhost:5432/postgres

@@ -3276,25 +3276,21 @@ export class CustomOrdersService {
     );
     const updatedAtMs = dto.updatedAtMs ?? Date.now();
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { notificationSettings: true },
-    });
-    const existing =
-      (user?.notificationSettings as Record<string, unknown> | null) ?? {};
-    const next = {
-      ...existing,
-      customOrders: {
-        ...((existing.customOrders as Record<string, unknown>) ?? {}),
-        displayChartFamily,
-        displayChartUpdatedAtMs: updatedAtMs,
-      },
-    };
-
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { notificationSettings: next as Prisma.InputJsonValue },
-    });
+    // This shares the preference row with notification settings. Merge only
+    // this subtree in the locked UPDATE, never replace an earlier whole-row read.
+    const changed = await this.prisma.$executeRaw(Prisma.sql`
+      UPDATE "User" AS u
+      SET "notificationSettings" = jsonb_set(
+        CASE WHEN jsonb_typeof(u."notificationSettings") = 'object'
+          THEN u."notificationSettings" ELSE '{}'::jsonb END,
+        '{customOrders}',
+        (CASE WHEN jsonb_typeof(u."notificationSettings" -> 'customOrders') = 'object'
+          THEN u."notificationSettings" -> 'customOrders' ELSE '{}'::jsonb END) ||
+          ${JSON.stringify({ displayChartFamily, displayChartUpdatedAtMs: updatedAtMs })}::jsonb
+      ), "updatedAt" = CURRENT_TIMESTAMP
+      WHERE u."_id" = ${userId}::uuid
+    `);
+    if (!changed) throw new NotFoundException('Account not found');
 
     return {
       statusCode: 200,

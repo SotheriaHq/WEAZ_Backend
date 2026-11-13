@@ -1627,27 +1627,23 @@ describe('CustomOrdersService', () => {
     expect(result.data.checkoutIntentId).toBe('intent_1');
   });
 
-  it('stores and returns display chart preference in user notification settings', async () => {
-    prisma.user.findUnique
-      .mockResolvedValueOnce({ notificationSettings: null })
-      .mockResolvedValueOnce({
-        notificationSettings: {
-          customOrders: {
-            displayChartFamily: 'NIGERIA',
-            displayChartUpdatedAtMs: 12345,
-          },
-        },
-      });
-    prisma.user.update.mockResolvedValue({ id: 'buyer_1' });
-
-    await service.updateDisplayChartPreference('buyer_1', {
-      displayChartFamily: 'NIGERIA',
-      updatedAtMs: 12345,
-    });
-
+  it('stores only the chart subtree and returns the saved display preference', async () => {
+    prisma.$executeRaw = jest.fn().mockResolvedValue(1);
+    prisma.user.findUnique.mockResolvedValue({ notificationSettings: {
+      customOrders: { displayChartFamily: 'NIGERIA', displayChartUpdatedAtMs: 12345 },
+    } });
+    await service.updateDisplayChartPreference('buyer_1', { displayChartFamily: 'NIGERIA', updatedAtMs: 12345 });
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    const sql = prisma.$executeRaw.mock.calls[0][0];
+    expect(sql.text).toContain('jsonb_set'); expect(sql.text).not.toContain('buyer_1');
+    expect(sql.values).toEqual([JSON.stringify({ displayChartFamily: 'NIGERIA', displayChartUpdatedAtMs: 12345 }), 'buyer_1']);
     const result = await service.getDisplayChartPreference('buyer_1');
-    expect(prisma.user.update).toHaveBeenCalled();
-    expect(result.data.displayChartFamily).toBe('NIGERIA');
-    expect(result.data.updatedAtMs).toBe(12345);
+    expect(result.data.displayChartFamily).toBe('NIGERIA'); expect(result.data.updatedAtMs).toBe(12345);
   });
+  it('rejects a chart preference save for a missing account', async () => {
+    prisma.$executeRaw = jest.fn().mockResolvedValue(0);
+    await expect(service.updateDisplayChartPreference('buyer_1', { displayChartFamily: 'NIGERIA', updatedAtMs: 12345 })).rejects.toThrow('Account not found');
+  });
+
 });
