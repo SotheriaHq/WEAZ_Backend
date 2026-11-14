@@ -28,6 +28,7 @@ describe('MarketSuggestionService', () => {
     totalStock: 4,
     customOrderEnabled: false,
     standardCheckoutEnabled: true,
+    publicationStatus: CollectionStatus.PUBLISHED,
     tags: ['aso-oke', 'jacket'],
     gender: 'EVERYBODY',
     viewsCount: 8,
@@ -435,6 +436,257 @@ describe('MarketSuggestionService', () => {
           deletedAt: null,
         }),
       }),
+    );
+  });
+  // Every public suggestion context, so the predicates below are asserted on
+  // every product, collection and brand query the service can issue.
+  const runEveryContext = async (service: MarketSuggestionService) => {
+    await service.getSuggestions(
+      {
+        context: MarketSuggestionContext.PRODUCT_DETAIL,
+        targetType: MarketSuggestionTargetType.PRODUCT,
+        targetId: 'product_target',
+      },
+      {},
+    );
+    await service.getSuggestions(
+      {
+        context: MarketSuggestionContext.COLLECTION_DETAIL,
+        targetType: MarketSuggestionTargetType.COLLECTION,
+        targetId: 'collection_1',
+      },
+      {},
+    );
+    await service.getSuggestions(
+      {
+        context: MarketSuggestionContext.SEARCH_EMPTY,
+        targetType: MarketSuggestionTargetType.QUERY,
+        query: 'aso oke',
+      },
+      {},
+    );
+    await service.getSuggestions(
+      {
+        context: MarketSuggestionContext.MARKET_SECTION_DETAIL,
+        targetType: MarketSuggestionTargetType.SECTION,
+        sectionKey: 'fresh-drops',
+      },
+      {},
+    );
+    await service.getSuggestions(
+      {
+        context: MarketSuggestionContext.BRAND_DETAIL,
+        targetType: MarketSuggestionTargetType.BRAND,
+        targetId: 'brand_1',
+      },
+      {},
+    );
+  };
+  const whereOf = (mock: jest.Mock) =>
+    mock.mock.calls.map((call: any[]) => call[0].where);
+
+  it('requires PUBLISHED on every product query, including products counted for collections and brands', async () => {
+    const prisma = createPrisma();
+    await runEveryContext(
+      new MarketSuggestionService(prisma as any, suppressionService() as any),
+    );
+
+    const productWheres = whereOf(prisma.product.findMany);
+    expect(productWheres.length).toBeGreaterThan(0);
+    for (const where of productWheres) {
+      expect(where.publicationStatus).toBe(CollectionStatus.PUBLISHED);
+    }
+    for (const where of whereOf(prisma.storeCollectionProduct.findMany)) {
+      expect(where.product.publicationStatus).toBe(CollectionStatus.PUBLISHED);
+    }
+    for (const where of whereOf(prisma.storeCollection.findMany)) {
+      expect(where.products.some.product.publicationStatus).toBe(
+        CollectionStatus.PUBLISHED,
+      );
+    }
+    for (const where of whereOf(prisma.brand.findMany)) {
+      expect(where.products.some.publicationStatus).toBe(
+        CollectionStatus.PUBLISHED,
+      );
+    }
+  });
+
+  it('excludes suspended owners: every product, collection and brand query requires an ACTIVE owner', async () => {
+    const prisma = createPrisma();
+    await runEveryContext(
+      new MarketSuggestionService(prisma as any, suppressionService() as any),
+    );
+
+    for (const where of whereOf(prisma.product.findMany)) {
+      expect(where.brand.owner).toEqual({ status: 'ACTIVE' });
+    }
+    for (const where of whereOf(prisma.storeCollectionProduct.findMany)) {
+      expect(where.product.brand.owner).toEqual({ status: 'ACTIVE' });
+    }
+    expect(prisma.storeCollection.findMany).toHaveBeenCalled();
+    for (const where of whereOf(prisma.storeCollection.findMany)) {
+      expect(where.owner.status).toBe('ACTIVE');
+      expect(where.products.some.product.brand.owner).toEqual({
+        status: 'ACTIVE',
+      });
+    }
+    expect(prisma.brand.findMany).toHaveBeenCalled();
+    for (const where of whereOf(prisma.brand.findMany)) {
+      expect(where.owner).toEqual({ status: 'ACTIVE' });
+    }
+  });
+
+  it('excludes closed stores: product and brand queries require an open store', async () => {
+    const prisma = createPrisma();
+    await runEveryContext(
+      new MarketSuggestionService(prisma as any, suppressionService() as any),
+    );
+
+    for (const where of whereOf(prisma.product.findMany)) {
+      expect(where.brand.isStoreOpen).toBe(true);
+    }
+    for (const where of whereOf(prisma.storeCollection.findMany)) {
+      expect(where.owner.brand).toEqual({ isStoreOpen: true });
+    }
+    for (const where of whereOf(prisma.brand.findMany)) {
+      expect(where.isStoreOpen).toBe(true);
+    }
+  });
+
+  it('selects publicationStatus for nested collection products so the cover check can fail closed', async () => {
+    const prisma = createPrisma();
+    await new MarketSuggestionService(
+      prisma as any,
+      suppressionService() as any,
+    ).getSuggestions(
+      {
+        context: MarketSuggestionContext.COLLECTION_DETAIL,
+        targetType: MarketSuggestionTargetType.COLLECTION,
+        targetId: 'collection_1',
+      },
+      {},
+    );
+
+    for (const call of prisma.storeCollection.findMany.mock.calls) {
+      expect(call[0].select.products.select.product.select).toEqual(
+        expect.objectContaining({ publicationStatus: true }),
+      );
+    }
+  });
+
+  const coverCases: Array<[string, Record<string, any> | 'missing', boolean]> =
+    [
+      ['PUBLISHED', { publicationStatus: CollectionStatus.PUBLISHED }, true],
+      ['DRAFT', { publicationStatus: CollectionStatus.DRAFT }, false],
+      ['IN_REVIEW', { publicationStatus: CollectionStatus.IN_REVIEW }, false],
+      [
+        'CHANGES_REQUESTED',
+        { publicationStatus: CollectionStatus.CHANGES_REQUESTED },
+        false,
+      ],
+      ['REJECTED', { publicationStatus: CollectionStatus.REJECTED }, false],
+      ['ARCHIVED', { publicationStatus: CollectionStatus.ARCHIVED }, false],
+      ['undefined', { publicationStatus: undefined }, false],
+      ['missing (field not selected)', 'missing', false],
+    ];
+
+  it.each(coverCases)(
+    'collection cover with a %s product: visible=%p (fails closed when the status is absent)',
+    async (_label, overrides, expected) => {
+      const base = product({
+        id: 'only_product',
+        thumbnail: 'https://cdn.wiez.test/only.jpg',
+        images: ['https://cdn.wiez.test/only.jpg'],
+      });
+      const only =
+        overrides === 'missing'
+          ? (() => {
+              const copy: Record<string, any> = { ...base };
+              delete copy.publicationStatus;
+              return copy;
+            })()
+          : { ...base, ...overrides };
+      const prisma = createPrisma({
+        storeCollection: {
+          findFirst: jest.fn().mockResolvedValue(storeCollection()),
+          findMany: jest.fn().mockResolvedValue([
+            storeCollection({
+              id: 'only_collection',
+              products: [{ product: only }],
+            }),
+          ]),
+        },
+      });
+      const result = await new MarketSuggestionService(
+        prisma as any,
+        suppressionService() as any,
+      ).getSuggestions(
+        {
+          context: MarketSuggestionContext.COLLECTION_DETAIL,
+          targetType: MarketSuggestionTargetType.COLLECTION,
+          targetId: 'collection_1',
+        },
+        {},
+      );
+
+      const similar = result.blocks.find(
+        (block) => block.blockKey === 'collection-detail-similar-collections',
+      );
+      expect((similar?.items ?? []).map((item) => item.sourceId)).toEqual(
+        expected ? ['only_collection'] : [],
+      );
+    },
+  );
+
+  it('chooses collection covers from published products only and drops collections with none', async () => {
+    const draft = product({
+      id: 'draft_product',
+      publicationStatus: CollectionStatus.DRAFT,
+      thumbnail: 'https://cdn.wiez.test/draft.jpg',
+      images: ['https://cdn.wiez.test/draft.jpg'],
+    });
+    const live = product({
+      id: 'live_product',
+      thumbnail: 'https://cdn.wiez.test/live.jpg',
+      images: ['https://cdn.wiez.test/live.jpg'],
+    });
+    const prisma = createPrisma({
+      storeCollection: {
+        findFirst: jest.fn().mockResolvedValue(storeCollection()),
+        findMany: jest.fn().mockResolvedValue([
+          storeCollection({
+            id: 'mixed_collection',
+            products: [{ product: draft }, { product: live }],
+          }),
+          storeCollection({
+            id: 'draft_only_collection',
+            products: [{ product: draft }],
+          }),
+        ]),
+      },
+    });
+    const service = new MarketSuggestionService(
+      prisma as any,
+      suppressionService() as any,
+    );
+
+    const result = await service.getSuggestions(
+      {
+        context: MarketSuggestionContext.COLLECTION_DETAIL,
+        targetType: MarketSuggestionTargetType.COLLECTION,
+        targetId: 'collection_1',
+      },
+      {},
+    );
+
+    const similar = result.blocks.find(
+      (block) => block.blockKey === 'collection-detail-similar-collections',
+    );
+    expect(similar?.items.map((item) => item.sourceId)).toEqual([
+      'mixed_collection',
+    ]);
+    expect(similar?.items[0]?.media?.url).toBe(
+      'https://cdn.wiez.test/live.jpg',
     );
   });
 });
