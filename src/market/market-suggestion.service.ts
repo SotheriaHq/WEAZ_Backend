@@ -1,5 +1,14 @@
+import {
+  eligibleProductWhere,
+  eligibleStoreCollectionWhere,
+  eligibleBrandWhere,
+  isEligibleProduct,
+  usableProductImage,
+  PRODUCT_ELIGIBILITY_FIELDS,
+  PRODUCT_ELIGIBILITY_BRAND_FIELDS,
+} from './eligibility/market-eligibility';
 import { BadRequestException, Injectable, Optional } from '@nestjs/common';
-import { CollectionStatus, CollectionVisibility, Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import {
   MarketSectionItemDto,
@@ -293,9 +302,7 @@ export class MarketSuggestionService {
     const target = await this.prisma.storeCollection.findFirst({
       where: {
         id: collectionId,
-        status: CollectionStatus.PUBLISHED,
-        visibility: CollectionVisibility.PUBLIC,
-        deletedAt: null,
+        ...eligibleStoreCollectionWhere(),
       },
       select: {
         id: true,
@@ -401,7 +408,7 @@ export class MarketSuggestionService {
     const target = await this.prisma.brand.findFirst({
       where: {
         id: brandId,
-        isStoreOpen: true,
+        ...eligibleBrandWhere(),
       },
       select: {
         id: true,
@@ -813,9 +820,7 @@ export class MarketSuggestionService {
     limit: number,
     excludeIds: string[] = [],
   ) {
-    const productWhere = this.buildMarketableProductWhere([], {
-      includeBrandOpen: false,
-    });
+    const productWhere = this.buildMarketableProductWhere();
     const links = await this.prisma.storeCollectionProduct.findMany({
       where: {
         collectionId,
@@ -864,18 +869,7 @@ export class MarketSuggestionService {
 
     const collections = await this.prisma.storeCollection.findMany({
       where: {
-        status: CollectionStatus.PUBLISHED,
-        visibility: CollectionVisibility.PUBLIC,
-        isAvailableInStore: true,
-        deletedAt: null,
-        owner: { status: 'ACTIVE', brand: { isStoreOpen: true } },
-        products: {
-          some: {
-            product: this.buildMarketableProductWhere([], {
-              includeBrandOpen: false,
-            }),
-          },
-        },
+        ...eligibleStoreCollectionWhere(),
         ...(andFilters.length ? { AND: andFilters } : {}),
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -892,9 +886,7 @@ export class MarketSuggestionService {
     limit: number;
     excludeIds?: string[];
   }) {
-    const productWhere = this.buildMarketableProductWhere([], {
-      includeBrandOpen: false,
-    });
+    const productWhere = this.buildMarketableProductWhere();
     const brands = await this.prisma.brand.findMany({
       where: {
         isStoreOpen: true,
@@ -922,6 +914,8 @@ export class MarketSuggestionService {
           orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
           take: 1,
           select: {
+            ...PRODUCT_ELIGIBILITY_FIELDS,
+            brand: { select: PRODUCT_ELIGIBILITY_BRAND_FIELDS },
             id: true,
             name: true,
             thumbnail: true,
@@ -930,7 +924,7 @@ export class MarketSuggestionService {
         },
         _count: {
           select: {
-            products: true,
+            products: { where: productWhere },
           },
         },
       },
@@ -943,6 +937,7 @@ export class MarketSuggestionService {
 
   private productSelect() {
     return {
+      ...PRODUCT_ELIGIBILITY_FIELDS,
       id: true,
       name: true,
       description: true,
@@ -966,6 +961,7 @@ export class MarketSuggestionService {
       brandId: true,
       brand: {
         select: {
+          ...PRODUCT_ELIGIBILITY_BRAND_FIELDS,
           id: true,
           name: true,
           logo: true,
@@ -1021,6 +1017,8 @@ export class MarketSuggestionService {
         select: {
           product: {
             select: {
+              ...PRODUCT_ELIGIBILITY_FIELDS,
+              brand: { select: PRODUCT_ELIGIBILITY_BRAND_FIELDS },
               id: true,
               name: true,
               price: true,
@@ -1070,42 +1068,12 @@ export class MarketSuggestionService {
 
   private buildMarketableProductWhere(
     extraAnd: Prisma.ProductWhereInput[] = [],
-    options?: { includeBrandOpen?: boolean },
   ): Prisma.ProductWhereInput {
-    const now = new Date();
-    const andFilters: Prisma.ProductWhereInput[] = [
-      {
-        OR: [{ totalStock: { gt: 0 } }, { customOrderEnabled: true }],
-      },
-      {
-        OR: [{ publishAt: null }, { publishAt: { lte: now } }],
-      },
-      {
-        OR: [{ thumbnail: { not: null } }, { images: { isEmpty: false } }],
-      },
-      ...extraAnd,
-    ];
-
-    return {
-      isActive: true,
-      // Publication is the moderation gate. Drafts, items in review and
-      // rejected items default to isActive=true, so without this a suggestion
-      // block could show a product that no public surface may show.
-      publicationStatus: CollectionStatus.PUBLISHED,
-      deletedAt: null,
-      archivedAt: null,
-      // The owner's account must be active on every path. The store-open
-      // check is skipped only where the enclosing brand or collection query
-      // already requires it.
-      brand:
-        options?.includeBrandOpen === false
-          ? { owner: { status: 'ACTIVE' } }
-          : { isStoreOpen: true, owner: { status: 'ACTIVE' } },
-      AND: andFilters,
-    };
+    return eligibleProductWhere(new Date(), extraAnd);
   }
 
   private mapProductItem(product: any): MarketSectionItemDto | null {
+    if (!isEligibleProduct(product)) return null;
     const image = this.firstProductImage(product);
     if (!image) return null;
     const price = Number(product.price ?? 0);
@@ -1239,7 +1207,7 @@ export class MarketSuggestionService {
       stats: {
         views: null,
         threads: null,
-        products: Number(collection._count?.products ?? visibleProducts.length),
+        products: visibleProducts.length,
       },
       target: {
         type: 'COLLECTION',
@@ -1253,7 +1221,10 @@ export class MarketSuggestionService {
   }
 
   private mapBrandItem(brand: any): MarketSectionItemDto | null {
-    const representativeProduct = brand.products?.[0] ?? null;
+    const representativeProduct =
+      brand.products?.find((product: any) => isEligibleProduct(product)) ??
+      null;
+    if (!representativeProduct) return null;
     const productImage = representativeProduct
       ? this.firstProductImage(representativeProduct)
       : null;
@@ -1454,33 +1425,12 @@ export class MarketSuggestionService {
     return candidates.some((entry) => excludedIds.has(entry));
   }
 
-  private firstProductImage(product: any): string | null {
-    const thumbnail = this.cleanString(product?.thumbnail);
-    if (thumbnail) return thumbnail;
-    const images = Array.isArray(product?.images) ? product.images : [];
-    return (
-      images
-        .map((image: unknown) => this.cleanString(image))
-        .find((image: string | null): image is string => Boolean(image)) ?? null
-    );
+  private firstProductImage(product: any) {
+    return usableProductImage(product);
   }
 
   private isProductVisible(product: any) {
-    if (!product) return false;
-    if (product.deletedAt || product.archivedAt || product.isActive === false) {
-      return false;
-    }
-    // Fail closed: a missing status is not a published status. Every caller
-    // must select publicationStatus (storeCollectionSelect does).
-    if (product.publicationStatus !== CollectionStatus.PUBLISHED) {
-      return false;
-    }
-    if (product.publishAt && product.publishAt > new Date()) {
-      return false;
-    }
-    return (
-      Number(product.totalStock ?? 0) > 0 || product.customOrderEnabled === true
-    );
+    return isEligibleProduct(product);
   }
 
   private isSaleActive(product: any) {

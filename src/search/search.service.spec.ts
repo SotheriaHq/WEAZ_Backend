@@ -293,8 +293,11 @@ describe('SearchService', () => {
     expect(sqlText).toContain('p."publicationStatus"');
     expect(sqlText).toContain('p."publishAt"');
     expect(sqlText).toContain('p."archivedAt" IS NULL');
-    expect(sqlText).toContain('b."isStoreOpen" = true');
-    expect(sqlValues).toContain(CollectionStatus.PUBLISHED);
+    expect(sqlText).toContain('eligibility_brand."isStoreOpen" = true');
+    expect(sqlText).toContain("'PUBLISHED'");
+    expect(sqlValues.some((value: unknown) => value instanceof Date)).toBe(
+      true,
+    );
   });
 
   it('keeps product suggestion rebuilds restricted to public published products', async () => {
@@ -310,15 +313,15 @@ describe('SearchService', () => {
           publicationStatus: CollectionStatus.PUBLISHED,
           deletedAt: null,
           archivedAt: null,
-          brand: { isStoreOpen: true },
-          AND: [
+          brand: { isStoreOpen: true, owner: { status: 'ACTIVE' } },
+          AND: expect.arrayContaining([
             {
               OR: [
                 { publishAt: null },
                 { publishAt: { lte: expect.any(Date) } },
               ],
             },
-          ],
+          ]),
         }),
       }),
     );
