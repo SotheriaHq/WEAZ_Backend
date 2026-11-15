@@ -81,15 +81,29 @@ async function checkMarketIndexPlans(db, brand) {
     const result = (
       await db.query('EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) ' + query, args)
     ).rows[0]['QUERY PLAN'][0];
-    const names = [];
+    const names = [],
+      conditions = [];
     function visit(plan) {
       if (plan['Index Name']) names.push(plan['Index Name']);
+      if (plan['Index Cond']) conditions.push(plan['Index Cond']);
       for (const child of plan.Plans || []) visit(child);
     }
     visit(result.Plan);
     const acceptable = Array.isArray(expected) ? expected : [expected];
+    // Small selective results may legitimately use an older narrower index.
+    // Assert an indexed predicate, rather than pinning that optimizer choice.
+    const selectiveColumn =
+      label === 'brand'
+        ? 'brandId'
+        : label === 'category'
+          ? 'categoryId'
+          : null;
     assert(
-      acceptable.some((name) => names.includes(name)),
+      selectiveColumn
+        ? conditions.some((condition) =>
+            condition.includes('"' + selectiveColumn + '"'),
+          )
+        : acceptable.some((name) => names.includes(name)),
       label + ' did not use an appropriate index: ' + names.join(','),
     );
   }
