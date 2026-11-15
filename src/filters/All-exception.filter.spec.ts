@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ForbiddenException,
+  HttpException,
   InternalServerErrorException,
 } from '@nestjs/common';
 import { AllExceptionsFilter } from './All-exception.filter';
@@ -31,6 +32,63 @@ describe('AllExceptionsFilter', () => {
       } as any,
     };
   };
+
+  it('forwards the step-up challenge fields clients need on a 428 security challenge', () => {
+    const filter = new AllExceptionsFilter();
+    const { host, response } = createHost();
+    const expiresAt = new Date('2026-11-12T10:05:00.000Z');
+    filter.catch(
+      new HttpException(
+        {
+          code: 'STEP_UP_REQUIRED',
+          message:
+            'Verify this action with your authenticator app, passkey or recovery code.',
+          action: 'store.payment_account.update',
+          challengeId: '7f6a3f53-8f4e-4b8a-9d55-0f0b7c1c2a11',
+          expiresAt,
+          sensitivity: 'CRITICAL_CHANGE',
+          serverNow: '2026-11-12T10:00:00.000Z',
+          review: { title: 'Change payout account' },
+          internalNote: 'must never reach the client',
+        },
+        428,
+      ),
+      host,
+    );
+    expect(response.status).toHaveBeenCalledWith(428);
+    const body = response.json.mock.calls[0][0];
+    expect(body).toMatchObject({
+      statusCode: 428,
+      code: 'STEP_UP_REQUIRED',
+      action: 'store.payment_account.update',
+      challengeId: '7f6a3f53-8f4e-4b8a-9d55-0f0b7c1c2a11',
+      expiresAt,
+      sensitivity: 'CRITICAL_CHANGE',
+      serverNow: '2026-11-12T10:00:00.000Z',
+      review: { title: 'Change payout account' },
+    });
+    expect(body).not.toHaveProperty('internalNote');
+  });
+
+  it('keeps every other error shape unchanged (no challenge fields outside 428 security codes)', () => {
+    const filter = new AllExceptionsFilter();
+    const first = createHost();
+    filter.catch(
+      new BadRequestException({ message: 'Bad', challengeId: 'x' }),
+      first.host,
+    );
+    expect(first.response.json.mock.calls[0][0]).not.toHaveProperty(
+      'challengeId',
+    );
+    const second = createHost();
+    filter.catch(
+      new HttpException({ code: 'SOMETHING_ELSE', challengeId: 'x' }, 428),
+      second.host,
+    );
+    expect(second.response.json.mock.calls[0][0]).not.toHaveProperty(
+      'challengeId',
+    );
+  });
 
   it('redacts sensitive validation values and removes query strings', () => {
     const filter = new AllExceptionsFilter();
