@@ -1,3 +1,5 @@
+import { loadPublicFeaturedSummaries } from './public-featured-summary.util';
+import { eligibleProductWhere } from 'src/market/eligibility/market-eligibility';
 import type { NotificationEvent } from '../../notifications/notification-batch-query';
 import {
   Injectable,
@@ -524,8 +526,7 @@ export class AdminFeaturedService {
     if (!params.entityType || params.entityType === 'PRODUCT') {
       const products = await this.prisma.product.findMany({
         where: {
-          deletedAt: null,
-          isActive: true,
+          ...eligibleProductWhere(),
           ...(params.search
             ? {
                 name: { contains: params.search, mode: 'insensitive' as const },
@@ -699,20 +700,20 @@ export class AdminFeaturedService {
       orderBy: { startsAt: 'asc' },
     });
 
-    const summaries = await loadFeaturedSummaries(this.prisma, items);
-    return Promise.all(
-      items.map(async (item) => {
-        const { entityName, entityThumbnail } = summaries.get(item.id)!;
-        const entityPrice = summaries.get(item.id)!.entityPrice;
-
-        return {
-          ...item,
-          entityName,
-          entityThumbnail,
-          entityPrice,
-        };
-      }),
-    );
+    const summaries = await loadPublicFeaturedSummaries(this.prisma, items);
+    return items.flatMap((item) => {
+      const summary = summaries.get(item.id);
+      return summary
+        ? [
+            {
+              ...item,
+              entityName: summary.entityName,
+              entityThumbnail: summary.entityThumbnail,
+              entityPrice: summary.entityPrice,
+            },
+          ]
+        : [];
+    });
   }
 
   async publicGetById(id: string) {
@@ -732,16 +733,23 @@ export class AdminFeaturedService {
       },
     });
 
-    if (!item || !item.isActive)
+    if (
+      !item ||
+      !item.isActive ||
+      item.startsAt > new Date() ||
+      item.expiresAt <= new Date()
+    )
       throw new NotFoundException('Featured item not found');
 
-    const entityName = await this.getEntityName(item.entityType, item.entityId);
-    const entityThumbnail = await this.getEntityThumbnail(
-      item.entityType,
-      item.entityId,
-    );
-
-    return { ...item, entityName, entityThumbnail };
+    const summary = (
+      await loadPublicFeaturedSummaries(this.prisma, [item])
+    ).get(item.id);
+    if (!summary) throw new NotFoundException('Featured item not found');
+    return {
+      ...item,
+      entityName: summary.entityName,
+      entityThumbnail: summary.entityThumbnail,
+    };
   }
 
   // ── Auto-removal (called by event hooks) ──
@@ -886,8 +894,8 @@ export class AdminFeaturedService {
     client: Prisma.TransactionClient = this.prisma,
   ) {
     if (entityType === 'PRODUCT') {
-      const product = await client.product.findUnique({
-        where: { id: entityId },
+      const product = await client.product.findFirst({
+        where: eligibleProductWhere(new Date(), [{ id: entityId }]),
         select: {
           id: true,
           name: true,

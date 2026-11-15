@@ -1,3 +1,8 @@
+import {
+  eligibleProductWhere,
+  eligibleStoreCollectionWhere,
+  eligibleBrandWhere,
+} from 'src/market/eligibility/market-eligibility';
 import { Injectable } from '@nestjs/common';
 import {
   CollectionDomain,
@@ -22,21 +27,11 @@ export class SearchVisibilityService {
   }
 
   publicProductWhere(brandId?: string): Prisma.ProductWhereInput {
-    return {
-      ...(brandId ? { brandId } : {}),
-      isActive: true,
-      publicationStatus: CollectionStatus.PUBLISHED,
-      deletedAt: null,
-      archivedAt: null,
-      brand: { isStoreOpen: true },
-      AND: [{ OR: [{ publishAt: null }, { publishAt: { lte: new Date() } }] }],
-    };
+    return { ...eligibleProductWhere(), ...(brandId ? { brandId } : {}) };
   }
 
   publicBrandCommerceWhere(): Prisma.BrandWhereInput {
-    return {
-      isStoreOpen: true,
-    };
+    return eligibleBrandWhere();
   }
 
   publicDesignWhere(): Prisma.CollectionWhereInput {
@@ -52,10 +47,8 @@ export class SearchVisibilityService {
     ownerId?: string,
   ): Prisma.StoreCollectionWhereInput {
     return {
+      ...eligibleStoreCollectionWhere(),
       ...(ownerId ? { ownerId } : {}),
-      status: CollectionStatus.PUBLISHED,
-      visibility: CollectionVisibility.PUBLIC,
-      deletedAt: null,
     };
   }
 

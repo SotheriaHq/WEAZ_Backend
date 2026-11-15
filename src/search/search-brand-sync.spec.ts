@@ -2,10 +2,31 @@ import { SearchService } from './search.service';
 
 describe('Brand search suggestion refresh', () => {
   const product = (id: string, overrides = {}) => ({
-    id, name: 'Linen casual shirt', description: 'Everyday linen', tags: ['linen'],
-    images: [], thumbnail: null, price: 100, salePrice: null, currency: 'NGN', slug: null,
-    brandId: 'brand', brand: { ownerId: 'owner', name: 'Brand', isStoreOpen: true },
-    isActive: true, publicationStatus: 'PUBLISHED', publishAt: null, deletedAt: null, archivedAt: null,
+    id,
+    name: 'Linen casual shirt',
+    description: 'Everyday linen',
+    tags: ['linen'],
+    images: ['https://media.example/card.webp'],
+    thumbnail: null,
+    totalStock: 2,
+    customOrderEnabled: false,
+    collections: [],
+    price: 100,
+    salePrice: null,
+    currency: 'NGN',
+    slug: null,
+    brandId: 'brand',
+    brand: {
+      ownerId: 'owner',
+      name: 'Brand',
+      isStoreOpen: true,
+      owner: { status: 'ACTIVE' },
+    },
+    isActive: true,
+    publicationStatus: 'PUBLISHED',
+    publishAt: null,
+    deletedAt: null,
+    archivedAt: null,
     ...overrides,
   });
 

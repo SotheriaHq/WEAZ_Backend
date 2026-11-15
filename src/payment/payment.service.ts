@@ -1,3 +1,7 @@
+import {
+  resolveProductPrice,
+  type ProductPriceInput,
+} from 'src/common/pricing/product-price';
 import { consumePaidCartLines } from '../bagging/cart-transaction.util';
 import { loadStandardPaymentOrders } from './standard-payment-order-query';
 import { lockCheckoutSession } from './checkout-session-query';
@@ -7852,23 +7856,11 @@ export class PaymentService implements OnModuleInit {
     return Object.keys(parsed).length > 0 ? parsed : null;
   }
 
-  private isProductOnSale(product: {
-    salePrice: Prisma.Decimal | null;
-    saleStartAt: Date | null;
-    saleEndAt: Date | null;
-  }) {
-    if (!product.salePrice) {
-      return false;
-    }
-
-    const now = Date.now();
-    if (product.saleStartAt && product.saleStartAt.getTime() > now) {
-      return false;
-    }
-    if (product.saleEndAt && product.saleEndAt.getTime() < now) {
-      return false;
-    }
-    return true;
+  private isProductOnSale(
+    product: ProductPriceInput,
+    now = new Date(),
+  ): boolean {
+    return resolveProductPrice(product, now)?.isOnSale ?? false;
   }
 
   private buildUnifiedSummaryFromSession(checkoutSession: {

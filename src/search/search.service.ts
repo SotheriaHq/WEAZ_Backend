@@ -1,4 +1,16 @@
 import {
+  eligibleProductSql,
+  eligibleProductWhere,
+  usableProductImage,
+  eligibleStoreCollectionSql,
+  eligibleStoreCollectionWhere,
+  eligibleBrandSql,
+  eligibleBrandWhere,
+  isEligibleProduct,
+  PRODUCT_ELIGIBILITY_FIELDS,
+  PRODUCT_ELIGIBILITY_BRAND_FIELDS,
+} from 'src/market/eligibility/market-eligibility';
+import {
   BadRequestException,
   ServiceUnavailableException,
   Injectable,
@@ -48,11 +60,26 @@ interface SearchParams {
 type ParsedSearchQuery = SearchQueryAnalysis;
 
 const PRODUCT_SUGGESTION_SELECT = {
-  id: true, name: true, description: true, tags: true, thumbnail: true,
-  images: true, price: true, salePrice: true, currency: true, slug: true,
-  brandId: true, isActive: true, publicationStatus: true, publishAt: true,
-  deletedAt: true, archivedAt: true,
-  brand: { select: { ownerId: true, name: true, isStoreOpen: true } },
+  ...PRODUCT_ELIGIBILITY_FIELDS,
+  id: true,
+  name: true,
+  description: true,
+  tags: true,
+  thumbnail: true,
+  images: true,
+  price: true,
+  salePrice: true,
+  currency: true,
+  slug: true,
+  brandId: true,
+  isActive: true,
+  publicationStatus: true,
+  publishAt: true,
+  deletedAt: true,
+  archivedAt: true,
+  brand: {
+    select: { ...PRODUCT_ELIGIBILITY_BRAND_FIELDS, ownerId: true, name: true },
+  },
 } satisfies Prisma.ProductSelect;
 type ProductSuggestionSource = Prisma.ProductGetPayload<{ select: typeof PRODUCT_SUGGESTION_SELECT }>;
 const SEARCH_SYNC_WRITE_CONCURRENCY = 8;
@@ -541,7 +568,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       title: row.name,
       subtitle: row.brand?.name || null,
       description: row.description || null,
-      imageUrl: row.thumbnail || row.images?.[0] || null,
+      imageUrl: usableProductImage(row),
       href: row.slug ? `/p/${row.slug}` : `/products/${row.id}`,
       price: this.decimalToNumber(row.price),
       salePrice: this.decimalToNumber(row.salePrice),
@@ -911,7 +938,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       title: product.name,
       subtitle: product.brand?.name || null,
       description: product.description || null,
-      imageUrl: product.thumbnail || product.images?.[0] || null,
+      imageUrl: usableProductImage(product),
       href: product.slug ? `/p/${product.slug}` : `/products/${product.id}`,
       score,
       price: product.price != null ? Number(product.price) : null,
@@ -1379,6 +1406,67 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     return parsed;
   }
 
+  private async revalidateCommerceItems(
+    items: SearchItem[],
+  ): Promise<SearchItem[]> {
+    const ids = (type: SearchEntityType) =>
+      items.filter((item) => item.type === type).map((item) => item.id);
+    const products = ids('product'),
+      brands = ids('brand'),
+      collections = ids('collection');
+    const [productRows, brandRows, collectionRows] = await Promise.all([
+      products.length
+        ? this.prisma.product.findMany({
+            where: eligibleProductWhere(new Date(), [{ id: { in: products } }]),
+            select: PRODUCT_SUGGESTION_SELECT,
+          })
+        : [],
+      brands.length
+        ? this.prisma.brand.findMany({
+            where: { ...eligibleBrandWhere(), id: { in: brands } },
+            select: { id: true },
+          })
+        : [],
+      collections.length
+        ? this.prisma.storeCollection.findMany({
+            where: {
+              ...eligibleStoreCollectionWhere(),
+              id: { in: collections },
+            },
+            select: { id: true },
+          })
+        : [],
+    ]);
+    const productMap = new Map(
+      productRows
+        .filter((row) => isEligibleProduct(row))
+        .map((row) => [row.id, this.createProductSuggestionPayload(row)]),
+    );
+    const brandIds = new Set(brandRows.map((row) => row.id));
+    const collectionIds = new Set(collectionRows.map((row) => row.id));
+    return items.flatMap((item) => {
+      if (item.type === 'brand') return brandIds.has(item.id) ? [item] : [];
+      if (item.type === 'collection')
+        return collectionIds.has(item.id) ? [item] : [];
+      if (item.type !== 'product') return [item];
+      const current = productMap.get(item.id);
+      if (!current || !current.imageUrl?.trim()) return [];
+      return [
+        {
+          ...item,
+          title: current.title,
+          subtitle: current.subtitle,
+          description: current.description,
+          imageUrl: current.imageUrl,
+          price: current.price,
+          salePrice: current.salePrice,
+          currency: current.currency,
+          metadata: current.metadata,
+        },
+      ];
+    });
+  }
+
   private async fetchSuggestionItems(
     key: string,
     normalizedQuery: string,
@@ -1448,7 +1536,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    return items;
+    return this.revalidateCommerceItems(items);
   }
 
   private async fetchSuggestionItemsWithFallback(
@@ -1630,6 +1718,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     offset: number,
     brandId?: string,
   ): Promise<SearchPageResult> {
+    const eligibility = eligibleProductSql(new Date());
     const brandFilter = brandId
       ? Prisma.sql`AND p."brandId" = ${brandId}`
       : Prisma.empty;
@@ -1668,12 +1757,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         FROM "Product" p
         INNER JOIN "Brand" b ON b."_id" = p."brandId"
         CROSS JOIN search_params sp
-        WHERE p."isActive" = true
-          AND p."publicationStatus" = ${CollectionStatus.PUBLISHED}
-          AND p."deletedAt" IS NULL
-          AND p."archivedAt" IS NULL
-          AND (p."publishAt" IS NULL OR p."publishAt" <= NOW())
-          AND b."isStoreOpen" = true
+        WHERE ${eligibility}
           ${brandFilter}
           AND p.search_vector @@ sp.tsq${productCoverage}
       ),
@@ -1700,12 +1784,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         FROM "Product" p
         INNER JOIN "Brand" b ON b."_id" = p."brandId"
         CROSS JOIN search_params sp
-        WHERE p."isActive" = true
-          AND p."publicationStatus" = ${CollectionStatus.PUBLISHED}
-          AND p."deletedAt" IS NULL
-          AND p."archivedAt" IS NULL
-          AND (p."publishAt" IS NULL OR p."publishAt" <= NOW())
-          AND b."isStoreOpen" = true
+        WHERE ${eligibility}
           ${brandFilter}
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = p."_id")
           AND GREATEST(
@@ -1732,12 +1811,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         FROM "Product" p
         INNER JOIN "Brand" b ON b."_id" = p."brandId"
         CROSS JOIN search_params sp
-        WHERE p."isActive" = true
-          AND p."publicationStatus" = ${CollectionStatus.PUBLISHED}
-          AND p."deletedAt" IS NULL
-          AND p."archivedAt" IS NULL
-          AND (p."publishAt" IS NULL OR p."publishAt" <= NOW())
-          AND b."isStoreOpen" = true
+        WHERE ${eligibility}
           ${brandFilter}
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = p."_id")
           AND NOT EXISTS (SELECT 1 FROM trgm WHERE trgm.id = p."_id")
@@ -1771,12 +1845,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         FROM "Product" p
         INNER JOIN "Brand" b ON b."_id" = p."brandId"
         CROSS JOIN search_params sp
-        WHERE p."isActive" = true
-          AND p."publicationStatus" = ${CollectionStatus.PUBLISHED}
-          AND p."deletedAt" IS NULL
-          AND p."archivedAt" IS NULL
-          AND (p."publishAt" IS NULL OR p."publishAt" <= NOW())
-          AND b."isStoreOpen" = true
+        WHERE ${eligibility}
           ${brandFilter}
           AND p.search_vector @@ sp.tsq${productCoverage}
       ),
@@ -1785,12 +1854,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         FROM "Product" p
         INNER JOIN "Brand" b ON b."_id" = p."brandId"
         CROSS JOIN search_params sp
-        WHERE p."isActive" = true
-          AND p."publicationStatus" = ${CollectionStatus.PUBLISHED}
-          AND p."deletedAt" IS NULL
-          AND p."archivedAt" IS NULL
-          AND (p."publishAt" IS NULL OR p."publishAt" <= NOW())
-          AND b."isStoreOpen" = true
+        WHERE ${eligibility}
           ${brandFilter}
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = p."_id")
           AND GREATEST(
@@ -1803,12 +1867,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         FROM "Product" p
         INNER JOIN "Brand" b ON b."_id" = p."brandId"
         CROSS JOIN search_params sp
-        WHERE p."isActive" = true
-          AND p."publicationStatus" = ${CollectionStatus.PUBLISHED}
-          AND p."deletedAt" IS NULL
-          AND p."archivedAt" IS NULL
-          AND (p."publishAt" IS NULL OR p."publishAt" <= NOW())
-          AND b."isStoreOpen" = true
+        WHERE ${eligibility}
           ${brandFilter}
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = p."_id")
           AND NOT EXISTS (SELECT 1 FROM trgm WHERE trgm.id = p."_id")
@@ -1829,30 +1888,32 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     `);
 
     return {
-      items: rows.map((row) =>
-        this.productToItem(
-          {
-            id: row.id,
-            name: row.name,
-            description: row.description,
-            thumbnail: row.thumbnail,
-            images: row.images || [],
-            price: row.price,
-            salePrice: row.salePrice,
-            currency: row.currency,
-            slug: row.slug,
-            brandId: row.brandId,
-            brand: {
-              name: row.brandName,
-              ownerId: row.brandOwnerId,
+      items: rows
+        .filter((row) => usableProductImage(row))
+        .map((row) =>
+          this.productToItem(
+            {
+              id: row.id,
+              name: row.name,
+              description: row.description,
+              thumbnail: row.thumbnail,
+              images: row.images || [],
+              price: row.price,
+              salePrice: row.salePrice,
+              currency: row.currency,
+              slug: row.slug,
+              brandId: row.brandId,
+              brand: {
+                name: row.brandName,
+                ownerId: row.brandOwnerId,
+              },
+              viewsCount: 0,
+              tags: [],
             },
-            viewsCount: 0,
-            tags: [],
-          },
-          query,
-          tokens,
+            query,
+            tokens,
+          ),
         ),
-      ),
       total,
     };
   }
@@ -1889,7 +1950,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           0 AS source_rank
         FROM "Brand" b
         CROSS JOIN search_params sp
-        WHERE b."isStoreOpen" = true
+        WHERE ${eligibleBrandSql()}
           AND b.search_vector @@ sp.tsq${brandCoverage}
       ),
       trgm AS (
@@ -1905,7 +1966,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           1 AS source_rank
         FROM "Brand" b
         CROSS JOIN search_params sp
-        WHERE b."isStoreOpen" = true
+        WHERE ${eligibleBrandSql()}
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = b."_id")
           AND similarity(immutable_unaccent(COALESCE(b.name, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}${brandCoverage}
       )
@@ -1930,14 +1991,14 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         SELECT b."_id" AS id
         FROM "Brand" b
         CROSS JOIN search_params sp
-        WHERE b."isStoreOpen" = true
+        WHERE ${eligibleBrandSql()}
           AND b.search_vector @@ sp.tsq${brandCoverage}
       ),
       trgm AS (
         SELECT b."_id" AS id
         FROM "Brand" b
         CROSS JOIN search_params sp
-        WHERE b."isStoreOpen" = true
+        WHERE ${eligibleBrandSql()}
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = b."_id")
           AND similarity(immutable_unaccent(COALESCE(b.name, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}${brandCoverage}
       )
@@ -2112,6 +2173,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     offset: number,
     ownerId?: string,
   ): Promise<SearchPageResult> {
+    const eligibility = eligibleStoreCollectionSql(new Date());
     const ownerFilter = ownerId
       ? Prisma.sql`AND sc."ownerId" = ${ownerId}`
       : Prisma.empty;
@@ -2141,9 +2203,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           0 AS source_rank
         FROM "StoreCollection" sc
         CROSS JOIN search_params sp
-        WHERE sc.status = ${CollectionStatus.PUBLISHED}
-          AND sc.visibility = ${CollectionVisibility.PUBLIC}
-          AND sc."deletedAt" IS NULL
+        WHERE ${eligibility}
           ${ownerFilter}
           AND sc.search_vector @@ sp.tsq${collectionCoverage}
       ),
@@ -2159,9 +2219,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           1 AS source_rank
         FROM "StoreCollection" sc
         CROSS JOIN search_params sp
-        WHERE sc.status = ${CollectionStatus.PUBLISHED}
-          AND sc.visibility = ${CollectionVisibility.PUBLIC}
-          AND sc."deletedAt" IS NULL
+        WHERE ${eligibility}
           ${ownerFilter}
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = sc."_id")
           AND similarity(immutable_unaccent(COALESCE(sc.title, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}${collectionCoverage}
@@ -2187,9 +2245,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         SELECT sc."_id" AS id
         FROM "StoreCollection" sc
         CROSS JOIN search_params sp
-        WHERE sc.status = ${CollectionStatus.PUBLISHED}
-          AND sc.visibility = ${CollectionVisibility.PUBLIC}
-          AND sc."deletedAt" IS NULL
+        WHERE ${eligibility}
           ${ownerFilter}
           AND sc.search_vector @@ sp.tsq${collectionCoverage}
       ),
@@ -2197,9 +2253,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         SELECT sc."_id" AS id
         FROM "StoreCollection" sc
         CROSS JOIN search_params sp
-        WHERE sc.status = ${CollectionStatus.PUBLISHED}
-          AND sc.visibility = ${CollectionVisibility.PUBLIC}
-          AND sc."deletedAt" IS NULL
+        WHERE ${eligibility}
           ${ownerFilter}
           AND NOT EXISTS (SELECT 1 FROM fts WHERE fts.id = sc."_id")
           AND similarity(immutable_unaccent(COALESCE(sc.title, '')), sp.normalized_query) >= ${SEARCH_SIMILARITY_THRESHOLD}${collectionCoverage}
@@ -2644,27 +2698,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     for (;;) {
       const rows = await this.prisma.product.findMany({
         where: this.searchCore.visibility.publicProductWhere(),
-        select: {
-          id: true,
-          name: true,
-          description: true,
-          tags: true,
-          thumbnail: true,
-          images: true,
-          price: true,
-          salePrice: true,
-          currency: true,
-          slug: true,
-          brandId: true,
-          publicationStatus: true,
-          publishAt: true,
-          brand: {
-            select: {
-              ownerId: true,
-              name: true,
-            },
-          },
-        },
+        select: PRODUCT_SUGGESTION_SELECT,
         take: SEARCH_REBUILD_BATCH_SIZE,
         orderBy: { id: 'asc' },
         ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
@@ -2920,16 +2954,11 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     await this.syncProductSuggestionRow(id, row);
   }
 
-  private async syncProductSuggestionRow(id: string, row: ProductSuggestionSource | null) {
-    if (
-      !row ||
-      !row.isActive ||
-      row.publicationStatus !== CollectionStatus.PUBLISHED ||
-      row.deletedAt ||
-      row.archivedAt ||
-      (row.publishAt && row.publishAt > new Date()) ||
-      !row.brand?.isStoreOpen
-    ) {
+  private async syncProductSuggestionRow(
+    id: string,
+    row: ProductSuggestionSource | null,
+  ) {
+    if (!isEligibleProduct(row)) {
       await this.removeSuggestion('product', SEARCH_SUGGEST_KEYS.products, id);
       return;
     }
@@ -2970,8 +2999,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async syncBrandSuggestionById(id: string) {
-    const row = await this.prisma.brand.findUnique({
-      where: { id },
+    const row = await this.prisma.brand.findFirst({
+      where: { ...eligibleBrandWhere(), id },
       select: {
         id: true,
         ownerId: true,
@@ -3046,8 +3075,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async syncStoreCollectionSuggestionById(id: string) {
-    const row = await this.prisma.storeCollection.findUnique({
-      where: { id },
+    const row = await this.prisma.storeCollection.findFirst({
+      where: { ...eligibleStoreCollectionWhere(), id },
       select: {
         id: true,
         ownerId: true,
@@ -3060,12 +3089,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    if (
-      !row ||
-      row.status !== CollectionStatus.PUBLISHED ||
-      row.visibility !== CollectionVisibility.PUBLIC ||
-      row.deletedAt
-    ) {
+    if (!row) {
       await this.removeSuggestion(
         'collection',
         SEARCH_SUGGEST_KEYS.collections,
@@ -3371,7 +3395,15 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       versionToken,
     });
 
-    const cached = await this.getCachedSearchResult(cacheKey);
+    let cached = await this.getCachedSearchResult(cacheKey);
+    if (cached) {
+      const currentItems = await this.revalidateCommerceItems(cached.items);
+      // Rebuild counts and pagination as well when eligibility changed.
+      cached =
+        currentItems.length === cached.items.length
+          ? { ...cached, items: currentItems }
+          : null;
+    }
     if (cached) {
       this.logSearchEvent('search', {
         mode: parsedQuery.mode,
