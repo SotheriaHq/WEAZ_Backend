@@ -61,7 +61,9 @@
     "check:client-headers": "node scripts/test-client-headers-allowed.js",
     "test:notification-settings-postgres": "node scripts/test-notification-settings-postgres.cjs",
     "test:market-eligibility": "jest eligibility public-featured-summary src/common/content-audience.spec.ts src/store/product-owner-financials.spec.ts --runInBand",
-    "test:market-eligibility-postgres": "node scripts/test-market-eligibility-postgres.cjs"
+    "test:market-eligibility-postgres": "node scripts/test-market-eligibility-postgres.cjs",
+    "test:market-schema-postgres": "node scripts/test-market-schema-postgres.cjs && node scripts/test-market-product-writers-postgres.cjs && node scripts/test-market-feature-snapshots-postgres.cjs && node scripts/test-market-affinity-exposure-postgres.cjs && node scripts/test-market-section-versions-postgres.cjs && node scripts/test-market-price-parity-postgres.cjs",
+    "market:backfill-products": "node scripts/backfill-market-products.cjs"
   },
   "_moduleAliases": {
     "src": "dist"

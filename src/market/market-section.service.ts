@@ -1,3 +1,4 @@
+import { resolveProductPrice } from 'src/common/pricing/product-price';
 import {
   eligibleProductWhere,
   eligibleStoreCollectionWhere,
@@ -1606,11 +1607,13 @@ export class MarketSectionService {
     if (!isEligibleProduct(product)) return null;
     const image = this.firstProductImage(product);
     if (!image) return null;
-    const price = Number(product.price ?? 0);
-    const saleAmount = this.isSaleActive(product)
-      ? Number(product.salePrice)
+    const pricing = resolveProductPrice(product);
+    if (!pricing) return null;
+    const price = pricing.price.toNumber();
+    const saleAmount = pricing.isOnSale
+      ? pricing.effectivePrice.toNumber()
       : null;
-    const effectiveAmount = saleAmount ?? price;
+    const effectiveAmount = pricing.effectivePrice.toNumber();
     const mediaFileId = fileIdByUrl?.get(image) ?? null;
     const dimensions = dimensionsByUrl?.get(image) ?? null;
     const width = this.normalizedDimension(dimensions?.width);
@@ -1692,13 +1695,12 @@ export class MarketSectionService {
       : null;
     if (!coverImage) return null;
 
+    const pricingAt = new Date();
     const prices = visibleProducts
-      .map((product: any) =>
-        Number(
-          this.isSaleActive(product) && product.salePrice
-            ? product.salePrice
-            : product.price,
-        ),
+      .map(
+        (product: any) =>
+          resolveProductPrice(product, pricingAt)?.effectivePrice.toNumber() ??
+          NaN,
       )
       .filter((price: number) => Number.isFinite(price) && price > 0);
     const currency =

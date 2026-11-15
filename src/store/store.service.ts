@@ -1,4 +1,8 @@
 import {
+  resolveProductPrice,
+  type ProductPriceInput,
+} from 'src/common/pricing/product-price';
+import {
   eligibleProductWhere,
   isEligibleProduct,
   usableProductImage,
@@ -6772,7 +6776,9 @@ export class StoreService {
       brandName: product.brand?.name ?? null,
       brandId: product.brandId,
       currency: product.currency ?? product.brand?.currency ?? null,
-      price: this.toMoneyNumber(product.salePrice ?? product.price),
+      price: this.toMoneyNumber(
+        resolveProductPrice(product)?.effectivePrice ?? product.price,
+      ),
       quantity: resultingQuantity,
       selectedSize: resolvedSelectedSize,
       selectedColor: dto.selectedColor || null,
@@ -7312,12 +7318,11 @@ export class StoreService {
 
   // ==================== HELPERS ====================
 
-  private isProductOnSale(product: any): boolean {
-    if (!product.salePrice) return false;
-    const now = new Date();
-    if (product.saleStartAt && product.saleStartAt > now) return false;
-    if (product.saleEndAt && product.saleEndAt < now) return false;
-    return true;
+  private isProductOnSale(
+    product: ProductPriceInput,
+    now = new Date(),
+  ): boolean {
+    return resolveProductPrice(product, now)?.isOnSale ?? false;
   }
 
   private hasPublicStoreAccess(
@@ -7379,11 +7384,9 @@ export class StoreService {
     );
     const primaryCollectionId = sortedCollections[0]?.collectionId ?? null;
     const collectionIds = sortedCollections.map((c) => c.collectionId);
-    const isOnSale = this.isProductOnSale(product);
-    const effectivePrice =
-      isOnSale && product.salePrice
-        ? Number(product.salePrice)
-        : Number(product.price);
+    const pricing = resolveProductPrice(product);
+    const isOnSale = pricing?.isOnSale ?? false;
+    const effectivePrice = Number(pricing?.effectivePrice ?? product.price);
 
     // Calculate discount percentage
     let discountPercent: number | null = null;

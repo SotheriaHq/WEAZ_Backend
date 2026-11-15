@@ -38,6 +38,20 @@ const product = {
 };
 
 describe('product owner financials', () => {
+  it.each([
+    ['0', 100, false],
+    ['100', 100, false],
+    ['110', 100, false],
+    ['90', 90, true],
+  ])(
+    'renders catalogue price consistently for sale %s',
+    (salePrice, effectivePrice, isOnSale) => {
+      const view = transform({ ...product, price: '100', salePrice });
+      expect(view.effectivePrice).toBe(effectivePrice);
+      expect(view.isOnSale).toBe(isOnSale);
+    },
+  );
+
   it('omits cost and margin by default', () => {
     const view = transform(product);
     expect('costPerItem' in view).toBe(false);

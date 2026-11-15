@@ -1,3 +1,4 @@
+import { resolveProductPrice } from 'src/common/pricing/product-price';
 import {
   eligibleProductWhere,
   eligibleStoreCollectionWhere,
@@ -1076,11 +1077,13 @@ export class MarketSuggestionService {
     if (!isEligibleProduct(product)) return null;
     const image = this.firstProductImage(product);
     if (!image) return null;
-    const price = Number(product.price ?? 0);
-    const saleAmount = this.isSaleActive(product)
-      ? Number(product.salePrice)
+    const pricing = resolveProductPrice(product);
+    if (!pricing) return null;
+    const price = pricing.price.toNumber();
+    const saleAmount = pricing.isOnSale
+      ? pricing.effectivePrice.toNumber()
       : null;
-    const effectiveAmount = saleAmount ?? price;
+    const effectiveAmount = pricing.effectivePrice.toNumber();
 
     return {
       id: product.id,
@@ -1152,13 +1155,12 @@ export class MarketSuggestionService {
       : null;
     if (!coverImage) return null;
 
+    const pricingAt = new Date();
     const prices = visibleProducts
-      .map((product: any) =>
-        Number(
-          this.isSaleActive(product) && product.salePrice
-            ? product.salePrice
-            : product.price,
-        ),
+      .map(
+        (product: any) =>
+          resolveProductPrice(product, pricingAt)?.effectivePrice.toNumber() ??
+          NaN,
       )
       .filter((price: number) => Number.isFinite(price) && price > 0);
     const currency =
@@ -1431,21 +1433,6 @@ export class MarketSuggestionService {
 
   private isProductVisible(product: any) {
     return isEligibleProduct(product);
-  }
-
-  private isSaleActive(product: any) {
-    const price = Number(product?.price ?? 0);
-    const salePrice = Number(product?.salePrice ?? 0);
-    if (!Number.isFinite(price) || !Number.isFinite(salePrice)) return false;
-    if (salePrice <= 0 || salePrice >= price) return false;
-    const now = Date.now();
-    const start = product.saleStartAt
-      ? new Date(product.saleStartAt).getTime()
-      : null;
-    const end = product.saleEndAt
-      ? new Date(product.saleEndAt).getTime()
-      : null;
-    return (!start || start <= now) && (!end || end >= now);
   }
 
   private clean(value: unknown): string | null {
