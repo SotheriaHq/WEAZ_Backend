@@ -868,7 +868,7 @@ export class MarketSuggestionService {
         visibility: CollectionVisibility.PUBLIC,
         isAvailableInStore: true,
         deletedAt: null,
-        owner: { brand: { isStoreOpen: true } },
+        owner: { status: 'ACTIVE', brand: { isStoreOpen: true } },
         products: {
           some: {
             product: this.buildMarketableProductWhere([], {
@@ -898,6 +898,7 @@ export class MarketSuggestionService {
     const brands = await this.prisma.brand.findMany({
       where: {
         isStoreOpen: true,
+        owner: { status: 'ACTIVE' },
         ...(options.excludeIds?.length
           ? { id: { notIn: options.excludeIds } }
           : {}),
@@ -1032,6 +1033,7 @@ export class MarketSuggestionService {
               totalStock: true,
               customOrderEnabled: true,
               isActive: true,
+              publicationStatus: true,
               deletedAt: true,
               archivedAt: true,
               publishAt: true,
@@ -1086,11 +1088,19 @@ export class MarketSuggestionService {
 
     return {
       isActive: true,
+      // Publication is the moderation gate. Drafts, items in review and
+      // rejected items default to isActive=true, so without this a suggestion
+      // block could show a product that no public surface may show.
+      publicationStatus: CollectionStatus.PUBLISHED,
       deletedAt: null,
       archivedAt: null,
-      ...(options?.includeBrandOpen === false
-        ? {}
-        : { brand: { isStoreOpen: true } }),
+      // The owner's account must be active on every path. The store-open
+      // check is skipped only where the enclosing brand or collection query
+      // already requires it.
+      brand:
+        options?.includeBrandOpen === false
+          ? { owner: { status: 'ACTIVE' } }
+          : { isStoreOpen: true, owner: { status: 'ACTIVE' } },
       AND: andFilters,
     };
   }
@@ -1458,6 +1468,11 @@ export class MarketSuggestionService {
   private isProductVisible(product: any) {
     if (!product) return false;
     if (product.deletedAt || product.archivedAt || product.isActive === false) {
+      return false;
+    }
+    // Fail closed: a missing status is not a published status. Every caller
+    // must select publicationStatus (storeCollectionSelect does).
+    if (product.publicationStatus !== CollectionStatus.PUBLISHED) {
       return false;
     }
     if (product.publishAt && product.publishAt > new Date()) {
