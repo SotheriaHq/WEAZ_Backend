@@ -10,7 +10,7 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { applyRealtimeSecurityHeaders } from 'src/common/middleware/security-headers';
+import { applyRealtimeSecurityHeaders, REALTIME_CONTENT_SECURITY_POLICY, securityHeadersFor } from 'src/common/middleware/security-headers';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import { AuthJwtClaims } from 'src/auth/dto/auth-response.dto';
@@ -73,6 +73,14 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
    * upgrade; one listener, registered once per process.
    */
   afterInit(server: Server) {
+    // Validation failures never emit Engine.IO's headers event. Its normal
+    // middleware runs before protocol/session checks, covering polling errors.
+    server?.engine?.use?.((req, res, next) => {
+      for (const [name, value] of Object.entries(securityHeadersFor(req, {
+        contentSecurityPolicy: REALTIME_CONTENT_SECURITY_POLICY,
+      }))) res.setHeader(name, value);
+      next();
+    });
     server?.engine?.on?.('headers', applyRealtimeSecurityHeaders);
     // Namespace middleware finishes identity verification before the client can
     // receive `connect` and immediately send its first room join.
