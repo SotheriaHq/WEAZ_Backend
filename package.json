@@ -59,7 +59,9 @@
     "check:perf-regressions": "node scripts/check-perf-regressions.cjs",
     "ci:phase8": "npm run check:module-cycles && npm run check:client-headers && npm test -- src/upload/upload.service.spec.ts src/designs/mappers/design-response.mapper.spec.ts --runInBand && npm run build && npm run check:perf-regressions",
     "check:client-headers": "node scripts/test-client-headers-allowed.js",
-    "test:notification-settings-postgres": "node scripts/test-notification-settings-postgres.cjs"
+    "test:notification-settings-postgres": "node scripts/test-notification-settings-postgres.cjs",
+    "test:market-eligibility": "jest eligibility public-featured-summary src/common/content-audience.spec.ts src/store/product-owner-financials.spec.ts --runInBand",
+    "test:market-eligibility-postgres": "node scripts/test-market-eligibility-postgres.cjs"
   },
   "_moduleAliases": {
     "src": "dist"

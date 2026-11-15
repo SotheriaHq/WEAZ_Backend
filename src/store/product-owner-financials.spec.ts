@@ -14,7 +14,10 @@ import { StoreService } from './store.service';
  * Absent, not null: "you may not see this" must not be confusable with "the
  * brand has not set a cost".
  */
-const transform = (product: any, options?: { includeOwnerFinancials?: boolean }) =>
+const transform = (
+  product: any,
+  options?: { includeOwnerFinancials?: boolean },
+) =>
   (Object.create(StoreService.prototype) as any).transformProduct(
     product,
     options,
@@ -61,4 +64,90 @@ describe('product owner financials', () => {
     const serialized = JSON.stringify(view);
     expect(serialized).not.toContain('18000');
   });
+
+  it('never exposes the owner authority relation or private collection metadata publicly', () => {
+    const draft = {
+      id: 'private',
+      title: 'Unreleased capsule',
+      status: 'DRAFT',
+      visibility: 'PRIVATE',
+      isAvailableInStore: true,
+      deletedAt: null,
+    };
+    const published = {
+      id: 'public',
+      title: 'Public capsule',
+      status: 'PUBLISHED',
+      visibility: 'PUBLIC',
+      isAvailableInStore: true,
+      deletedAt: null,
+    };
+    const source = {
+      ...product,
+      brand: { id: 'brand', name: 'Brand', owner: { status: 'ACTIVE' } },
+      collection: draft,
+      collections: [
+        { collectionId: draft.id, orderIndex: 0, collection: draft },
+        { collectionId: published.id, orderIndex: 1, collection: published },
+      ],
+    };
+    const view = transform(source);
+    expect(view.brand).toEqual({ id: 'brand', name: 'Brand' });
+    expect(view.collectionIds).toEqual(['public']);
+    expect(view.collection.title).toBe('Public capsule');
+    expect(JSON.stringify(view)).not.toContain('Unreleased capsule');
+    const owner = transform(source, { includeOwnerFinancials: true });
+    expect(owner.collectionIds).toEqual(['private', 'public']);
+    expect(owner.collection.title).toBe('Unreleased capsule');
+    const minimal = transform({
+      ...source,
+      collections: [
+        {
+          collectionId: 'public',
+          collection: {
+            status: 'PUBLISHED',
+            visibility: 'PUBLIC',
+            isAvailableInStore: true,
+            deletedAt: null,
+          },
+        },
+      ],
+    });
+    expect(minimal.collection).toBeNull();
+    expect(minimal.collectionIds).toEqual(['public']);
+  });
+
+  it.each(['PRIVATE', undefined])(
+    'hides published collection metadata when visibility is %s, preserving owner preview',
+    (visibility) => {
+      const collection = {
+        id: 'hidden-capsule-id',
+        title: 'Confidential capsule',
+        description: 'Unannounced launch details',
+        status: 'PUBLISHED',
+        visibility,
+        isAvailableInStore: true,
+        deletedAt: null,
+      };
+      const source = {
+        ...product,
+        collectionId: collection.id,
+        collection,
+        collections: [{ collectionId: collection.id, collection }],
+      };
+      const view = transform(source);
+      expect(view.collectionId).toBeNull();
+      expect(view.collectionIds).toEqual([]);
+      expect(view.collection).toBeNull();
+      for (const value of [
+        collection.id,
+        collection.title,
+        collection.description,
+      ])
+        expect(JSON.stringify(view)).not.toContain(value);
+      const owner = transform(source, { includeOwnerFinancials: true });
+      expect(owner.collectionIds).toEqual([collection.id]);
+      expect(owner.collection).toEqual(collection);
+    },
+  );
 });

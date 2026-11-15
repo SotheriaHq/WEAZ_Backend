@@ -14,6 +14,12 @@ describe('MarketSuggestionService', () => {
   const now = new Date('2026-05-25T10:00:00.000Z');
 
   const product = (overrides: Record<string, any> = {}) => ({
+    isActive: true,
+    deletedAt: null,
+    archivedAt: null,
+    publishAt: null,
+    collections: [],
+    publicationStatus: CollectionStatus.PUBLISHED,
     id: 'product_1',
     name: 'Aso oke jacket',
     description: 'Ready to wear',
@@ -28,7 +34,6 @@ describe('MarketSuggestionService', () => {
     totalStock: 4,
     customOrderEnabled: false,
     standardCheckoutEnabled: true,
-    publicationStatus: CollectionStatus.PUBLISHED,
     tags: ['aso-oke', 'jacket'],
     gender: 'EVERYBODY',
     viewsCount: 8,
@@ -37,6 +42,8 @@ describe('MarketSuggestionService', () => {
     updatedAt: now,
     brandId: 'brand_1',
     brand: {
+      isStoreOpen: true,
+      owner: { status: 'ACTIVE' },
       id: 'brand_1',
       name: 'Ada Atelier',
       logo: 'https://cdn.wiez.test/logo.jpg',
@@ -442,6 +449,14 @@ describe('MarketSuggestionService', () => {
   // every product, collection and brand query the service can issue.
   const runEveryContext = async (service: MarketSuggestionService) => {
     await service.getSuggestions(
+      { context: MarketSuggestionContext.WISHLIST },
+      {},
+    );
+    await service.getSuggestions(
+      { context: MarketSuggestionContext.BRAND_STORE, targetId: 'brand_1' },
+      {},
+    );
+    await service.getSuggestions(
       {
         context: MarketSuggestionContext.PRODUCT_DETAIL,
         targetType: MarketSuggestionTargetType.PRODUCT,
@@ -482,6 +497,66 @@ describe('MarketSuggestionService', () => {
       {},
     );
   };
+  it.each([
+    { publicationStatus: CollectionStatus.DRAFT },
+    { publicationStatus: CollectionStatus.IN_REVIEW },
+    { publicationStatus: CollectionStatus.CHANGES_REQUESTED },
+    { publicationStatus: CollectionStatus.REJECTED },
+    { publicationStatus: undefined },
+    { isActive: false },
+    { deletedAt: now },
+    { archivedAt: now },
+    { publishAt: new Date('2100-01-01') },
+    { brand: { isStoreOpen: false, owner: { status: 'ACTIVE' } } },
+    { brand: { isStoreOpen: true, owner: { status: 'SUSPENDED' } } },
+    { price: 0 },
+    { totalStock: 0 },
+    { thumbnail: null, images: [] },
+    {
+      collections: [
+        {
+          collection: {
+            status: 'DRAFT',
+            isAvailableInStore: true,
+            deletedAt: null,
+          },
+        },
+      ],
+    },
+  ])(
+    'never exposes an ineligible candidate or its collection/brand cover: %j',
+    async (patch) => {
+      const bad = product({ id: 'hidden_product', ...patch });
+      const prisma = createPrisma();
+      prisma.product.findMany.mockResolvedValue([bad]);
+      prisma.storeCollectionProduct.findMany.mockResolvedValue([
+        { product: bad },
+      ]);
+      prisma.storeCollection.findMany.mockResolvedValue([
+        storeCollection({ products: [{ product: bad }] }),
+      ]);
+      prisma.brand.findMany.mockResolvedValue([brand({ products: [bad] })]);
+      const service = new MarketSuggestionService(
+        prisma as any,
+        suppressionService() as any,
+      );
+      for (const identity of [{}, { userId: 'shopper' }]) {
+        for (const context of Object.values(MarketSuggestionContext)) {
+          const response = await service.getSuggestions(
+            {
+              context,
+              targetId: 'target',
+              sectionKey: 'fresh-drops',
+              query: 'aso oke',
+            },
+            identity,
+          );
+          expect(response.blocks.flatMap((block) => block.items)).toEqual([]);
+        }
+      }
+    },
+  );
+
   const whereOf = (mock: jest.Mock) =>
     mock.mock.calls.map((call: any[]) => call[0].where);
 

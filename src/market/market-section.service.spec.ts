@@ -7,6 +7,12 @@ describe('MarketSectionService', () => {
   const now = new Date('2026-05-23T10:00:00.000Z');
 
   const product = (overrides: Record<string, any> = {}) => ({
+    isActive: true,
+    deletedAt: null,
+    archivedAt: null,
+    publishAt: null,
+    collections: [],
+    publicationStatus: CollectionStatus.PUBLISHED,
     id: 'product_1',
     name: 'Aso oke jacket',
     description: 'Ready to wear',
@@ -29,6 +35,8 @@ describe('MarketSectionService', () => {
     updatedAt: now,
     brandId: 'brand_1',
     brand: {
+      isStoreOpen: true,
+      owner: { status: 'ACTIVE' },
       id: 'brand_1',
       name: 'Ada Atelier',
       logo: 'https://cdn.wiez.test/logo.jpg',

@@ -1,4 +1,12 @@
 import {
+  eligibleProductWhere,
+  eligibleStoreCollectionWhere,
+  isEligibleProduct,
+  usableProductImage,
+  PRODUCT_ELIGIBILITY_FIELDS,
+  PRODUCT_ELIGIBILITY_BRAND_FIELDS,
+} from './eligibility/market-eligibility';
+import {
   BadRequestException,
   Injectable,
   Logger,
@@ -1011,32 +1019,8 @@ export class MarketSectionService {
 
   private buildMarketableProductWhere(
     extraAnd: Prisma.ProductWhereInput[] = [],
-    options?: { includeBrandOpen?: boolean },
   ): Prisma.ProductWhereInput {
-    const now = new Date();
-    const andFilters: Prisma.ProductWhereInput[] = [
-      {
-        OR: [{ totalStock: { gt: 0 } }, { customOrderEnabled: true }],
-      },
-      {
-        OR: [{ publishAt: null }, { publishAt: { lte: now } }],
-      },
-      {
-        OR: [{ thumbnail: { not: null } }, { images: { isEmpty: false } }],
-      },
-      ...extraAnd,
-    ];
-
-    return {
-      isActive: true,
-      publicationStatus: CollectionStatus.PUBLISHED,
-      deletedAt: null,
-      archivedAt: null,
-      ...(options?.includeBrandOpen === false
-        ? { brand: { owner: { status: 'ACTIVE' } } }
-        : { brand: { isStoreOpen: true, owner: { status: 'ACTIVE' } } }),
-      AND: andFilters,
-    };
+    return eligibleProductWhere(new Date(), extraAnd);
   }
 
   private buildMarketableDesignWhere(): Prisma.CollectionWhereInput {
@@ -1059,16 +1043,7 @@ export class MarketSectionService {
   }
 
   private buildMarketableCollectionWhere(): Prisma.StoreCollectionWhereInput {
-    return {
-      status: CollectionStatus.PUBLISHED,
-      visibility: CollectionVisibility.PUBLIC,
-      isAvailableInStore: true,
-      deletedAt: null,
-      owner: { status: 'ACTIVE', brand: { isStoreOpen: true } },
-      products: {
-        some: { product: this.buildMarketableProductWhere() },
-      },
-    };
+    return eligibleStoreCollectionWhere();
   }
 
   private async getProductItems(options: {
@@ -1085,6 +1060,8 @@ export class MarketSectionService {
         ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
         take: take + 1,
         select: {
+          ...PRODUCT_ELIGIBILITY_FIELDS,
+
           id: true,
           name: true,
           description: true,
@@ -1108,6 +1085,7 @@ export class MarketSectionService {
           brandId: true,
           brand: {
             select: {
+              ...PRODUCT_ELIGIBILITY_BRAND_FIELDS,
               id: true,
               name: true,
               logo: true,
@@ -1234,6 +1212,8 @@ export class MarketSectionService {
             select: {
               product: {
                 select: {
+                  ...PRODUCT_ELIGIBILITY_FIELDS,
+                  brand: { select: PRODUCT_ELIGIBILITY_BRAND_FIELDS },
                   id: true,
                   name: true,
                   price: true,
@@ -1343,9 +1323,7 @@ export class MarketSectionService {
 
   private async getBrandItems(options: { cursor?: string; limit: number }) {
     const take = this.normalizeLimit(options.limit, this.defaultDetailLimit);
-    const productWhere = this.buildMarketableProductWhere([], {
-      includeBrandOpen: false,
-    });
+    const productWhere = this.buildMarketableProductWhere();
     const brands = await this.runCursorQuery(() =>
       this.prisma.brand.findMany({
         where: {
@@ -1371,6 +1349,8 @@ export class MarketSectionService {
             orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
             take: 1,
             select: {
+              ...PRODUCT_ELIGIBILITY_FIELDS,
+              brand: { select: PRODUCT_ELIGIBILITY_BRAND_FIELDS },
               id: true,
               name: true,
               thumbnail: true,
@@ -1379,7 +1359,7 @@ export class MarketSectionService {
           },
           _count: {
             select: {
-              products: true,
+              products: { where: productWhere },
             },
           },
         },
@@ -1623,6 +1603,7 @@ export class MarketSectionService {
     fileIdByUrl?: Map<string, string>,
     dimensionsByUrl?: Map<string, MediaDimensions>,
   ): MarketSectionItemDto | null {
+    if (!isEligibleProduct(product)) return null;
     const image = this.firstProductImage(product);
     if (!image) return null;
     const price = Number(product.price ?? 0);
@@ -1768,7 +1749,7 @@ export class MarketSectionService {
       stats: {
         views: null,
         threads: null,
-        products: Number(collection._count?.products ?? visibleProducts.length),
+        products: visibleProducts.length,
       },
       target: {
         type: 'COLLECTION',
@@ -1786,7 +1767,10 @@ export class MarketSectionService {
     fileIdByUrl?: Map<string, string>,
     dimensionsByUrl?: Map<string, MediaDimensions>,
   ): MarketSectionItemDto | null {
-    const representativeProduct = brand.products?.[0] ?? null;
+    const representativeProduct =
+      brand.products?.find((product: any) => isEligibleProduct(product)) ??
+      null;
+    if (!representativeProduct) return null;
     const productImage = representativeProduct
       ? this.firstProductImage(representativeProduct)
       : null;
@@ -1844,28 +1828,12 @@ export class MarketSectionService {
     };
   }
 
-  private firstProductImage(product: any): string | null {
-    const thumbnail = this.cleanString(product?.thumbnail);
-    if (thumbnail) return thumbnail;
-    const images = Array.isArray(product?.images) ? product.images : [];
-    return (
-      images
-        .map((image: unknown) => this.cleanString(image))
-        .find((image: string | null): image is string => Boolean(image)) ?? null
-    );
+  private firstProductImage(product: any) {
+    return usableProductImage(product);
   }
 
   private isProductVisible(product: any) {
-    if (!product) return false;
-    if (product.deletedAt || product.archivedAt || product.isActive === false) {
-      return false;
-    }
-    if (product.publishAt && product.publishAt > new Date()) {
-      return false;
-    }
-    return (
-      Number(product.totalStock ?? 0) > 0 || product.customOrderEnabled === true
-    );
+    return isEligibleProduct(product);
   }
 
   private isSaleActive(product: any) {
