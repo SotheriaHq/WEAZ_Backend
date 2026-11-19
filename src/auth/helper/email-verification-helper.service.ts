@@ -1,12 +1,19 @@
 import { Injectable } from '@nestjs/common';
-import { randomBytes } from 'crypto';
 import { buildEmailVerificationLink } from 'src/common/utils/auth-links';
+import {
+  issueExpiringEmailToken,
+  type IssuedEmailToken,
+} from '../email-link-policy';
 
 @Injectable()
 export class EmailVerificationHelperService {
-  generateVerificationCode(): string {
-    // Single-use opaque token used in verification links.
-    return randomBytes(24).toString('hex');
+  /**
+   * A fresh single-use verification token. Store `stored`, email `token`.
+   * Issuing a new one replaces the stored digest, so every older link stops
+   * working: only the most recent email can verify.
+   */
+  issueVerificationToken(): IssuedEmailToken {
+    return issueExpiringEmailToken();
   }
 
   generateVerificationLink(

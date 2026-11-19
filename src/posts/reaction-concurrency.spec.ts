@@ -77,7 +77,7 @@ function reactionFixture(kind: 'post' | 'collection' | 'media' | 'comment' | 'le
         : kind === 'media' ? service.toggleMediaThread('target', userId)
           : kind === 'legacy' ? service.toggleReaction('target', userId, reactionType)
             : service.toggleThread('target', userId);
-  return { state, rows, update, locks, prisma, toggle };
+  return { state, rows, update, locks, prisma, toggle, service };
 }
 
 describe.each(['post', 'collection', 'media', 'comment'] as const)('%s reaction concurrency', (kind) => {
@@ -109,6 +109,34 @@ describe.each(['post', 'collection', 'media', 'comment'] as const)('%s reaction 
     fixture.rows.set('one-user', { id: 'one-user', type: ReactionType.THREAD });
     await fixture.toggle('one-user');
     expect(fixture.state.threadsCount).toBe(0);
+  });
+});
+
+describe('media thread with a desired state', () => {
+  const setThread = (fixture: ReturnType<typeof reactionFixture>, userId: string, desired: boolean) =>
+    (fixture as any).service.toggleMediaThread('target', userId, desired);
+
+  it('a request for the state that already holds writes nothing and reports unchanged', async () => {
+    const fixture = reactionFixture('media', 1);
+    fixture.rows.set('one-user', { id: 'one-user', type: ReactionType.THREAD });
+    await expect(setThread(fixture, 'one-user', true)).resolves.toEqual({ threads: 1, threaded: true, changed: false });
+    expect(fixture.update).not.toHaveBeenCalled();
+    expect(fixture.rows.size).toBe(1);
+  });
+
+  it('two simultaneous "thread it" requests add exactly one thread', async () => {
+    const fixture = reactionFixture('media');
+    const results = await Promise.all([setThread(fixture, 'one-user', true), setThread(fixture, 'one-user', true)]);
+    expect(fixture.rows.size).toBe(1);
+    expect(fixture.state.threadsCount).toBe(1);
+    expect(results.map((r: any) => r.changed).sort()).toEqual([false, true]);
+  });
+
+  it('removes only when asked to remove', async () => {
+    const fixture = reactionFixture('media', 1);
+    fixture.rows.set('one-user', { id: 'one-user', type: ReactionType.THREAD });
+    await expect(setThread(fixture, 'one-user', false)).resolves.toEqual({ threads: 0, threaded: false, changed: true });
+    expect(fixture.rows.size).toBe(0);
   });
 });
 

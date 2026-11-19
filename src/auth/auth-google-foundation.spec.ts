@@ -114,7 +114,11 @@ describe('AuthService Google auth foundation', () => {
       revokeOtherRefreshTokens: jest.fn(),
     };
     mockEmailVerificationHelper = {
-      generateVerificationCode: jest.fn(() => 'verify-token'),
+      issueVerificationToken: jest.fn(() => ({
+        token: 'verify-token',
+        stored: 'verify-token-digest',
+        expiresAt: new Date(),
+      })),
       generateVerificationLink: jest.fn(() => 'https://§WIEZ_ME§/verify-email?token=verify-token'),
     };
     mockEmailService = {
@@ -212,7 +216,7 @@ describe('AuthService Google auth foundation', () => {
           password: null,
           passwordCredentialStatus: PasswordCredentialStatus.NOT_SET,
           isEmailVerified: false,
-          emailVerificationCode: 'verify-token',
+          emailVerificationCode: 'verify-token-digest',
           authIdentities: {
             create: expect.objectContaining({
               provider: AuthProvider.GOOGLE,

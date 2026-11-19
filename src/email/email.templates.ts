@@ -1,4 +1,5 @@
 import { EmailContent } from './email.types';
+import { EMAIL_LINK_TTL_LABEL } from '../auth/email-link-policy';
 import {
   EMAIL_COLORS,
   escapeHtml,
@@ -81,13 +82,13 @@ export function passwordResetEmail(
     html: wrap(
       '🔐 Reset your password',
       `${p(`No worries — it happens to the best of us. We received a request to reset the password on your <strong>${companyName}</strong> account.`)}
-      ${p('Click the button below to create a new password. The link is valid for <strong>1 hour</strong> and can only be used once.')}
+      ${p(`Click the button below to create a new password. The link is valid for <strong>${EMAIL_LINK_TTL_LABEL}</strong> and can only be used once.`)}
       <div style="text-align:center;margin:24px 0">${btn(resetLink, 'Reset My Password')}</div>
       ${linkFallback(resetLink, 'Reset your password')}
       ${warningBox(`<p style="margin:0;color:#9a3412;font-size:13px">If you didn't request this, your account is safe — just ignore this email. Your current password remains unchanged.</p>`)}`,
       companyName,
     ),
-    text: `Reset Your Password\n\nWe received a request to reset your ${companyName} password. Click the link below:\n\n${resetLink}\n\nThis link expires in 1 hour and is single-use. If you didn't request this, ignore this email.`,
+    text: `Reset Your Password\n\nWe received a request to reset your ${companyName} password. Click the link below:\n\n${resetLink}\n\nThis link expires in ${EMAIL_LINK_TTL_LABEL} and is single-use. If you didn't request this, ignore this email.`,
   };
 }
 
@@ -105,11 +106,11 @@ export function emailVerificationEmail(
       ${p('Wiezing your email lets you create designs, connect with buyers, build your brand, and do so much more. It keeps your account secure too.')}
       <div style="text-align:center;margin:24px 0">${btn(verifyLink, 'WIEZ up my email')}</div>
       ${linkFallback(verifyLink, 'Verify your email')}
-      ${infoBox(`<p style="margin:0;color:${BRAND_PRIMARY};font-size:13px">This link is single-use and stops working once your email is WIEZED — so click it when you're ready to dive in.</p>`)}`,
+      ${infoBox(`<p style="margin:0;color:${BRAND_PRIMARY};font-size:13px">This link is single-use and works for ${EMAIL_LINK_TTL_LABEL}. If it has expired, open WIEZ and tap Resend for a fresh one.</p>`)}`,
       companyName,
       `This email was sent because someone signed up for a ${companyName} account with this address.`,
     ),
-    text: `Welcome to ${companyName}!\n\nConfirm your email to unlock your full workspace:\n\n${verifyLink}\n\nThis link is single-use and expires after confirmation.`,
+    text: `Welcome to ${companyName}!\n\nConfirm your email to unlock your full workspace:\n\n${verifyLink}\n\nThis link is single-use and expires in ${EMAIL_LINK_TTL_LABEL}.`,
   };
 }
 
@@ -572,12 +573,12 @@ export function confirmEmailChangeEmail(
     html: wrap(
       'Confirm email change',
       `${p(`We received a request to change the email address on your <strong>${companyName}</strong> account to <strong>${newEmail}</strong>.`)}
-      ${p('Click the button below to confirm the new email address. Your current email stays active until you complete this confirmation.')}
+      ${p(`Click the button below to confirm the new email address. Your current email stays active until you complete this confirmation. The link works for ${EMAIL_LINK_TTL_LABEL}, once.`)}
       <div style="text-align:center;margin:24px 0">${btn(confirmLink, 'Confirm New Email')}</div>
       ${warningBox('<p style="margin:0;color:#9a3412;font-size:13px">If you did not request this change, you can ignore this email and your account email will remain unchanged.</p>')}`,
       companyName,
     ),
-    text: `Confirm your new ${companyName} email address\n\nConfirm this email change: ${confirmLink}\n\nIf you did not request it, ignore this email.`,
+    text: `Confirm your new ${companyName} email address\n\nConfirm this email change: ${confirmLink}\n\nThis link expires in ${EMAIL_LINK_TTL_LABEL} and is single-use. If you did not request it, ignore this email.`,
   };
 }
 

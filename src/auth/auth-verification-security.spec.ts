@@ -3,9 +3,16 @@ import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { AuthService } from './auth.service';
 import { VerifyEmailCodeDto } from './dto/verify-email-code.dto';
+import {
+  EMAIL_LINK_TTL_MS,
+  digestEmailToken,
+  emailTokenExpired,
+  issueExpiringEmailToken,
+} from './email-link-policy';
 
 describe('Email verification boundary', () => {
-  const token = 'a'.repeat(48);
+  const issued = issueExpiringEmailToken();
+  const token = issued.token;
   let service: AuthService;
   let prisma: { user: { findUnique: jest.Mock; update: jest.Mock } };
 
@@ -41,11 +48,11 @@ describe('Email verification boundary', () => {
     expect(prisma.user.update).not.toHaveBeenCalled();
   });
 
-  it('preserves valid verification and consumes the matching code', async () => {
+  it('verifies against the stored digest and consumes it', async () => {
     prisma.user.findUnique.mockResolvedValue({
       id: 'shopper',
       isEmailVerified: false,
-      emailVerificationCode: token,
+      emailVerificationCode: issued.stored,
     });
     await expect(
       service.verifyEmailByCode('shopper@example.com', token),
@@ -54,6 +61,65 @@ describe('Email verification boundary', () => {
       where: { email: 'shopper@example.com' },
       data: { isEmailVerified: true, emailVerificationCode: null },
     });
+  });
+
+  it('refuses the stored digest itself: a leaked row is not a working code', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'shopper',
+      isEmailVerified: false,
+      emailVerificationCode: issued.stored,
+    });
+    await expect(
+      service.verifyEmailByCode('shopper@example.com', issued.stored),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses a matching code once it has expired', async () => {
+    const stale = issueExpiringEmailToken(Date.now() - EMAIL_LINK_TTL_MS - 1);
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'shopper',
+      isEmailVerified: false,
+      emailVerificationCode: stale.stored,
+    });
+    await expect(
+      service.verifyEmailByLink('shopper', stale.token),
+    ).rejects.toThrow(/expired/);
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('looks the emailed link up by digest and refuses it after 15 minutes', async () => {
+    const stale = issueExpiringEmailToken(Date.now() - EMAIL_LINK_TTL_MS - 1);
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'shopper',
+      isEmailVerified: false,
+      emailVerificationCode: stale.stored,
+    });
+    await expect(service.verifyEmailByToken(stale.token)).rejects.toThrow(
+      /expired/,
+    );
+    expect(prisma.user.findUnique).toHaveBeenCalledWith({
+      where: { emailVerificationCode: digestEmailToken(stale.token) },
+    });
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('answers a repeat click on a used link with "already verified", even after expiry', async () => {
+    const stale = issueExpiringEmailToken(Date.now() - EMAIL_LINK_TTL_MS - 1);
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'shopper',
+      isEmailVerified: true,
+      emailVerificationCode: stale.stored,
+    });
+    await expect(service.verifyEmailByToken(stale.token)).resolves.toEqual({
+      message: 'Email already verified',
+    });
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('treats tokens issued before expiry existed as expired', () => {
+    expect(emailTokenExpired('a'.repeat(48))).toBe(true);
+    expect(emailTokenExpired(token)).toBe(false);
   });
 
   it('rejects a null code on the alternate user-id link entry', async () => {

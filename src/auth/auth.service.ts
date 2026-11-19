@@ -87,8 +87,14 @@ import {
   signupFailed,
   signupSucceeded,
 } from 'src/telegram-monitoring/business-events';
+import {
+  EMAIL_LINK_TTL_MS,
+  digestEmailToken,
+  emailTokenExpired,
+  storedEmailTokenMatches,
+} from './email-link-policy';
 
-const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+const PASSWORD_RESET_TOKEN_TTL_MS = EMAIL_LINK_TTL_MS;
 const RESET_REQUEST_SUPPRESSION_MS = 2 * 60 * 1000;
 const EMAIL_LOGIN_CODE_TTL_MS = 10 * 60 * 1000;
 const PASSWORD_SETUP_TOKEN_TTL_MS = 15 * 60 * 1000;
@@ -630,9 +636,9 @@ export class AuthService {
         throw new BadRequestException('Password processing failed');
       }
 
-      // Generate single-use email verification token
-      const verificationToken =
-        this.emailVerificationHelper.generateVerificationCode();
+      // Single-use, 15-minute verification token; only its digest is stored.
+      const verification = this.emailVerificationHelper.issueVerificationToken();
+      const verificationToken = verification.token;
       // Ensure database-required name fields are present. Prisma User model requires firstName and lastName.
       const dbFirstName = signupDto.firstName ?? '';
       const dbLastName = signupDto.lastName ?? '';
@@ -651,7 +657,7 @@ export class AuthService {
               password: hashedPassword,
               passwordCredentialStatus: PasswordCredentialStatus.ENABLED,
               type: signupDto.type ?? UserType.REGULAR,
-              emailVerificationCode: verificationToken,
+              emailVerificationCode: verification.stored,
               isEmailVerified: false,
               userProfile: {
                 create: {
@@ -763,7 +769,7 @@ export class AuthService {
           recipientUserId: user.id,
           scenarioKey: 'auth.email_verification',
           priority: EmailPriority.P1_TRANSACTIONAL,
-          idempotencyKey: `auth:email-verification:${user.id}:${verificationToken}`,
+          idempotencyKey: `auth:email-verification:${user.id}:${verification.stored}`,
           dispatchImmediately: true,
         },
       );
@@ -957,8 +963,8 @@ export class AuthService {
     const intent: 'LOGIN' | 'SIGNUP' =
       dto.intent ?? (dto.type ? 'SIGNUP' : 'LOGIN');
     const createdAt = new Date();
-    const verificationToken =
-      this.emailVerificationHelper.generateVerificationCode();
+    const verification = this.emailVerificationHelper.issueVerificationToken();
+    const verificationToken = verification.token;
     let createdGoogleAccount = false;
 
     if (requestedType === UserType.BRAND && !dto.brandFullName?.trim()) {
@@ -1149,7 +1155,7 @@ export class AuthService {
             passwordCredentialStatus: PasswordCredentialStatus.NOT_SET,
             type: requestedType,
             isEmailVerified: false,
-            emailVerificationCode: verificationToken,
+            emailVerificationCode: verification.stored,
             userProfile: {
               create: {
                 firstName: displayNames.firstName,
@@ -1274,7 +1280,7 @@ export class AuthService {
           recipientUserId: user.id,
           scenarioKey: 'auth.email_verification',
           priority: EmailPriority.P1_TRANSACTIONAL,
-          idempotencyKey: `auth:email-verification:${user.id}:${verificationToken}`,
+          idempotencyKey: `auth:email-verification:${user.id}:${verification.stored}`,
           dispatchImmediately: true,
         },
       );
@@ -2446,14 +2452,22 @@ export class AuthService {
       throw new BadRequestException('Verification token is required');
     }
 
+    // Only the digest is stored, so a leaked row is not a working link.
     const user = await this.prisma.user.findUnique({
-      where: { emailVerificationCode: verificationToken },
+      where: { emailVerificationCode: digestEmailToken(verificationToken) },
     });
     if (!user) {
       throw new BadRequestException('Invalid or expired verification link');
     }
+    // A second click on a link that already worked changes nothing; saying so
+    // beats an "expired" error about an email that is in fact confirmed.
     if (user.isEmailVerified) {
       return { message: 'Email already verified' };
+    }
+    if (emailTokenExpired(verificationToken)) {
+      throw new BadRequestException(
+        'This verification link has expired. Open WIEZ and request a new one.',
+      );
     }
 
     await withSecurityWrite(this.prisma, async (tx) => tx.user.update({
@@ -2485,7 +2499,6 @@ export class AuthService {
         email: true,
         type: true,
         isEmailVerified: true,
-        emailVerificationCode: true,
       },
     });
 
@@ -2497,16 +2510,15 @@ export class AuthService {
       return { message: 'Email already verified' };
     }
 
-    const verificationToken =
-      String(user.emailVerificationCode ?? '').trim() ||
-      this.emailVerificationHelper.generateVerificationCode();
-
-    if (!user.emailVerificationCode) {
-      await withSecurityWrite(this.prisma, async (tx) => tx.user.update({
-        where: { id: user.id },
-        data: { emailVerificationCode: verificationToken },
-      }));
-    }
+    // Always a fresh token. The stored code is a digest, so the old link
+    // cannot be re-sent, and replacing it retires every earlier email: only
+    // the newest link can verify, and only for 15 minutes.
+    const verification = this.emailVerificationHelper.issueVerificationToken();
+    const verificationToken = verification.token;
+    await withSecurityWrite(this.prisma, async (tx) => tx.user.update({
+      where: { id: user.id },
+      data: { emailVerificationCode: verification.stored },
+    }));
 
     const verificationLink =
       this.emailVerificationHelper.generateVerificationLink(
@@ -2576,8 +2588,7 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new BadRequestException('User not found');
     if (user.isEmailVerified) return { message: 'Email already verified' };
-    if (!user.emailVerificationCode || user.emailVerificationCode !== code)
-      throw new BadRequestException('Invalid verification code');
+    this.assertLiveVerificationCode(user.emailVerificationCode, code);
     await withSecurityWrite(this.prisma, async (tx) => tx.user.update({
       where: { id: userId },
       data: { isEmailVerified: true, emailVerificationCode: null },
@@ -2599,8 +2610,7 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { email } });
     if (!user) throw new BadRequestException('User not found');
     if (user.isEmailVerified) return { message: 'Email already verified' };
-    if (!user.emailVerificationCode || user.emailVerificationCode !== code)
-      throw new BadRequestException('Invalid verification code');
+    this.assertLiveVerificationCode(user.emailVerificationCode, code);
     await withSecurityWrite(this.prisma, async (tx) => tx.user.update({
       where: { email },
       data: { isEmailVerified: true, emailVerificationCode: null },
@@ -2611,6 +2621,21 @@ export class AuthService {
       });
     } catch {}
     return { message: 'Email verified successfully' };
+  }
+
+  /** The presented code matches the stored digest and has not expired. */
+  private assertLiveVerificationCode(
+    stored: string | null | undefined,
+    code: string,
+  ): void {
+    if (!storedEmailTokenMatches(stored, code)) {
+      throw new BadRequestException('Invalid verification code');
+    }
+    if (emailTokenExpired(code)) {
+      throw new BadRequestException(
+        'This verification code has expired. Request a new one.',
+      );
+    }
   }
 
   private assertVerificationCode(code: unknown): asserts code is string {
@@ -2866,7 +2891,7 @@ export class AuthService {
 
     const rawToken = randomBytes(32).toString('hex');
     const tokenHash = createHash('sha256').update(rawToken).digest('hex');
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + EMAIL_LINK_TTL_MS);
 
     await withSecurityWrite(this.prisma, async (tx) => tx.user.update({
       where: { id: userId },
