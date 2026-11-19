@@ -14,7 +14,7 @@
  */
 
 /** The product name. There is no former name to surface anywhere. */
-export const PRODUCT_NAME = 'WIEZ';
+export const PRODUCT_NAME = 'ARU';
 
 export const PRODUCT_TAGLINE = 'When you think WEARS, you think WIEZ.';
 
