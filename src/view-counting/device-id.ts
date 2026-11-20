@@ -20,11 +20,17 @@ const MAX_DEVICE_ID_LENGTH = 128;
  * is dropped, so a hostile header cannot smuggle Redis key separators (`:`),
  * newlines, or an unbounded string into a key.
  */
-export function readDeviceId(req: any): string | null {
-  const raw = req?.headers?.[ARU_DEVICE_ID_HEADER] ?? req?.headers?.[LEGACY_DEVICE_ID_HEADER];
+const sanitizeDeviceId = (raw: unknown): string | null => {
   const value = Array.isArray(raw) ? raw[0] : raw;
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   if (!trimmed || trimmed.length > MAX_DEVICE_ID_LENGTH) return null;
   return /^[A-Za-z0-9._-]+$/.test(trimmed) ? trimmed : null;
+};
+
+export function readDeviceId(req: any): string | null {
+  return (
+    sanitizeDeviceId(req?.headers?.[ARU_DEVICE_ID_HEADER]) ??
+    sanitizeDeviceId(req?.headers?.[LEGACY_DEVICE_ID_HEADER])
+  );
 }
