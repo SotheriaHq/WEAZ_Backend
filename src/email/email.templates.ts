@@ -103,10 +103,10 @@ export function emailVerificationEmail(
     html: wrap(
       `✨ Confirm your ${companyName} email`,
       `${p(`Welcome to <strong>${companyName}</strong> — Africa's Fashion Media community. You're just one click away from unlocking your full workspace.`)}
-      ${p('Wiezing your email lets you create designs, connect with buyers, build your brand, and do so much more. It keeps your account secure too.')}
-      <div style="text-align:center;margin:24px 0">${btn(verifyLink, 'WIEZ up my email')}</div>
+      ${p('Verifying your email lets you create designs, connect with buyers, build your brand, and do so much more. It keeps your account secure too.')}
+      <div style="text-align:center;margin:24px 0">${btn(verifyLink, 'Verify my email')}</div>
       ${linkFallback(verifyLink, 'Verify your email')}
-      ${infoBox(`<p style="margin:0;color:${BRAND_PRIMARY};font-size:13px">This link is single-use and works for ${EMAIL_LINK_TTL_LABEL}. If it has expired, open WIEZ and tap Resend for a fresh one.</p>`)}`,
+      ${infoBox(`<p style="margin:0;color:${BRAND_PRIMARY};font-size:13px">This link is single-use and works for ${EMAIL_LINK_TTL_LABEL}. If it has expired, open ${companyName} and tap Resend for a fresh one.</p>`)}`,
       companyName,
       `This email was sent because someone signed up for a ${companyName} account with this address.`,
     ),

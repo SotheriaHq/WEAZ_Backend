@@ -367,7 +367,7 @@ export class NotificationRegistry {
         }
         if (n.payload?.action === 'VERIFY_EMAIL') {
           // Never put the code here: push text is visible on the lock screen.
-          return 'Verify your email to enjoy WIEZ. Your code is in your inbox.';
+          return 'Verify your email to enjoy ARU. Your code is in your inbox.';
         }
         return 'Welcome! Your account was created';
       },
@@ -1255,8 +1255,8 @@ export class NotificationRegistry {
       // Free brands also hear they may choose a live video call instead.
       formatter: (n: any) =>
         n?.payload?.videoCallAllowed === true
-          ? 'Your brand documents are approved. Last step: a short physical verification visit, or a live video call if you prefer — we’ll send you times to choose from in WIEZ.'
-          : 'Your brand documents are approved. Last step: a short physical verification visit. We’ll send you times to choose from in WIEZ.',
+          ? 'Your brand documents are approved. Last step: a short physical verification visit, or a live video call if you prefer — we’ll send you times to choose from in ARU.'
+          : 'Your brand documents are approved. Last step: a short physical verification visit. We’ll send you times to choose from in ARU.',
       pushFormatter: (n: any) =>
         n?.payload?.videoCallAllowed === true
           ? `${wiezGreeting(n?.payload?.brandName, '🎉')} Your brand documents are approved. Last step: a short verification visit or a live video call — we’ll send you times to choose from.`
@@ -1768,7 +1768,7 @@ export class NotificationRegistry {
             : `${code}: the extension was granted.`;
         }
         if (response === 'REJECTED') {
-          return `${code}: the extension was declined and WIEZ is now reviewing the order.`;
+          return `${code}: the extension was declined and ARU is now reviewing the order.`;
         }
         return `The extension request for ${code} was ${response.toLowerCase() || 'resolved'}`;
       },
@@ -1800,7 +1800,7 @@ export class NotificationRegistry {
       }),
       formatter: (n: any) =>
         n.payload?.message ||
-        `The shopper declined more time on ${formatCustomOrderCode(n.payload?.customOrderId)}. WIEZ is reviewing the order — keep producing unless told otherwise.`,
+        `The shopper declined more time on ${formatCustomOrderCode(n.payload?.customOrderId)}. ARU is reviewing the order — keep producing unless told otherwise.`,
     });
 
     registry.register({
@@ -1892,7 +1892,7 @@ export class NotificationRegistry {
       }),
       formatter: (n: any) =>
         n.payload?.message ||
-        `Someone at WIEZ has taken on the dispute for ${formatCustomOrderCode(n.payload?.customOrderId)}. You'll hear from us here.`,
+        `Someone at ARU has taken on the dispute for ${formatCustomOrderCode(n.payload?.customOrderId)}. You'll hear from us here.`,
     });
 
     registry.register({
@@ -1908,7 +1908,7 @@ export class NotificationRegistry {
       }),
       formatter: (n: any) =>
         n.payload?.message ||
-        `WIEZ has suggested a way to settle ${formatCustomOrderCode(n.payload?.customOrderId)}. Have a look and tell us if you agree.`,
+        `ARU has suggested a way to settle ${formatCustomOrderCode(n.payload?.customOrderId)}. Have a look and tell us if you agree.`,
     });
 
     registry.register({
