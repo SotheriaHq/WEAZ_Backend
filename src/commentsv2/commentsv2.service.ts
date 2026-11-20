@@ -654,7 +654,7 @@ export class CommentsV2Service {
 
     const threaded = await retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<Array<{ id: string; threadsCount: number }>>`
-        SELECT "_id" AS id, "threadsCount" FROM "CommentV2" WHERE "_id"=${commentId}::uuid FOR UPDATE
+        SELECT "_id" AS id, "likeCount" AS "threadsCount" FROM "CommentV2" WHERE "_id"=${commentId}::uuid FOR UPDATE
       `;
       if (!locked.length) throw new NotFoundException('Comment not found');
       const existing = await tx.commentV2Thread.findUnique({

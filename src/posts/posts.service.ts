@@ -311,7 +311,7 @@ export class PostsService {
 
     const { threaded, updatedPost } = await retryDatabaseTransaction(() => this.prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<Array<{ id: string; threadsCount: number }>>`
-        SELECT "_id" AS id, "threadsCount" FROM "Post" WHERE "_id"=${postId}::uuid FOR UPDATE
+        SELECT "_id" AS id, "likesCount" AS "threadsCount" FROM "Post" WHERE "_id"=${postId}::uuid FOR UPDATE
       `;
       if (!locked.length) throw new NotFoundException('Post not found');
       const existingThread = await tx.thread.findUnique({
