@@ -311,9 +311,9 @@ export class TokenService {
   }
 
   private securityDevice(req: Request, userId: string) {
-    const raw = req.headers['x-wiez-security-device'];
+    const raw = req.headers['x-aru-security-device'] ?? req.headers['x-wiez-security-device'];
     const deviceId = typeof raw === 'string' && /^[a-zA-Z0-9_-]{16,128}$/.test(raw) ? raw : null;
-    const name = req.headers['x-wiez-device-name'];
+    const name = req.headers['x-aru-device-name'] ?? req.headers['x-wiez-device-name'];
     return {
       deviceKey: deviceId ? createHash('sha256').update(`${userId}:${deviceId}`).digest('hex') : null,
       deviceName: typeof name === 'string' ? name.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 80).trim() || null : null,

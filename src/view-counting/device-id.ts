@@ -1,10 +1,15 @@
-/** Header carrying the client's durable, locally generated device id. */
-export const DEVICE_ID_HEADER = 'x-wiez-device-id';
+/** Primary and legacy headers carrying the client's durable, locally generated device id. */
+export const ARU_DEVICE_ID_HEADER = 'x-aru-device-id';
+export const LEGACY_DEVICE_ID_HEADER = 'x-wiez-device-id';
+export const DEVICE_ID_HEADER = ARU_DEVICE_ID_HEADER;
 
 const MAX_DEVICE_ID_LENGTH = 128;
 
 /**
  * Read the caller's device id.
+ *
+ * Checks the primary ARU header first ('x-aru-device-id'), falling back to
+ * the legacy WIEZ header ('x-wiez-device-id') for backward compatibility.
  *
  * This is client-supplied and entirely untrusted. It is used for ONE thing —
  * suppressing a duplicate view — so the worst a forged value can do is stop a
@@ -16,7 +21,7 @@ const MAX_DEVICE_ID_LENGTH = 128;
  * newlines, or an unbounded string into a key.
  */
 export function readDeviceId(req: any): string | null {
-  const raw = req?.headers?.[DEVICE_ID_HEADER];
+  const raw = req?.headers?.[ARU_DEVICE_ID_HEADER] ?? req?.headers?.[LEGACY_DEVICE_ID_HEADER];
   const value = Array.isArray(raw) ? raw[0] : raw;
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
