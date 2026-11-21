@@ -119,6 +119,12 @@ const parseFromAddress = (from: string | null): string | null => {
   return bareAddressMatch ? from.trim().toLowerCase() : null;
 };
 
+const isLegacyBrandString = (value: string | undefined | null): boolean => {
+  if (!value) return false;
+  const upper = value.trim().toUpperCase();
+  return upper === 'WIEZ' || upper === 'WEAZ' || upper === 'THREADLY';
+};
+
 const parseFromName = (from: string | null, fallback: string): string => {
   if (!from) {
     return fallback;
@@ -126,7 +132,10 @@ const parseFromName = (from: string | null, fallback: string): string => {
 
   const displayNameMatch = from.match(/^"?([^"<]+?)"?\s*<[^<>]+>$/);
   const parsed = cleanString(displayNameMatch?.[1]);
-  return parsed ?? fallback;
+  if (!parsed || isLegacyBrandString(parsed)) {
+    return fallback;
+  }
+  return parsed;
 };
 
 export const resolveEmailConfig = (
@@ -159,8 +168,11 @@ export const resolveEmailConfig = (
     );
     mode = 'log_only';
   }
+  const rawAppName = cleanString(config.get<string>('APP_NAME'));
   const appName =
-    cleanString(config.get<string>('APP_NAME')) ?? DEFAULT_APP_NAME;
+    (!rawAppName || isLegacyBrandString(rawAppName))
+      ? DEFAULT_APP_NAME
+      : rawAppName;
   const from = cleanString(config.get<string>('RESEND_FROM'));
   const fromAddress = parseFromAddress(from);
   const fromName = parseFromName(from, appName);

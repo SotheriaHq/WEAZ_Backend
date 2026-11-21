@@ -166,6 +166,9 @@ export function renderEmailShell(args: {
   const safeSupportLine = escapeHtml(
     `Need help? Reply to this email and the ${companyName} support team will help.`,
   );
+  const legalDisclosure = escapeHtml(
+    `${companyName} is operated by Soteria Genesis Limited. All rights reserved.`,
+  );
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -196,7 +199,8 @@ export function renderEmailShell(args: {
   </td></tr>
   <tr><td style="padding:18px 32px;background:${EMAIL_COLORS.brandDark};border:1px solid ${EMAIL_COLORS.brandDark};border-top:1px solid ${EMAIL_COLORS.brandAccent};border-radius:0 0 18px 18px">
     <p style="margin:0 0 6px;color:#e5e7eb;font-size:12px;line-height:1.6">${safeSupportLine}</p>
-    <p style="margin:0;color:#aab2c0;font-size:12px;line-height:1.6">${safeFooterContext}</p>
+    <p style="margin:0 0 6px;color:#aab2c0;font-size:12px;line-height:1.6">${safeFooterContext}</p>
+    <p style="margin:0;color:#9ca3af;font-size:11px;line-height:1.5">${legalDisclosure}</p>
   </td></tr>
 </table>
 </body></html>`;
