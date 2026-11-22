@@ -437,21 +437,25 @@ export class TokenService {
         throw new UnauthorizedException('Invalid refresh token');
       }
 
-      if (storedToken.sessionVersion !== 1) throw new UnauthorizedException('Sign in again to secure this session');
+      // Codes below are only attached after the secret has been verified, so
+      // they never tell a caller holding just a session id anything. The
+      // revoked/expired check above stays generic (AUTH_REFRESH_INVALID, added
+      // by the controller) for the same reason.
+      if (storedToken.sessionVersion !== 1) throw new UnauthorizedException({ message: 'Sign in again to secure this session', code: 'AUTH_REAUTH_REQUIRED' });
       const tokens = await withSecurityTransaction(this.prisma, async (tx) => {
         const user = await this.lockAccount(tx, storedToken.userId);
         if (storedToken.issuedAuthVersion !== user.authVersion)
-          throw new UnauthorizedException('Account security changed. Please sign in again.');
-        if (user.mustResetPassword && this.isAdminRole(user.role)) throw new UnauthorizedException('Password reset required');
+          throw new UnauthorizedException({ message: 'Account security changed. Please sign in again.', code: 'AUTH_REAUTH_REQUIRED' });
+        if (user.mustResetPassword && this.isAdminRole(user.role)) throw new UnauthorizedException({ message: 'Password reset required', code: 'AUTH_REAUTH_REQUIRED' });
         let parent: RefreshToken | null = null;
         if (storedToken.parentSessionId) {
           parent = await tx.refreshToken.findFirst({ where: { id: storedToken.parentSessionId, userId: storedToken.userId,
             sessionVersion: 1, issuedAuthVersion: user.authVersion, riskState: { not: 'REVOKED' }, expiresAt: { gt: new Date() } } });
-          if (!parent) throw new UnauthorizedException('Parent session is no longer valid');
+          if (!parent) throw new UnauthorizedException({ message: 'Parent session is no longer valid', code: 'AUTH_SESSION_REVOKED' });
         }
         const origin = parent ?? storedToken;
         if (this.isAdminRole(user.role) && Date.now() - origin.createdAt.getTime() > ADMIN_ABSOLUTE_SESSION_TTL_MS) {
-          throw new UnauthorizedException('Admin session expired. Please log in again');
+          throw new UnauthorizedException({ message: 'Admin session expired. Please log in again', code: 'AUTH_REAUTH_REQUIRED' });
         }
         const refreshTtl = Math.min(this.getRefreshTtlForUser(user), this.isAdminRole(user.role) ? ADMIN_ABSOLUTE_SESSION_TTL_MS - (Date.now() - origin.createdAt.getTime()) : Infinity);
         const rotatedRefreshToken = await this.rotateRefreshToken(storedToken, req, refreshTtl, tx, parent);
