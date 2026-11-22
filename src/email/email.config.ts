@@ -173,9 +173,10 @@ export const resolveEmailConfig = (
     (!rawAppName || isLegacyBrandString(rawAppName))
       ? DEFAULT_APP_NAME
       : rawAppName;
-  const from = cleanString(config.get<string>('RESEND_FROM'));
-  const fromAddress = parseFromAddress(from);
-  const fromName = parseFromName(from, appName);
+  const rawFrom = cleanString(config.get<string>('RESEND_FROM'));
+  const fromAddress = parseFromAddress(rawFrom);
+  const fromName = parseFromName(rawFrom, appName);
+  const from = fromAddress ? `${fromName} <${fromAddress}>` : rawFrom;
   const replyTo = cleanString(config.get<string>('RESEND_REPLY_TO'));
   const redirectTo = cleanString(config.get<string>('SIT_EMAIL_REDIRECT_TO'));
   const dailyLimit = parseDailyLimit(
