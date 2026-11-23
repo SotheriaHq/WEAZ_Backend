@@ -8118,7 +8118,7 @@ export class CollectionsService {
             dislikesCount: number;
           }>
         >`
-        SELECT "_id" AS id, "visibility", "threadsCount", "dislikesCount"
+        SELECT "_id" AS id, "visibility", "likesCount" AS "threadsCount", "dislikesCount"
         FROM "Collection" WHERE "_id"=${collectionId}::uuid FOR UPDATE
       `;
         if (!locked.length) throw new NotFoundException('Collection not found');
@@ -8825,7 +8825,7 @@ export class CollectionsService {
         const locked = await tx.$queryRaw<
           Array<{ id: string; threadsCount: number }>
         >`
-        SELECT "_id" AS id, "threadsCount" FROM "CollectionMedia" WHERE "_id"=${mediaId}::uuid FOR UPDATE
+        SELECT "_id" AS id, "likesCount" AS "threadsCount" FROM "CollectionMedia" WHERE "_id"=${mediaId}::uuid FOR UPDATE
       `;
         if (!locked.length) throw new NotFoundException('Media not found');
         const existing = await tx.collectionMediaReaction.findUnique({

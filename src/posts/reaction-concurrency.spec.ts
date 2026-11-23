@@ -4,6 +4,21 @@ import { PostsService } from './posts.service';
 import { CollectionsService } from '../collections/collections.service';
 import { CommentsV2Service } from '../commentsv2/commentsv2.service';
 import { CommentsService } from './comments/comments.service';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
+/**
+ * The real column behind a Prisma field. Raw SQL bypasses `@map`, so a lock
+ * query naming the FIELD (`"threadsCount"`) fails in Postgres with 42703 —
+ * which is what every thread toggle did on SIT until 20 Nov 2026, while these
+ * in-memory tests passed.
+ */
+const schema = readFileSync(join(__dirname, '../../prisma/schema.prisma'), 'utf8');
+function columnFor(model: string, field: string): string {
+  const block = schema.match(new RegExp(`\\nmodel ${model} \\{([\\s\\S]*?)\\n\\}`))?.[1] ?? '';
+  const line = block.split('\n').find((entry) => entry.trim().startsWith(`${field} `)) ?? '';
+  return line.match(/@map\("([^"]+)"\)/)?.[1] ?? field;
+}
 
 /** In-memory DB semantics exercise the real methods; PostgreSQL lock behavior is an integration gate. */
 function reactionFixture(kind: 'post' | 'collection' | 'media' | 'comment' | 'legacy', initialCount = 0) {
@@ -45,6 +60,11 @@ function reactionFixture(kind: 'post' | 'collection' | 'media' | 'comment' | 'le
         const query = sql.join('?');
         expect(query).toContain(`FROM "${table}"`);
         expect(query).toContain('FOR UPDATE');
+        if (query.includes('threadsCount')) {
+          const column = columnFor(table, 'threadsCount');
+          // Selected by its real column name, aliased back to the field.
+          expect(query).toContain(column === 'threadsCount' ? '"threadsCount"' : `"${column}" AS "threadsCount"`);
+        }
         locks.push(query);
         const previous = tail;
         tail = new Promise<void>((resolve) => { release = resolve; });
