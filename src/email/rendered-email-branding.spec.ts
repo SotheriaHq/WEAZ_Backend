@@ -17,7 +17,7 @@ describe('Rendered Customer-Facing Email Branding & Legal Entity Suite', () => {
     // Note: Temporary asset filename stems (e.g. wiez-email-logo.png) and preserved
     // operational domains (e.g. weaz.me) are excluded from copy checks per PO Decisions 1 & 4.
     const copyOnly = text
-      .replace(/wiez-email-logo\.png/g, '')
+      .replace(/(?:aru|wiez)-email-logo\.png/g, '')
       .replace(/weaz\.me/g, '')
       .replace(/wiez\.me/g, '');
     expect(copyOnly).not.toMatch(/\bWIEZ\b/i);

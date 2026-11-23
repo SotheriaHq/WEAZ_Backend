@@ -34,7 +34,7 @@ export const EMAIL_COLORS = {
 
 const DEFAULT_COMPANY_NAME = PRODUCT_NAME;
 const DEFAULT_HEADER_SUBTITLE = PRODUCT_CATEGORY;
-const DEFAULT_COMPANY_LOGO_PATH = '/brand/wiez-email-logo.png';
+const DEFAULT_COMPANY_LOGO_PATH = '/brand/aru-email-logo.png';
 
 export function normalizeCompanyName(_value: string): string {
   return DEFAULT_COMPANY_NAME;
