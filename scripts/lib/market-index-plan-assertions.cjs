@@ -126,4 +126,91 @@ async function checkMarketIndexPlans(db, brand) {
   );
 }
 
-module.exports = { checkMarketIndexPlans };
+const PRIVACY_AGE_INDEXES = {
+  feed: ['user_feed_signals', 'user_feed_signals_createdAt__id_idx'],
+  seen: ['user_seen_items', 'user_seen_items_createdAt__id_idx'],
+  sections: [
+    'market_section_signals',
+    'market_section_signals_createdAt__id_idx',
+  ],
+  suggestions: ['suggestion_signals', 'suggestion_signals_createdAt__id_idx'],
+  receipts: [
+    'market_signal_batch_receipts',
+    'market_signal_batch_receipts_createdAt__id_idx',
+  ],
+};
+
+// Plans the exact production age statements (EXPLAIN without ANALYZE never
+// executes the DELETE) in the steady state the every-minute sweep sees: 20,000
+// fresh rows per identity table and only a few expired ones.
+async function checkPrivacyIndexPlans(db) {
+  require('ts-node').register({ transpileOnly: true });
+  const {
+    marketRetentionSteps,
+  } = require('../../src/market/intelligence/market-intelligence.sql');
+  // The application stores UTC wall-clock timestamps and connects in UTC.
+  await db.query("SET TIME ZONE 'UTC'");
+  // Append-only order: four expired rows first, then ~22 hours of fresh rows.
+  const age = `(statement_timestamp() AT TIME ZONE 'UTC')-CASE WHEN n<=4
+    THEN interval '2 days'-make_interval(secs=>n) ELSE make_interval(secs=>(20000-n)*3.9) END`;
+  await db.query(`INSERT INTO user_feed_signals ("_id","targetType","targetId","signalType","createdAt")
+    SELECT gen_random_uuid(),'PRODUCT','t'||n,'ITEM_IMPRESSION',${age} FROM generate_series(1,20000) n`);
+  await db.query(`INSERT INTO user_seen_items ("_id","targetType","targetId",surface,"seenAt","createdAt")
+    SELECT gen_random_uuid(),'PRODUCT','t'||n,'MARKET_HOME',${age},${age} FROM generate_series(1,20000) n`);
+  await db.query(`INSERT INTO market_section_signals ("_id","sectionKey","signalType","createdAt")
+    SELECT gen_random_uuid(),'fixture','SECTION_VIEW',${age} FROM generate_series(1,20000) n`);
+  await db.query(`INSERT INTO suggestion_signals ("_id","blockKey","signalType","createdAt")
+    SELECT gen_random_uuid(),'fixture','SECTION_VIEW',${age} FROM generate_series(1,20000) n`);
+  await db.query(`INSERT INTO market_signal_batch_receipts ("_id","batchId","createdAt")
+    SELECT gen_random_uuid(),'batch-'||n,${age} FROM generate_series(1,20000) n`);
+  const cutoff = (
+    await db.query(
+      `SELECT date_trunc('milliseconds',statement_timestamp()-interval '24 hours') AS cutoff`,
+    )
+  ).rows[0].cutoff;
+  let planned = 0;
+  for (const [kind, [table, index]] of Object.entries(PRIVACY_AGE_INDEXES)) {
+    await db.query('ANALYZE ' + table);
+    const [step] = marketRetentionSteps(kind, cutoff);
+    // The selection must be index-driven; joining its <=2,000 keys back to a
+    // tiny fixture table may legitimately hash a sequential scan.
+    for (const [statement, scanFree] of [
+      [step.delete, false],
+      [step.remaining, true],
+    ]) {
+      const plan = (
+        await db.query(
+          'EXPLAIN (FORMAT JSON) ' + statement.text,
+          statement.values,
+        )
+      ).rows[0]['QUERY PLAN'][0].Plan;
+      const names = [];
+      const seqScans = [];
+      (function visit(node) {
+        if (node['Index Name']) names.push(node['Index Name']);
+        if (node['Node Type'] === 'Seq Scan')
+          seqScans.push(node['Relation Name']);
+        for (const child of node.Plans || []) visit(child);
+      })(plan);
+      assert(
+        names.includes(index) && !(scanFree && seqScans.includes(table)),
+        kind +
+          ' privacy age statement must use ' +
+          index +
+          ': ' +
+          names.join(',') +
+          '; sequential: ' +
+          seqScans.join(','),
+      );
+      planned++;
+    }
+  }
+  await db.query('RESET TIME ZONE');
+  console.log(
+    'PASS ' +
+      planned +
+      ' production privacy age statements use (createdAt,_id) indexes on 20,000 rows per table; not a production latency/capacity claim',
+  );
+}
+
+module.exports = { checkMarketIndexPlans, checkPrivacyIndexPlans };

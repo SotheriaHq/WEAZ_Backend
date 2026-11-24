@@ -50,15 +50,22 @@ import { Request } from 'express';
 import { LegalActionDto } from 'src/legal/dto/legal-acceptance.dto';
 import { MarketFlagsService } from '../market/market-flags.service';
 import { MarketCatalogService } from '../market/catalog/market-catalog.service';
-import { createMarketCatalogScope, MarketCatalogViewer } from '../market/catalog/market-catalog-scope';
+import {
+  createMarketCatalogScope,
+  MarketCatalogViewer,
+} from '../market/catalog/market-catalog-scope';
 import {
   mapLegacyMarketPage,
   parseLegacyMarketRoute,
   isLegacyMarketCursor,
+  legacyMarketFallbackReason,
+  MarketLegacyFallbackLog,
 } from '../market/catalog/market-legacy-facade';
 
 @Controller()
 export class StoreController {
+  private readonly marketFallbackLog = new MarketLegacyFallbackLog();
+
   constructor(
     private readonly storeService: StoreService,
     private readonly sizeComputation: SizeComputationService,
@@ -399,9 +406,17 @@ export class StoreController {
           includeTotal: true,
           includeLegacyOptions: true,
         };
-        return mapLegacyMarketPage(
-          await this.marketCatalog.getPage(route.query, viewer, trusted),
-        );
+        try {
+          return mapLegacyMarketPage(
+            await this.marketCatalog.getPage(route.query, viewer, trusted),
+          );
+        } catch (error) {
+          // Refused before any database work: the existing V1 reader answers
+          // this unsigned request. Everything else surfaces unchanged.
+          const reason = legacyMarketFallbackReason(error, route);
+          if (!reason) throw error;
+          this.marketFallbackLog.record(reason);
+        }
       }
     }
     const resolvedSortBy = sortBy ?? sort;

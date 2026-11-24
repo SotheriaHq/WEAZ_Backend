@@ -21,7 +21,17 @@ export const MARKET_FEATURE_PARAMETERS = Object.freeze({
 export const MARKET_RAW_RETENTION_MS = 24 * 60 * 60_000;
 export const MARKET_FEATURE_CHUNK = 500;
 export const MARKET_WRITE_CHUNK = 2_000;
-export const MARKET_MAX_PRODUCTS = 100_000;
+export const MARKET_JOB_BUDGET_MS = 90_000;
+/** Slowest measured local rate per product per transaction: 10,000 products
+ * took 13,175 ms to refresh and 13,360 ms to snapshot. */
+export const MARKET_MEASURED_MS_PER_PRODUCT = 1.336;
+/** A concurrent-load run already hit the 3-second statement limit at that
+ * size, so capacity assumes work can run three times slower under contention. */
+export const MARKET_CONTENTION_FACTOR = 3;
+/** 90,000 / (1.336 x 3) = 22,455 products, rounded down to 20,000. That is
+ * about 26.7 s of uncontended work per transaction. Raising it requires new
+ * capacity evidence, never a longer transaction timeout. */
+export const MARKET_MAX_PRODUCTS = 20_000;
 export const MARKET_FEATURE_MAX_SOURCE_AGE_MS = 2 * 60 * 60_000;
 export const MARKET_SNAPSHOT_MIN_PUBLICATION_MS = 10 * 60_000;
 export const MARKET_SNAPSHOT_MAX_BUCKET_GENERATIONS = 32;
@@ -35,12 +45,15 @@ export interface MarketLexiconRebuilder {
 }
 
 export interface MarketIntelligenceResult {
-  status: 'completed' | 'skipped' | 'backlog';
+  status: 'completed' | 'skipped' | 'backlog' | 'failed';
   rows: number;
   sourceAsOf?: string;
   epochId?: string;
   reason?: string;
   retainedBytes?: number;
+  products?: number;
+  pendingClasses?: string[];
+  failedClasses?: string[];
 }
 
 export interface MarketSnapshotReadSummary {

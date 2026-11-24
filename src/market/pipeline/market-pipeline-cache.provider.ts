@@ -13,6 +13,7 @@ export function createMarketPipelineCache(
 ): PipelineCandidateCache {
   return new RedisPipelineCandidateCache({
     hGet: async (key, field) => (await queue.client).hget(key, field),
+    hmGet: async (key, fields) => (await queue.client).hmget(key, ...fields),
     eval: async (script, { keys, arguments: args }) =>
       (await queue.client).eval(script, keys.length, ...keys, ...args),
   });

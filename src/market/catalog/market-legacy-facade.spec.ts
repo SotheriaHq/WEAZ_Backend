@@ -1,14 +1,21 @@
 import 'reflect-metadata';
+import { Logger } from '@nestjs/common';
 import { StoreController } from '../../store/store.controller';
 import { StoreService } from '../../store/store.service';
 import { SizeComputationService } from '../../sizing/size-computation.service';
 import { MarketFlagsService } from '../market-flags.service';
 import { MarketSectionItemDto } from '../dto/market-section.dto';
-import { MarketCatalogService } from './market-catalog.service';
+import {
+  MarketCatalogNotStartedException,
+  MarketCatalogService,
+} from './market-catalog.service';
+import { MarketCatalogAdmissionException } from './market-catalog-read.service';
 import {
   parseLegacyMarketRoute,
   mapLegacyMarketPage,
   LegacyMarketCataloguePage,
+  MarketLegacyFallbackLog,
+  MARKET_LEGACY_FALLBACK_LOG_INTERVAL_MS,
 } from './market-legacy-facade';
 
 const product = '00000000-0000-0000-0000-000000000001';
@@ -225,7 +232,19 @@ describe('legacy Market translation', () => {
   });
 });
 
+const busy = () =>
+  new MarketCatalogNotStartedException('ADMISSION', {
+    code: 'CATALOGUE_BUSY',
+    message: 'The catalogue is busy. Please try again shortly.',
+  });
+const unconfigured = () =>
+  new MarketCatalogNotStartedException('CURSOR_CONFIGURATION', {
+    code: 'CATALOGUE_CURSOR_UNAVAILABLE',
+    message: 'The catalogue is updating. Please try again shortly.',
+  });
+
 describe('legacy Market card serialization', () => {
+  afterEach(() => jest.restoreAllMocks());
   it('maps real current data, signed media and exact total without exposing internal records', () => {
     const source = page();
     const result = mapLegacyMarketPage(source);
@@ -277,15 +296,50 @@ describe('legacy Market card serialization', () => {
       );
     },
   );
-  it('refuses incomplete selling options instead of silently hiding selectors', () => {
+  it('refuses a page without selling options instead of silently hiding selectors', () => {
     responseCode(
       () => mapLegacyMarketPage({ ...page(), legacyOptions: undefined }),
       'CATALOGUE_FACADE_UNAVAILABLE',
     );
-    responseCode(
-      () => mapLegacyMarketPage({ ...page(), legacyOptions: new Map() }),
-      'CATALOGUE_FACADE_UNAVAILABLE',
-    );
+  });
+  it('omits only a card that cannot be serialized completely and reports its ID', () => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    const complete = { ...item(), id: brand };
+    const source = page();
+    const options = source.legacyOptions!.get(product)!;
+    const result = mapLegacyMarketPage({
+      ...source,
+      items: [item(), complete],
+      legacyOptions: new Map([[brand, options]]),
+    });
+    expect(result.items.map((value) => value.id)).toEqual([brand]);
+    expect(result.total).toBe(43);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith({
+      event: 'market.legacy_facade.items_dropped',
+      count: 1,
+      productIds: [product],
+    });
+    for (const broken of [
+      { ...item(), price: null },
+      { ...item(), media: null },
+      { ...item(), availability: null },
+      { ...item(), entityType: 'DESIGN' as const },
+    ])
+      expect(
+        mapLegacyMarketPage({
+          ...source,
+          items: [broken as unknown as MarketSectionItemDto],
+        }).items,
+      ).toEqual([]);
+    expect(
+      mapLegacyMarketPage({
+        ...source,
+        legacyOptions: new Map([[product, { ...options, gallery: [] }]]),
+      }).items,
+    ).toEqual([]);
   });
   it('retains every signed gallery view and public style details without passing through unknown data', () => {
     const source = page(),
@@ -430,6 +484,54 @@ describe('Store Market facade dispatch', () => {
     await expect(invoke('/products/market')).rejects.toBe(error);
     expect(legacy).not.toHaveBeenCalled();
   });
+  it.each([
+    ['admission refusal', busy],
+    ['unavailable cursor configuration', unconfigured],
+  ])(
+    'serves an unsigned request on V1 after a %s before any database work',
+    async (_, refusal) => {
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      const { legacy, canonical, invoke } = fixture();
+      canonical.mockRejectedValue(refusal());
+      await expect(
+        invoke('/products/market?sortBy=price_asc&gender=MALE', { id: user }),
+      ).resolves.toEqual({ legacy: true });
+      expect(canonical).toHaveBeenCalledTimes(1);
+      expect(legacy).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'market.legacy_facade.v1_fallback',
+          reason: refusal().reason,
+        }),
+      );
+      warn.mockRestore();
+    },
+  );
+  it('keeps a signed continuation on the canonical error even when refused before database work', async () => {
+    const { legacy, canonical, invoke } = fixture();
+    const cursor = 'a'.repeat(20) + '.' + 'b'.repeat(43);
+    for (const refusal of [busy(), unconfigured()]) {
+      canonical.mockRejectedValueOnce(refusal);
+      await expect(invoke('/products/market?cursor=' + cursor)).rejects.toBe(
+        refusal,
+      );
+    }
+    expect(legacy).not.toHaveBeenCalled();
+  });
+  it('does not fall back for a refusal after capture or for unmapped pages', async () => {
+    const { legacy, canonical, invoke } = fixture();
+    const afterCapture = new MarketCatalogAdmissionException();
+    canonical.mockRejectedValueOnce(afterCapture);
+    await expect(invoke('/products/market')).rejects.toBe(afterCapture);
+    canonical.mockResolvedValueOnce({ ...page(), total: undefined });
+    await expect(invoke('/products/market')).rejects.toMatchObject({
+      response: { code: 'CATALOGUE_FACADE_UNAVAILABLE' },
+    });
+    expect(legacy).not.toHaveBeenCalled();
+  });
+
   it('keeps feature-incompatible V1 requests on their existing implementation', async () => {
     const { legacy, canonical, invoke } = fixture();
     await expect(
@@ -437,5 +539,29 @@ describe('Store Market facade dispatch', () => {
     ).resolves.toEqual({ legacy: true });
     expect(legacy).toHaveBeenCalledTimes(1);
     expect(canonical).not.toHaveBeenCalled();
+  });
+});
+
+describe('legacy Market fallback reporting', () => {
+  it('warns once per reason per interval and reports the suppressed count', () => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    let now = 1000;
+    const log = new MarketLegacyFallbackLog(() => now);
+    log.record('ADMISSION');
+    log.record('ADMISSION');
+    log.record('ADMISSION');
+    log.record('CURSOR_CONFIGURATION');
+    expect(warn).toHaveBeenCalledTimes(2);
+    now += MARKET_LEGACY_FALLBACK_LOG_INTERVAL_MS;
+    log.record('ADMISSION');
+    expect(warn).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenLastCalledWith({
+      event: 'market.legacy_facade.v1_fallback',
+      reason: 'ADMISSION',
+      suppressedSincePreviousWarning: 2,
+    });
+    warn.mockRestore();
   });
 });

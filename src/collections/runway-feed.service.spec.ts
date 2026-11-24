@@ -1,3 +1,8 @@
+import {
+  RUNWAY_BEHAVIOR_CACHE_VERSION,
+  RUNWAY_BEHAVIOR_USABLE_WINDOW_MS,
+  RUNWAY_SESSION_MS,
+} from './runway-affinity-retention';
 import { RunwayFeedService } from './runway-feed.service';
 import { emptyRunwayAffinity } from './runway-ranking.util';
 describe('Runway session pagination and privacy', () => {
@@ -117,43 +122,175 @@ describe('Runway session pagination and privacy', () => {
       ).ids,
     ).toEqual([]);
   });
-  it('caps a personalized session at the oldest contribution deadline', async () => {
+  it('keeps behaviour ranking for a full session when its evidence outlives it', async () => {
     const { service, prisma } = setup();
     const affinity = emptyRunwayAffinity();
-    const deadline = Date.now() + 1_000;
-    (service as any).affinitySourceDeadlines.set(affinity, deadline);
+    affinity.brands.set('favourite-brand', 12);
+    (service as any).affinitySourceDeadlines.set(
+      affinity,
+      Date.now() + RUNWAY_SESSION_MS + 60_000,
+    );
     (service as any).affinity.mockResolvedValue(affinity);
     await service.page({}, 'viewer', 'for-you', undefined, 3);
-    expect(
-      prisma.runwayFeedSession.create.mock.calls[0][0].data.expiresAt,
-    ).toEqual(new Date(deadline));
-    expect(
-      prisma.runwayFeedSession.create.mock.calls[0][0].data.categoryKey,
-    ).toMatch(/^runway-r1-v1:/);
+    expect((service as any).candidateIds).toHaveBeenCalledWith({}, 40, false, {
+      owners: ['favourite-brand'],
+    });
+    const data = prisma.runwayFeedSession.create.mock.calls[0][0].data;
+    expect(data.expiresAt.getTime() - data.createdAt.getTime()).toBe(
+      RUNWAY_SESSION_MS,
+    );
+    expect(data.categoryKey).toMatch(/^runway-r1-v1:/);
   });
-  it('rejects expired behavior after a slow session write and on subsequent cursor reads', async () => {
+  it('ranks without behaviour that would expire mid-session and keeps paging past its deadline', async () => {
     const now = new Date('2026-11-21T12:00:00.000Z');
     jest.useFakeTimers().setSystemTime(now);
     try {
       const { service, prisma } = setup();
       const affinity = emptyRunwayAffinity();
+      affinity.brands.set('favourite-brand', 12);
       (service as any).affinitySourceDeadlines.set(
         affinity,
-        now.getTime() + 10,
+        now.getTime() + 1_000,
       );
       (service as any).affinity.mockResolvedValue(affinity);
-      const create = prisma.runwayFeedSession.create.getMockImplementation()!;
-      prisma.runwayFeedSession.create.mockImplementation(async (args) => {
-        await create(args);
-        jest.setSystemTime(new Date(now.getTime() + 11));
+      const first = await service.page({}, 'viewer', 'for-you', undefined, 3);
+      expect((service as any).candidateIds).not.toHaveBeenCalledWith(
+        {},
+        40,
+        false,
+        { owners: ['favourite-brand'] },
+      );
+      expect(
+        prisma.runwayFeedSession.create.mock.calls[0][0].data.expiresAt,
+      ).toEqual(new Date(now.getTime() + RUNWAY_SESSION_MS));
+      expect(first.ids).toHaveLength(3);
+      jest.setSystemTime(new Date(now.getTime() + 2_000));
+      const second = await service.page(
+        {},
+        'viewer',
+        'for-you',
+        first.nextCursor!,
+        3,
+      );
+      expect(second.ids).toHaveLength(3);
+      expect(second.ids.some((id) => first.ids.includes(id))).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+  it('continues with non-personalised ranking when behaviour expires during construction', async () => {
+    const now = new Date('2026-11-21T12:00:00.000Z');
+    jest.useFakeTimers().setSystemTime(now);
+    try {
+      const { service, prisma, rows } = setup();
+      const behaviourOnly = {
+        ...rows[0],
+        id: '00000000-0000-0000-0000-0000000000aa',
+      };
+      const catalogue = [...rows, behaviourOnly];
+      prisma.collection.findMany.mockImplementation(async ({ where }) =>
+        catalogue.filter((row) => where.AND[1].id.in.includes(row.id)),
+      );
+      const affinity = emptyRunwayAffinity();
+      affinity.brands.set('favourite-brand', 12);
+      const deadline = now.getTime() + RUNWAY_SESSION_MS + 10;
+      (service as any).affinitySourceDeadlines.set(affinity, deadline);
+      (service as any).affinity.mockResolvedValue(affinity);
+      (service as any).candidateIds.mockImplementation(
+        async (_where, _take, _popular, related) => {
+          if (!related?.owners) return rows.map((row) => ({ id: row.id }));
+          jest.setSystemTime(new Date(deadline + 1));
+          return [{ id: behaviourOnly.id }];
+        },
+      );
+      const page = await service.page({}, 'viewer', 'for-you', undefined, 20);
+      expect(page.ids).toHaveLength(rows.length);
+      expect(page.ids).not.toContain(behaviourOnly.id);
+      expect(
+        prisma.runwayFeedSession.create.mock.calls[0][0].data.designIds,
+      ).not.toContain(behaviourOnly.id);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+  it('checks the account once per cursor page and reuses it for first-page affinity', async () => {
+    const { service, prisma } = setup();
+    const first = await service.page({}, 'viewer', 'discover', undefined, 3);
+    expect((service as any).affinity).toHaveBeenCalledWith(
+      'viewer',
+      'discover',
+      expect.any(Date),
+      true,
+    );
+    expect(prisma.user.findUnique).toHaveBeenCalledTimes(2);
+    prisma.user.findUnique.mockClear();
+    await service.page({}, 'viewer', 'discover', first.nextCursor!, 3);
+    expect(prisma.user.findUnique).toHaveBeenCalledTimes(1);
+  });
+  it('builds affinity without a second account read when the request verified it', async () => {
+    const prisma: any = {
+      user: { findUnique: jest.fn() },
+      personalizationReset: { findFirst: jest.fn().mockResolvedValue(null) },
+      runwayAffinityCache: { findUnique: jest.fn().mockResolvedValue(null) },
+    };
+    const service = new RunwayFeedService(prisma);
+    const build = jest
+      .spyOn(service as any, 'buildAffinity')
+      .mockResolvedValue(emptyRunwayAffinity());
+    await (service as any).affinity('viewer', 'for-you', new Date(), true);
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    expect(build.mock.calls[0][3]).toBe(true);
+  });
+  it('rebuilds instead of reusing a cached profile that expires within a session', async () => {
+    const now = new Date('2026-11-21T12:00:00.000Z');
+    jest.useFakeTimers().setSystemTime(now);
+    try {
+      const cache = (sourceWindowStart: Date) => ({
+        payload: {
+          version: RUNWAY_BEHAVIOR_CACHE_VERSION,
+          retentionHours: 24,
+          sourceWindowStart: sourceWindowStart.toISOString(),
+          sourceWindowEnd: now.toISOString(),
+          brands: [['cached-brand', 4]],
+          tags: [],
+          categories: [],
+          fashion: [],
+          seen: [],
+          negative: [],
+        },
+        builtAt: now,
+        expiresAt: new Date(now.getTime() + 30_000),
       });
-      expect(
-        (await service.page({}, 'viewer', 'for-you', undefined, 3)).ids,
-      ).toEqual([]);
-      const id = prisma.runwayFeedSession.create.mock.calls[0][0].data.id;
-      expect(
-        (await service.page({}, 'viewer', 'for-you', `rw_${id}_3`, 3)).ids,
-      ).toEqual([]);
+      const prisma: any = {
+        user: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValue({ status: 'ACTIVE', deactivatedAt: null }),
+        },
+        personalizationReset: { findFirst: jest.fn().mockResolvedValue(null) },
+        runwayAffinityCache: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValueOnce(
+              cache(new Date(now.getTime() - 86_400_000 + 60_000)),
+            )
+            .mockResolvedValueOnce(cache(new Date(now.getTime() - 3_600_000))),
+        },
+      };
+      const service = new RunwayFeedService(prisma);
+      const build = jest
+        .spyOn(service as any, 'buildAffinity')
+        .mockResolvedValue(emptyRunwayAffinity());
+      const nearEdge = await (service as any).affinity(
+        'viewer',
+        'for-you',
+        now,
+      );
+      expect(build).toHaveBeenCalledTimes(1);
+      expect(nearEdge.brands.size).toBe(0);
+      const current = await (service as any).affinity('viewer', 'for-you', now);
+      expect(build).toHaveBeenCalledTimes(1);
+      expect(current.brands.get('cached-brand')).toBe(4);
     } finally {
       jest.useRealTimers();
     }
@@ -278,12 +415,14 @@ describe('Runway session pagination and privacy', () => {
     expect(result.seen.size).toBe(0);
   });
 
-  it('discards a profile whose first source crosses24h while cache persistence is pending', async () => {
+  it('discards a profile whose cache lifetime ends while persistence is pending', async () => {
     const now = new Date('2026-11-21T12:00:00.000Z');
     jest.useFakeTimers().setSystemTime(now);
     try {
       const reads = { findMany: jest.fn().mockResolvedValue([]) };
-      const source = new Date(now.getTime() - 86_400_000 + 10);
+      const source = new Date(
+        now.getTime() - RUNWAY_BEHAVIOR_USABLE_WINDOW_MS + 10,
+      );
       const prisma: any = {
         user: {
           findUnique: jest
@@ -304,11 +443,16 @@ describe('Runway session pagination and privacy', () => {
               signalType: 'IMPRESSION',
               createdAt: source,
             },
+            {
+              targetId: '00000000-0000-0000-0000-000000000002',
+              signalType: 'IMPRESSION',
+              createdAt: new Date(now.getTime() - 86_400_000 + 10),
+            },
           ]),
         },
         runwayAffinityCache: {
           upsert: jest.fn().mockImplementation(() => {
-            jest.setSystemTime(new Date(now.getTime() + 11));
+            jest.setSystemTime(new Date(now.getTime() + 30_001));
             return Promise.resolve({});
           }),
         },
@@ -320,11 +464,16 @@ describe('Runway session pagination and privacy', () => {
       expect(result.seen.size).toBe(0);
       const cache = prisma.runwayAffinityCache.upsert.mock.calls[0][0].create;
       expect(cache.payload.version).toBe('runway-r1-v1');
-      expect(cache.expiresAt).toEqual(new Date(now.getTime() + 10));
+      // Sources inside 24h but outside the usable window never set the deadline.
+      expect(cache.payload.sourceWindowStart).toBe(source.toISOString());
+      expect(cache.payload.seen).toEqual([
+        '00000000-0000-0000-0000-000000000001',
+      ]);
+      expect(cache.expiresAt).toEqual(new Date(now.getTime() + 30_000));
       expect(
         prisma.userFeedSignal.findMany.mock.calls[0][0].where.createdAt,
       ).toEqual({
-        gte: new Date(now.getTime() - 86_400_000),
+        gte: new Date(now.getTime() - RUNWAY_BEHAVIOR_USABLE_WINDOW_MS),
         lte: now,
       });
     } finally {

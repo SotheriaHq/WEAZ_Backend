@@ -143,6 +143,22 @@ describe('evidence-based Market-wide sort admission', () => {
       valid.id,
     );
   });
+  it('validates a pinned epoch without whole-catalogue probes when probing is skipped', async () => {
+    const { tx, query, byId } = fixture(epoch(), [rows(8), rows(8)]);
+    await expect(
+      marketSortAvailability(tx, now, cursor(), { probe: false }),
+    ).resolves.toEqual({
+      available: ordered,
+      epoch: expect.objectContaining({ id: epochId }),
+      currentMissing: false,
+    });
+    expect(byId).toHaveBeenCalledTimes(1);
+    expect(query).not.toHaveBeenCalled();
+    const stale = fixture(epoch({ generation: 2n }));
+    await expect(
+      marketSortAvailability(stale.tx, now, cursor(), { probe: false }),
+    ).resolves.toMatchObject({ epoch: null, currentMissing: true });
+  });
   it('does not advertise popular/trending below eight qualifying Market products', async () => {
     const { tx } = fixture(epoch(), [
       rows(7),

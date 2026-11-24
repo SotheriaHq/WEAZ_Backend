@@ -20,7 +20,10 @@ import { MarketFlagsService } from './market-flags.service';
 import { legacyPipelineSection } from './market-pipeline-facade';
 import { Throttle } from '@nestjs/throttler';
 import { MarketCatalogViewer } from './catalog/market-catalog-scope';
-import { parseMarketPageRequest } from './market-page.controller';
+import {
+  parseMarketPageRequest,
+  requestAbortScope,
+} from './market-page.controller';
 
 @ApiTags('market')
 @IsPublic()
@@ -87,7 +90,13 @@ export class MarketSectionController {
         query,
         req?.user?.id ?? req?.user?.sub,
       );
-      const page = await this.delivery.page(input);
+      const scope = requestAbortScope(req);
+      let page: Awaited<ReturnType<MarketPipelineDeliveryService['page']>>;
+      try {
+        page = await this.delivery.page({ ...input, signal: scope.signal });
+      } finally {
+        scope.dispose();
+      }
       return {
         generatedAt: page.generatedAt,
         sections: page.sections.map((section) =>
@@ -141,11 +150,19 @@ export class MarketSectionController {
           message: 'Do not repeat Market controls.',
         });
       query.delete('anonymousSessionId');
-      const result = await this.pipeline.getSection({
-        key,
-        viewer: this.viewer(req, anonymousSessionId),
-        query,
-      });
+      const viewer = this.viewer(req, anonymousSessionId);
+      const scope = requestAbortScope(req);
+      let result: Awaited<ReturnType<MarketPipelineService['getSection']>>;
+      try {
+        result = await this.pipeline.getSection({
+          key,
+          viewer,
+          query,
+          signal: scope.signal,
+        });
+      } finally {
+        scope.dispose();
+      }
       if (result.kind === 'catalogue')
         return {
           generatedAt: result.data.meta?.asOf ?? new Date().toISOString(),

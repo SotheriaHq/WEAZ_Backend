@@ -1,10 +1,18 @@
 import {
   BadRequestException,
+  Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { MarketSectionItemDto } from '../dto/market-section.dto';
 import { parseMarketCatalogRequest } from './market-catalog-request';
-import type { MarketLegacySellingOptions } from './market-catalog.service';
+import {
+  MarketCatalogNotStartedException,
+  type MarketCatalogNotStartedReason,
+  type MarketLegacySellingOptions,
+} from './market-catalog.service';
+
+const logger = new Logger('MarketLegacyFacade');
+export const MARKET_LEGACY_FALLBACK_LOG_INTERVAL_MS = 60_000;
 
 export type LegacyMarketRoute =
   | Readonly<{ kind: 'legacy' }>
@@ -149,6 +157,52 @@ export function parseLegacyMarketRoute(
   });
 }
 
+/**
+ * A translated request without a signed cursor may be answered by V1 only when
+ * the canonical read was refused before any database work began. Validation
+ * errors, queries that ran and failed, and signed continuations never cross.
+ */
+export function legacyMarketFallbackReason(
+  error: unknown,
+  route: Readonly<{ query: URLSearchParams }>,
+): MarketCatalogNotStartedReason | null {
+  if (
+    route.query.has('cursor') ||
+    !(error instanceof MarketCatalogNotStartedException)
+  )
+    return null;
+  return error.reason;
+}
+
+/** Bounded fallback reporting: one warning per reason per interval, with the
+ * number of further fallbacks since the previous warning for that reason. */
+export class MarketLegacyFallbackLog {
+  private readonly windows = new Map<
+    MarketCatalogNotStartedReason,
+    { startedAt: number; suppressed: number }
+  >();
+
+  constructor(private readonly clock: () => number = () => performance.now()) {}
+
+  record(reason: MarketCatalogNotStartedReason): void {
+    const now = this.clock();
+    const window = this.windows.get(reason);
+    if (
+      window &&
+      now - window.startedAt < MARKET_LEGACY_FALLBACK_LOG_INTERVAL_MS
+    ) {
+      window.suppressed++;
+      return;
+    }
+    logger.warn({
+      event: 'market.legacy_facade.v1_fallback',
+      reason,
+      suppressedSincePreviousWarning: window?.suppressed ?? 0,
+    });
+    this.windows.set(reason, { startedAt: now, suppressed: 0 });
+  }
+}
+
 export type LegacyMarketSellingOptions = MarketLegacySellingOptions;
 export interface LegacyMarketCataloguePage {
   readonly items: readonly MarketSectionItemDto[];
@@ -178,7 +232,8 @@ export function mapLegacyMarketPage(page: LegacyMarketCataloguePage) {
       code: 'CATALOGUE_FACADE_UNAVAILABLE',
       message: 'The Market is updating. Please try again shortly.',
     });
-  const items = page.items.map((item) => {
+  const dropped: string[] = [];
+  const items = page.items.flatMap((item) => {
     const options = page.legacyOptions!.get(item.id);
     if (
       item.entityType !== 'PRODUCT' ||
@@ -187,11 +242,12 @@ export function mapLegacyMarketPage(page: LegacyMarketCataloguePage) {
       !item.price ||
       !item.availability ||
       !item.media?.url
-    )
-      throw new ServiceUnavailableException({
-        code: 'CATALOGUE_FACADE_UNAVAILABLE',
-        message: 'The Market is updating. Please try again shortly.',
-      });
+    ) {
+      // One card that cannot be serialized completely is omitted, never sent
+      // with missing selectors or media, and never fails the whole page.
+      dropped.push(item.id);
+      return [];
+    }
     const media = options.gallery.map((gallery) => ({
       url: gallery.url,
       fileId: gallery.fileId,
@@ -275,6 +331,12 @@ export function mapLegacyMarketPage(page: LegacyMarketCataloguePage) {
       updatedAt: item.updatedAt,
     };
   });
+  if (dropped.length)
+    logger.warn({
+      event: 'market.legacy_facade.items_dropped',
+      count: dropped.length,
+      productIds: dropped,
+    });
   return {
     items,
     total: page.total!,

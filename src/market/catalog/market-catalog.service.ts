@@ -8,7 +8,10 @@ import { createHash } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { MarketPublicMediaService } from './market-public-media.service';
 import { eligibleProductWhere } from '../eligibility/market-eligibility';
-import { MarketCatalogReadService } from './market-catalog-read.service';
+import {
+  MarketCatalogAdmissionException,
+  MarketCatalogReadService,
+} from './market-catalog-read.service';
 import {
   MarketCursorCodec,
   MarketCursorState,
@@ -46,7 +49,7 @@ import { readMarketFacets } from './market-facets';
 import { validateMarketDimensionLayers } from './market-filter-dictionary';
 import { MARKET_FEATURE_MAX_SOURCE_AGE_MS } from '../intelligence/market-intelligence.contracts';
 import { rememberReadResource } from '../../auth/access/read-resource-context';
-import { marketProductFiltersSql } from './market-filter.sql';
+import { marketCatalogProductFiltersSql } from './market-filter.sql';
 
 interface CatalogRow extends MarketOrderedRow {
   score?: number;
@@ -93,6 +96,19 @@ export interface MarketLegacySellingOptions {
     colorHex: string | null;
   }[];
 }
+export type MarketCatalogNotStartedReason =
+  | 'ADMISSION'
+  | 'CURSOR_CONFIGURATION';
+/** The canonical read was refused before any database work began. The public
+ * response is unchanged; only a compatibility caller may act on the reason. */
+export class MarketCatalogNotStartedException extends ServiceUnavailableException {
+  constructor(
+    readonly reason: MarketCatalogNotStartedReason,
+    response: { readonly code: string; readonly message: string },
+  ) {
+    super(response);
+  }
+}
 const isOrdered = (
   sort: CatalogSort,
 ): sort is 'newest' | 'price_asc' | 'price_desc' =>
@@ -114,7 +130,7 @@ export class MarketCatalogService {
         this.config.get<string>('MARKET_CURSOR_SECRET_PREVIOUS') || undefined,
       );
     } catch {
-      throw new ServiceUnavailableException({
+      throw new MarketCatalogNotStartedException('CURSOR_CONFIGURATION', {
         code: 'CATALOGUE_CURSOR_UNAVAILABLE',
         message: 'The catalogue is updating. Please try again shortly.',
       });
@@ -138,9 +154,20 @@ export class MarketCatalogService {
       trusted?.scope ??
       createMarketCatalogScope({ key: 'catalog', version: '1', viewer });
     const fixedFilters = trusted?.fixedFilters ?? {};
-    const captured = await this.reads.run((tx) =>
-      this.capturePage(tx, request, codec, scope, fixedFilters, trusted),
-    );
+    const captured = await this.reads
+      .run((tx) =>
+        this.capturePage(tx, request, codec, scope, fixedFilters, trusted),
+      )
+      .catch((error: unknown) => {
+        // Only the first admission precedes all database work. A refusal of
+        // the later media authorization read is a failure of a query that ran.
+        if (error instanceof MarketCatalogAdmissionException)
+          throw new MarketCatalogNotStartedException('ADMISSION', {
+            code: 'CATALOGUE_BUSY',
+            message: 'The catalogue is busy. Please try again shortly.',
+          });
+        throw error;
+      });
     const authorizedGallery = new Map<string, ReadonlySet<string>>();
     const delivery = await this.media.resolve(async (tx) => {
       const { asOf: now } = await captureMarketReadContext(tx, false);
@@ -162,7 +189,7 @@ export class MarketCatalogService {
               JOIN "ProductMedia" media ON media."productId"=p."_id" AND media."fileUploadId"=expected."fileId" AND media."reviewStatus"='APPROVED'
               JOIN "FileUpload" file ON file."_id"=expected."fileId" AND file."assetVersion"=expected."assetVersion"
                 AND file."processingStatus"='READY' AND file."originalDeletedAt" IS NULL AND file."mimeType" IN ('image/jpeg','image/png','image/webp','image/avif','image/gif')
-              WHERE ${marketProductFiltersSql([request.filters, fixedFilters], now, 'p', captured.scope)}
+              WHERE ${marketCatalogProductFiltersSql([request.filters, fixedFilters], now, 'p', captured.scope)}
               GROUP BY p."_id" HAVING bool_or(expected."isCover") LIMIT 61`,
           )
         : [];
@@ -247,9 +274,7 @@ export class MarketCatalogService {
     });
     const renderable = signed.filter((item) => delivery.value.has(item.id));
     const items = renderable.slice(0, request.limit);
-    const hasNextPage =
-      renderable.length > request.limit ||
-      captured.rows.length === captured.scanLimit;
+    const hasNextPage = renderable.length > request.limit || captured.lookAhead;
     const lastId =
       renderable.length > request.limit
         ? items[items.length - 1]?.id
@@ -465,7 +490,11 @@ export class MarketCatalogService {
     let reanchored = decoded?.kind === 'reanchor';
     let notice: 'Updated' | 'Prices updated' | null =
       decoded?.kind === 'reanchor' ? decoded.notice : null;
-    let availability = await marketSortAvailability(tx, asOf, cursor);
+    // A verified ordered continuation keeps its sort; repeating the
+    // whole-catalogue evidence probes on every page would not change it.
+    let availability = await marketSortAvailability(tx, asOf, cursor, {
+      probe: !(cursor && isOrdered(cursor.sort as CatalogSort)),
+    });
     if (cursor?.epoch && availability.currentMissing) {
       availability = await marketSortAvailability(tx, asOf, null);
       cursor = null;
@@ -531,12 +560,17 @@ export class MarketCatalogService {
         }),
       );
     }
+    // The final row of a full scan is look-ahead only: it proves that a row
+    // exists after the anchor without another query, so a cursor never leads
+    // to a page with no candidates. It is never hydrated or used as the anchor.
+    const lookAhead = rows.length === scanLimit;
+    if (lookAhead) rows = rows.slice(0, -1);
     const cards = await captureMarketCatalogCards(tx, { rows, asOf });
     let total: number | undefined;
     if (legacy?.includeTotal) {
       const counts = await tx.$queryRaw<Array<{ count: string }>>(
         isOrdered(sort)
-          ? Prisma.sql`SELECT count(*)::text AS count FROM "Product" p WHERE ${marketProductFiltersSql([request.filters, fixedFilters], asOf, 'p', scope)}${sort === 'newest' ? Prisma.sql` AND p."firstPublishedAt" IS NOT NULL AND p."firstPublishedAt"<=${asOf.toISOString()}::timestamptz` : Prisma.empty}`
+          ? Prisma.sql`SELECT count(*)::text AS count FROM "Product" p WHERE ${marketCatalogProductFiltersSql([request.filters, fixedFilters], asOf, 'p', scope)}${sort === 'newest' ? Prisma.sql` AND p."firstPublishedAt" IS NOT NULL AND p."firstPublishedAt"<=${asOf.toISOString()}::timestamptz` : Prisma.empty}`
           : marketSnapshotPageSql({
               epochId: availability.epoch!.id,
               sort,
@@ -609,7 +643,7 @@ export class MarketCatalogService {
       cards,
       total,
       legacyOptions,
-      scanLimit,
+      lookAhead,
       sort,
       asOf,
       snapshot,

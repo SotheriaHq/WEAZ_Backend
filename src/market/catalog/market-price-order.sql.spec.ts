@@ -4,6 +4,7 @@ import {
   marketNextPriceBoundarySql,
   MARKET_PRICE_DIRTY_LIMIT,
 } from './market-price-order.sql';
+import { eligibleProductSql } from '../eligibility/market-eligibility';
 
 describe('price-reader admission boundaries', () => {
   const now = new Date('2026-11-20T12:00:00.000Z');
@@ -41,6 +42,15 @@ describe('price-reader admission boundaries', () => {
     expect(() =>
       marketPricePageSql({ ...input, dirty: ['x;drop table Product'] }),
     ).toThrow(RangeError);
+  });
+  it('counts only canonically eligible stale prices toward the refresh limit', () => {
+    const sql = marketPriceDirtyIdsSql(now);
+    // Both disjoint stale-cache branches carry the shared eligibility gate,
+    // bound to the same captured clock (placeholders are renumbered inline).
+    const gate = eligibleProductSql(now, 'p').text.replace(/\$\d+/g, '$n');
+    expect(sql.text.replace(/\$\d+/g, '$n').split(gate)).toHaveLength(3);
+    expect(sql.values.filter((value) => value === now)).toHaveLength(2);
+    expect(sql.values).toContain(MARKET_PRICE_DIRTY_LIMIT + 1);
   });
   it('rejects invalid clocks in both price and boundary readers', () => {
     expect(() => marketPriceDirtyIdsSql(new Date(NaN))).toThrow(RangeError);

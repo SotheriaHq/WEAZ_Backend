@@ -1,6 +1,7 @@
 import {
   RedisPipelineCandidateCache,
   createPipelineExposureReceipt,
+  pipelineExposureKeys,
   serializePipelinePage,
   writePipelineExposures,
 } from './market-pipeline.delivery';
@@ -63,6 +64,7 @@ describe('Market pipeline delivery adapters', () => {
     const redis = {
       eval: jest.fn().mockResolvedValue(1),
       hGet: jest.fn().mockResolvedValue(null),
+      hmGet: jest.fn(),
     };
     const cache = new RedisPipelineCandidateCache(redis, () => 1000);
     const key = `mkt:cand:v2:${'a'.repeat(64)}`;
@@ -99,6 +101,7 @@ describe('Market pipeline delivery adapters', () => {
     const redis = {
       eval: jest.fn(),
       hGet: jest.fn().mockRejectedValue(new Error('provider failure')),
+      hmGet: jest.fn(),
     };
     const cache = new RedisPipelineCandidateCache(redis, () => clock);
     const key = `mkt:cand:v2:${'b'.repeat(64)}`;
@@ -113,6 +116,7 @@ describe('Market pipeline delivery adapters', () => {
     const redis = {
       eval: jest.fn(),
       hGet: jest.fn(() => new Promise<string | null>(() => undefined)),
+      hmGet: jest.fn(),
     };
     const cache = new RedisPipelineCandidateCache(redis);
     const key = `mkt:cand:v2:${'c'.repeat(64)}`;
@@ -123,5 +127,104 @@ describe('Market pipeline delivery adapters', () => {
     expect(redis.hGet).toHaveBeenCalledTimes(4);
     await expect(cache.get(key)).rejects.toThrow('Candidate cache busy');
     expect(redis.hGet).toHaveBeenCalledTimes(4);
+  });
+  it('reads every page key with one HMGET and validates each entry independently', async () => {
+    const valid = JSON.stringify({ expires: 5000, rows: [{ id, score: 2 }] });
+    const redis = {
+      eval: jest.fn(),
+      hGet: jest.fn(),
+      hmGet: jest
+        .fn()
+        .mockResolvedValue([
+          valid,
+          null,
+          '{"expires":5000,"rows":[{"id":"not-a-uuid","score":1}]}',
+          JSON.stringify({ expires: 999, rows: [{ id, score: 1 }] }),
+        ]),
+    };
+    const cache = new RedisPipelineCandidateCache(redis, () => 1000);
+    const keys = ['d', 'e', 'f', '0'].map(
+      (char) => `mkt:cand:v2:${char.repeat(64)}`,
+    );
+    const found = await cache.getMany([
+      ...keys,
+      keys[0],
+      'mkt:cand:v2:not-a-key',
+    ]);
+    expect(redis.hmGet).toHaveBeenCalledTimes(1);
+    expect(redis.hmGet.mock.calls[0][1]).toEqual(
+      keys.map((key) => key.slice(-64)),
+    );
+    // Missing, malformed and expired entries are misses; only one valid hit.
+    expect([...found.keys()]).toEqual([keys[0]]);
+    expect(found.get(keys[0])).toEqual([{ id, score: 2 }]);
+  });
+  it('treats a short HMGET reply as a miss and refuses oversized batches', async () => {
+    const redis = {
+      eval: jest.fn(),
+      hGet: jest.fn(),
+      hmGet: jest.fn().mockResolvedValue([null]),
+    };
+    const cache = new RedisPipelineCandidateCache(redis, () => 1000);
+    const keys = ['1', '2'].map((char) => `mkt:cand:v2:${char.repeat(64)}`);
+    expect((await cache.getMany(keys)).size).toBe(0);
+    await expect(
+      cache.getMany(
+        Array.from(
+          { length: 49 },
+          (_, n) => `mkt:cand:v2:${n.toString(16).padStart(64, '0')}`,
+        ),
+      ),
+    ).rejects.toThrow('Candidate cache batch too large');
+    expect(redis.hmGet).toHaveBeenCalledTimes(1);
+  });
+  it('keeps ranking diagnostics out of public items', () => {
+    const item = {
+      id,
+      entityType: 'PRODUCT',
+      position: 0,
+      explore: true,
+      samplingProbability: 0.25,
+      repeatOf: 'fresh-drops',
+    };
+    const page = serializePipelinePage({
+      generatedAt: '2026-11-21T12:00:00.000Z',
+      epoch: null,
+      metadata: { partial: false, cachePolicy: 'private-no-store' },
+      sections: [
+        {
+          key: 'hot-right-now',
+          template: 'TREND',
+          items: [item],
+          viewAll: {},
+          metadata: {},
+        } as unknown as PipelineSection,
+      ],
+    });
+    expect(page.sections[0].items[0]).toEqual({
+      id,
+      entityType: 'PRODUCT',
+      position: 0,
+    });
+    expect(item.repeatOf).toBe('fresh-drops');
+  });
+  it('derives exposure identities from server receipts only', () => {
+    const receipt = createPipelineExposureReceipt(
+      [
+        {
+          key: 'hot-right-now',
+          template: 'TREND',
+          items: [{ id, entityType: 'PRODUCT', position: 0 }],
+        } as unknown as PipelineSection,
+      ],
+      { asOf: new Date('2026-11-21T13:00:00.000Z'), epoch: null },
+    );
+    expect(pipelineExposureKeys(receipt)).toEqual({
+      keys: [`2026-11-21T12:00:00.000Z|hot-right-now|${id}`],
+      expiresAt: Date.parse('2026-11-21T18:00:00.000Z'),
+    });
+    expect(() =>
+      pipelineExposureKeys({ kind: 'market-pipeline-exposure-receipt' }),
+    ).toThrow('Invalid exposure receipt');
   });
 });

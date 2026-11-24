@@ -11,6 +11,7 @@ import {
   MARKET_INTELLIGENCE_JOBS as jobs,
   MARKET_INTELLIGENCE_QUEUE,
   MARKET_LEXICON_REBUILDER,
+  MarketIntelligenceResult,
   MarketLexiconRebuilder,
   marketIntelligenceConfig,
 } from './market-intelligence.contracts';
@@ -125,6 +126,13 @@ export class MarketIntelligenceProcessor extends WorkerHost {
         if (!config.featuresEnabled)
           return { status: 'skipped', reason: 'FEATURES_DISABLED' };
         result = await this.service.refreshFeatures();
+        if ((result as MarketIntelligenceResult).reason === 'PRODUCT_CAPACITY')
+          this.logger.warn(
+            JSON.stringify({
+              event: 'market_feature_capacity_backlog',
+              products: (result as MarketIntelligenceResult).products,
+            }),
+          );
         // No partial refresh publishes. This copies the committed live generation.
         if ((result as { status: string }).status === 'completed') {
           const snapshot = await this.service.publishSnapshot();
@@ -154,7 +162,8 @@ export class MarketIntelligenceProcessor extends WorkerHost {
         break;
       case jobs.privacy:
       case jobs.retention: {
-        result = await this.service.cleanupPrivacy();
+        const privacy = await this.service.cleanupPrivacy();
+        result = privacy;
         // Housekeeping remains active even while optional feature production is off.
         const cleanupDeadline = Date.now() + 10_000;
         for (
@@ -164,6 +173,12 @@ export class MarketIntelligenceProcessor extends WorkerHost {
         ) {
           if ((await this.service.cleanupEpochs()).status !== 'backlog') break;
         }
+        // The status record is written; fail the job so retries and alerts see it.
+        if (privacy.status === 'failed')
+          throw new Error(
+            'Market privacy cleanup failed for: ' +
+              (privacy.failedClasses ?? []).join(','),
+          );
         break;
       }
       case jobs.lexicon:

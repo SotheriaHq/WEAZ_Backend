@@ -9,6 +9,9 @@ const { PrismaPg } = require('@prisma/adapter-pg');
 require('dotenv').config({ quiet: true });
 require('ts-node').register({ transpileOnly: true });
 const {
+  RENDERABLE_COVER_FIXTURE_SQL,
+} = require('./lib/market-fixture-renderable-covers.cjs');
+const {
   marketPriceDirtyIdsSql,
   marketPricePageSql,
   marketNextPriceBoundarySql,
@@ -82,6 +85,7 @@ async function main() {
         "firstPublishedAt" timestamptz(3) DEFAULT date_trunc('milliseconds',statement_timestamp())
       );
     `);
+    await db.query(RENDERABLE_COVER_FIXTURE_SQL);
     await db.query(
       fs.readFileSync(
         path.join(

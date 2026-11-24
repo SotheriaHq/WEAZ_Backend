@@ -28,6 +28,10 @@ import {
   resolvePipelineFallback,
 } from './market-pipeline.sources';
 import { ResolvedPipelineSection } from './market-pipeline.section-reader';
+import {
+  NEW_RELEASES_WIDEN_AGAIN_BELOW,
+  NEW_RELEASES_WIDEN_BELOW,
+} from './market-pipeline.composer';
 import { eligibleProductSql } from '../eligibility/market-eligibility';
 
 function available(spec: PipelineSpec, context: PipelineContext): boolean {
@@ -102,6 +106,7 @@ export async function resolvePipelineSectionSource(input: {
       spec: PipelineSpec;
       layers: readonly CanonicalMarketFilters[];
       reason: string | null;
+      days: number;
     }> = [];
     const tried = new Set<string>();
     while (queue.length) {
@@ -129,7 +134,15 @@ export async function resolvePipelineSectionSource(input: {
             filters: {},
             epoch: context.epoch,
             asOf: context.asOf,
-            limit: current.spec.capacity.minItems,
+            // New releases probe up to the Home widening threshold (8) so the
+            // same window rule can be applied; other templates need minItems.
+            limit:
+              current.spec.template === 'NEW_RELEASES'
+                ? Math.max(
+                    current.spec.capacity.minItems,
+                    NEW_RELEASES_WIDEN_BELOW,
+                  )
+                : current.spec.capacity.minItems,
             signal: input.signal ?? new AbortController().signal,
             suppressionMode: 'viewer',
           };
@@ -139,6 +152,7 @@ export async function resolvePipelineSectionSource(input: {
             spec: current.spec,
             layers: current.layers,
             reason: current.reason,
+            days,
           });
         }
       }
@@ -173,10 +187,44 @@ export async function resolvePipelineSectionSource(input: {
               (row.candidate.features.actors7d ?? -1) >=
                 source.spec.params.evidenceFloorActors)),
       );
+    // Home widens new releases 30→60 days below 8 candidates and →90 below 4,
+    // then applies minItems to the window it settled on. See All must resolve
+    // the same window, or "View all" would show fewer items than the rail.
+    const attempts: Array<typeof sources> = [];
+    for (const source of sources) {
+      const last = attempts[attempts.length - 1];
+      if (
+        last &&
+        last[0].spec === source.spec &&
+        last[0].layers === source.layers
+      )
+        last.push(source);
+      else attempts.push([source]);
+    }
+    const settledWindow = (attempt: typeof sources) => {
+      let chosen = attempt[0];
+      if (chosen.spec.template !== 'NEW_RELEASES') return chosen;
+      const byDays = (days: number) =>
+        attempt.find((source) => source.days === days);
+      if (
+        chosen.days < 60 &&
+        qualifying(chosen).length < NEW_RELEASES_WIDEN_BELOW
+      )
+        chosen = byDays(60) ?? chosen;
+      if (
+        chosen.days < 90 &&
+        qualifying(chosen).length < NEW_RELEASES_WIDEN_AGAIN_BELOW
+      )
+        chosen = byDays(90) ?? chosen;
+      return chosen;
+    };
     const selected =
-      sources.find(
-        (source) => qualifying(source).length >= source.spec.capacity.minItems,
-      ) ?? sources[sources.length - 1];
+      attempts
+        .map(settledWindow)
+        .find(
+          (source) =>
+            qualifying(source).length >= source.spec.capacity.minItems,
+        ) ?? sources[sources.length - 1];
     const targetFingerprint = input.productId
       ? ((
           await tx.$queryRaw<Array<{ value: string }>>(Prisma.sql`

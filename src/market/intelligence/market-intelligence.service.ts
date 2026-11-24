@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   MARKET_FEATURE_CHUNK,
   MARKET_FEATURE_PARAMETERS,
   MARKET_FEATURE_STATE_KEY,
+  MARKET_JOB_BUDGET_MS,
   MARKET_MAX_PRODUCTS,
   MARKET_RAW_RETENTION_MS,
   MARKET_WRITE_CHUNK,
@@ -17,23 +18,29 @@ import {
   marketSnapshotAdmissionReason,
 } from './market-intelligence.contracts';
 import {
+  MARKET_RETENTION_ACTOR_SCAN,
   MARKET_RETENTION_CLASSES,
+  MarketRetentionClass,
   marketFeatureRefreshSql,
   marketPriceSweepSql,
-  marketRetentionDeleteSql,
-  marketRetentionRemainingSql,
+  marketRetentionActorSql,
+  marketRetentionStepCount,
+  marketRetentionSteps,
   marketSnapshotCopySql,
   marketSnapshotReadSummarySql,
 } from './market-intelligence.sql';
 
 type Tx = Prisma.TransactionClient;
 const SQL_BUDGET_MS = 3_000;
-const JOB_BUDGET_MS = 90_000;
+const JOB_BUDGET_MS = MARKET_JOB_BUDGET_MS;
 const LOCK_NAMESPACE = 72_304;
 
 /** These jobs never consume identity rows to manufacture unavailable histories. */
 @Injectable()
 export class MarketIntelligenceService {
+  private readonly logger = new Logger(MarketIntelligenceService.name);
+  /** Per-process rotation through identities; a restart rescans from the start. */
+  private readonly actorCursors = new Map<MarketRetentionClass, string>();
   constructor(private readonly prisma: PrismaService) {}
 
   private async transaction<T>(
@@ -76,6 +83,18 @@ export class MarketIntelligenceService {
   async refreshFeatures(): Promise<MarketIntelligenceResult> {
     return this.transaction(async (tx) => {
       if (!(await this.lock(tx, 1))) return { status: 'skipped', rows: 0 };
+      // Same repeatable-read snapshot as the pages: refuse before any write when
+      // the catalogue exceeds the measured capacity, instead of timing out later.
+      const [capacity] = await tx.$queryRaw<{ products: number }[]>`
+        SELECT count(*)::int AS products FROM (
+          SELECT 1 FROM "Product" LIMIT ${MARKET_MAX_PRODUCTS + 1}) bounded`;
+      if (capacity.products > MARKET_MAX_PRODUCTS)
+        return {
+          status: 'backlog',
+          rows: 0,
+          reason: 'PRODUCT_CAPACITY',
+          products: capacity.products,
+        };
       const sourceAsOf = await this.clock(tx);
       const [salesSource] = await tx.$queryRaw<{ value: string }[]>`
         SELECT value FROM system_config WHERE key='market.sales.source.coverage'`;
@@ -256,55 +275,122 @@ export class MarketIntelligenceService {
     return { status: 'backlog', rows };
   }
 
+  /** Each step is its own short transaction under the class lock. */
+  private async retentionStep(
+    kind: MarketRetentionClass,
+    step: number,
+  ): Promise<{ count: number; remaining: boolean; more: boolean }> {
+    return this.transaction(async (tx) => {
+      if (!(await this.lock(tx, 10 + MARKET_RETENTION_CLASSES.indexOf(kind))))
+        return { count: 0, remaining: true, more: false };
+      const now = await this.clock(tx);
+      const steps = marketRetentionSteps(
+        kind,
+        new Date(now.getTime() - MARKET_RAW_RETENTION_MS),
+      );
+      if (step < steps.length) {
+        const count = await tx.$executeRaw(steps[step].delete);
+        // SKIP LOCKED may return fewer rows while expired rows remain locked.
+        const [evidence] =
+          count < MARKET_WRITE_CHUNK
+            ? await tx.$queryRaw<{ remaining: boolean }[]>(
+                steps[step].remaining,
+              )
+            : [{ remaining: true }];
+        return { count, remaining: evidence.remaining, more: false };
+      }
+      const actorSql = marketRetentionActorSql(
+        kind,
+        this.actorCursors.get(kind) ?? null,
+      );
+      if (!actorSql) return { count: 0, remaining: false, more: false };
+      const [actors] = await tx.$queryRaw<
+        {
+          deleted: number;
+          scanned: number;
+          lastActor: string | null;
+          remaining: boolean;
+        }[]
+      >(actorSql);
+      // A segment with locked or excess rows is rescanned; otherwise advance.
+      if (!actors.remaining) {
+        if (actors.scanned < MARKET_RETENTION_ACTOR_SCAN || !actors.lastActor)
+          this.actorCursors.delete(kind);
+        else this.actorCursors.set(kind, actors.lastActor);
+      }
+      return {
+        count: actors.deleted,
+        remaining: actors.remaining,
+        more: this.actorCursors.has(kind),
+      };
+    }, 10_000);
+  }
+
   async cleanupPrivacy(): Promise<MarketIntelligenceResult> {
     const deadline = Date.now() + 30_000;
-    const pending = new Set(MARKET_RETENTION_CLASSES);
+    const rotation = new Set(MARKET_RETENTION_CLASSES);
+    const pending = new Set<MarketRetentionClass>();
+    const failed = new Set<MarketRetentionClass>();
     let rows = 0;
-    // Round robin prevents a large old event table starving profile/aggregate erasure.
+    // Round robin prevents a large old event table starving profile/aggregate
+    // erasure. A failing class never stops the classes after it.
     for (
       let pass = 0;
-      pass < 8 && pending.size && Date.now() < deadline;
+      pass < 8 && rotation.size && Date.now() < deadline;
       pass++
     ) {
-      for (const kind of [...pending]) {
+      for (const kind of [...rotation]) {
         if (Date.now() >= deadline) break;
-        const count = await this.transaction(async (tx) => {
-          if (
-            !(await this.lock(tx, 10 + MARKET_RETENTION_CLASSES.indexOf(kind)))
-          )
-            return { count: 0, remaining: true };
-          const now = await this.clock(tx);
-          const cutoff = new Date(now.getTime() - MARKET_RAW_RETENTION_MS);
-          const count = await tx.$executeRaw(
-            marketRetentionDeleteSql(kind, cutoff),
+        try {
+          let remaining = false;
+          let more = false;
+          for (let step = 0; step < marketRetentionStepCount(kind); step++) {
+            const result = await this.retentionStep(kind, step);
+            rows += result.count;
+            remaining ||= result.remaining;
+            more ||= result.more;
+          }
+          if (remaining) pending.add(kind);
+          else pending.delete(kind);
+          // Classes with an unfinished identity rotation keep scanning while
+          // time allows; that alone is not known expired data.
+          if (!remaining && !more) rotation.delete(kind);
+        } catch (error) {
+          rotation.delete(kind);
+          pending.delete(kind);
+          failed.add(kind);
+          this.logger.error(
+            JSON.stringify({
+              event: 'market_privacy_class_failed',
+              dataClass: kind,
+              error: error instanceof Error ? error.name : 'UnknownError',
+              code: (error as { code?: unknown } | null)?.code ?? null,
+            }),
           );
-          // SKIP LOCKED may return fewer rows while expired rows remain locked.
-          const [evidence] =
-            count < MARKET_WRITE_CHUNK
-              ? await tx.$queryRaw<{ remaining: boolean }[]>(
-                  marketRetentionRemainingSql(kind, cutoff),
-                )
-              : [{ remaining: true }];
-          return { count, remaining: evidence.remaining };
-        }, 10_000);
-        rows += count.count;
-        if (!count.remaining) pending.delete(kind);
+        }
       }
-      if (pending.size && Date.now() < deadline)
+      if (rotation.size && Date.now() < deadline)
         await new Promise<void>((resolve) => setTimeout(resolve, 100));
     }
-    const status = pending.size ? 'backlog' : 'completed';
+    const status = failed.size
+      ? 'failed'
+      : pending.size
+        ? 'backlog'
+        : 'completed';
+    const pendingClasses = [...pending];
+    const failedClasses = [...failed];
     await this.transaction(
       (tx) =>
         this.watermark(tx, 'market.privacy.cleanup', {
           completedAt: new Date().toISOString(),
           rows,
           status,
-          pendingClasses: [...pending],
+          pendingClasses,
+          failedClasses,
         }),
       10_000,
     );
-    return { status, rows };
+    return { status, rows, pendingClasses, failedClasses };
   }
 
   async cleanupEpochs(): Promise<MarketIntelligenceResult> {

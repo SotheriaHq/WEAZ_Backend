@@ -12,6 +12,11 @@ import {
 } from '../eligibility/market-eligibility';
 import { MarketOrderedRow } from './market-ordered-reader';
 
+/** Catalogue page capture: up to 60 cards plus one look-ahead row. */
+export const MARKET_CARD_CAPTURE_DEFAULT = 61;
+/** Hard ceiling for one capture (the Market page: 8 rails x (12 + 2 reserve)). */
+export const MARKET_CARD_CAPTURE_MAX = 112;
+
 export const MARKET_CATALOG_CARD_SELECT = {
   ...PRODUCT_ELIGIBILITY_FIELDS,
   collections: {
@@ -115,7 +120,8 @@ export async function captureMarketCatalogCards(
     readonly asOf: Date;
   },
 ): Promise<CapturedMarketCard[]> {
-  if (input.rows.length > 61 || !Number.isFinite(input.asOf.getTime()))
+  const limit = MARKET_CARD_CAPTURE_DEFAULT;
+  if (input.rows.length > limit || !Number.isFinite(input.asOf.getTime()))
     throw new RangeError('Invalid catalogue hydration budget');
   if (!input.rows.length) return [];
   const products = await tx.product.findMany({
@@ -124,7 +130,7 @@ export async function captureMarketCatalogCards(
       { currency: 'NGN' },
     ]),
     select: MARKET_CATALOG_CARD_SELECT,
-    take: 61,
+    take: limit,
   });
   const tags = products.length
     ? await tx.$queryRaw<
@@ -153,7 +159,7 @@ export async function captureMarketCatalogCards(
           originalDeletedAt: null,
         },
         select: { id: true, s3Url: true, userId: true },
-        take: 61,
+        take: limit,
       })
     : [];
   const byId = new Map(products.map((product) => [product.id, product]));
@@ -242,7 +248,7 @@ export async function hydrateMarketCatalogCards(
     'getBatchPublicSignedUrls' | 'getBatchVariantDisplayUrls'
   >,
 ): Promise<MarketSectionItemDto[]> {
-  if (captured.length > 61)
+  if (captured.length > MARKET_CARD_CAPTURE_MAX)
     throw new RangeError('Invalid catalogue signing budget');
   const ids = [
     ...new Set(

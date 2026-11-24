@@ -83,14 +83,32 @@ async function runMarketSourceKeysetAssertions({db,prisma,now,brand,owner,chosen
   const secondTrend=await scopedCatalogue.getPage(new URLSearchParams('sort=newest&limit=1&cursor='+encodeURIComponent(firstTrend.pagination.nextCursor)),{},{scope:trendScope(8),fixedFilters:{}});
   equal(secondTrend.items.length,1,'An ordered trend cursor can restore its pinned immutable evidence');
   equal(secondTrend.items[0].id===firstTrend.items[0].id,false,'Pinned evidence continuation retains source keyset order');
-  const before=queryStats();
-  const started=performance.now();
-  console.log('STAGE full pipeline query budget');
-  const publicPage=await buildMarketPipelinePage({read,media:new MarketPipelineMediaResolver(new MarketPublicMediaService(read,config)),viewer:{},surface:'HOME',filters:{},specs:[parsePipelineSpec({key:'bounded-read-proof',template:'CURATED_LIST',status:'ACTIVE',curated:{placementKey:'SCOPE_PERF'},capacity:{preview:8,minItems:1},params:{maxPerBrand:8,maxPerCategory:8,explorationShare:0}})]});
-  const afterStats=queryStats();
-  equal(publicPage.public.sections[0]?.items.length,8,'Real public capture and media authorization render the requested shelf');
-  const total=afterStats.total-before.total,controls=afterStats.controls-before.controls;
-  console.log('QUERY_BUDGET '+JSON.stringify({total,controls,data:total-controls,limit:12,withinTotalBudget:total<=12,elapsedMs:Math.round(performance.now()-started)}));
+  // Every statement the driver sends is counted, including BEGIN/COMMIT/SET.
+  // An N+1 read makes the count grow with the number of cards or rows served,
+  // so the same request at two result sizes must issue identical counts.
+  const measure=async work=>{
+    const before=queryStats(),started=performance.now();
+    const result=await work();
+    const after=queryStats();
+    const total=after.total-before.total,controls=after.controls-before.controls;
+    return{result,total,controls,data:total-controls,elapsedMs:Math.round(performance.now()-started)};
+  };
+  console.log('STAGE full pipeline query budget and N+1 invariance');
+  const shelf=preview=>buildMarketPipelinePage({read,media:new MarketPipelineMediaResolver(new MarketPublicMediaService(read,config)),viewer:{},surface:'HOME',filters:{},specs:[parsePipelineSpec({key:'bounded-read-proof',template:'CURATED_LIST',status:'ACTIVE',curated:{placementKey:'SCOPE_PERF'},capacity:{preview,minItems:1},params:{maxPerBrand:8,maxPerCategory:8,explorationShare:0}})]});
+  const oneCard=await measure(()=>shelf(1));
+  const fullShelf=await measure(()=>shelf(8));
+  equal(oneCard.result.public.sections[0]?.items.length,1,'A one-card shelf renders one card');
+  equal(fullShelf.result.public.sections[0]?.items.length,8,'Real public capture and media authorization render the requested shelf');
+  equal(fullShelf.total,oneCard.total,'N+1: Market page statements do not grow from 1 to 8 cards');
+  assert(fullShelf.total<=12,'Market page stays within its 12-statement budget, got '+fullShelf.total);checks++;
+  console.log('QUERY_BUDGET '+JSON.stringify({page:{oneCard:oneCard.total,eightCards:fullShelf.total,controls:fullShelf.controls,data:fullShelf.data,limit:12,elapsedMs:fullShelf.elapsedMs}}));
+  const cataloguePage=limit=>scopedCatalogue.getPage(new URLSearchParams('sort=newest&limit='+limit),{},{scope:createMarketCatalogScope({key:'catalog',version:'1',viewer:{}}),fixedFilters:{}});
+  const catalogueOne=await measure(()=>cataloguePage(1));
+  const catalogueMany=await measure(()=>cataloguePage(24));
+  equal(catalogueOne.result.items.length,1,'A one-item catalogue page renders one item');
+  assert(catalogueMany.result.items.length>=12,'A larger catalogue page renders many items');checks++;
+  equal(catalogueMany.total,catalogueOne.total,'N+1: catalogue page statements do not grow with page size');
+  console.log('QUERY_BUDGET '+JSON.stringify({catalogue:{oneItem:catalogueOne.total,manyItems:catalogueMany.total,itemsServed:catalogueMany.result.items.length,controls:catalogueMany.controls,elapsedMs:catalogueMany.elapsedMs}}));
   console.log(`PASS ${checks} complete product/nonproduct source-keyset proofs beyond preview capacity`);
   return{checks};
 }

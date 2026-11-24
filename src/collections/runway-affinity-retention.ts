@@ -1,5 +1,14 @@
 export const RUNWAY_BEHAVIOR_RETENTION_MS = 24 * 60 * 60 * 1000;
 export const RUNWAY_BEHAVIOR_CACHE_VERSION = 'runway-r1-v1';
+export const RUNWAY_SESSION_MS = 30 * 60 * 1000;
+export const RUNWAY_AFFINITY_REFRESH_MS = 30_000;
+/** Behaviour used for ranking stops a full session plus one cache refresh short
+ * of the 24h limit, so any session ranked from it ends before its earliest
+ * contribution expires: build at T uses sources from T - 23h29m30s, giving a
+ * deadline of at least T + 30m30s; a cache read at most 30 s later still has a
+ * full 30-minute session left. */
+export const RUNWAY_BEHAVIOR_USABLE_WINDOW_MS =
+  RUNWAY_BEHAVIOR_RETENTION_MS - RUNWAY_SESSION_MS - RUNWAY_AFFINITY_REFRESH_MS;
 
 export function readableRunwayBehaviorCache(
   cache: { payload: unknown; builtAt: Date; expiresAt: Date } | null,
@@ -62,7 +71,7 @@ export function readableRunwayBehaviorCache(
     cache.builtAt.getTime() === end &&
     cache.expiresAt > now &&
     cache.expiresAt.getTime() <= first + RUNWAY_BEHAVIOR_RETENTION_MS &&
-    cache.expiresAt.getTime() <= end + 30_000 &&
+    cache.expiresAt.getTime() <= end + RUNWAY_AFFINITY_REFRESH_MS &&
     (!resetAt || first >= resetAt.getTime())
   );
 }
@@ -70,13 +79,14 @@ export function readableRunwayBehaviorCache(
 export function earliestRunwayBehaviorSource(
   now: Date,
   rows: readonly { createdAt: Date }[],
+  windowStart = new Date(now.getTime() - RUNWAY_BEHAVIOR_RETENTION_MS),
 ): Date {
   let earliest = now.getTime();
   for (const row of rows) {
     const at = row.createdAt.getTime();
     if (
       Number.isFinite(at) &&
-      at >= now.getTime() - RUNWAY_BEHAVIOR_RETENTION_MS &&
+      at >= windowStart.getTime() &&
       at <= now.getTime()
     )
       earliest = Math.min(earliest, at);

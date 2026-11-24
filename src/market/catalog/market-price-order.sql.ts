@@ -1,7 +1,8 @@
 import { Prisma } from '@prisma/client';
 import { productEffectivePriceSql } from '../../common/pricing/product-price.sql';
+import { eligibleProductSql } from '../eligibility/market-eligibility';
 import { CanonicalMarketFilters } from './market-filters';
-import { marketProductFiltersSql } from './market-filter.sql';
+import { marketCatalogProductFiltersSql } from './market-filter.sql';
 import { MarketCatalogScope } from './market-catalog-scope';
 
 export const MARKET_PRICE_DIRTY_LIMIT = 2000;
@@ -57,17 +58,22 @@ function dirtyIds(ids: readonly string[]): Prisma.Sql {
  * Prerequisite: the Product price-cache metadata constraint is validated. A
  * LIMIT+1 sentinel means "not safe to page", never "ignore remaining rows".
  * Each branch needs its boundary/computed-time index; the branches are disjoint.
+ * Only canonically eligible products can be priced live into a page, so stale
+ * caches on drafts, archived or deleted products never count toward the limit.
  */
 export function marketPriceDirtyIdsSql(now: Date): Prisma.Sql {
   const time = instant(now),
-    limit = MARKET_PRICE_DIRTY_LIMIT + 1;
+    limit = MARKET_PRICE_DIRTY_LIMIT + 1,
+    eligible = eligibleProductSql(now, 'p');
   return Prisma.sql`SELECT dirty.id FROM (
-    (SELECT "_id" AS id FROM "Product"
-      WHERE "effectivePriceValidUntil" <= ${time} AND "effectivePriceComputedAt" <= ${time}
-      ORDER BY "effectivePriceValidUntil", "_id" LIMIT ${limit})
+    (SELECT p."_id" AS id FROM "Product" p
+      WHERE p."effectivePriceValidUntil" <= ${time} AND p."effectivePriceComputedAt" <= ${time}
+        AND ${eligible}
+      ORDER BY p."effectivePriceValidUntil", p."_id" LIMIT ${limit})
     UNION ALL
-    (SELECT "_id" AS id FROM "Product" WHERE "effectivePriceComputedAt" > ${time}
-      ORDER BY "effectivePriceComputedAt", "_id" LIMIT ${limit})
+    (SELECT p."_id" AS id FROM "Product" p WHERE p."effectivePriceComputedAt" > ${time}
+        AND ${eligible}
+      ORDER BY p."effectivePriceComputedAt", p."_id" LIMIT ${limit})
   ) dirty LIMIT ${limit}`;
 }
 
@@ -117,8 +123,18 @@ export function marketPricePageSql(input: {
   const direction = sort === 'price_asc' ? Prisma.sql`ASC` : Prisma.sql`DESC`;
   const comparison = sort === 'price_asc' ? Prisma.sql`>` : Prisma.sql`<`;
   const layers = [filters, input.fixedFilters ?? {}];
-  const eligible = marketProductFiltersSql(layers, now, 'p', input.scope);
-  const dirtyEligible = marketProductFiltersSql(layers, now, 'mp', input.scope);
+  const eligible = marketCatalogProductFiltersSql(
+    layers,
+    now,
+    'p',
+    input.scope,
+  );
+  const dirtyEligible = marketCatalogProductFiltersSql(
+    layers,
+    now,
+    'mp',
+    input.scope,
+  );
   const live = productEffectivePriceSql(now, 'mp');
   const freshKey = after
     ? Prisma.sql`AND (p."effectivePrice" ${comparison} ${after.amount}::numeric OR

@@ -7,6 +7,8 @@ Market home uses two parallel requests, as confirmed on 23 November 2026:
 1. `GET /market/page` returns composed sections.
 2. `GET /market/catalog?includeFacets=1` returns the catalogue, sort availability and filter counts.
 
+`availableSorts` on a first page (or any page without a verified cursor) reflects the Market-wide evidence floors. A continuation whose verified cursor fixes an ordered sort (`newest`, `price_asc`, `price_desc`) does not repeat those whole-catalogue probes; its `availableSorts` lists only the always-available ordered sorts. Clients keep the sort menu from the first page and must not hide evidence-backed sorts because a continuation omitted them. Score-sorted continuations still evaluate availability on every page.
+
 The section request does not wait for catalogue hydration. Both requests accept the same canonical filter vocabulary. `limit` means section count (1–8) on `/market/page`, and product count (1–60) on `/market/catalog`; clients must not reuse one value blindly.
 
 Responses are private/no-store. Optional authentication identifies the principal from the verified JWT, never a query-supplied user ID. A validated anonymous session token may supply guest suppression context and does not become a catalogue filter. It is ignored for ownership when a verified user is present. Unknown, repeated singleton or malformed controls are rejected rather than silently omitted.

@@ -10,6 +10,9 @@ require('dotenv').config({ quiet: true });
 require('ts-node').register({ transpileOnly: true });
 const { withUtcDatabaseUrl } = require('../src/prisma/database-connection');
 const {
+  RENDERABLE_COVER_FIXTURE_SQL,
+} = require('./lib/market-fixture-renderable-covers.cjs');
+const {
   trimSql,
   normalizeTokenSql,
 } = require('../src/common/utils/sql-text-normalization');
@@ -81,6 +84,7 @@ async function main() {
       CREATE TABLE "TagBinding" ("tagId" uuid REFERENCES "Tag", "entityType" text, "entityId" uuid);
       CREATE INDEX ON "TagBinding" ("entityType","entityId");
     `);
+    await db.query(RENDERABLE_COVER_FIXTURE_SQL);
     const readUrl = new URL(withUtcDatabaseUrl(testUrl.toString()));
     readUrl.searchParams.set(
       'options',

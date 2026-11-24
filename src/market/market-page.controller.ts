@@ -18,6 +18,31 @@ import { MarketPipelineDeliveryService } from './market-pipeline-delivery.servic
 
 type PageRequest = Request & { user?: { id?: string; sub?: string } };
 
+/** Aborts when the client disconnects before a response is written. Always
+ * call `dispose` when the work settles so no listener outlives the request. */
+export function requestAbortScope(req: Partial<Request> | undefined): {
+  readonly signal: AbortSignal;
+  readonly dispose: () => void;
+} {
+  const controller = new AbortController();
+  if (!req || typeof req.once !== 'function')
+    return { signal: controller.signal, dispose: () => undefined };
+  const abort = () => controller.abort();
+  const close = () => {
+    if (!req.res?.writableEnded) abort();
+  };
+  req.once('aborted', abort);
+  req.res?.once('close', close);
+  if (req.aborted) abort();
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      req.off?.('aborted', abort);
+      req.res?.off('close', close);
+    },
+  };
+}
+
 export function parseMarketPageRequest(
   query: URLSearchParams,
   userId?: string,
@@ -77,19 +102,11 @@ export class MarketPageController {
       new URL(req.originalUrl, 'https://market.invalid').searchParams,
       req.user?.id ?? req.user?.sub,
     );
-    const controller = new AbortController();
-    const abort = () => controller.abort();
-    const close = () => {
-      if (!req.res?.writableEnded) abort();
-    };
-    req.once('aborted', abort);
-    req.res?.once('close', close);
-    if (req.aborted) abort();
+    const scope = requestAbortScope(req);
     try {
-      return await this.delivery.page({ ...input, signal: controller.signal });
+      return await this.delivery.page({ ...input, signal: scope.signal });
     } finally {
-      req.off('aborted', abort);
-      req.res?.off('close', close);
+      scope.dispose();
     }
   }
 }

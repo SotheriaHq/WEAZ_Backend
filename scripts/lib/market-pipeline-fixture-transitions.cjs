@@ -165,7 +165,12 @@ async function runPipelineTransitions(f) {
     targetId: a.p.id, sectionKey: 'fixture', suppressionType: 'HIDE_ITEM' } });
   const current = await prisma.$transaction(tx => readCurrentPipelineSources(tx, capture), { isolationLevel: 'RepeatableRead', timeout: 10000 });
   equal(has(current, a.p.id), false, 'Final source gate applies new viewer suppression');
-  equal(has(current, b.p.id), true, 'Final source gate preserves unrelated items in the section');
+  // Capture holds only the cards the planned page places (brand caps apply), so
+  // check every captured product other than the newly hidden one survives.
+  const keptIds = [...capture.captureIds].filter((key) => key.startsWith('PRODUCT:'))
+    .map((key) => key.slice('PRODUCT:'.length)).filter((id) => id !== a.p.id);
+  equal(keptIds.length > 0, true, 'Capture holds unrelated products to recheck');
+  equal(keptIds.every((id) => has(current, id)), true, 'Final source gate preserves unrelated items in the section');
   await prisma.userContentSuppression.delete({ where: { id: hidden.id } });
 
   const alias = await prisma.tag.create({ data: { id: randomUUID(), normalizedName: 'fixture-alias',

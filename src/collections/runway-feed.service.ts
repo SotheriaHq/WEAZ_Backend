@@ -11,6 +11,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   RUNWAY_BEHAVIOR_RETENTION_MS,
   RUNWAY_BEHAVIOR_CACHE_VERSION,
+  RUNWAY_BEHAVIOR_USABLE_WINDOW_MS,
+  RUNWAY_SESSION_MS,
   earliestRunwayBehaviorSource,
   readableRunwayBehaviorCache,
 } from './runway-affinity-retention';
@@ -28,7 +30,7 @@ import {
 const isUuid = (value: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 const WINDOW_MS = RUNWAY_BEHAVIOR_RETENTION_MS;
-const SESSION_MS = 30 * 60000;
+const SESSION_MS = RUNWAY_SESSION_MS;
 const EXPIRY_BATCH_SIZE = 500;
 const MAX_ACTIVE_PAGES = 16;
 const AFRICAN_COUNTRIES = new Set([
@@ -302,10 +304,12 @@ export class RunwayFeedService {
     }
   }
 
+  /** `actorActive` is the caller's account check from the same request. */
   private async affinity(
     userId: string | undefined,
     key: RunwayKey,
     now: Date,
+    actorActive = false,
   ): Promise<RunwayAffinity> {
     const result = emptyRunwayAffinity();
     if (!userId) return result;
@@ -315,15 +319,27 @@ export class RunwayFeedService {
         orderBy: { resetAt: 'desc' },
       }),
       this.prisma.runwayAffinityCache.findUnique({ where: { userId } }),
-      this.prisma.user.findUnique({
-        where: { id: userId },
-        select: { status: true, deactivatedAt: true },
-      }),
+      actorActive
+        ? { status: 'ACTIVE', deactivatedAt: null }
+        : this.prisma.user.findUnique({
+            where: { id: userId },
+            select: { status: true, deactivatedAt: true },
+          }),
     ]);
     if (!actor || actor.status !== 'ACTIVE' || actor.deactivatedAt !== null)
       return result;
     const readAt = new Date(Math.max(now.getTime(), Date.now()));
-    if (cached && readableRunwayBehaviorCache(cached, readAt, reset?.resetAt)) {
+    // A profile whose earliest source expires within one session is rebuilt
+    // from the usable window instead of ranking a session it cannot outlive.
+    if (
+      cached &&
+      readableRunwayBehaviorCache(cached, readAt, reset?.resetAt) &&
+      Date.parse(
+        (cached.payload as Record<string, unknown>).sourceWindowStart as string,
+      ) +
+        WINDOW_MS >=
+        readAt.getTime() + SESSION_MS
+    ) {
       const payload = cached.payload as Record<string, unknown>;
       for (const name of ['brands', 'tags', 'categories', 'fashion'] as const)
         result[name] = new Map(payload[name] as Array<[string, number]>);
@@ -344,7 +360,7 @@ export class RunwayFeedService {
         ? emptyRunwayAffinity()
         : resolved;
     }
-    const pending = this.buildAffinity(userId, readAt, reset?.resetAt);
+    const pending = this.buildAffinity(userId, readAt, reset?.resetAt, true);
     this.affinityLoads.set(loadKey, pending);
     try {
       const resolved = await pending;
@@ -358,12 +374,19 @@ export class RunwayFeedService {
     }
   }
 
-  private async buildAffinity(userId: string, now: Date, resetAt?: Date) {
+  private async buildAffinity(
+    userId: string,
+    now: Date,
+    resetAt?: Date,
+    actorVerified = false,
+  ) {
     const result = emptyRunwayAffinity();
-    const signalActor = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { status: true, deactivatedAt: true },
-    });
+    const signalActor = actorVerified
+      ? { status: 'ACTIVE', deactivatedAt: null }
+      : await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { status: true, deactivatedAt: true },
+        });
     if (
       !signalActor ||
       signalActor.status !== 'ACTIVE' ||
@@ -372,7 +395,10 @@ export class RunwayFeedService {
       return result;
     now = new Date(Math.max(now.getTime(), Date.now()));
     const since = new Date(
-      Math.max(now.getTime() - WINDOW_MS, resetAt?.getTime() ?? 0),
+      Math.max(
+        now.getTime() - RUNWAY_BEHAVIOR_USABLE_WINDOW_MS,
+        resetAt?.getTime() ?? 0,
+      ),
     );
     const [
       reactions,
@@ -621,16 +647,20 @@ export class RunwayFeedService {
       [...map].sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 64);
     for (const name of ['brands', 'tags', 'categories', 'fashion'] as const)
       result[name] = new Map(trim(result[name]));
-    const sourceWindowStart = earliestRunwayBehaviorSource(now, [
-      ...reactions,
-      ...comments,
-      ...saved,
-      ...signals,
-      ...purchases,
-      ...patches,
-      ...designReactions,
-      ...standardPurchases,
-    ]);
+    const sourceWindowStart = earliestRunwayBehaviorSource(
+      now,
+      [
+        ...reactions,
+        ...comments,
+        ...saved,
+        ...signals,
+        ...purchases,
+        ...patches,
+        ...designReactions,
+        ...standardPurchases,
+      ],
+      since,
+    );
     const expiresAt = new Date(
       Math.min(now.getTime() + 30_000, sourceWindowStart.getTime() + WINDOW_MS),
     );
@@ -720,6 +750,9 @@ export class RunwayFeedService {
       return actor?.status === 'ACTIVE' && actor.deactivatedAt === null;
     };
     if (!(await activeActor())) return emptyPage();
+    // The request's account check is reused for affinity; only a first page,
+    // after its long asynchronous construction, checks the account again.
+    let recheckActor = false;
     const scope =
       RUNWAY_BEHAVIOR_CACHE_VERSION +
       ':' +
@@ -802,13 +835,22 @@ export class RunwayFeedService {
             )
           : load();
       };
-      const [[fresh, popular], affinity] = await Promise.all([
+      const [[fresh, popular], loaded] = await Promise.all([
         this.publicCandidates(JSON.stringify(where), () =>
           Promise.all([read(160), read(80, true)]),
         ),
-        this.affinity(userId, key, now),
+        this.affinity(userId, key, now, true),
       ]);
-      behaviorDeadline = this.affinitySourceDeadlines.get(affinity) ?? Infinity;
+      recheckActor = Boolean(userId);
+      // A session never outlives the behaviour it is ranked from. Evidence that
+      // expires sooner gives this session the non-personalised ranking.
+      const loadedDeadline =
+        this.affinitySourceDeadlines.get(loaded) ?? Infinity;
+      const coversSession =
+        loadedDeadline >= now.getTime() + SESSION_MS &&
+        loadedDeadline > Date.now();
+      let affinity = coversSession ? loaded : emptyRunwayAffinity();
+      behaviorDeadline = coversSession ? loadedDeadline : Infinity;
       const top = (map: Map<string, number>) =>
         [...map]
           .filter(([, weight]) => weight > 0)
@@ -860,6 +902,9 @@ export class RunwayFeedService {
           ]),
         ).values(),
       ];
+      const publicIds = new Set(
+        [...laneRows, ...fresh, ...popular].map((row) => row.id),
+      );
       const metadataKey =
         'metadata:' +
         createHash('sha256')
@@ -920,7 +965,7 @@ export class RunwayFeedService {
           ...(classifications.get(filter.entityId) ?? []),
           filter.filterValue.slug,
         ]);
-      const candidates = pool
+      let candidates = pool
         .filter((row) => {
           const terms = [...row.tags, ...(classifications.get(row.id) ?? [])];
           if (AFRICAN_COUNTRIES.has(normalized(row.owner.brand?.country ?? '')))
@@ -933,7 +978,13 @@ export class RunwayFeedService {
           fashionFeatures: features.get(row.id) ?? [],
         }));
       sessionId = randomUUID();
-      if (behaviorDeadline <= Date.now()) return emptyPage();
+      if (behaviorDeadline <= Date.now()) {
+        // Behaviour expired during construction: continue with the
+        // non-personalised ranking and drop behaviour-derived candidates.
+        affinity = emptyRunwayAffinity();
+        behaviorDeadline = Infinity;
+        candidates = candidates.filter((row) => publicIds.has(row.id));
+      }
       ids = rankRunwayCandidates(
         candidates,
         key,
@@ -972,8 +1023,9 @@ export class RunwayFeedService {
     `)
         : [];
     const hiddenIds = new Set(hidden.map((row) => row.id));
-    if (!(await activeActor()) || behaviorDeadline <= Date.now())
-      return emptyPage();
+    // Reached only once the session's own lifetime has ended.
+    if (behaviorDeadline <= Date.now()) return emptyPage();
+    if (recheckActor && !(await activeActor())) return emptyPage();
     const page: string[] = [];
     while (offset < ids.length && page.length < take) {
       const id = ids[offset++];

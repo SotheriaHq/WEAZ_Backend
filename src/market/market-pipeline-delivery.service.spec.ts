@@ -1,11 +1,28 @@
-import { MarketPipelineDeliveryService } from './market-pipeline-delivery.service';
+import {
+  MARKET_EXPOSURE_MEMO_LIMIT,
+  MarketPipelineDeliveryService,
+} from './market-pipeline-delivery.service';
 import { MarketPipelineService } from './pipeline/market-pipeline.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { writePipelineExposures } from './pipeline/market-pipeline.delivery';
+import {
+  pipelineExposureKeys,
+  writePipelineExposures,
+} from './pipeline/market-pipeline.delivery';
 
 jest.mock('./pipeline/market-pipeline.delivery', () => ({
   writePipelineExposures: jest.fn().mockResolvedValue(1),
+  pipelineExposureKeys: jest.fn(),
 }));
+const exposureKeys = pipelineExposureKeys as jest.Mock;
+let keySequence = 0;
+/** Each page gets its own rows unless a test pins them. */
+function freshKeys() {
+  keySequence++;
+  return {
+    keys: [`2026-11-24T12:00:00.000Z|fresh-drops|${keySequence}`],
+    expiresAt: Date.now() + 3_600_000,
+  };
+}
 
 describe('bounded server exposure delivery', () => {
   const input = { viewer: {}, limit: 1 };
@@ -26,7 +43,68 @@ describe('bounded server exposure delivery', () => {
     );
     return { service, prepared, preparePage, tx, transaction };
   }
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    exposureKeys.mockImplementation(freshKeys);
+  });
+  it('skips the write transaction when every row was already committed this epoch', async () => {
+    const { service, transaction } = fixture();
+    const pinned = freshKeys();
+    exposureKeys.mockReturnValue(pinned);
+    await service.page(input);
+    await service.page(input);
+    expect(transaction).toHaveBeenCalledTimes(1);
+  });
+  it('writes again once a row is new, or after the epoch ends', async () => {
+    const { service, transaction } = fixture();
+    const pinned = freshKeys();
+    exposureKeys.mockReturnValue(pinned);
+    await service.page(input);
+    exposureKeys.mockReturnValue({
+      keys: [...pinned.keys, 'another|row|1'],
+      expiresAt: pinned.expiresAt,
+    });
+    await service.page(input);
+    expect(transaction).toHaveBeenCalledTimes(2);
+    const expired = { keys: ['expired|row|1'], expiresAt: Date.now() - 1 };
+    exposureKeys.mockReturnValue(expired);
+    await service.page(input);
+    await service.page(input);
+    expect(transaction).toHaveBeenCalledTimes(4);
+  });
+  it('never remembers rows whose transaction rolled back', async () => {
+    const { service, transaction, prepared } = fixture();
+    const pinned = freshKeys();
+    exposureKeys.mockReturnValue(pinned);
+    transaction.mockRejectedValueOnce(new Error('rollback'));
+    await expect(service.page(input)).resolves.toBe(prepared.public);
+    await service.page(input);
+    expect(transaction).toHaveBeenCalledTimes(2);
+    await service.page(input);
+    expect(transaction).toHaveBeenCalledTimes(2);
+  });
+  it('keeps the committed-row memory bounded', async () => {
+    const { service } = fixture();
+    exposureKeys.mockReturnValue({
+      keys: Array.from(
+        { length: MARKET_EXPOSURE_MEMO_LIMIT + 50 },
+        (_, n) => `bound|row|${n}`,
+      ),
+      expiresAt: Date.now() + 3_600_000,
+    });
+    await service.page(input);
+    expect(
+      (service as unknown as { written: Map<string, number> }).written.size,
+    ).toBe(MARKET_EXPOSURE_MEMO_LIMIT);
+  });
+  it('returns the public page without writing when the receipt is invalid', async () => {
+    const { service, transaction, prepared } = fixture();
+    exposureKeys.mockImplementation(() => {
+      throw new RangeError('Invalid exposure receipt');
+    });
+    await expect(service.page(input)).resolves.toBe(prepared.public);
+    expect(transaction).not.toHaveBeenCalled();
+  });
   it('preserves an internal section limit when the HTTP alias is absent', async () => {
     const { service, preparePage } = fixture();
     await service.page({ viewer: {}, sectionLimit: 2 });

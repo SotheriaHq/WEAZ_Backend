@@ -2,6 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
+  MarketCatalogAdmissionException,
   MarketCatalogReadService,
   MARKET_CATALOG_CONCURRENT_READS,
 } from './market-catalog-read.service';
@@ -55,7 +56,12 @@ describe('catalogue read admission', () => {
       { length: MARKET_CATALOG_CONCURRENT_READS },
       () => service.run(async () => blocked),
     );
-    await expect(service.run(async () => 'extra')).rejects.toMatchObject({
+    const refused = service.run(async () => 'extra');
+    await expect(refused).rejects.toBeInstanceOf(
+      MarketCatalogAdmissionException,
+    );
+    await expect(refused).rejects.toMatchObject({
+      status: 503,
       response: { code: 'CATALOGUE_BUSY' },
     });
     expect(transaction).toHaveBeenCalledTimes(MARKET_CATALOG_CONCURRENT_READS);

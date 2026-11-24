@@ -1,6 +1,7 @@
-import { BoundedPipelineCandidateCache } from './market-pipeline.cache';
 import {
   MarketPipelineComposer,
+  MarketPipelineComposerOptions,
+  PIPELINE_CAPTURE_RESERVE,
   PIPELINE_MAX_PORT_CALLS,
 } from './market-pipeline.composer';
 import {
@@ -150,6 +151,13 @@ function spec(patch: Record<string, unknown> = {}) {
     ...patch,
   });
 }
+/** Deterministic page clock: a slow test host never drops a section. */
+function composer(
+  io: PipelinePorts,
+  options: MarketPipelineComposerOptions = {},
+) {
+  return new MarketPipelineComposer(io, { now: () => 0, ...options });
+}
 function ports(
   rows = Array.from({ length: 20 }, (_, n) => candidate(n + 1)),
 ): PipelinePorts & { retrieve: jest.Mock; hydrate: jest.Mock } {
@@ -223,9 +231,9 @@ describe('Market pipeline immutable evidence and retention', () => {
 describe('Market pipeline bounded composition', () => {
   it('preserves deterministic order and captured clock through one batch hydrate', async () => {
     const io = ports();
-    const composer = new MarketPipelineComposer(io);
-    const first = await composer.compose([spec()], context());
-    const second = await composer.compose([spec()], context());
+    const pageComposer = composer(io);
+    const first = await pageComposer.compose([spec()], context());
+    const second = await pageComposer.compose([spec()], context());
     expect(first.sections[0].items.map((item) => item.id)).toEqual(
       second.sections[0].items.map((item) => item.id),
     );
@@ -240,7 +248,7 @@ describe('Market pipeline bounded composition', () => {
       const io = ports(
         Array.from({ length: count }, (_, n) => candidate(n + 1)),
       );
-      const result = await new MarketPipelineComposer(io).compose(
+      const result = await composer(io).compose(
         [spec({ capacity: { minItems: 1 } })],
         context(),
       );
@@ -249,7 +257,7 @@ describe('Market pipeline bounded composition', () => {
   );
   it('dedupes across sections with bounded backfill and distinct entity keys', async () => {
     const io = ports();
-    const result = await new MarketPipelineComposer(io).compose(
+    const result = await composer(io).compose(
       [
         spec({ key: 'first' }),
         spec({ key: 'second', placement: { surface: 'HOME', order: 1 } }),
@@ -262,13 +270,11 @@ describe('Market pipeline bounded composition', () => {
     );
     expect(new Set(all).size).toBe(all.length);
   });
-  it('applies fresh per-viewer suppressions on every cache hit without storing them', async () => {
+  it('applies the current viewer suppression on every composition', async () => {
     const io = ports();
-    const cache = new BoundedPipelineCandidateCache();
-    const composer = new MarketPipelineComposer(io, cache);
-    const first = await composer.compose([spec()], context());
+    const first = await composer(io).compose([spec()], context());
     const hidden = first.sections[0].items[0].id;
-    const next = await composer.compose([spec()], {
+    const next = await composer(io).compose([spec()], {
       ...context(),
       suppression: {
         ...context().suppression,
@@ -278,9 +284,94 @@ describe('Market pipeline bounded composition', () => {
     expect(next.sections[0].items.some((item) => item.id === hidden)).toBe(
       false,
     );
-    expect(io.retrieve.mock.calls[1][0].cachedIds).toBeDefined();
-    const third = await composer.compose([spec()], context());
+    const third = await composer(io).compose([spec()], context());
     expect(third.sections[0].items[0].id).toBe(hidden);
+  });
+  const twoRails = () => [
+    spec({ key: 'first' }),
+    spec({ key: 'second', placement: { surface: 'HOME', order: 1 } }),
+  ];
+  it('plans every card the page will place, plus bounded reserves, without hydrating', async () => {
+    const io = ports();
+    const planned = await composer(io, { planning: true }).plan(
+      twoRails(),
+      context(),
+    );
+    expect(io.hydrate).not.toHaveBeenCalled();
+    expect(planned.size).toBeLessThanOrEqual(
+      2 * (8 + PIPELINE_CAPTURE_RESERVE),
+    );
+    const page = await composer(ports()).compose(twoRails(), context());
+    const placed = page.sections.flatMap((section) =>
+      section.items.map((item) => `${item.entityType}:${item.id}`),
+    );
+    expect(placed).toHaveLength(16);
+    for (const key of placed) expect(planned.has(key)).toBe(true);
+  });
+  it('fills every rail when only planned cards are captured', async () => {
+    const planned = await composer(ports(), { planning: true }).plan(
+      twoRails(),
+      context(),
+    );
+    const io = ports();
+    // Simulate capture: hydration knows only the planned cards.
+    io.hydrate.mockImplementation(
+      async (values: readonly PipelineCandidate[]) =>
+        values
+          .filter((row) => planned.has(`${row.entityType}:${row.id}`))
+          .map(hydrated),
+    );
+    const page = await composer(io).compose(twoRails(), context());
+    expect(page.sections.map((section) => section.items.length)).toEqual([
+      8, 8,
+    ]);
+  });
+  it('replaces a card that fails hydration from the planned reserve', async () => {
+    const planned = await composer(ports(), { planning: true }).plan(
+      [spec()],
+      context(),
+    );
+    const io = ports();
+    const [failed] = [...planned];
+    io.hydrate.mockImplementation(
+      async (values: readonly PipelineCandidate[]) =>
+        values
+          .filter(
+            (row) =>
+              planned.has(`${row.entityType}:${row.id}`) &&
+              `${row.entityType}:${row.id}` !== failed,
+          )
+          .map(hydrated),
+    );
+    const page = await composer(io).compose([spec()], context());
+    expect(page.sections[0].items).toHaveLength(8);
+    expect(
+      page.sections[0].items.some(
+        (item) => `${item.entityType}:${item.id}` === failed,
+      ),
+    ).toBe(false);
+  });
+  it('keeps planning and rendering modes separate', async () => {
+    await expect(
+      composer(ports(), { planning: true }).compose([spec()], context()),
+    ).rejects.toThrow('A planning composer cannot render a page');
+    await expect(composer(ports()).plan([spec()], context())).rejects.toThrow(
+      'Composer was not created for planning',
+    );
+  });
+  it('stops at the section limit in both modes and rejects invalid limits', async () => {
+    const page = await composer(ports(), { sectionLimit: 1 }).compose(
+      twoRails(),
+      context(),
+    );
+    expect(page.sections.map((section) => section.key)).toEqual(['first']);
+    const planned = await composer(ports(), {
+      planning: true,
+      sectionLimit: 1,
+    }).plan(twoRails(), context());
+    expect(planned.size).toBeLessThanOrEqual(8 + PIPELINE_CAPTURE_RESERVE);
+    for (const sectionLimit of [0, 9, 1.5])
+      expect(() => composer(ports(), { sectionLimit })).toThrow(RangeError);
   });
   it('omits private/unpublished products and failed media; never falls back to raw URLs', async () => {
     const io = ports();
@@ -291,15 +382,13 @@ describe('Market pipeline bounded composition', () => {
           product: { ...hydrated(row).product!, publicationStatus: 'DRAFT' },
         })),
     );
-    expect(
-      (await new MarketPipelineComposer(io).compose([spec()], context()))
-        .sections,
-    ).toEqual([]);
+    expect((await composer(io).compose([spec()], context())).sections).toEqual(
+      [],
+    );
     io.hydrate.mockResolvedValue([]);
-    expect(
-      (await new MarketPipelineComposer(io).compose([spec()], context()))
-        .sections,
-    ).toEqual([]);
+    expect((await composer(io).compose([spec()], context())).sections).toEqual(
+      [],
+    );
   });
   it('rechecks live tracked standard-checkout SKU scarcity', async () => {
     const io = ports();
@@ -315,18 +404,14 @@ describe('Market pipeline bounded composition', () => {
         })),
     );
     expect(
-      (
-        await new MarketPipelineComposer(io).compose(
-          [spec({ template: 'LOW_STOCK' })],
-          context(),
-        )
-      ).sections,
+      (await composer(io).compose([spec({ template: 'LOW_STOCK' })], context()))
+        .sections,
     ).toEqual([]);
   });
   it('uses truthful Fresh Drops fallback when R1 has no trend/popularity evidence', async () => {
     const io = ports();
     const ctx = { ...context(), epoch: null };
-    const result = await new MarketPipelineComposer(io).compose(
+    const result = await composer(io).compose(
       [spec({ key: 'hot-right-now', template: 'TREND' })],
       ctx,
     );
@@ -341,7 +426,7 @@ describe('Market pipeline bounded composition', () => {
   });
   it('shows a public fallback to guests of a personal spec without calling a personal source', async () => {
     const io = ports();
-    const result = await new MarketPipelineComposer(io).compose(
+    const result = await composer(io).compose(
       [spec({ template: 'AFFINITY' })],
       context(),
     );
@@ -368,10 +453,10 @@ describe('Market pipeline bounded composition', () => {
       filters: { fulfilment: 'MADE_TO_ORDER' },
       placement: { surface: 'HOME', order: 1 },
     });
-    const result = await new MarketPipelineComposer(io).compose(
-      [original, fallback],
-      { ...context(), filters: { colors: ['red'] } },
-    );
+    const result = await composer(io).compose([original, fallback], {
+      ...context(),
+      filters: { colors: ['red'] },
+    });
     expect(result.sections[0].scope.fixedFilterLayers).toEqual([
       { tags: ['adire'] },
       { fulfilment: 'MADE_TO_ORDER' },
@@ -397,7 +482,7 @@ describe('Market pipeline bounded composition', () => {
             Array.from({ length: 20 }, (_, n) => candidate(n + 1)),
           ),
     );
-    const result = await new MarketPipelineComposer(io).compose(
+    const result = await composer(io).compose(
       [
         spec({ key: 'slow' }),
         spec({ key: 'fast', placement: { surface: 'HOME', order: 1 } }),
@@ -414,7 +499,7 @@ describe('Market pipeline bounded composition', () => {
     controller.abort();
     expect(
       (
-        await new MarketPipelineComposer(io).compose([spec()], {
+        await composer(io).compose([spec()], {
           ...context(),
           signal: controller.signal,
         })
@@ -422,10 +507,10 @@ describe('Market pipeline bounded composition', () => {
     ).toEqual([]);
     expect(io.retrieve).not.toHaveBeenCalled();
     const bad = ports([candidate(1), { ...candidate(2), id: 'untrusted' }]);
-    await new MarketPipelineComposer(bad).compose([spec()], context());
+    await composer(bad).compose([spec()], context());
     expect(bad.hydrate).not.toHaveBeenCalled();
     const empty = ports([]);
-    await new MarketPipelineComposer(empty).compose(
+    await composer(empty).compose(
       Array.from({ length: 16 }, (_, n) => spec({ key: `s-${n}` })),
       context(),
     );

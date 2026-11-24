@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { CanonicalMarketFilters } from './market-filters';
-import { marketProductFiltersSql } from './market-filter.sql';
+import { marketCatalogProductFiltersSql } from './market-filter.sql';
 import { isMarketSortKey } from './market-cursor';
 import { MarketCatalogScope } from './market-catalog-scope';
 import { MARKET_FEATURE_MAX_SOURCE_AGE_MS } from '../intelligence/market-intelligence.contracts';
@@ -47,7 +47,7 @@ export function marketSnapshotPageSql(input: {
   if (input.countOnly && after)
     throw new RangeError('A catalogue count has no continuation key');
 
-  const eligible = marketProductFiltersSql(
+  const eligible = marketCatalogProductFiltersSql(
     [filters, input.fixedFilters ?? {}],
     now,
     'p',

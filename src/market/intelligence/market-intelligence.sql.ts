@@ -160,91 +160,159 @@ export function marketPriceSweepSql(now: Date): Prisma.Sql {
 }
 
 // Closed identifier set. No job data, configuration or request value is SQL text.
+// Event classes expire by age through their ("createdAt","_id") index; a
+// separate bounded actor scan removes rows of erased/inactive identities early.
 const retentionClasses = {
-  feed: {
-    table: Prisma.sql`user_feed_signals`,
-    key: Prisma.sql`"_id"`,
-    cutoff: true,
-  },
-  sections: {
-    table: Prisma.sql`market_section_signals`,
-    key: Prisma.sql`"_id"`,
-    cutoff: true,
-  },
-  suggestions: {
-    table: Prisma.sql`suggestion_signals`,
-    key: Prisma.sql`"_id"`,
-    cutoff: true,
-  },
-  seen: {
-    table: Prisma.sql`user_seen_items`,
-    key: Prisma.sql`"_id"`,
-    cutoff: true,
-  },
-  receipts: {
-    table: Prisma.sql`market_signal_batch_receipts`,
-    key: Prisma.sql`"_id"`,
-    cutoff: true,
-  },
+  feed: { table: Prisma.sql`user_feed_signals`, mode: 'event' },
+  sections: { table: Prisma.sql`market_section_signals`, mode: 'event' },
+  suggestions: { table: Prisma.sql`suggestion_signals`, mode: 'event' },
+  // The only writer assigns seenAt the same server instant as createdAt.
+  seen: { table: Prisma.sql`user_seen_items`, mode: 'event' },
+  receipts: { table: Prisma.sql`market_signal_batch_receipts`, mode: 'event' },
   identifiedAggregates: {
     table: Prisma.sql`market_signal_aggregate_daily`,
-    key: Prisma.sql`"_id"`,
-    cutoff: false,
+    mode: 'identified',
   },
-  affinity: {
-    table: Prisma.sql`user_market_affinity`,
-    key: Prisma.sql`"userId"`,
-    cutoff: false,
-  },
-  runwayCache: {
-    table: Prisma.sql`"RunwayAffinityCache"`,
-    key: Prisma.sql`"userId"`,
-    cutoff: false,
-  },
+  affinity: { table: Prisma.sql`user_market_affinity`, mode: 'all' },
+  runwayCache: { table: Prisma.sql`"RunwayAffinityCache"`, mode: 'runway' },
 } as const;
 export type MarketRetentionClass = keyof typeof retentionClasses;
 export const MARKET_RETENTION_CLASSES = Object.freeze(
   Object.keys(retentionClasses) as MarketRetentionClass[],
 );
+/** Distinct identities examined per actor statement (one index probe each). */
+export const MARKET_RETENTION_ACTOR_SCAN = 500;
+/** Canonical Date#toISOString text with a real calendar date. Matching strings
+ * are compared as text, so no cast can raise an error on any PostgreSQL version. */
+export const MARKET_CANONICAL_INSTANT_PATTERN =
+  '^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])' +
+  '|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))' +
+  '|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:[2468][048]|[13579][26])00)-02-29)' +
+  'T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$';
 
-function retentionPredicate(
-  kind: MarketRetentionClass,
-  cutoff: Date,
-): Prisma.Sql {
+export interface MarketRetentionStep {
+  /** Bounded by MARKET_WRITE_CHUNK; execute with $executeRaw. */
+  readonly delete: Prisma.Sql;
+  /** Returns [{ remaining: boolean }] through an index-bounded EXISTS. */
+  readonly remaining: Prisma.Sql;
+}
+
+function retentionClass(kind: MarketRetentionClass) {
   if (!Object.prototype.hasOwnProperty.call(retentionClasses, kind))
     throw new RangeError('Invalid retention class');
-  const erased = Prisma.sql`("userId" IS NOT NULL AND NOT EXISTS(
-    SELECT 1 FROM "User" retained_actor WHERE retained_actor."_id"=${retentionClasses[kind].table}."userId"
-      AND retained_actor.status='ACTIVE' AND retained_actor."deactivatedAt" IS NULL))`;
-  return retentionClasses[kind].cutoff
-    ? Prisma.sql`("createdAt"<${cutoff}::timestamptz ${kind === 'seen' ? Prisma.sql`OR "seenAt"<${cutoff}::timestamptz` : Prisma.empty} OR ${erased})`
-    : kind === 'identifiedAggregates'
-      ? Prisma.sql`("userId" IS NOT NULL OR "anonymousSessionId" IS NOT NULL)`
-      : kind === 'runwayCache'
-        ? Prisma.sql`(${erased} OR "expiresAt"<=statement_timestamp()
-        OR payload->>'version' IS DISTINCT FROM 'runway-r1-v1' OR "builtAt"<${cutoff}::timestamptz
-        OR CASE WHEN pg_input_is_valid(payload->>'sourceWindowStart','pg_catalog.timestamptz')
-          THEN (payload->>'sourceWindowStart')::timestamptz<${cutoff}::timestamptz ELSE true END)`
-        : Prisma.sql`true`;
+  return retentionClasses[kind];
 }
 
-export function marketRetentionRemainingSql(
-  kind: MarketRetentionClass,
-  cutoff: Date,
-): Prisma.Sql {
-  const predicate = retentionPredicate(kind, cutoff);
-  return Prisma.sql`SELECT EXISTS(SELECT 1 FROM ${retentionClasses[kind].table} WHERE ${predicate}) AS remaining`;
+function boundedStep(
+  table: Prisma.Sql,
+  key: Prisma.Sql,
+  where: Prisma.Sql,
+  order: Prisma.Sql,
+): MarketRetentionStep {
+  return {
+    delete: Prisma.sql`WITH expired AS MATERIALIZED (
+    SELECT ${key} FROM ${table} WHERE ${where}
+    ORDER BY ${order} LIMIT ${MARKET_WRITE_CHUNK} FOR UPDATE SKIP LOCKED
+  ) DELETE FROM ${table} t USING expired e WHERE t.${key}=e.${key}`,
+    remaining: Prisma.sql`SELECT EXISTS(SELECT 1 FROM ${table} WHERE ${where}) AS remaining`,
+  };
 }
 
-export function marketRetentionDeleteSql(
+/** Index-driven steps. Each predicate is a single indexed range or key scan. */
+export function marketRetentionSteps(
   kind: MarketRetentionClass,
   cutoff: Date,
-): Prisma.Sql {
-  const predicate = retentionPredicate(kind, cutoff);
-  const { table, key } = retentionClasses[kind];
-  return Prisma.sql`WITH expired AS MATERIALIZED (
-    SELECT ${key} FROM ${table} WHERE ${predicate}
-    ORDER BY ${retentionClasses[kind].cutoff ? Prisma.sql`"createdAt",` : Prisma.empty} ${key}
+): readonly MarketRetentionStep[] {
+  const { table, mode } = retentionClass(kind);
+  const id = Prisma.sql`"_id"`;
+  const userId = Prisma.sql`"userId"`;
+  switch (mode) {
+    case 'event':
+      return [
+        boundedStep(
+          table,
+          id,
+          Prisma.sql`"createdAt"<${cutoff}::timestamptz`,
+          Prisma.sql`"createdAt","_id"`,
+        ),
+      ];
+    case 'identified':
+      // Rows with both identities null are retained global totals.
+      return [
+        boundedStep(
+          table,
+          id,
+          Prisma.sql`"userId" IS NOT NULL`,
+          Prisma.sql`"userId","bucketDate"`,
+        ),
+        boundedStep(
+          table,
+          id,
+          Prisma.sql`"anonymousSessionId" IS NOT NULL`,
+          Prisma.sql`"anonymousSessionId","bucketDate"`,
+        ),
+      ];
+    case 'all':
+      return [boundedStep(table, userId, Prisma.sql`true`, userId)];
+    case 'runway':
+      // One short-lived row per recent viewer, keyed by userId.
+      return [
+        boundedStep(
+          table,
+          userId,
+          Prisma.sql`(NOT EXISTS(SELECT 1 FROM "User" retained_actor
+            WHERE retained_actor."_id"="RunwayAffinityCache"."userId"
+              AND retained_actor.status='ACTIVE' AND retained_actor."deactivatedAt" IS NULL)
+          OR "expiresAt"<=statement_timestamp()
+          OR payload->>'version' IS DISTINCT FROM 'runway-r1-v1' OR "builtAt"<${cutoff}::timestamptz
+          OR CASE WHEN payload->>'sourceWindowStart' ~ ${MARKET_CANONICAL_INSTANT_PATTERN}
+            THEN (payload->>'sourceWindowStart') COLLATE "C"<${cutoff.toISOString()}::text
+            ELSE true END)`,
+          userId,
+        ),
+      ];
+  }
+}
+
+/** Transactions per class pass: index-driven steps, then any actor scan. */
+export function marketRetentionStepCount(kind: MarketRetentionClass): number {
+  return (
+    marketRetentionSteps(kind, new Date(0)).length +
+    (marketRetentionActorSql(kind, null) ? 1 : 0)
+  );
+}
+
+/** Event classes only: examines at most MARKET_RETENTION_ACTOR_SCAN distinct
+ * identities after `after` (loose index scan on the userId index), then deletes
+ * up to MARKET_WRITE_CHUNK rows belonging to missing or inactive accounts.
+ * Returns [{ deleted, scanned, lastActor, remaining }]. */
+export function marketRetentionActorSql(
+  kind: MarketRetentionClass,
+  after: string | null,
+): Prisma.Sql | null {
+  const { table, mode } = retentionClass(kind);
+  if (mode !== 'event') return null;
+  const start =
+    after === null
+      ? Prisma.sql`"userId" IS NOT NULL`
+      : Prisma.sql`"userId">${after}::uuid`;
+  return Prisma.sql`WITH RECURSIVE actors(id,n) AS (
+    (SELECT "userId",1 FROM ${table} WHERE ${start} ORDER BY "userId" LIMIT 1)
+    UNION ALL
+    SELECT next.id,actors.n+1 FROM actors CROSS JOIN LATERAL (
+      SELECT "userId" AS id FROM ${table} WHERE "userId">actors.id ORDER BY "userId" LIMIT 1
+    ) next WHERE actors.n<${MARKET_RETENTION_ACTOR_SCAN}
+  ), inactive AS MATERIALIZED (
+    SELECT a.id FROM actors a WHERE NOT EXISTS(SELECT 1 FROM "User" retained_actor
+      WHERE retained_actor."_id"=a.id AND retained_actor.status='ACTIVE' AND retained_actor."deactivatedAt" IS NULL)
+  ), expired AS MATERIALIZED (
+    SELECT "_id" FROM ${table} WHERE "userId" IN (SELECT id FROM inactive)
     LIMIT ${MARKET_WRITE_CHUNK} FOR UPDATE SKIP LOCKED
-  ) DELETE FROM ${table} t USING expired e WHERE t.${key}=e.${key}`;
+  ), deleted AS (
+    DELETE FROM ${table} t USING expired e WHERE t."_id"=e."_id" RETURNING 1
+  ) SELECT (SELECT count(*)::int FROM deleted) AS deleted,
+    (SELECT count(*)::int FROM actors) AS scanned,
+    (SELECT id::text FROM actors ORDER BY n DESC LIMIT 1) AS "lastActor",
+    EXISTS(SELECT 1 FROM ${table} WHERE "userId" IN (SELECT id FROM inactive)
+      AND "_id" NOT IN (SELECT "_id" FROM expired)) AS remaining`;
 }

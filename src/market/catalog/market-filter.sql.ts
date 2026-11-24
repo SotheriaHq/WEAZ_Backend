@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { productEffectivePriceSql } from '../../common/pricing/product-price.sql';
+import { trimSql } from '../../common/utils/sql-text-normalization';
 import {
   eligibleProductSql,
   usableProductImageSql,
@@ -158,6 +159,57 @@ export function marketProductFiltersSql(
     conditions.map((condition) => Prisma.sql`(${condition})`),
     ' AND ',
   )})`;
+}
+
+/**
+ * SQL counterpart of the catalogue card capture: a card renders only when its
+ * first usable product image is an approved, ready product image file, or a
+ * current-version variant of that file. Results, totals and facets share it so
+ * counts never include products that hydration must drop.
+ */
+export function marketRenderableCoverSql(alias: Alias = 'p'): Prisma.Sql {
+  if (!Object.prototype.hasOwnProperty.call(aliases, alias))
+    throw new RangeError('Unsupported catalogue product alias');
+  const p = aliases[alias];
+  const image = trimSql(Prisma.sql`cover_image.value`);
+  return Prisma.sql`EXISTS (
+    SELECT 1 FROM (
+      SELECT COALESCE(NULLIF(${trimSql(Prisma.sql`${p}.thumbnail`)}, ''), (
+        SELECT ${image} FROM unnest(${p}.images) WITH ORDINALITY cover_image(value, position)
+        WHERE length(${image}) > 0 ORDER BY cover_image.position LIMIT 1
+      )) AS url
+    ) card_cover
+    JOIN "ProductMedia" cover_media ON cover_media."productId" = ${p}."_id"
+    JOIN "FileUpload" cover_file ON cover_file."_id" = cover_media."fileUploadId"
+    WHERE char_length(card_cover.url) <= 4096
+      AND cover_media."reviewStatus" = 'APPROVED' AND cover_file."processingStatus" = 'READY'
+      AND cover_file."originalDeletedAt" IS NULL
+      AND cover_file."mimeType" IN ('image/jpeg','image/png','image/webp','image/avif','image/gif')
+      AND (${trimSql(Prisma.sql`cover_file."s3Url"`)} = card_cover.url OR EXISTS (
+        SELECT 1 FROM "FileVariant" cover_variant
+        WHERE cover_variant."fileUploadId" = cover_file."_id"
+          AND cover_variant."assetVersion" = cover_file."assetVersion"
+          AND cover_variant."s3Url" = card_cover.url
+      ))
+  )`;
+}
+
+/** Catalogue results, totals and facets: canonical filters plus a renderable cover. */
+export function marketCatalogProductFiltersSql(
+  layers: readonly CanonicalMarketFilters[],
+  now: Date,
+  alias: Alias = 'p',
+  scope?: MarketCatalogScope,
+  excludedUserDimension?: Prisma.Sql,
+): Prisma.Sql {
+  const filters = marketProductFiltersSql(
+    layers,
+    now,
+    alias,
+    scope,
+    excludedUserDimension,
+  );
+  return Prisma.sql`(${filters} AND ${marketRenderableCoverSql(alias)})`;
 }
 
 export function marketProductFilterSql(

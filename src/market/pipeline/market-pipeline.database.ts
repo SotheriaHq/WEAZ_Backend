@@ -16,7 +16,10 @@ import {
   marketFilterHash,
   CanonicalMarketFilters,
 } from '../catalog/market-filters';
-import { marketProductFiltersSql } from '../catalog/market-filter.sql';
+import {
+  marketCatalogProductFiltersSql,
+  marketProductFiltersSql,
+} from '../catalog/market-filter.sql';
 import { pipelineTrendRatioSql } from './market-pipeline.trend';
 import {
   MARKET_FEATURE_PARAMETERS,
@@ -36,10 +39,18 @@ import {
   pipelineUnavailableReason,
   resolvePipelineFallback,
 } from './market-pipeline.sources';
+import { scorePipelineCandidates } from './market-pipeline.ranking';
 import {
-  scorePipelineCandidates,
-  rerankPipelineCandidates,
-} from './market-pipeline.ranking';
+  MarketPipelineComposer,
+  PIPELINE_CAPTURE_LIMIT,
+  pipelineSuppressionMode,
+} from './market-pipeline.composer';
+import {
+  PIPELINE_CACHE_MAX_BATCH,
+  PipelineCachedCandidate,
+  PipelineCandidateCache,
+  pipelineCacheKey,
+} from './market-pipeline.cache';
 import {
   PipelineContext,
   PipelineEpoch,
@@ -65,6 +76,67 @@ export interface CapturedPipelinePage {
     spec: PipelineSpec;
   }[];
   readonly captureIds: ReadonlySet<string>;
+  /** Shared candidate pools to store after the read transaction (cache misses only). */
+  readonly cacheWrites: readonly PipelineCacheWrite[];
+}
+export interface PipelineCacheWrite {
+  readonly key: string;
+  readonly rows: readonly PipelineCachedCandidate[];
+  readonly ttlSeconds: number;
+}
+/** Redis lookups never hold the read transaction longer than this. */
+export const PIPELINE_CACHE_WAIT_MS = 30;
+
+/** Bounded, failure-tolerant read: a slow or broken cache is an ordinary miss. */
+async function readPipelineCandidateCache(
+  cache: PipelineCandidateCache,
+  keys: readonly string[],
+  signal: AbortSignal | undefined,
+): Promise<ReadonlyMap<string, readonly PipelineCachedCandidate[]>> {
+  if (!keys.length || signal?.aborted) return new Map();
+  const lookup = cache.getMany(keys);
+  // The adapter keeps admission until its command settles; a late rejection
+  // after this wait expires must not surface as an unhandled rejection.
+  lookup.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      lookup,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Candidate cache wait expired')),
+          PIPELINE_CACHE_WAIT_MS,
+        );
+      }),
+    ]);
+  } catch {
+    return new Map();
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** In-memory source reads over one capture; shared by planning and rendering. */
+function capturedRetrieve(
+  requests: CapturedPipelinePage['requests'],
+  rows: readonly PipelineDatabaseRow[],
+  asOf: Date,
+): PipelinePorts['retrieve'] {
+  return async (request) => {
+    if (request.signal.aborted || request.asOf.getTime() !== asOf.getTime())
+      throw new Error('Request context ended');
+    const key = pipelineRequestKey(request);
+    if (!requests.some((entry) => entry.key === key))
+      throw new Error('Uncaptured source');
+    const cached = request.cachedIds ? new Set(request.cachedIds) : null;
+    return rows
+      .filter(
+        (row) =>
+          row.requestKey === key && (!cached || cached.has(row.candidate.id)),
+      )
+      .map((row) => row.candidate)
+      .slice(0, request.limit);
+  };
 }
 export function pipelineRequestKey(request: PipelineSourceRequest): string {
   return createHash('sha256')
@@ -141,7 +213,7 @@ export async function readPipelineEpochContext(
       AND e."readyAt"<=${now} AND e."epochStart"<=${now}
       AND e."sourceAsOf" BETWEEN ${now}-interval '2 hours' AND ${now} AND e."acceptUntil">${now} LIMIT 1)
     SELECT clock.*,(SELECT epoch FROM epoch LIMIT 1) AS epoch,(SELECT value FROM system_config WHERE key='market.features.snapshot') AS "readSummary"
-      ${probe ? Prisma.sql`,(SELECT count(*)::int FROM(SELECT 1 FROM "Product" p WHERE ${marketProductFiltersSql([probe.filters], capturedClock.asOf, 'p', createMarketCatalogScope({ key: 'pipeline', version: '1', viewer: probe.viewer }))} LIMIT 8) bounded) AS "eligibleProductCount"` : Prisma.empty}
+      ${probe ? Prisma.sql`,(SELECT count(*)::int FROM(SELECT 1 FROM "Product" p WHERE ${marketCatalogProductFiltersSql([probe.filters], capturedClock.asOf, 'p', createMarketCatalogScope({ key: 'pipeline', version: '1', viewer: probe.viewer }))} LIMIT 8) bounded) AS "eligibleProductCount"` : Prisma.empty}
       FROM clock`);
   const clock = rows[0];
   if (
@@ -248,12 +320,7 @@ function requestsFor(
             asOf: context.asOf,
             limit: spec.params.candidateLimit,
             signal: context.signal ?? new AbortController().signal,
-            suppressionMode:
-              context.surface === 'HOME' &&
-              !Object.keys(context.filters).length &&
-              !context.productId
-                ? 'public_pool'
-                : 'viewer',
+            suppressionMode: pipelineSuppressionMode(context),
           };
           const key = pipelineRequestKey(request);
           if (!result.has(key)) result.set(key, { key, request, spec });
@@ -284,6 +351,8 @@ export async function captureMarketPipelinePage(
     readonly specs: readonly unknown[];
     readonly context: PipelineContext;
     readonly viewer: MarketCatalogViewer;
+    readonly cache?: PipelineCandidateCache;
+    readonly sectionLimit?: number;
   },
 ): Promise<CapturedPipelinePage> {
   const specs = input.specs.map(parsePipelineSpec);
@@ -294,7 +363,34 @@ export async function captureMarketPipelinePage(
   // below uses only memory and never abandons a still-running SQL operation.
   if (!Number.isFinite(input.context.deadline))
     await tx.$executeRaw`SET LOCAL statement_timeout='250ms'`;
-  const requests = requestsFor(specs, input.context);
+  // Shared pools hold only {id, score} for unfiltered, nonpersonal HOME rails.
+  // A hit narrows that source's SQL to the cached IDs; every predicate, current
+  // eligibility and suppression still runs, so a hit never authorizes a card.
+  const cacheKeys = new Map<string, string>();
+  const registered = requestsFor(specs, input.context);
+  if (input.cache)
+    for (const entry of registered) {
+      const key = pipelineCacheKey(entry.spec, input.context, entry.request);
+      if (key) cacheKeys.set(entry.key, key);
+    }
+  const cacheHits = input.cache
+    ? await readPipelineCandidateCache(
+        input.cache,
+        [...new Set(cacheKeys.values())].slice(0, PIPELINE_CACHE_MAX_BATCH),
+        input.context.signal,
+      )
+    : new Map<string, readonly PipelineCachedCandidate[]>();
+  const requests = registered.map((entry) => {
+    const hit = cacheHits.get(cacheKeys.get(entry.key) ?? '');
+    // An empty pool is never trusted: the first product of a new catalogue
+    // must appear without waiting for a cached empty list to expire.
+    return hit?.length && hit.length <= entry.request.limit
+      ? {
+          ...entry,
+          request: { ...entry.request, cachedIds: hit.map((row) => row.id) },
+        }
+      : entry;
+  });
   const dimensionEntries = requests.flatMap(({ request }) =>
     [request.filters, ...request.fixedFilterLayers].flatMap((layer) =>
       Object.entries(layer.dimensions ?? {}).map(
@@ -407,45 +503,35 @@ export async function captureMarketPipelinePage(
     },
     tenure: new Map(Object.entries(preference.tenure)),
   };
-  const ranked = requests.map(({ key, spec }) =>
-    rerankPipelineCandidates(
-      scorePipelineCandidates(
-        (rowsByRequest.get(key) ?? []).map((row) => row.candidate),
-        spec,
-        context,
-      ),
-      spec,
+  // Plan with the real composer over the captured rows, so page-level dedupe,
+  // fallbacks, windows, diversity and repeats decide which cards to capture.
+  // Ranking a rail in isolation would capture cards a later rail cannot use.
+  const planned = await new MarketPipelineComposer(
+    {
+      retrieve: capturedRetrieve(requests, rows, context.asOf),
+      hydrate: async () => {
+        throw new Error('Planning never hydrates');
+      },
+    },
+    { planning: true, sectionLimit: input.sectionLimit },
+  ).plan(specs, context);
+  const captureIds = new Set([...planned].slice(0, PIPELINE_CAPTURE_LIMIT));
+  const cacheWrites = new Map<string, PipelineCacheWrite>();
+  for (const entry of requests) {
+    const key = cacheKeys.get(entry.key);
+    if (!key || entry.request.cachedIds || cacheWrites.has(key)) continue;
+    const scored = scorePipelineCandidates(
+      (rowsByRequest.get(entry.key) ?? []).map((row) => row.candidate),
+      entry.spec,
       context,
-      { placed: new Map(), repeats: 0 },
-    ),
-  );
-  const captureIds = new Set<string>();
-  // Round-robin prefetch avoids allowing the first source to consume all media.
-  for (let position = 0; position < 24 && captureIds.size < 61; position++)
-    for (const list of ranked) {
-      const row = list[position];
-      if (row)
-        captureIds.add(`${row.candidate.entityType}:${row.candidate.id}`);
-      if (captureIds.size === 61) break;
-    }
-  // Fill unused capture capacity across source pools. Several sections can
-  // share one query while rotating same-day ties with different section seeds.
-  for (let position = 0; position < 61 && captureIds.size < 61; position++)
-    for (const entry of requests) {
-      const row = rowsByRequest.get(entry.key)?.[position];
-      if (
-        row &&
-        !context.suppression.targetKeys.has(
-          `${row.candidate.entityType}:${row.candidate.id}`,
-        ) &&
-        (!row.candidate.brandId ||
-          !context.suppression.brandIds.has(row.candidate.brandId)) &&
-        (!row.candidate.categoryId ||
-          !context.suppression.categoryIds.has(row.candidate.categoryId))
-      )
-        captureIds.add(`${row.candidate.entityType}:${row.candidate.id}`);
-      if (captureIds.size === 61) break;
-    }
+    );
+    if (scored.length)
+      cacheWrites.set(key, {
+        key,
+        rows: scored.map((row) => ({ id: row.candidate.id, score: row.score })),
+        ttlSeconds: entry.spec.cache.sharedTtlSeconds,
+      });
+  }
   const productRows = new Map(
     rows
       .filter(
@@ -474,6 +560,7 @@ export async function captureMarketPipelinePage(
     rows,
     products,
     captureIds,
+    cacheWrites: [...cacheWrites.values()],
     viewer: input.viewer,
   };
 }
@@ -561,24 +648,11 @@ export async function resolveCapturedPipelinePorts(
     hydrated.set(`${item.entityType}:${item.id}`, { item });
   }
   return {
-    retrieve: async (request) => {
-      if (
-        request.signal.aborted ||
-        request.asOf.getTime() !== capture.context.asOf.getTime()
-      )
-        throw new Error('Request context ended');
-      const key = pipelineRequestKey(request);
-      const known = capture.requests.some((entry) => entry.key === key);
-      if (!known) throw new Error('Uncaptured source');
-      const cached = request.cachedIds ? new Set(request.cachedIds) : null;
-      return capture.rows
-        .filter(
-          (row) =>
-            row.requestKey === key && (!cached || cached.has(row.candidate.id)),
-        )
-        .map((row) => row.candidate)
-        .slice(0, request.limit);
-    },
+    retrieve: capturedRetrieve(
+      capture.requests,
+      capture.rows,
+      capture.context.asOf,
+    ),
     hydrate: async (candidates, asOf, signal) => {
       if (
         signal.aborted ||
@@ -602,36 +676,50 @@ export async function readCurrentPipelineSources(
   if (capture.context.signal?.aborted) throw new Error('Request ended');
   if (!Number.isFinite(capture.context.deadline))
     await tx.$executeRaw`SET LOCAL statement_timeout='250ms'`;
-  const requests = capture.requests
-    .map((entry) => ({
-      key: entry.key,
-      request: {
-        ...entry.request,
-        ...(![
-          'from_runway',
-          'looks',
-          'new_designers',
-          'category_tiles',
-        ].includes(entry.request.source.kind)
-          ? {
-              capturedCovers: capture.products.map((card) => ({
-                productId: card.product.id,
-                fileId: card.file.id,
-                assetVersion: card.file.assetVersion,
-              })),
-            }
-          : {}),
-        cachedIds: capture.rows
-          .filter(
-            (row) =>
-              row.requestKey === entry.key &&
-              capture.captureIds.has(
-                `${row.candidate.entityType}:${row.candidate.id}`,
-              ),
-          )
-          .map((row) => row.candidate.id),
+  const covers = new Map(
+    capture.products.map((card) => [
+      card.product.id,
+      {
+        productId: card.product.id,
+        fileId: card.file.id,
+        assetVersion: card.file.assetVersion,
       },
-    }))
+    ]),
+  );
+  const requests = capture.requests
+    .map((entry) => {
+      const capturedIds = capture.rows
+        .filter(
+          (row) =>
+            row.requestKey === entry.key &&
+            capture.captureIds.has(
+              `${row.candidate.entityType}:${row.candidate.id}`,
+            ),
+        )
+        .map((row) => row.candidate.id);
+      return {
+        key: entry.key,
+        request: {
+          ...entry.request,
+          // Only this source's own captured covers: one source returns at most
+          // 61 rows, so the proof list stays small for every request.
+          ...(![
+            'from_runway',
+            'looks',
+            'new_designers',
+            'category_tiles',
+          ].includes(entry.request.source.kind)
+            ? {
+                capturedCovers: capturedIds.flatMap((id) => {
+                  const cover = covers.get(id);
+                  return cover ? [cover] : [];
+                }),
+              }
+            : {}),
+          cachedIds: capturedIds,
+        },
+      };
+    })
     .filter((entry) => entry.request.cachedIds.length);
   if (!requests.length) return [];
   // Always enforce this viewer's CURRENT suppression at the final public gate.

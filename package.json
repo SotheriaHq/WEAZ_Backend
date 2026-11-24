@@ -64,6 +64,8 @@
     "test:market-eligibility-postgres": "node scripts/test-market-eligibility-postgres.cjs",
     "test:market-schema-postgres": "node scripts/test-market-schema-postgres.cjs && node scripts/test-market-product-writers-postgres.cjs && node scripts/test-market-feature-snapshots-postgres.cjs && node scripts/test-market-affinity-exposure-postgres.cjs && node scripts/test-market-section-versions-postgres.cjs && node scripts/test-market-price-parity-postgres.cjs",
     "market:backfill-products": "node scripts/backfill-market-products.cjs",
+    "test:market-intelligence": "jest src/market/intelligence --runInBand && node scripts/test-market-intelligence-contracts.cjs && node scripts/test-market-intelligence-postgres.cjs && node scripts/test-market-intelligence-ingest-postgres.cjs",
+    "test:market-intelligence-redis": "node scripts/test-market-intelligence-redis.cjs",
     "test:market-catalog": "jest src/market/catalog/ src/market/market-flags.service.spec.ts --runInBand",
     "test:market-catalog-postgres": "node scripts/test-market-catalog-filters-postgres.cjs && node scripts/test-market-price-fence-postgres.cjs && node scripts/test-market-price-order-postgres.cjs"
   },

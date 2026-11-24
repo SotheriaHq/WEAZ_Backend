@@ -8,6 +8,7 @@ import {
   resolveCapturedPipelinePorts,
 } from './market-pipeline.database';
 import { PipelinePorts } from './market-pipeline.types';
+import { PIPELINE_CAPTURE_LIMIT } from './market-pipeline.composer';
 
 export interface PipelineMediaResolver {
   resolve(capture: CapturedPipelinePage): Promise<PipelinePorts>;
@@ -19,7 +20,10 @@ export class MarketPipelineMediaResolver implements PipelineMediaResolver {
     private readonly media: Pick<MarketPublicMediaService, 'resolve'>,
   ) {}
   async resolve(capture: CapturedPipelinePage): Promise<PipelinePorts> {
-    if (capture.captureIds.size > 61 || capture.context.signal?.aborted)
+    if (
+      capture.captureIds.size > PIPELINE_CAPTURE_LIMIT ||
+      capture.context.signal?.aborted
+    )
       throw new Error('Request context ended');
     const resolved = await this.media.resolve(
       async (tx) => {

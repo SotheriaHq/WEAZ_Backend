@@ -1,6 +1,9 @@
 import { ContentMediaViewSlot, Prisma } from '@prisma/client';
 import { ServiceUnavailableException } from '@nestjs/common';
-import { CapturedMarketCard } from './market-catalog-cards';
+import {
+  CapturedMarketCard,
+  MARKET_CARD_CAPTURE_MAX,
+} from './market-catalog-cards';
 import { MarketOrderedRow } from './market-ordered-reader';
 import {
   eligibleProductSql,
@@ -47,7 +50,7 @@ const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const utc = (field: Prisma.Sql, timestamptz = false) =>
   Prisma.sql`CASE WHEN ${field} IS NULL THEN NULL ELSE to_char(${timestamptz ? Prisma.sql`${field} AT TIME ZONE 'UTC'` : field},'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END`;
 
-/** One physical data statement for <=61 cards. Lateral aggregates are confined
+/** One physical data statement for <=MARKET_CARD_CAPTURE_MAX cards. Lateral aggregates are confined
  * to those IDs; no Prisma relation fanout or whole-catalog card materialization. */
 export function marketCatalogCardBatchSql(input: {
   rows: readonly MarketOrderedRow[];
@@ -55,7 +58,7 @@ export function marketCatalogCardBatchSql(input: {
 }): Prisma.Sql {
   if (
     !input.rows.length ||
-    input.rows.length > 61 ||
+    input.rows.length > MARKET_CARD_CAPTURE_MAX ||
     !Number.isFinite(input.asOf.getTime()) ||
     input.rows.some((row) => !uuid.test(row.id))
   )
@@ -89,7 +92,7 @@ export function marketCatalogCardBatchSql(input: {
     LEFT JOIN LATERAL (SELECT array_agg(tag."normalizedName" ORDER BY tag."normalizedName",tag."_id") AS values FROM (
       SELECT tag."normalizedName",tag."_id" FROM "TagBinding" binding JOIN "Tag" tag ON tag."_id"=binding."tagId"
       WHERE binding."entityType"='PRODUCT' AND binding."entityId"=p."_id" AND tag.status='APPROVED' AND NOT tag."isBanned" AND tag."aliasOfTagId" IS NULL ORDER BY tag."normalizedName",tag."_id" LIMIT 25) tag) tags ON true
-    WHERE p."_id" IN (${Prisma.join(input.rows.map((row) => Prisma.sql`${row.id}::uuid`))}) AND ${eligibleProductSql(input.asOf)} AND p.currency='NGN' AND p.price<'Infinity'::numeric LIMIT 61`;
+    WHERE p."_id" IN (${Prisma.join(input.rows.map((row) => Prisma.sql`${row.id}::uuid`))}) AND ${eligibleProductSql(input.asOf)} AND p.currency='NGN' AND p.price<'Infinity'::numeric LIMIT ${MARKET_CARD_CAPTURE_MAX}`;
 }
 
 const date = (value: string | null) =>
@@ -98,7 +101,10 @@ export async function captureMarketCatalogCardsBatched(
   tx: Pick<Prisma.TransactionClient, '$queryRaw'>,
   input: { rows: readonly MarketOrderedRow[]; asOf: Date },
 ): Promise<CapturedMarketCard[]> {
-  if (input.rows.length > 61 || !Number.isFinite(input.asOf.getTime()))
+  if (
+    input.rows.length > MARKET_CARD_CAPTURE_MAX ||
+    !Number.isFinite(input.asOf.getTime())
+  )
     throw new RangeError('Invalid catalogue hydration budget');
   if (!input.rows.length) return [];
   const raw = await tx.$queryRaw<RawCard[]>(marketCatalogCardBatchSql(input));

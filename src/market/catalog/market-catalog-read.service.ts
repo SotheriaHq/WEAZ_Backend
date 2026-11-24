@@ -27,6 +27,16 @@ export function assertMarketReadDeadline(
     });
 }
 
+/** The bulkhead refused the read before any transaction or connection request. */
+export class MarketCatalogAdmissionException extends ServiceUnavailableException {
+  constructor() {
+    super({
+      code: 'CATALOGUE_BUSY',
+      message: 'The catalogue is busy. Please try again shortly.',
+    });
+  }
+}
+
 function databaseErrorCode(meta: Record<string, unknown> | undefined): unknown {
   if (typeof meta?.code === 'string') return meta.code;
   // Prisma's PostgreSQL driver adapter retains SQLSTATE in a structured cause.
@@ -53,10 +63,7 @@ export class MarketCatalogReadService {
     assertMarketReadDeadline(options);
     // Reject instead of accumulating a second, unbounded application queue.
     if (this.active >= MARKET_CATALOG_CONCURRENT_READS)
-      throw new ServiceUnavailableException({
-        code: 'CATALOGUE_BUSY',
-        message: 'The catalogue is busy. Please try again shortly.',
-      });
+      throw new MarketCatalogAdmissionException();
     this.active++;
     try {
       const remaining = () =>

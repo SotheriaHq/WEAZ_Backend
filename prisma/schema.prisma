@@ -7131,6 +7131,7 @@ model UserSeenItem {
   @@index([sectionKey, createdAt])
   @@index([suggestionBlockKey, createdAt])
   @@index([userId, targetType, targetId])
+  @@index([createdAt, id])
   @@map("user_seen_items")
 }
 
@@ -7155,6 +7156,7 @@ model MarketSectionSignal {
   @@index([anonymousSessionId, clientEventId])
   @@index([clientEventId, createdAt])
   @@index([sectionKey, createdAt])
+  @@index([createdAt, id])
   @@map("market_section_signals")
 }
 
@@ -7182,6 +7184,7 @@ model SuggestionSignal {
   @@index([clientEventId, createdAt])
   @@index([targetType, targetId, createdAt])
   @@index([blockKey, createdAt])
+  @@index([createdAt, id])
   @@map("suggestion_signals")
 }
 
@@ -7198,6 +7201,7 @@ model MarketSignalBatchReceipt {
   @@unique([anonymousSessionId, batchId])
   @@index([userId, createdAt])
   @@index([anonymousSessionId, createdAt])
+  @@index([createdAt, id])
   @@map("market_signal_batch_receipts")
 }
 

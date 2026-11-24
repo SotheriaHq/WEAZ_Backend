@@ -229,6 +229,9 @@ export async function readPipelineSourceSection(input: {
           (row) => `${row.candidate.entityType}:${row.candidate.id}`,
         ),
       ),
+      // See All pages are viewer-filtered keyset reads; they never feed the
+      // shared HOME candidate pools.
+      cacheWrites: [],
       viewer: input.viewer,
     };
     return {

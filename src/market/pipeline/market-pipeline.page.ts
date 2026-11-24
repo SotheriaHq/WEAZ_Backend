@@ -12,6 +12,8 @@ import {
   PIPELINE_PAGE_TIMEOUT_MS,
 } from './market-pipeline.composer';
 import {
+  PIPELINE_CACHE_WAIT_MS,
+  PipelineCacheWrite,
   captureMarketPipelinePage,
   readPipelineEpochContext,
 } from './market-pipeline.database';
@@ -25,6 +27,31 @@ import {
   PipelinePorts,
 } from './market-pipeline.types';
 import { PipelineMediaResolver } from './market-pipeline.media';
+
+/** Bounded best-effort shared-pool writes; never fails or delays a page beyond the wait. */
+export async function writePipelineCandidateCache(
+  cache: PipelineCandidateCache | undefined,
+  writes: readonly PipelineCacheWrite[],
+): Promise<void> {
+  if (!cache || !writes.length) return;
+  await Promise.allSettled(
+    writes.map(async (write) => {
+      const operation = cache.set(write.key, write.rows, write.ttlSeconds);
+      operation.catch(() => undefined);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          operation,
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, PIPELINE_CACHE_WAIT_MS);
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }),
+  );
+}
 
 export interface PipelineReadRunner {
   run<T>(
@@ -98,6 +125,8 @@ export async function buildMarketPipelinePage(input: {
         specs,
         context,
         viewer: input.viewer,
+        cache: input.cache,
+        sectionLimit: input.sectionLimit,
       });
     },
     { deadline, signal: input.signal },
@@ -105,16 +134,20 @@ export async function buildMarketPipelinePage(input: {
   assertMarketReadDeadline({ deadline, signal: input.signal });
   let capturedPorts: PipelinePorts;
   let mediaUnavailable = false;
-  try {
-    capturedPorts = await input.media.resolve(capture);
-  } catch {
+  // Cache writes run beside media authorization, after the read transaction
+  // has released its connection. Each write is bounded; failures are misses.
+  const [media] = await Promise.allSettled([
+    input.media.resolve(capture),
+    writePipelineCandidateCache(input.cache, capture.cacheWrites),
+  ]);
+  if (media.status === 'fulfilled') capturedPorts = media.value;
+  else {
     mediaUnavailable = true;
     capturedPorts = { retrieve: async () => [], hydrate: async () => [] };
   }
-  const page = await new MarketPipelineComposer(
-    capturedPorts,
-    input.cache,
-  ).compose(capture.specs, capture.context);
+  const page = await new MarketPipelineComposer(capturedPorts, {
+    sectionLimit: input.sectionLimit,
+  }).compose(capture.specs, capture.context);
   if (mediaUnavailable) page.metadata.partial = true;
   page.sections = page.sections.slice(0, input.sectionLimit ?? 8);
   assertMarketReadDeadline({ deadline, signal: input.signal });

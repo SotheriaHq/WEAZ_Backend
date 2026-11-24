@@ -3,10 +3,6 @@ import {
   parseMarketFilters,
 } from '../catalog/market-filters';
 import { isEligibleProduct } from '../eligibility/market-eligibility';
-import {
-  PipelineCandidateCache,
-  pipelineCacheKey,
-} from './market-pipeline.cache';
 import { PIPELINE_TEMPLATES } from './market-pipeline.registry';
 import {
   rerankPipelineCandidates,
@@ -38,6 +34,39 @@ export const PIPELINE_MAX_SECTIONS = 8;
 export const PIPELINE_MAX_PORT_CALLS = 96;
 export const PIPELINE_SECTION_TIMEOUT_MS = 250;
 export const PIPELINE_PAGE_TIMEOUT_MS = 550;
+/** New releases widen to 60 days below this many candidates (Home and See All). */
+export const NEW_RELEASES_WIDEN_BELOW = 8;
+/** ...and to 90 days below this many. */
+export const NEW_RELEASES_WIDEN_AGAIN_BELOW = 4;
+/** Extra ranked candidates captured per planned rail, so a card that fails
+ * final media/eligibility checks is replaced instead of shortening the rail. */
+export const PIPELINE_CAPTURE_RESERVE = 2;
+/** Largest preview a validated spec may request (see the spec parser). */
+export const PIPELINE_MAX_PREVIEW = 12;
+/** Upper bound of distinct cards one page can capture and sign. */
+export const PIPELINE_CAPTURE_LIMIT =
+  PIPELINE_MAX_SECTIONS * (PIPELINE_MAX_PREVIEW + PIPELINE_CAPTURE_RESERVE);
+
+export interface MarketPipelineComposerOptions {
+  /** Select cards from captured candidate rows without hydration. Used to
+   * decide which cards to capture before the real composition runs. */
+  readonly planning?: boolean;
+  /** Stop after this many rendered sections (1-8, default 8). */
+  readonly sectionLimit?: number;
+  /** Monotonic clock in milliseconds; injectable for deterministic tests. */
+  readonly now?: () => number;
+}
+
+/** Shared by capture and composition so both address the same source pool. */
+export function pipelineSuppressionMode(
+  context: Pick<PipelineContext, 'surface' | 'filters' | 'productId'>,
+): 'public_pool' | 'viewer' {
+  return context.surface === 'HOME' &&
+    !Object.keys(context.filters).length &&
+    !context.productId
+    ? 'public_pool'
+    : 'viewer';
+}
 
 class PipelineReadUnavailable extends Error {}
 interface ReadBudget {
@@ -49,13 +78,10 @@ async function bounded<T>(
   work: (signal: AbortSignal) => Promise<T>,
   parent: AbortSignal | undefined,
   budget: ReadBudget,
+  now: () => number,
   maximumMs = PIPELINE_SECTION_TIMEOUT_MS,
 ): Promise<T> {
-  if (
-    parent?.aborted ||
-    budget.remaining <= 0 ||
-    performance.now() >= budget.deadline
-  )
+  if (parent?.aborted || budget.remaining <= 0 || now() >= budget.deadline)
     throw new PipelineReadUnavailable();
   budget.remaining--;
   const controller = new AbortController();
@@ -71,7 +97,7 @@ async function bounded<T>(
         () => {
           controller.abort();
         },
-        Math.max(1, Math.min(maximumMs, budget.deadline - performance.now())),
+        Math.max(1, Math.min(maximumMs, budget.deadline - now())),
       );
     });
     return await Promise.race([work(controller.signal), timeout]);
@@ -199,12 +225,26 @@ function captureContext(context: PipelineContext): PipelineContext {
   };
 }
 
+type RankedRow = ReturnType<typeof rerankPipelineCandidates>[number];
+
+function cardKey(row: RankedRow): string {
+  return `${row.candidate.entityType}:${row.candidate.id}`;
+}
+
 /** No framework singleton stores a viewer, a placed set, suppression or hydrated cards. */
 export class MarketPipelineComposer {
+  private readonly now: () => number;
+  private readonly sectionLimit: number;
   constructor(
     private readonly ports: PipelinePorts,
-    private readonly cache?: PipelineCandidateCache,
-  ) {}
+    private readonly options: MarketPipelineComposerOptions = {},
+  ) {
+    const limit = options.sectionLimit ?? PIPELINE_MAX_SECTIONS;
+    if (!Number.isInteger(limit) || limit < 1 || limit > PIPELINE_MAX_SECTIONS)
+      throw new RangeError('Invalid section limit');
+    this.sectionLimit = limit;
+    this.now = options.now ?? (() => performance.now());
+  }
 
   async compose(
     inputs: readonly unknown[],
@@ -215,6 +255,25 @@ export class MarketPipelineComposer {
     sections: readonly PipelineSection[];
     metadata: { partial: boolean; cachePolicy: 'private-no-store' };
   }> {
+    if (this.options.planning)
+      throw new Error('A planning composer cannot render a page');
+    return (await this.run(inputs, inputContext)).page;
+  }
+
+  /** Card keys (`ENTITY:id`) the real composition will place, plus reserves.
+   * Selection uses the same fallback, dedupe, diversity and repeat rules. */
+  async plan(
+    inputs: readonly unknown[],
+    inputContext: PipelineContext,
+  ): Promise<ReadonlySet<string>> {
+    if (!this.options.planning)
+      throw new Error('Composer was not created for planning');
+    return (await this.run(inputs, inputContext)).planned;
+  }
+
+  private async run(inputs: readonly unknown[], inputContext: PipelineContext) {
+    const planning = this.options.planning === true;
+    const now = this.now;
     const context = captureContext(inputContext);
     const specs = inputs.map(parsePipelineSpec);
     validatePipelineGraph(specs);
@@ -229,11 +288,14 @@ export class MarketPipelineComposer {
       remaining: PIPELINE_MAX_PORT_CALLS,
       deadline: Math.min(
         context.deadline ?? Infinity,
-        performance.now() + PIPELINE_PAGE_TIMEOUT_MS,
+        now() + PIPELINE_PAGE_TIMEOUT_MS,
       ),
     };
+    const suppressionMode = pipelineSuppressionMode(context);
     const placed = new Map<string, string>();
+    const planned = new Set<string>();
     const sections: PipelineSection[] = [];
+    let builtCount = 0;
     let repeats = 0;
     let partial = false;
     for (const original of sorted) {
@@ -245,7 +307,8 @@ export class MarketPipelineComposer {
       const tried = new Set<string>();
       let fallbackReason: string | null = null;
       let built: PipelineSection | null = null;
-      while (queue.length && !built) {
+      let builtRows: RankedRow[] | null = null;
+      while (queue.length && !builtRows) {
         const attempt = queue.shift()!;
         const spec = attempt.spec;
         const attemptKey = `${spec.key}:${spec.template}`;
@@ -265,216 +328,166 @@ export class MarketPipelineComposer {
               asOf: context.asOf,
               epoch: context.epoch,
               limit: spec.params.candidateLimit,
+              suppressionMode,
             });
-            const cacheRequest = {
-              ...request(),
-              signal: context.signal ?? new AbortController().signal,
-            };
-            const cacheKey = pipelineCacheKey(spec, context, cacheRequest);
-            let cachedIds: readonly string[] | undefined;
-            if (cacheKey && this.cache) {
-              try {
-                const cached = await bounded(
-                  () => this.cache!.get(cacheKey),
-                  context.signal,
-                  {
-                    remaining: 1,
-                    deadline: Math.min(budget.deadline, performance.now() + 30),
-                  },
-                  30,
-                );
-                if (
-                  cached &&
-                  cached.length <= spec.params.candidateLimit &&
-                  cached.every(
-                    (row) =>
-                      typeof row.id === 'string' && Number.isFinite(row.score),
-                  )
-                )
-                  cachedIds = cached.map((row) => row.id);
-              } catch {
-                /* Cache failure never disables public reads or suppressions. */
-              }
-            }
-            let candidates = await bounded(
-              (signal) =>
-                this.ports.retrieve({
-                  ...request(),
-                  suppressionMode: cacheKey ? 'public_pool' : 'viewer',
-                  cachedIds,
-                  signal,
-                }),
-              context.signal,
-              budget,
-            );
+            const retrieve = () =>
+              bounded(
+                (signal) => this.ports.retrieve({ ...request(), signal }),
+                context.signal,
+                budget,
+                now,
+              );
+            let candidates = await retrieve();
             validCandidates(candidates, spec, spec.params.candidateLimit);
             // Window extension is a source restriction, not padding with older arbitrary cards.
             if (
               spec.template === 'NEW_RELEASES' &&
-              candidates.length < 8 &&
+              candidates.length < NEW_RELEASES_WIDEN_BELOW &&
               windowDays < 60
             ) {
               windowDays = 60;
               source = pipelineSource(spec, context, windowDays);
-              candidates = await bounded(
-                (signal) =>
-                  this.ports.retrieve({
-                    ...request(),
-                    suppressionMode: cacheKey ? 'public_pool' : 'viewer',
-                    signal,
-                  }),
-                context.signal,
-                budget,
-              );
+              candidates = await retrieve();
               validCandidates(candidates, spec, spec.params.candidateLimit);
             }
             if (
               spec.template === 'NEW_RELEASES' &&
-              candidates.length < 4 &&
+              candidates.length < NEW_RELEASES_WIDEN_AGAIN_BELOW &&
               windowDays < 90
             ) {
-              source = pipelineSource(spec, context, 90);
-              candidates = await bounded(
-                (signal) =>
-                  this.ports.retrieve({
-                    ...request(),
-                    suppressionMode: cacheKey ? 'public_pool' : 'viewer',
-                    signal,
-                  }),
-                context.signal,
-                budget,
-              );
+              windowDays = 90;
+              source = pipelineSource(spec, context, windowDays);
+              candidates = await retrieve();
               validCandidates(candidates, spec, spec.params.candidateLimit);
             }
             const scored = scorePipelineCandidates(candidates, spec, context);
-            if (cacheKey && this.cache && !cachedIds) {
-              try {
-                await bounded(
-                  () =>
-                    this.cache!.set(
-                      cacheKey,
-                      scored.map((row) => ({
-                        id: row.candidate.id,
-                        score: row.score,
-                      })),
-                      spec.cache.sharedTtlSeconds,
-                    ),
-                  context.signal,
-                  {
-                    remaining: 1,
-                    deadline: Math.min(budget.deadline, performance.now() + 30),
-                  },
-                  30,
-                );
-              } catch {
-                /* Bounded best-effort cache. */
-              }
-            }
             const ranked = rerankPipelineCandidates(scored, spec, context, {
               placed,
               repeats,
             });
             if (ranked.length >= spec.capacity.minItems) {
-              const hydrated = await bounded(
-                (signal) =>
-                  this.ports.hydrate(
-                    ranked.map((row) => row.candidate),
-                    context.asOf,
-                    signal,
-                    {
-                      ...request(),
-                      suppressionMode: cacheKey ? 'public_pool' : 'viewer',
+              let hydratedById: Map<string, PipelineHydrated> | null = null;
+              if (!planning) {
+                const hydrated = await bounded(
+                  (signal) =>
+                    this.ports.hydrate(
+                      ranked.map((row) => row.candidate),
+                      context.asOf,
                       signal,
-                    },
-                  ),
-                context.signal,
-                budget,
-              );
-              if (!Array.isArray(hydrated) || hydrated.length > ranked.length)
-                throw new PipelineReadUnavailable();
-              const hydratedById = new Map(
-                hydrated.map((row) => [
-                  `${row.item?.entityType}:${row.item?.id}`,
-                  row,
-                ]),
-              );
-              const items: PipelineSection['items'][number][] = [];
-              for (const row of ranked) {
-                const value = hydratedById.get(
-                  `${row.candidate.entityType}:${row.candidate.id}`,
+                      { ...request(), signal },
+                    ),
+                  context.signal,
+                  budget,
+                  now,
                 );
-                if (
-                  !value ||
-                  !validHydration(value, row.candidate, spec, context)
-                )
-                  continue;
+                if (!Array.isArray(hydrated) || hydrated.length > ranked.length)
+                  throw new PipelineReadUnavailable();
+                hydratedById = new Map(
+                  hydrated.map((row) => [
+                    `${row.item?.entityType}:${row.item?.id}`,
+                    row,
+                  ]),
+                );
+              }
+              const chosen: Array<{
+                row: RankedRow;
+                value: PipelineHydrated | null;
+              }> = [];
+              let lastIndex = -1;
+              for (let index = 0; index < ranked.length; index++) {
+                const row = ranked[index];
+                let value: PipelineHydrated | null = null;
+                if (hydratedById) {
+                  value = hydratedById.get(cardKey(row)) ?? null;
+                  if (
+                    !value ||
+                    !validHydration(value, row.candidate, spec, context)
+                  )
+                    continue;
+                }
                 // Missing media can shift positions; repeats never enter the first two.
                 if (
                   row.repeatOf &&
-                  (items.length < 2 ||
-                    repeats + items.filter((item) => item.repeatOf).length >= 2)
+                  (chosen.length < 2 ||
+                    repeats +
+                      chosen.filter((entry) => entry.row.repeatOf).length >=
+                      2)
                 )
                   continue;
-                items.push({
-                  ...value.item,
-                  position: items.length,
-                  explore: row.explore,
-                  samplingProbability: row.samplingProbability,
-                  repeatOf: row.repeatOf,
-                });
-                if (items.length === spec.capacity.preview) break;
+                chosen.push({ row, value });
+                lastIndex = index;
+                if (chosen.length === spec.capacity.preview) break;
               }
-              if (items.length >= spec.capacity.minItems)
-                built = {
-                  key: original.key,
-                  template: spec.template,
-                  title: spec.title,
-                  subtitle: spec.subtitle,
-                  policy: spec.rankingPolicy,
-                  policyVersion: 1,
-                  personalization: 'none',
-                  items,
-                  exposures: items.flatMap((item) => {
-                    const candidate = ranked.find(
-                      (row) =>
-                        row.candidate.id === item.id &&
-                        row.candidate.entityType === item.entityType,
-                    )?.candidate;
-                    const productId =
-                      item.entityType === 'PRODUCT'
-                        ? item.id
-                        : candidate?.exposureProductId;
-                    return productId
-                      ? [{ productId, position: item.position }]
-                      : [];
-                  }),
-                  viewAll: {
-                    enabled:
-                      spec.sorts.length > 0 ||
-                      ['CURATED_LIST', 'LOOKS', 'NEW_DESIGNERS'].includes(
-                        spec.template,
-                      ),
-                    sectionKey: original.key,
-                    specVersion: original.version,
-                    effectiveTemplate: spec.template,
-                    availableSorts: spec.sorts,
-                  },
-                  scope: { source, fixedFilterLayers: attempt.layers },
-                  metadata: {
-                    fallbackUsed: attempt.depth > 0,
-                    fallbackReason,
-                    candidateCount: candidates.length,
-                    minItems: spec.capacity.minItems,
-                  },
-                };
-              else reason = 'INSUFFICIENT_RENDERABLE_ITEMS';
+              if (chosen.length >= spec.capacity.minItems) {
+                builtRows = chosen.map((entry) => entry.row);
+                if (planning) {
+                  for (const row of builtRows) planned.add(cardKey(row));
+                  for (const row of ranked.slice(
+                    lastIndex + 1,
+                    lastIndex + 1 + PIPELINE_CAPTURE_RESERVE,
+                  ))
+                    planned.add(cardKey(row));
+                } else {
+                  const items: PipelineSection['items'][number][] = chosen.map(
+                    ({ row, value }, position) => ({
+                      ...value!.item,
+                      position,
+                      explore: row.explore,
+                      samplingProbability: row.samplingProbability,
+                      repeatOf: row.repeatOf,
+                    }),
+                  );
+                  built = {
+                    key: original.key,
+                    template: spec.template,
+                    title: spec.title,
+                    subtitle: spec.subtitle,
+                    policy: spec.rankingPolicy,
+                    policyVersion: 1,
+                    personalization: 'none',
+                    items,
+                    exposures: items.flatMap((item) => {
+                      const candidate = ranked.find(
+                        (row) =>
+                          row.candidate.id === item.id &&
+                          row.candidate.entityType === item.entityType,
+                      )?.candidate;
+                      const productId =
+                        item.entityType === 'PRODUCT'
+                          ? item.id
+                          : candidate?.exposureProductId;
+                      return productId
+                        ? [{ productId, position: item.position }]
+                        : [];
+                    }),
+                    viewAll: {
+                      enabled:
+                        spec.sorts.length > 0 ||
+                        ['CURATED_LIST', 'LOOKS', 'NEW_DESIGNERS'].includes(
+                          spec.template,
+                        ),
+                      sectionKey: original.key,
+                      specVersion: original.version,
+                      effectiveTemplate: spec.template,
+                      availableSorts: spec.sorts,
+                    },
+                    scope: { source, fixedFilterLayers: attempt.layers },
+                    metadata: {
+                      fallbackUsed: attempt.depth > 0,
+                      fallbackReason,
+                      candidateCount: candidates.length,
+                      minItems: spec.capacity.minItems,
+                    },
+                  };
+                }
+              } else reason = 'INSUFFICIENT_RENDERABLE_ITEMS';
             } else reason = 'INSUFFICIENT_ITEMS';
           } catch {
             reason = 'SOURCE_UNAVAILABLE';
             partial = true;
           }
         }
-        if (!built) {
+        if (!builtRows) {
           fallbackReason ??= reason;
           for (const key of defaultPipelineFallbacks(spec)) {
             const fallback = resolvePipelineFallback(spec, key, byKey);
@@ -493,28 +506,34 @@ export class MarketPipelineComposer {
           }
         }
       }
-      if (built) {
-        sections.push(built);
-        for (const item of built.items) {
-          if (item.repeatOf) repeats++;
-          else placed.set(`${item.entityType}:${item.sourceId}`, built.key);
+      if (builtRows) {
+        builtCount++;
+        if (built) sections.push(built);
+        // validHydration guarantees item.sourceId === candidate.id, so planning
+        // and rendering record identical placements.
+        for (const row of builtRows) {
+          if (row.repeatOf) repeats++;
+          else placed.set(cardKey(row), original.key);
         }
       }
-      if (sections.length === PIPELINE_MAX_SECTIONS) break;
+      if (builtCount === this.sectionLimit) break;
       if (
         context.signal?.aborted ||
         budget.remaining <= 0 ||
-        performance.now() >= budget.deadline
+        now() >= budget.deadline
       ) {
         partial = true;
         break;
       }
     }
     return {
-      generatedAt: context.asOf.toISOString(),
-      epoch: context.epoch?.id ?? null,
-      sections,
-      metadata: { partial, cachePolicy: 'private-no-store' },
+      planned,
+      page: {
+        generatedAt: context.asOf.toISOString(),
+        epoch: context.epoch?.id ?? null,
+        sections,
+        metadata: { partial, cachePolicy: 'private-no-store' as const },
+      },
     };
   }
 }

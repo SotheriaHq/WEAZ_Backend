@@ -15,7 +15,10 @@ import {
   MarketCatalogViewer,
   marketCatalogOwnerSql,
 } from '../catalog/market-catalog-scope';
-import { marketProductFiltersSql } from '../catalog/market-filter.sql';
+import {
+  marketCatalogProductFiltersSql,
+  marketProductFiltersSql,
+} from '../catalog/market-filter.sql';
 import { eligibleBrandSql } from '../eligibility/market-eligibility';
 import {
   PipelineCandidate,
@@ -66,7 +69,10 @@ function productScope(
       ? { productIds: request.cachedIds }
       : {}),
   });
-  const filters = marketProductFiltersSql(
+  // Product sources select only cards that can render (approved, ready cover),
+  // the same rule as catalogue counts and card capture, so planning never
+  // spends a rail slot on a product hydration would drop.
+  const filters = marketCatalogProductFiltersSql(
     [request.filters, ...request.fixedFilterLayers],
     request.asOf,
     'p',

@@ -9,6 +9,7 @@ const { backfillMarketProducts } = require('./lib/market-product-backfill.cjs');
 const { checkDiscoverySchema } = require('./lib/market-schema-assertions.cjs');
 const {
   checkMarketIndexPlans,
+  checkPrivacyIndexPlans,
 } = require('./lib/market-index-plan-assertions.cjs');
 require('dotenv').config({ quiet: true });
 
@@ -26,6 +27,13 @@ const packageMigrations = [
   '20261115090800_discovery_attribution_and_prefs',
   '20261115090900_market_indexes_concurrently',
   '20261115091000_signal_tables_autovacuum',
+];
+// Group 10 adds these to the identity tables that lacked an age-ordered index.
+const PRIVACY_AGE_INDEXES = [
+  'user_seen_items_createdAt__id_idx',
+  'market_section_signals_createdAt__id_idx',
+  'suggestion_signals_createdAt__id_idx',
+  'market_signal_batch_receipts_createdAt__id_idx',
 ];
 
 async function main() {
@@ -240,6 +248,23 @@ async function main() {
         ).rows;
         assert.equal(indexes.length, 9);
         assert(indexes.every((index) => index.indisvalid && index.indisready));
+        const privacyIndexes = (
+          await db.query(
+            `SELECT c.relname,i.indisvalid,i.indisready,pg_get_indexdef(i.indexrelid) AS definition
+          FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname=ANY($1::text[])`,
+            [PRIVACY_AGE_INDEXES],
+          )
+        ).rows;
+        assert.equal(privacyIndexes.length, PRIVACY_AGE_INDEXES.length);
+        assert(
+          privacyIndexes.every(
+            (index) =>
+              index.indisvalid &&
+              index.indisready &&
+              index.definition.endsWith('USING btree ("createdAt", _id)'),
+          ),
+          'Privacy age indexes must be valid (createdAt,_id) btrees',
+        );
         const reloptions = (
           await db.query(
             `SELECT relname,reloptions FROM pg_class WHERE relname=ANY($1::text[])`,
@@ -320,6 +345,7 @@ async function main() {
           assert(values.every((row) => row.effectivePrice === '150.00'));
           await checkDiscoverySchema(db, target.toString(), { user, products });
           await checkMarketIndexPlans(db, brand);
+          await checkPrivacyIndexPlans(db);
         } else assert.equal(dry.scanned, 0);
         runTool('validate-market-schema.cjs', ['--confirm-database=' + name]);
         const preflight = JSON.parse(runTool('market-schema-preflight.cjs'));
@@ -386,13 +412,14 @@ async function main() {
           'sourcePosition',
           'marketPersonalization',
           'marketRegionalOptIn',
+          ...PRIVACY_AGE_INDEXES,
         ])
           assert(
             !diff.stdout.includes('"' + owned + '"'),
             'New schema drift: ' + owned,
           );
         console.log(
-          'PASS full migration history + eleven groups + replay + nine valid concurrent indexes + bounded backfill: ' +
+          'PASS full migration history + eleven groups + replay + thirteen valid concurrent indexes + bounded backfill: ' +
             (populated ? 'populated upgrade' : 'empty database'),
         );
       } finally {

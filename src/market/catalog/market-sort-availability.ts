@@ -33,10 +33,16 @@ type Tx = Pick<
 >;
 const ordered = ['newest', 'price_asc', 'price_desc'] as const;
 
+/**
+ * `probe: false` validates the epoch but skips the whole-catalogue evidence
+ * probes. Use it only when a verified cursor already fixes an ordered sort; the
+ * result then lists just the always-available ordered sorts.
+ */
 export async function marketSortAvailability(
   tx: Tx,
   now: Date,
   cursor: MarketCursorState | null,
+  options: { readonly probe: boolean } = { probe: true },
 ) {
   let epoch = cursor?.epoch
     ? await tx.marketFeatureEpoch.findUnique({
@@ -81,6 +87,7 @@ export async function marketSortAvailability(
     epoch = null;
   const available: CatalogSort[] = [...ordered];
   if (!epoch) return { available, epoch: null, currentMissing: true };
+  if (!options.probe) return { available, epoch, currentMissing: false };
   const page = (
     sort: 'popular' | 'trending' | 'most_saved' | 'best_selling',
     after?: readonly (number | string | null)[],

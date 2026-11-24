@@ -103,17 +103,18 @@ module.exports = {
         identical either way, since @nestjs/config does not overwrite variables
         already present in the environment.
       */
-      node_args: ['--max-old-space-size=512', '-r', 'module-alias/register', '-r', 'dotenv/config'],
+      node_args: ['-r', 'module-alias/register', '-r', 'dotenv/config'],
       /*
         Measured 591 MB RSS on 2026-08-31 with no ceiling of any kind, because
         the 500 MB one was attached to the npm wrapper. 700 MB gives ~18%
         headroom over observed usage and is the first limit that has ever
         applied to this process.
 
-        Market Intelligence uses the approved 512 MiB V8 heap ceiling. Native
-        allocations (including image buffers and database drivers) are outside
-        V8's heap, so the existing 700M total-RSS restart remains necessary.
-        Verify the integrated worker's memory profile before releasing the jobs.
+        Deliberately NO `--max-old-space-size` here yet: the split between JS
+        heap and native memory (sharp buffers, the Prisma query engine) has not
+        been measured, and guessing a heap cap too low would cause exactly the
+        crash loop this file exists to prevent. `max_memory_restart` bounds
+        total RSS, which is the number that actually threatens a 1.9 GB host.
       */
       max_memory_restart: '700M',
     },

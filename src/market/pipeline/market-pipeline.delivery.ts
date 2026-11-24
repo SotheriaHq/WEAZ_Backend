@@ -1,8 +1,26 @@
 import { Prisma } from '@prisma/client';
 import { eligibleProductSql } from '../eligibility/market-eligibility';
+import { PIPELINE_CACHE_MAX_BATCH } from './market-pipeline.cache';
 import { PipelineContext, PipelineSection } from './market-pipeline.types';
 const pipelineUuid =
   /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+
+/** Ranking diagnostics stay server-side; they are not part of the public contract. */
+const INTERNAL_ITEM_FIELDS = [
+  'explore',
+  'samplingProbability',
+  'repeatOf',
+] as const;
+type PipelineItem = PipelineSection['items'][number];
+export type PublicPipelineItem = Omit<
+  PipelineItem,
+  (typeof INTERNAL_ITEM_FIELDS)[number]
+>;
+function publicPipelineItem(item: PipelineItem): PublicPipelineItem {
+  const copy: Partial<PipelineItem> = { ...item };
+  for (const field of INTERNAL_ITEM_FIELDS) delete copy[field];
+  return copy as PublicPipelineItem;
+}
 
 /** Explicit serializer keeps trusted source objects out of client-controlled state. */
 export function serializePipelinePage(page: {
@@ -32,7 +50,7 @@ export function serializePipelinePage(page: {
       policy: section.policy,
       policyVersion: section.policyVersion,
       personalization: section.personalization,
-      items: section.items,
+      items: section.items.map(publicPipelineItem),
       viewAll: {
         ...section.viewAll,
         route: `/market/sections/${encodeURIComponent(section.key)}`,
@@ -92,10 +110,40 @@ export function createPipelineExposureReceipt(
 
 /** Separate server-only write after the read-only capture transaction has ended.
  * A JSON-shaped forged receipt cannot authorize a write. Retries stay idempotent. */
+/** Stable identities of the rows a receipt would write, plus when its epoch ends.
+ * Lets a caller skip a transaction whose rows were all written already. */
+export function pipelineExposureKeys(receipt: PipelineExposureReceipt): {
+  readonly keys: readonly string[];
+  readonly expiresAt: number;
+} {
+  const { epochStart, rows } = exposureRows(receipt);
+  return {
+    keys: rows.map((row) => `${epochStart}|${row.sectionKey}|${row.productId}`),
+    expiresAt: Date.parse(epochStart) + 21600000,
+  };
+}
+
 export async function writePipelineExposures(
   db: Pick<Prisma.TransactionClient, '$executeRaw'>,
   receipt: PipelineExposureReceipt,
 ): Promise<number> {
+  const { epochStart, rows, context } = exposureRows(receipt);
+  if (!rows.length) return 0;
+  const values = rows.map(
+    (row) =>
+      Prisma.sql`(${row.sectionKey},${row.productId}::uuid,${epochStart}::timestamptz,${context.epoch?.id ?? null}::uuid,${row.slot})`,
+  );
+  return db.$executeRaw(Prisma.sql`INSERT INTO market_section_exposure("sectionKey","productId",epoch,"epochId",slot)
+    SELECT input.* FROM (VALUES ${Prisma.join(values)}) AS input("sectionKey","productId",epoch,"epochId",slot)
+    LEFT JOIN market_feature_epochs e ON e.id=input."epochId" AND e.status='READY' AND e."stateKey"='market.features.v1.r1'
+      AND e."acceptUntil">${context.asOf.toISOString()}::timestamptz
+    JOIN "Product" p ON p."_id"=input."productId"
+    WHERE (input."epochId" IS NULL OR e.id IS NOT NULL) AND ${eligibleProductSql(context.asOf)}
+    ON CONFLICT("sectionKey","productId",epoch) DO NOTHING`);
+}
+
+/** Validated rows of a server-minted receipt; a forged object is rejected. */
+function exposureRows(receipt: PipelineExposureReceipt) {
   const authorization = exposureReceipts.get(receipt);
   if (!authorization) throw new RangeError('Invalid exposure receipt');
   const { sections, context } = authorization;
@@ -132,18 +180,7 @@ export async function writePipelineExposures(
     )
   )
     throw new RangeError('Invalid exposure write');
-  if (!rows.length) return 0;
-  const values = rows.map(
-    (row) =>
-      Prisma.sql`(${row.sectionKey},${row.productId}::uuid,${epochStart}::timestamptz,${context.epoch?.id ?? null}::uuid,${row.slot})`,
-  );
-  return db.$executeRaw(Prisma.sql`INSERT INTO market_section_exposure("sectionKey","productId",epoch,"epochId",slot)
-    SELECT input.* FROM (VALUES ${Prisma.join(values)}) AS input("sectionKey","productId",epoch,"epochId",slot)
-    LEFT JOIN market_feature_epochs e ON e.id=input."epochId" AND e.status='READY' AND e."stateKey"='market.features.v1.r1'
-      AND e."acceptUntil">${context.asOf.toISOString()}::timestamptz
-    JOIN "Product" p ON p."_id"=input."productId"
-    WHERE (input."epochId" IS NULL OR e.id IS NOT NULL) AND ${eligibleProductSql(context.asOf)}
-    ON CONFLICT("sectionKey","productId",epoch) DO NOTHING`);
+  return { epochStart, rows, context };
 }
 
 export interface PipelineRedisClient {
@@ -152,6 +189,7 @@ export interface PipelineRedisClient {
     options: { keys: string[]; arguments: string[] },
   ): Promise<unknown>;
   hGet(key: string, field: string): Promise<string | null>;
+  hmGet(key: string, fields: string[]): Promise<Array<string | null>>;
 }
 const putScript = `
 local key=KEYS[1]
@@ -221,7 +259,36 @@ export class RedisPipelineCandidateCache {
     const raw = await this.run(() =>
       this.redis.hGet(this.namespace + ':bounded', key.slice(-64)),
     );
-    if (!raw || Buffer.byteLength(raw) > 40000) return null;
+    return this.parse(raw);
+  }
+  /** One HMGET for every page key: a single admission slot and round trip. */
+  async getMany(
+    keys: readonly string[],
+  ): Promise<ReadonlyMap<string, readonly { id: string; score: number }[]>> {
+    if (keys.length > PIPELINE_CACHE_MAX_BATCH)
+      throw new RangeError('Candidate cache batch too large');
+    const valid = [...new Set(keys)].filter((key) =>
+      /^mkt:cand:v2:[a-f0-9]{64}$/.test(key),
+    );
+    const found = new Map<string, readonly { id: string; score: number }[]>();
+    if (!valid.length) return found;
+    const raws = await this.run(() =>
+      this.redis.hmGet(
+        this.namespace + ':bounded',
+        valid.map((key) => key.slice(-64)),
+      ),
+    );
+    if (!Array.isArray(raws) || raws.length !== valid.length) return found;
+    valid.forEach((key, index) => {
+      const rows = this.parse(raws[index]);
+      if (rows) found.set(key, rows);
+    });
+    return found;
+  }
+  private parse(
+    raw: string | null | undefined,
+  ): readonly { id: string; score: number }[] | null {
+    if (typeof raw !== 'string' || Buffer.byteLength(raw) > 40000) return null;
     try {
       const parsed: unknown = JSON.parse(raw);
       if (

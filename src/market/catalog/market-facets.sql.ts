@@ -3,7 +3,7 @@ import { productEffectivePriceSql } from '../../common/pricing/product-price.sql
 import { normalizeTokenSql } from '../../common/utils/sql-text-normalization';
 import { CanonicalMarketFilters } from './market-filters';
 import { filtersForMarketFacet, MarketFacetKey } from './market-facet-filters';
-import { marketProductFiltersSql } from './market-filter.sql';
+import { marketCatalogProductFiltersSql } from './market-filter.sql';
 import { marketStockSelectionSql } from './market-stock-selection.sql';
 import { MarketCatalogScope } from './market-catalog-scope';
 
@@ -80,12 +80,12 @@ export function marketFacetQueries(
     fixed,
   ];
   const predicate = (key: MarketFacetKey) =>
-    marketProductFiltersSql(layers(key), now, 'p', input.scope);
+    marketCatalogProductFiltersSql(layers(key), now, 'p', input.scope);
   const stockLayers = (key: MarketFacetKey) => [
     ...layers(key),
     ...(input.scope?.filterLayers ?? []),
   ];
-  const publicPredicate = marketProductFiltersSql([{}], now);
+  const publicPredicate = marketCatalogProductFiltersSql([{}], now);
   const row = (
     key: string,
     value: Prisma.Sql,
@@ -166,7 +166,7 @@ export function marketFacetQueries(
     ([slug, values]) =>
       Prisma.sql`(d.slug=${slug} AND ${selectedSql(Prisma.sql`v.slug`, values)})`,
   );
-  const dimensionPredicate = marketProductFiltersSql(
+  const dimensionPredicate = marketCatalogProductFiltersSql(
     [filters, fixed],
     now,
     'p',
@@ -302,7 +302,7 @@ export function marketFacetQueries(
               : Boolean(filters.inStockOnly)
       }`,
     )}
-      FROM "Product" p WHERE ${marketProductFiltersSql([...layers(key), candidate], now, 'p', input.scope)}`;
+      FROM "Product" p WHERE ${marketCatalogProductFiltersSql([...layers(key), candidate], now, 'p', input.scope)}`;
   const toggles = boundedOptions(
     Prisma.join(
       [

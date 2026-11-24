@@ -170,7 +170,9 @@ describe('Market pipeline captured database adapter', () => {
       epoch: null,
     });
     const sql = tx.$queryRaw.mock.calls[1][0];
-    expect(sql.text).toContain('FROM "Product" p WHERE p."_id"=f."productId" LIMIT 1');
+    expect(sql.text).toContain(
+      'FROM "Product" p WHERE p."_id"=f."productId" LIMIT 1',
+    );
     expect(sql.text).toContain('LIMIT 8');
     expect(sql.text).not.toContain('bool_and');
     expect(sql.text).toContain('"publicationStatus"');
@@ -340,5 +342,118 @@ describe('Market pipeline captured database adapter', () => {
     );
     const failed = await resolveCapturedPipelinePorts(capture, uploads);
     expect(await failed.hydrate(rows, date, input.signal)).toEqual([]);
+  });
+});
+
+describe('shared candidate pools at capture', () => {
+  const sourceKey = () =>
+    pipelineRequestKey(
+      request({ kind: 'catalog', sort: 'newest', firstPublishedAfter: null }),
+    );
+  const homeSpec = () =>
+    parsePipelineSpec({
+      key: 'catalog',
+      template: 'CATALOG_FILTER',
+      status: 'ACTIVE',
+      capacity: { minItems: 1 },
+    });
+  const row = () => ({
+    requestKey: sourceKey(),
+    candidate,
+    amount: '100',
+    fileId: null,
+    projection: null,
+    scarcity: null,
+  });
+  function readTx(rows: unknown[]) {
+    return {
+      product: { findMany: jest.fn() },
+      fileUpload: { findMany: jest.fn() },
+      filterDimension: { findMany: jest.fn() },
+      $executeRaw: jest.fn().mockResolvedValue(0),
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce(rows)
+        .mockResolvedValueOnce([
+          { targets: [], brands: [], categories: [], sections: [], tenure: {} },
+        ])
+        .mockResolvedValue([]),
+    };
+  }
+  function cacheWith(
+    lookup: (
+      keys: readonly string[],
+    ) => Promise<Map<string, { id: string; score: number }[]>>,
+  ) {
+    return { get: jest.fn(), set: jest.fn(), getMany: jest.fn(lookup) };
+  }
+  const capture = (
+    tx: ReturnType<typeof readTx>,
+    cache: ReturnType<typeof cacheWith>,
+    filters: PipelineContext['filters'] = {},
+  ) =>
+    captureMarketPipelinePage(
+      tx as unknown as Parameters<typeof captureMarketPipelinePage>[0],
+      {
+        specs: [homeSpec()],
+        context: { ...context(), filters },
+        viewer: {},
+        cache,
+      },
+    );
+  const batchSql = (tx: ReturnType<typeof readTx>) =>
+    tx.$queryRaw.mock.calls[0][0] as Prisma.Sql;
+
+  it('runs the full source on a miss and stores the scored pool afterwards', async () => {
+    const tx = readTx([row()]);
+    const cache = cacheWith(async () => new Map());
+    const result = await capture(tx, cache);
+    expect(cache.getMany).toHaveBeenCalledTimes(1);
+    expect(batchSql(tx).values).not.toContain(productId);
+    expect(result.cacheWrites).toHaveLength(1);
+    expect(result.cacheWrites[0].rows.map((entry) => entry.id)).toEqual([
+      productId,
+    ]);
+    expect(result.cacheWrites[0].ttlSeconds).toBe(120);
+    expect(cache.set).not.toHaveBeenCalled();
+  });
+  it('narrows the source query to cached IDs on a hit and never rewrites it', async () => {
+    const tx = readTx([row()]);
+    const cache = cacheWith(
+      async (keys) =>
+        new Map(keys.map((key) => [key, [{ id: productId, score: 1 }]])),
+    );
+    const result = await capture(tx, cache);
+    expect(batchSql(tx).values).toContain(productId);
+    expect(result.cacheWrites).toEqual([]);
+  });
+  it('treats an empty cached pool as a miss so a first product appears at once', async () => {
+    const tx = readTx([row()]);
+    const cache = cacheWith(
+      async (keys) => new Map(keys.map((key) => [key, []])),
+    );
+    const result = await capture(tx, cache);
+    expect(batchSql(tx).values).not.toContain(productId);
+    expect(result.cacheWrites).toHaveLength(1);
+  });
+  it('reads normally when the cache fails or never answers', async () => {
+    const failing = cacheWith(async () => {
+      throw new Error('provider failure');
+    });
+    expect((await capture(readTx([row()]), failing)).cacheWrites).toHaveLength(
+      1,
+    );
+    const silent = cacheWith(() => new Promise(() => undefined));
+    const started = Date.now();
+    expect((await capture(readTx([row()]), silent)).cacheWrites).toHaveLength(
+      1,
+    );
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+  it('never consults the shared pool for a filtered request', async () => {
+    const cache = cacheWith(async () => new Map());
+    const result = await capture(readTx([]), cache, { onSale: true });
+    expect(cache.getMany).not.toHaveBeenCalled();
+    expect(result.cacheWrites).toEqual([]);
   });
 });

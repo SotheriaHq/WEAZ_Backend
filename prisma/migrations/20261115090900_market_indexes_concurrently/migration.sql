@@ -45,5 +45,20 @@ CREATE INDEX CONCURRENTLY "Product_market_effective_price_desc_idx"
 CREATE INDEX CONCURRENTLY "Product_market_price_computed_idx"
   ON "Product" ("effectivePriceComputedAt", "_id");
 
+-- Age-ordered privacy deletion: the every-minute sweep reads only the expired
+-- prefix instead of scanning and sorting each identity table. user_feed_signals
+-- already has the equivalent index.
+CREATE INDEX CONCURRENTLY "user_seen_items_createdAt__id_idx"
+  ON "user_seen_items" ("createdAt", "_id");
+
+CREATE INDEX CONCURRENTLY "market_section_signals_createdAt__id_idx"
+  ON "market_section_signals" ("createdAt", "_id");
+
+CREATE INDEX CONCURRENTLY "suggestion_signals_createdAt__id_idx"
+  ON "suggestion_signals" ("createdAt", "_id");
+
+CREATE INDEX CONCURRENTLY "market_signal_batch_receipts_createdAt__id_idx"
+  ON "market_signal_batch_receipts" ("createdAt", "_id");
+
 RESET statement_timeout;
 RESET lock_timeout;

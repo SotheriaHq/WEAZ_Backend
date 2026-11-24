@@ -79,8 +79,27 @@ async function runMarketCatalogSourceScopeAssertions({ db, prisma, now, queryCou
   const otherCategory = await prisma.collectionCategory.create({
     data: { id: randomUUID(), slug: 'scope-b', name: 'Scope B' },
   });
-  const add = (data) =>
-    prisma.product.create({
+  // Published products carry an approved, ready cover, as real catalogue rows
+  // must to render. The catalogue only lists products whose cover can render.
+  const sharedCover = await prisma.fileUpload.create({
+    data: {
+      id: randomUUID(),
+      userId: owner.id,
+      originalName: 'Shared cover',
+      fileName: 'shared-cover.webp',
+      s3Key: 'scope/shared-cover.webp',
+      s3Url: 'https://media.fixture.invalid/source.webp',
+      fileType: 'POST_IMAGE',
+      mimeType: 'image/webp',
+      size: 100,
+      processingStatus: 'READY',
+      assetVersion: 1,
+      width: 1200,
+      height: 1800,
+    },
+  });
+  const add = async (data) => {
+    const product = await prisma.product.create({
       data: {
         id: randomUUID(),
         brandId: brand.id,
@@ -103,6 +122,19 @@ async function runMarketCatalogSourceScopeAssertions({ db, prisma, now, queryCou
         ...data,
       },
     });
+    await prisma.productMedia.create({
+      data: {
+        productId: product.id,
+        fileUploadId: sharedCover.id,
+        brandId: brand.id,
+        createdById: owner.id,
+        viewSlot: 'OTHER',
+        reviewStatus: 'APPROVED',
+        orderIndex: 9,
+      },
+    });
+    return product;
+  };
   const anchor = await add({});
   const chosen = await add({
     price: 9000,
@@ -637,6 +669,8 @@ async function runMarketCatalogSourceScopeAssertions({ db, prisma, now, queryCou
     where: { id: chosen.id },
     data: { images: [firstFile.s3Url, backFile.s3Url] },
   });
+  // The media-association stage owns this product's gallery from here on.
+  await prisma.productMedia.deleteMany({ where: { productId: chosen.id } });
   await prisma.productMedia.createMany({
     data: [
       {

@@ -16,6 +16,7 @@ const {
   marketPlatformPaidOrderFloorSql,
 } = require('../src/market/intelligence/market-intelligence.sql');
 const {
+  MARKET_MAX_PRODUCTS,
   r1FeatureCoverage,
   parseMarketSnapshotReadSummary,
 } = require('../src/market/intelligence/market-intelligence.contracts');
@@ -75,7 +76,10 @@ async function main() {
       CREATE TABLE system_config (key text PRIMARY KEY,value text,"updatedAt" timestamp);
       CREATE TABLE user_market_affinity ("userId" uuid PRIMARY KEY);
       CREATE TABLE "RunwayAffinityCache" ("userId" uuid PRIMARY KEY,payload jsonb,"builtAt" timestamp,"expiresAt" timestamp);
-      CREATE TABLE market_signal_aggregate_daily ("_id" uuid PRIMARY KEY,"userId" uuid,"anonymousSessionId" text);
+      CREATE TABLE market_signal_aggregate_daily ("_id" uuid PRIMARY KEY,"userId" uuid,"anonymousSessionId" text,
+        "bucketDate" timestamp NOT NULL DEFAULT (statement_timestamp() AT TIME ZONE 'UTC'));
+      CREATE INDEX ON market_signal_aggregate_daily("userId","bucketDate");
+      CREATE INDEX ON market_signal_aggregate_daily("anonymousSessionId","bucketDate");
     `);
     for (const table of [
       'user_feed_signals',
@@ -86,7 +90,7 @@ async function main() {
     ]) {
       assert(/^[a-z_]+$/.test(table));
       await db.query(`CREATE TABLE ${table} ("_id" uuid PRIMARY KEY,"createdAt" timestamp NOT NULL,"seenAt" timestamp,"userId" uuid);
-        CREATE INDEX ON ${table}("createdAt","_id")`);
+        CREATE INDEX ON ${table}("createdAt","_id"); CREATE INDEX ON ${table}("userId","createdAt")`);
     }
     // Execute the exact production SQL guards, without invoking a migration runner.
     for (const migration of [
@@ -441,6 +445,28 @@ async function main() {
     ).rows[0].price;
     check(() => assert.equal(effective, '100.00'));
 
+    // A catalogue above measured capacity is refused before any feature write.
+    const capacityWatermark = (
+      await db.query(
+        "SELECT value FROM system_config WHERE key='market.features.watermark'",
+      )
+    ).rows[0].value;
+    await db.query(
+      'INSERT INTO "Product"("_id","brandId") SELECT gen_random_uuid(),$1 FROM generate_series(1,$2::int)',
+      [brand, MARKET_MAX_PRODUCTS],
+    );
+    result = await service.refreshFeatures();
+    check(() => assert.equal(result.status, 'backlog'));
+    check(() => assert.equal(result.reason, 'PRODUCT_CAPACITY'));
+    check(() => assert.equal(result.products, MARKET_MAX_PRODUCTS + 1));
+    const refusedWatermark = (
+      await db.query(
+        "SELECT value FROM system_config WHERE key='market.features.watermark'",
+      )
+    ).rows[0].value;
+    check(() => assert.equal(refusedWatermark, capacityWatermark));
+    await db.query('DELETE FROM "Product" WHERE "_id"<>$1', [product]);
+
     // Expired identities are deleted while current events and global totals survive.
     const old = randomUUID(),
       fresh = randomUUID();
@@ -498,6 +524,128 @@ async function main() {
     // Restore-safety: a second sweep is idempotent and retains the fresh events/global totals.
     result = await service.cleanupPrivacy();
     check(() => assert.equal(result.rows, 0));
+
+    // Fresh rows of inactive, vanished and erased identities go before 24h,
+    // across more identities than one bounded actor scan examines.
+    const vanished = randomUUID();
+    for (const table of [
+      'user_feed_signals',
+      'user_seen_items',
+      'market_section_signals',
+      'suggestion_signals',
+      'market_signal_batch_receipts',
+    ])
+      await db.query(
+        `INSERT INTO ${table}("_id","createdAt","seenAt","userId") VALUES
+          ($1,statement_timestamp()-interval '1h',statement_timestamp()-interval '1h',$4),
+          ($2,statement_timestamp()-interval '1h',statement_timestamp()-interval '1h',$5),
+          ($3,statement_timestamp()-interval '1h',statement_timestamp()-interval '1h',$6)`,
+        [randomUUID(), randomUUID(), randomUUID(), inactive, vanished, buyer],
+      );
+    await db.query(`INSERT INTO user_feed_signals("_id","createdAt","userId")
+      SELECT gen_random_uuid(),statement_timestamp()-interval '1h',gen_random_uuid() FROM generate_series(1,600)`);
+    result = await service.cleanupPrivacy();
+    check(() => assert.equal(result.status, 'completed'));
+    check(() => assert.equal(result.rows, 5 * 2 + 600));
+    for (const table of [
+      'user_feed_signals',
+      'user_seen_items',
+      'market_section_signals',
+      'suggestion_signals',
+      'market_signal_batch_receipts',
+    ]) {
+      const owners = (
+        await db.query(
+          `SELECT "userId" FROM ${table} WHERE "userId" IS NOT NULL`,
+        )
+      ).rows;
+      check(() =>
+        assert.deepEqual(
+          owners.map((row) => row.userId),
+          [buyer],
+        ),
+      );
+    }
+
+    // Malformed cache proof is removed without a version-specific cast.
+    const cacheUsers = Array.from({ length: 4 }, () => randomUUID());
+    await db.query(
+      'INSERT INTO "User"("_id",status,role) SELECT id,\'ACTIVE\',\'User\' FROM unnest($1::uuid[]) id',
+      [cacheUsers],
+    );
+    const cacheClock = (
+      await db.query(
+        "SELECT date_trunc('milliseconds',statement_timestamp()) AS now",
+      )
+    ).rows[0].now;
+    const cacheStarts = [
+      new Date(cacheClock.getTime() - 3_600_000).toISOString(),
+      '2026-02-30T00:00:00.000Z',
+      'not-a-timestamp',
+      new Date(cacheClock.getTime() - 25 * 3_600_000).toISOString(),
+    ];
+    for (let i = 0; i < cacheUsers.length; i++)
+      await db.query(
+        `INSERT INTO "RunwayAffinityCache" VALUES ($1,$2,
+          statement_timestamp() AT TIME ZONE 'UTC',(statement_timestamp()+interval '30 seconds') AT TIME ZONE 'UTC')`,
+        [
+          cacheUsers[i],
+          JSON.stringify({
+            version: 'runway-r1-v1',
+            sourceWindowStart: cacheStarts[i],
+          }),
+        ],
+      );
+    result = await service.cleanupPrivacy();
+    check(() => assert.equal(result.status, 'completed'));
+    const caches = (
+      await db.query('SELECT "userId" FROM "RunwayAffinityCache"')
+    ).rows;
+    check(() =>
+      assert.deepEqual(
+        caches.map((row) => row.userId),
+        [cacheUsers[0]],
+      ),
+    );
+
+    // One failing class neither stops the erasure classes after it nor hides
+    // its failure: the status record names it and the result is failed.
+    await db.query(
+      `INSERT INTO market_section_signals("_id","createdAt") VALUES ($1,statement_timestamp()-interval '25h')`,
+      [randomUUID()],
+    );
+    await db.query('INSERT INTO user_market_affinity VALUES ($1)', [buyer]);
+    await db.query(
+      `UPDATE "RunwayAffinityCache" SET "expiresAt"=(statement_timestamp()-interval '1 second') AT TIME ZONE 'UTC'`,
+    );
+    await db.query(`CREATE FUNCTION reject_fixture_cleanup() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'fixture-cleanup-failure'; END $$;
+      CREATE TRIGGER reject_cleanup BEFORE DELETE ON market_section_signals FOR EACH ROW EXECUTE FUNCTION reject_fixture_cleanup()`);
+    result = await service.cleanupPrivacy();
+    check(() => assert.equal(result.status, 'failed'));
+    check(() => assert.deepEqual(result.failedClasses, ['sections']));
+    const afterFailedCleanup = (
+      await db.query(`SELECT (SELECT count(*)::int FROM user_market_affinity) AS profiles,
+        (SELECT count(*)::int FROM "RunwayAffinityCache") AS caches`)
+    ).rows[0];
+    check(() =>
+      assert.deepEqual(afterFailedCleanup, { profiles: 0, caches: 0 }),
+    );
+    const failedRecord = JSON.parse(
+      (
+        await db.query(
+          "SELECT value FROM system_config WHERE key='market.privacy.cleanup'",
+        )
+      ).rows[0].value,
+    );
+    check(() => assert.equal(failedRecord.status, 'failed'));
+    check(() => assert.deepEqual(failedRecord.failedClasses, ['sections']));
+    await db.query(
+      'DROP TRIGGER reject_cleanup ON market_section_signals; DROP FUNCTION reject_fixture_cleanup()',
+    );
+    result = await service.cleanupPrivacy();
+    check(() => assert.equal(result.status, 'completed'));
+    check(() => assert.deepEqual(result.failedClasses, []));
     if (process.argv.includes('--heap')) {
       // Only this generated disposable database is reset; accepted app generations are never touched.
       assert(/^aru_market_intelligence_[a-f0-9]{32}$/.test(name));

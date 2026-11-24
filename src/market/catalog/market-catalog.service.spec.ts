@@ -4,8 +4,14 @@ import {
   MarketPublicMediaService,
   MarketPublicMediaAuthorization,
 } from './market-public-media.service';
-import { MarketCatalogReadService } from './market-catalog-read.service';
-import { MarketCatalogService } from './market-catalog.service';
+import {
+  MarketCatalogAdmissionException,
+  MarketCatalogReadService,
+} from './market-catalog-read.service';
+import {
+  MarketCatalogNotStartedException,
+  MarketCatalogService,
+} from './market-catalog.service';
 import { MarketCursorCodec } from './market-cursor';
 import { captureMarketReadContext } from './market-read-context';
 import { readMarketOrderedPage } from './market-ordered-reader';
@@ -138,10 +144,43 @@ describe('catalogue service boundary and composed read', () => {
         service.getPage(new URLSearchParams()),
       ).rejects.toMatchObject({
         response: { code: 'CATALOGUE_CURSOR_UNAVAILABLE' },
+        reason: 'CURSOR_CONFIGURATION',
       });
+      await expect(
+        service.getPage(new URLSearchParams()),
+      ).rejects.toBeInstanceOf(MarketCatalogNotStartedException);
       expect(run).not.toHaveBeenCalled();
     },
   );
+  it('marks only the capture admission refusal as not started, with the unchanged busy response', async () => {
+    const { service, run } = fixture();
+    run.mockRejectedValueOnce(new MarketCatalogAdmissionException());
+    const refused = service.getPage(new URLSearchParams());
+    await expect(refused).rejects.toBeInstanceOf(
+      MarketCatalogNotStartedException,
+    );
+    await expect(refused).rejects.toMatchObject({
+      reason: 'ADMISSION',
+      status: 503,
+      response: { code: 'CATALOGUE_BUSY' },
+    });
+    expect(captureMarketReadContext).not.toHaveBeenCalled();
+  });
+  it('does not mark a media-authorization refusal or a failed query as not started', async () => {
+    const { service, run, resolve } = fixture();
+    resolve.mockRejectedValueOnce(new MarketCatalogAdmissionException());
+    const afterCapture = service.getPage(new URLSearchParams());
+    await expect(afterCapture).rejects.toBeInstanceOf(
+      MarketCatalogAdmissionException,
+    );
+    await expect(afterCapture).rejects.not.toBeInstanceOf(
+      MarketCatalogNotStartedException,
+    );
+    expect(run).toHaveBeenCalledTimes(1);
+    const failed = new Error('statement timeout');
+    run.mockRejectedValueOnce(failed);
+    await expect(service.getPage(new URLSearchParams())).rejects.toBe(failed);
+  });
   it('validates the complete request before opening a transaction', async () => {
     const { service, run } = fixture();
     await expect(
@@ -213,7 +252,69 @@ describe('catalogue service boundary and composed read', () => {
       scope,
       now,
     });
-    expect(marketSortAvailability).toHaveBeenCalledWith(tx, now, null);
+    expect(marketSortAvailability).toHaveBeenCalledWith(tx, now, null, {
+      probe: true,
+    });
+  });
+  it('counts totals with the same renderable-cover predicate as results', async () => {
+    const { service, query } = fixture();
+    await service.getPage(
+      new URLSearchParams('sort=newest'),
+      {},
+      {
+        scope: createMarketCatalogScope({
+          key: 'catalog',
+          version: '1',
+          viewer: {},
+        }),
+        fixedFilters: {},
+        includeTotal: true,
+      },
+    );
+    const count = query.mock.calls
+      .map(([sql]) => sql as Prisma.Sql)
+      .find((sql) => sql.text.includes('count(*)'));
+    expect(count?.text).toContain('"ProductMedia" cover_media');
+  });
+  it('skips whole-catalogue sort probes on a verified ordered continuation only', async () => {
+    const { service, tx } = fixture();
+    jest.mocked(readMarketOrderedPage).mockResolvedValue({
+      rows: [orderRow(first), orderRow(second), orderRow(third)],
+      asOf: now,
+      snapshot: context.snapshot,
+      nextPriceChangeAt: null,
+      reanchored: false,
+      notice: null,
+    });
+    const initial = await service.getPage(
+      new URLSearchParams('sort=newest&limit=1'),
+    );
+    expect(marketSortAvailability).toHaveBeenLastCalledWith(tx, now, null, {
+      probe: true,
+    });
+    const next = await service.getPage(
+      new URLSearchParams({
+        sort: 'newest',
+        limit: '1',
+        cursor: initial.pagination.nextCursor!,
+      }),
+    );
+    expect(marketSortAvailability).toHaveBeenLastCalledWith(
+      tx,
+      now,
+      expect.objectContaining({ sort: 'newest' }),
+      { probe: false },
+    );
+    expect(marketSortAvailability).toHaveBeenCalledTimes(2);
+    expect(next.sort).toEqual({ requested: 'newest', effective: 'newest' });
+    expect(next.availableSorts).toEqual(['newest', 'price_asc', 'price_desc']);
+    expect(readMarketOrderedPage).toHaveBeenLastCalledWith(
+      tx,
+      expect.objectContaining({
+        sort: 'newest',
+        cursor: expect.objectContaining({ sort: 'newest' }),
+      }),
+    );
   });
   it('moves the cursor beyond scanned media omissions so empty pages make forward progress', async () => {
     const { service } = fixture();
@@ -235,9 +336,34 @@ describe('catalogue service boundary and composed read', () => {
     const body = JSON.parse(
       Buffer.from(token.split('.')[0], 'base64url').toString('utf8'),
     );
-    expect(body.key).toEqual([now.toISOString(), third]);
+    // The final scanned row only proves that a next page has a candidate; it
+    // is neither hydrated nor used as the anchor, so the next page starts at it.
+    expect(body.key).toEqual([now.toISOString(), second]);
     expect(captureMarketCatalogCards).toHaveBeenCalledWith(expect.anything(), {
-      rows: [orderRow(first), orderRow(second), orderRow(third)],
+      rows: [orderRow(first), orderRow(second)],
+      asOf: now,
+    });
+  });
+  it('ends pagination when a short final scan leaves no renderable cards', async () => {
+    const { service } = fixture();
+    jest.mocked(readMarketOrderedPage).mockResolvedValue({
+      rows: [orderRow(first), orderRow(second)],
+      asOf: now,
+      snapshot: context.snapshot,
+      nextPriceChangeAt: null,
+      reanchored: false,
+      notice: null,
+    });
+    const response = await service.getPage(
+      new URLSearchParams('sort=newest&limit=1'),
+    );
+    expect(response.items).toEqual([]);
+    expect(response.pagination).toMatchObject({
+      hasNextPage: false,
+      nextCursor: null,
+    });
+    expect(captureMarketCatalogCards).toHaveBeenCalledWith(expect.anything(), {
+      rows: [orderRow(first), orderRow(second)],
       asOf: now,
     });
   });

@@ -104,6 +104,7 @@ function capture(): CapturedPipelinePage {
       { key, request, spec: {} as CapturedPipelinePage['specs'][number] },
     ],
     captureIds: new Set([`DESIGN:${id}`]),
+    cacheWrites: [],
   };
 }
 

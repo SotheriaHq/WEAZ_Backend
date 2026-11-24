@@ -6,12 +6,19 @@ import {
   PipelineSpec,
 } from './market-pipeline.types';
 
+/** A page registers at most 48 source requests (see requestsFor). */
+export const PIPELINE_CACHE_MAX_BATCH = 48;
+
 export interface PipelineCachedCandidate {
   readonly id: string;
   readonly score: number;
 }
 export interface PipelineCandidateCache {
   get(key: string): Promise<readonly PipelineCachedCandidate[] | null>;
+  /** One round trip for every key of a page; absent keys are omitted. */
+  getMany(
+    keys: readonly string[],
+  ): Promise<ReadonlyMap<string, readonly PipelineCachedCandidate[]>>;
   set(
     key: string,
     rows: readonly PipelineCachedCandidate[],
@@ -84,6 +91,18 @@ export class BoundedPipelineCandidateCache implements PipelineCandidateCache {
       return null;
     }
     return entry.rows.map((row) => ({ ...row }));
+  }
+  async getMany(
+    keys: readonly string[],
+  ): Promise<ReadonlyMap<string, readonly PipelineCachedCandidate[]>> {
+    if (keys.length > PIPELINE_CACHE_MAX_BATCH)
+      throw new RangeError('Candidate cache batch too large');
+    const found = new Map<string, readonly PipelineCachedCandidate[]>();
+    for (const key of new Set(keys)) {
+      const rows = await this.get(key);
+      if (rows) found.set(key, rows);
+    }
+    return found;
   }
   async set(
     key: string,

@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { CanonicalMarketFilters } from './market-filters';
-import { marketProductFiltersSql } from './market-filter.sql';
+import { marketCatalogProductFiltersSql } from './market-filter.sql';
 import { MarketCatalogScope } from './market-catalog-scope';
 
 export interface MarketNewestKey {
@@ -29,7 +29,7 @@ export function marketNewestPageSql(input: {
       new Date(after.publishedAt).toISOString() !== after.publishedAt)
   )
     throw new RangeError('Invalid newest catalogue key');
-  const eligible = marketProductFiltersSql(
+  const eligible = marketCatalogProductFiltersSql(
     [filters, input.fixedFilters ?? {}],
     now,
     'p',
