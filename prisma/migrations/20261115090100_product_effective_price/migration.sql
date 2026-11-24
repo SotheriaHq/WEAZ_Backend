@@ -90,4 +90,13 @@ CREATE TRIGGER trg_product_price_cache
 BEFORE INSERT OR UPDATE ON "Product"
 FOR EACH ROW EXECUTE FUNCTION wiez_product_price_cache();
 
+-- Old rows are repaired in bounded batches before this constraint is validated.
+-- The catalogue price reader must not enable its indexed merge beforehand.
+ALTER TABLE "Product" ADD CONSTRAINT "Product_market_price_cache_ready_check"
+  CHECK ("effectivePrice" IS NOT NULL AND "effectivePrice" >= 0
+    AND "effectivePrice" < 'Infinity'::numeric
+    AND "effectivePriceComputedAt" IS NOT NULL AND isfinite("effectivePriceComputedAt")
+    AND "priceChangeXid" IS NOT NULL
+    AND ("effectivePriceValidUntil" IS NULL OR isfinite("effectivePriceValidUntil"))) NOT VALID;
+
 COMMIT;

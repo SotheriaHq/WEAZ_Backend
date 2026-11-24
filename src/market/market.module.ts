@@ -16,10 +16,22 @@ import { MarketRankingConfigService } from './market-ranking-config.service';
 import { MarketRankingAggregateReaderService } from './market-ranking-aggregate-reader.service';
 import { MarketRankingScorerService } from './market-ranking-scorer.service';
 import { MarketGovernanceConfigService } from './market-governance-config.service';
+import { MarketFlagsService } from './market-flags.service';
+import { MarketCatalogReadService } from './catalog/market-catalog-read.service';
+import { MarketCatalogService } from './catalog/market-catalog.service';
+import { MarketCatalogController } from './catalog/market-catalog.controller';
+import { MarketPublicMediaService } from './catalog/market-public-media.service';
+import { MarketPageController } from './market-page.controller';
+import { MarketPipelineService } from './pipeline/market-pipeline.service';
+import { MarketPipelineDeliveryService } from './market-pipeline-delivery.service';
+import { QueueModule } from '../queue/queue.module';
+import { marketPipelineCacheProvider } from './pipeline/market-pipeline-cache.provider';
 
 @Module({
-  imports: [PrismaModule, UploadModule],
+  imports: [PrismaModule, UploadModule, QueueModule],
   controllers: [
+    MarketPageController,
+    MarketCatalogController,
     FeedCategoryController,
     MarketSectionController,
     MarketSignalController,
@@ -27,6 +39,13 @@ import { MarketGovernanceConfigService } from './market-governance-config.servic
     MarketSuppressionController,
   ],
   providers: [
+    marketPipelineCacheProvider,
+    MarketPipelineService,
+    MarketPipelineDeliveryService,
+    MarketPublicMediaService,
+    MarketCatalogService,
+    MarketCatalogReadService,
+    MarketFlagsService,
     FeedCategoryService,
     MarketSectionService,
     MarketRankingConfigService,
@@ -39,6 +58,11 @@ import { MarketGovernanceConfigService } from './market-governance-config.servic
     MarketSuppressionService,
   ],
   exports: [
+    MarketPipelineService,
+    MarketPublicMediaService,
+    MarketCatalogService,
+    MarketCatalogReadService,
+    MarketFlagsService,
     FeedCategoryService,
     MarketSectionService,
     MarketRankingConfigService,

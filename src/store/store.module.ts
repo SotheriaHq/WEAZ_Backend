@@ -17,10 +17,12 @@ import { SizingModule } from 'src/sizing/sizing.module';
 import { ReviewsModule } from 'src/reviews/reviews.module';
 import { ContentIntegrityModule } from 'src/content-integrity/content-integrity.module';
 import { LegalModule } from 'src/legal/legal.module';
+import { MarketModule } from '../market/market.module';
 
 @Module({
   imports: [
     PrismaModule,
+    forwardRef(() => MarketModule),
     AuthModule,
     UploadModule,
     NotificationsModule,

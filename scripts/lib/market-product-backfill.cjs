@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 
-const needsRepair = `("effectivePriceComputedAt" IS NULL OR
+const needsRepair = `("effectivePriceComputedAt" IS NULL OR "effectivePrice" IS NULL OR "priceChangeXid" IS NULL OR
   ("firstPublishedAt" IS NULL AND "publicationStatus"='PUBLISHED' AND "isActive"
     AND "deletedAt" IS NULL AND "archivedAt" IS NULL))`;
 

@@ -5604,6 +5604,7 @@ model Product {
   // Performance indexes
   @@index([tags], type: Gin, map: "Product_market_tags_idx")
   @@index([priceChangeXid, id], map: "Product_market_price_change_idx")
+  @@index([effectivePriceComputedAt, id], map: "Product_market_price_computed_idx")
   @@index([brandId])
   @@index([brandId, isActive])
   @@index([brandId, publicationStatus, createdAt])
@@ -6332,6 +6333,7 @@ model MarketItemFeatures {
   trendScore Float?
   qualityScore Float?
   units28d Int?
+  savesCount Int?
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   @@index([trendEligible, trendScore(sort: Desc)])
@@ -6422,11 +6424,14 @@ model MarketItemFeatureSnapshot {
   trendScore Float?
   qualityScore Float?
   units28d Int?
+  savesCount Int?
 
   @@id([epochId, productId])
-  @@index([epochId, trendEligible, trendScore(sort: Desc), productId])
+  @@index([epochId, trendEligible(sort: Desc), trendScore(sort: Desc), decayedPopularity(sort: Desc), productId], map: "market_item_feature_snapshots_epochId_trendEligible_trendSc_idx")
   @@index([epochId, decayedPopularity(sort: Desc), productId])
   @@index([epochId, lowStockVariants, minVariantStock, productId])
+  @@index([epochId, units28d(sort: Desc), productId])
+  @@index([epochId, savesCount(sort: Desc), productId])
   @@map("market_item_feature_snapshots")
 }
 

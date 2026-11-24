@@ -1,3 +1,4 @@
+import { trimSql } from '../../common/utils/sql-text-normalization';
 import {
   CollectionStatus,
   CollectionVisibility,
@@ -214,6 +215,17 @@ export function eligibleStoreCollectionSql(now = new Date()): Prisma.Sql {
 // ever passed to Prisma.raw: aliases are a closed set of literal SQL fragments.
 const PRODUCT_ALIASES = { p: Prisma.sql`p`, mp: Prisma.sql`mp` } as const;
 type ProductAlias = keyof typeof PRODUCT_ALIASES;
+
+/** SQL counterpart of usableProductImage for public result/facet counts. */
+export function usableProductImageSql(alias: ProductAlias = 'p'): Prisma.Sql {
+  if (!Object.prototype.hasOwnProperty.call(PRODUCT_ALIASES, alias))
+    throw new RangeError('Unsupported product image SQL alias');
+  const p = PRODUCT_ALIASES[alias];
+  return Prisma.sql`(length(${trimSql(Prisma.sql`${p}.thumbnail`)}) > 0 OR EXISTS (
+    SELECT 1 FROM unnest(${p}.images) image_value
+    WHERE length(${trimSql(Prisma.sql`image_value`)}) > 0
+  ))`;
+}
 
 export function eligibleProductSql(
   now = new Date(),

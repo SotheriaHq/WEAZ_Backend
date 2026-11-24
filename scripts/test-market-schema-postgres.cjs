@@ -238,7 +238,7 @@ async function main() {
           await db.query(`SELECT c.relname,i.indisvalid,i.indisready FROM pg_index i
           JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname LIKE 'Product_market_%'`)
         ).rows;
-        assert.equal(indexes.length, 7);
+        assert.equal(indexes.length, 9);
         assert(indexes.every((index) => index.indisvalid && index.indisready));
         const reloptions = (
           await db.query(
@@ -392,7 +392,7 @@ async function main() {
             'New schema drift: ' + owned,
           );
         console.log(
-          'PASS full migration history + eleven groups + replay + seven valid concurrent indexes + bounded backfill: ' +
+          'PASS full migration history + eleven groups + replay + nine valid concurrent indexes + bounded backfill: ' +
             (populated ? 'populated upgrade' : 'empty database'),
         );
       } finally {

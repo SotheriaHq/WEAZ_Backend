@@ -15,6 +15,13 @@ async function main() {
       current_setting('server_encoding') AS encoding,
       (SELECT datctype FROM pg_database WHERE datname=current_database()) AS "characterLocale"`)
     ).rows[0];
+    if (environment.encoding !== 'UTF8')
+      throw Object.assign(
+        new Error(
+          'Market Unicode normalization requires UTF8 database encoding',
+        ),
+        { code: 'MARKET_UTF8_REQUIRED' },
+      );
     const columns = (
       await db.query(
         `SELECT column_name FROM information_schema.columns

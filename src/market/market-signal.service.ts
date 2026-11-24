@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
   Optional,
@@ -23,8 +24,11 @@ import {
 import {
   MarketSignalAggregationResult,
   MarketSignalAggregationService,
+  withMarketSignalTransaction,
 } from './market-signal-aggregation.service';
 import { MonitoringService } from 'src/monitoring/monitoring.service';
+import { lockSecurityAccount } from '../auth/access/lock-security-account';
+import { lockForTransaction } from '../common/transaction-lock.util';
 
 export interface MarketSignalIdentity {
   userId?: string | null;
@@ -141,10 +145,54 @@ export class MarketSignalService {
       'sessionId',
       MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
     );
-    const now = new Date();
+    return withMarketSignalTransaction(this.prisma, (client) =>
+      this.ingestInTransaction(
+        events,
+        { userId, anonymousSessionId },
+        batchId,
+        defaultSessionId,
+        client,
+      ),
+    );
+  }
 
+  private async ingestInTransaction(
+    events: MarketSignalEventDto[],
+    identity: ResolvedMarketSignalIdentity,
+    batchId: string | null,
+    defaultSessionId: string | null,
+    client: Prisma.TransactionClient,
+  ) {
+    const { userId, anonymousSessionId } = identity;
+    if (userId) {
+      await lockSecurityAccount(client, userId);
+
+      const actor = await client.user.findUnique({
+        where: { id: userId },
+        select: { status: true, deactivatedAt: true },
+      });
+      if (!actor || actor.status !== 'ACTIVE' || actor.deactivatedAt !== null)
+        throw new ForbiddenException(
+          'Inactive accounts cannot submit Market signals',
+        );
+    } else {
+      // Serialize only this device identity so concurrent retries cannot claim
+      // each other's same-millisecond canonical insert during reconciliation.
+      await lockForTransaction(
+        client,
+        `market-signal-ingest:${anonymousSessionId}`,
+      );
+    }
+
+    const now = new Date();
     const existingBatchReceipt = batchId
-      ? await this.findBatchReceipt(userId, anonymousSessionId, batchId)
+      ? await this.findBatchReceipt(
+          client,
+          userId,
+          anonymousSessionId,
+          batchId,
+          now,
+        )
       : null;
     if (existingBatchReceipt) {
       this.emitRankingAlert('market_signal_duplicate_batch_replay', 'info', {
@@ -173,6 +221,7 @@ export class MarketSignalService {
       defaultSessionId,
     );
     const existingClientEventIds = await this.getExistingClientEventIds(
+      client,
       normalizedEvents
         .map((event) => event.clientEventId)
         .filter((value): value is string => Boolean(value)),
@@ -185,6 +234,7 @@ export class MarketSignalService {
     );
 
     const canonical = await this.persistCanonicalEvents(
+      client,
       acceptedEvents,
       { userId, anonymousSessionId },
       batchId,
@@ -196,7 +246,10 @@ export class MarketSignalService {
       batchId,
       now,
     );
-    const projectionCounts = await this.persistProjectionRows(projectionRows);
+    const projectionCounts = await this.persistProjectionRows(
+      client,
+      projectionRows,
+    );
 
     const persisted: PersistedCounts = {
       userFeedSignals: canonical.persistedCount,
@@ -207,13 +260,20 @@ export class MarketSignalService {
       canonical.insertedEvents,
       { userId, anonymousSessionId },
       now,
+      client,
     );
 
     if (batchId) {
-      await this.createBatchReceipt(userId, anonymousSessionId, batchId, {
-        received: events.length,
-        persisted,
-      });
+      await this.createBatchReceipt(
+        client,
+        userId,
+        anonymousSessionId,
+        batchId,
+        {
+          received: events.length,
+          persisted,
+        },
+      );
     }
 
     return {
@@ -227,6 +287,7 @@ export class MarketSignalService {
   }
 
   private async persistCanonicalEvents(
+    client: Prisma.TransactionClient,
     events: NormalizedMarketSignalEvent[],
     identity: ResolvedMarketSignalIdentity,
     batchId: string | null,
@@ -245,7 +306,7 @@ export class MarketSignalService {
       position: event.position,
     }));
 
-    const result = (await this.prisma.userFeedSignal.createMany({
+    const result = (await client.userFeedSignal.createMany({
       data,
       skipDuplicates: true,
     })) as MarketSignalCreateManyResult;
@@ -255,6 +316,7 @@ export class MarketSignalService {
     }
 
     const insertedClientEventIds = await this.getClientEventIdsCreatedAt(
+      client,
       events.map((event) => event.clientEventId),
       identity.userId,
       identity.anonymousSessionId,
@@ -329,11 +391,14 @@ export class MarketSignalService {
     return { seenItems, marketSectionSignals, suggestionSignals };
   }
 
-  private async persistProjectionRows(input: {
-    seenItems: Prisma.UserSeenItemCreateManyInput[];
-    marketSectionSignals: Prisma.MarketSectionSignalCreateManyInput[];
-    suggestionSignals: Prisma.SuggestionSignalCreateManyInput[];
-  }): Promise<Omit<PersistedCounts, 'userFeedSignals'>> {
+  private async persistProjectionRows(
+    client: Prisma.TransactionClient,
+    input: {
+      seenItems: Prisma.UserSeenItemCreateManyInput[];
+      marketSectionSignals: Prisma.MarketSectionSignalCreateManyInput[];
+      suggestionSignals: Prisma.SuggestionSignalCreateManyInput[];
+    },
+  ): Promise<Omit<PersistedCounts, 'userFeedSignals'>> {
     const persisted = {
       seenItems: 0,
       marketSectionSignals: 0,
@@ -344,7 +409,7 @@ export class MarketSignalService {
     const keys: Array<keyof typeof persisted> = [];
     if (input.seenItems.length) {
       writes.push(
-        this.prisma.userSeenItem.createMany({
+        client.userSeenItem.createMany({
           data: input.seenItems,
           skipDuplicates: true,
         }) as Prisma.PrismaPromise<MarketSignalCreateManyResult>,
@@ -353,7 +418,7 @@ export class MarketSignalService {
     }
     if (input.marketSectionSignals.length) {
       writes.push(
-        this.prisma.marketSectionSignal.createMany({
+        client.marketSectionSignal.createMany({
           data: input.marketSectionSignals,
           skipDuplicates: true,
         }) as Prisma.PrismaPromise<MarketSignalCreateManyResult>,
@@ -362,7 +427,7 @@ export class MarketSignalService {
     }
     if (input.suggestionSignals.length) {
       writes.push(
-        this.prisma.suggestionSignal.createMany({
+        client.suggestionSignal.createMany({
           data: input.suggestionSignals,
           skipDuplicates: true,
         }) as Prisma.PrismaPromise<MarketSignalCreateManyResult>,
@@ -372,19 +437,9 @@ export class MarketSignalService {
 
     if (!writes.length) return persisted;
 
-    try {
-      const results = (await this.prisma.$transaction(writes)) as
-        | MarketSignalCreateManyResult[]
-        | undefined;
-      for (const [index, key] of keys.entries()) {
-        persisted[key] = this.toCount(results?.[index]?.count);
-      }
-    } catch (error) {
-      this.logger.warn(
-        `Signal projection persistence failed; canonical signals were retained: ${
-          (error as any)?.message || error
-        }`,
-      );
+    const results = await Promise.all(writes);
+    for (const [index, key] of keys.entries()) {
+      persisted[key] = this.toCount(results[index]?.count);
     }
     return persisted;
   }
@@ -414,6 +469,7 @@ export class MarketSignalService {
     events: NormalizedMarketSignalEvent[],
     identity: MarketSignalIdentity,
     now: Date,
+    client: Prisma.TransactionClient,
   ) {
     if (events.length === 0) {
       return {
@@ -446,6 +502,7 @@ export class MarketSignalService {
           })),
           identity,
           now,
+          client,
         );
       return {
         ...result,
@@ -453,21 +510,14 @@ export class MarketSignalService {
       };
     } catch (error) {
       this.logger.warn(
-        `Signal aggregation failed; raw signals were retained: ${
-          (error as any)?.message || error
-        }`,
+        'Signal aggregation failed; signal transaction will roll back',
       );
       this.emitRankingAlert('market_signal_aggregation_failed', 'error', {
         eventCount: events.length,
         actorType: identity.userId ? 'USER' : 'ANONYMOUS',
         errorName: error instanceof Error ? error.name : 'UnknownError',
       });
-      return {
-        mode: 'synchronous-db' as const,
-        status: 'failed' as const,
-        eventsAggregated: 0,
-        bucketsUpdated: 0,
-      };
+      throw error;
     }
   }
 
@@ -559,20 +609,22 @@ export class MarketSignalService {
   }
 
   private async getExistingClientEventIds(
+    client: Prisma.TransactionClient,
     clientEventIds: string[],
     userId: string | null,
     anonymousSessionId: string | null,
     now: Date,
   ) {
     if (clientEventIds.length === 0) return new Set<string>();
-    const since = new Date(now.getTime() - this.duplicateReplayWindowMs);
+    const readAt = new Date(Math.max(now.getTime(), Date.now()));
+    const since = new Date(readAt.getTime() - this.duplicateReplayWindowMs);
     const where: Prisma.UserFeedSignalWhereInput = {
       clientEventId: { in: Array.from(new Set(clientEventIds)) },
-      createdAt: { gte: since },
+      createdAt: { gte: since, lte: readAt },
       ...(userId ? { userId } : { anonymousSessionId }),
     };
 
-    const rows = await this.prisma.userFeedSignal.findMany({
+    const rows = await client.userFeedSignal.findMany({
       where,
       select: { clientEventId: true },
       take: clientEventIds.length,
@@ -586,16 +638,25 @@ export class MarketSignalService {
   }
 
   private async getClientEventIdsCreatedAt(
+    client: Prisma.TransactionClient,
     clientEventIds: string[],
     userId: string | null,
     anonymousSessionId: string | null,
     createdAt: Date,
   ) {
     if (clientEventIds.length === 0) return new Set<string>();
-    const rows = await this.prisma.userFeedSignal.findMany({
+    const rows = await client.userFeedSignal.findMany({
       where: {
         clientEventId: { in: Array.from(new Set(clientEventIds)) },
         createdAt,
+        AND: [
+          {
+            createdAt: {
+              gte: new Date(Date.now() - this.duplicateReplayWindowMs),
+              lte: new Date(),
+            },
+          },
+        ],
         ...(userId ? { userId } : { anonymousSessionId }),
       },
       select: { clientEventId: true },
@@ -610,21 +671,31 @@ export class MarketSignalService {
   }
 
   private async findBatchReceipt(
+    client: Prisma.TransactionClient,
     userId: string | null,
     anonymousSessionId: string | null,
     batchId: string,
+    now: Date,
   ) {
     const ownerWhere: Prisma.MarketSignalBatchReceiptWhereInput[] = [];
     if (userId) ownerWhere.push({ userId, batchId });
     if (anonymousSessionId) ownerWhere.push({ anonymousSessionId, batchId });
     if (!ownerWhere.length) return null;
 
-    return this.prisma.marketSignalBatchReceipt.findFirst({
-      where: { OR: ownerWhere },
+    const readAt = new Date(Math.max(now.getTime(), Date.now()));
+    return client.marketSignalBatchReceipt.findFirst({
+      where: {
+        OR: ownerWhere,
+        createdAt: {
+          gte: new Date(readAt.getTime() - this.duplicateReplayWindowMs),
+          lte: readAt,
+        },
+      },
     });
   }
 
   private async createBatchReceipt(
+    client: Prisma.TransactionClient,
     userId: string | null,
     anonymousSessionId: string | null,
     batchId: string,
@@ -633,21 +704,18 @@ export class MarketSignalService {
       persisted: PersistedCounts;
     },
   ) {
-    try {
-      await this.prisma.marketSignalBatchReceipt.create({
-        data: {
+    await client.marketSignalBatchReceipt.createMany({
+      data: [
+        {
           userId,
           anonymousSessionId,
           batchId,
           received: input.received,
           persisted: input.persisted,
         },
-      });
-    } catch (error) {
-      if ((error as any)?.code !== 'P2002') {
-        throw error;
-      }
-    }
+      ],
+      skipDuplicates: true,
+    });
   }
 
   private toPersistedCounts(value: Prisma.JsonValue | null): PersistedCounts {

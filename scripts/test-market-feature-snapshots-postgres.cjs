@@ -96,6 +96,7 @@ tu.pathname = '/' + name;
     ).rows[0];
     assert.equal(row.actors7d, null);
     assert.equal(row.qualityScore, null);
+    assert.equal(row.savesCount, null);
     assert.equal(row.trendEligible, false);
     async function fails(sql, args = [], code = '23514') {
       let failed = false;
@@ -109,6 +110,10 @@ tu.pathname = '/' + name;
     }
     await fails(
       'UPDATE market_item_features SET "actors7d"=0 WHERE "productId"=$1',
+      [product],
+    );
+    await fails(
+      'UPDATE market_item_features SET "savesCount"=0 WHERE "productId"=$1',
       [product],
     );
     await fails(
@@ -132,9 +137,14 @@ tu.pathname = '/' + name;
       actors7d: complete,
       qualityScore: complete,
       trendScore: complete,
+      savesCount: {
+        ...complete,
+        requiredWindowStart: evidenceEnd,
+        observedFrom: evidenceEnd,
+      },
     };
     await db.query(
-      'UPDATE market_item_features SET "actors7d"=0,"qualityScore"=0.5,"trendScore"=-0.2,coverage=$2 WHERE "productId"=$1',
+      'UPDATE market_item_features SET "actors7d"=0,"qualityScore"=0.5,"trendScore"=-0.2,"savesCount"=7,coverage=$2 WHERE "productId"=$1',
       [product, JSON.stringify(coverage)],
     );
     row = (
@@ -145,6 +155,11 @@ tu.pathname = '/' + name;
     ).rows[0];
     assert.equal(row.actors7d, 0);
     assert.equal(row.trendScore, -0.2);
+    assert.equal(row.savesCount, 7);
+    await fails(
+      'UPDATE market_item_features SET "savesCount"=-1 WHERE "productId"=$1',
+      [product],
+    );
     await fails(
       'UPDATE market_item_features SET "qualityScore"=1.5 WHERE "productId"=$1',
       [product],
@@ -193,7 +208,7 @@ tu.pathname = '/' + name;
       [e1.id],
     );
     const copy =
-      'INSERT INTO market_item_feature_snapshots("epochId","productId","sourceComputedAt","sourceAsOf","actors7d","qualityScore","trendScore",coverage) SELECT $1,"productId","computedAt","sourceAsOf","actors7d","qualityScore","trendScore",coverage FROM market_item_features';
+      'INSERT INTO market_item_feature_snapshots("epochId","productId","sourceComputedAt","sourceAsOf","actors7d","qualityScore","trendScore","savesCount",coverage) SELECT $1,"productId","computedAt","sourceAsOf","actors7d","qualityScore","trendScore","savesCount",coverage FROM market_item_features';
     await fails(copy, [e1.id]);
     await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
     await db.query(
@@ -219,6 +234,7 @@ tu.pathname = '/' + name;
     assert.equal(frozen.actors7d, 0);
     assert.equal(frozen.qualityScore, 0.5);
     assert.equal(frozen.trendScore, -0.2);
+    assert.equal(frozen.savesCount, 7);
     proof.push(
       'one consistent owning transaction publishes snapshot and current pointer',
     );

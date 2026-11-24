@@ -25,6 +25,7 @@ CREATE TABLE "market_item_features" (
     "trendScore" DOUBLE PRECISION,
     "qualityScore" DOUBLE PRECISION,
     "units28d" INTEGER,
+    "savesCount" INTEGER,
     "updatedAt" TIMESTAMPTZ(3) NOT NULL,
 
     CONSTRAINT "market_item_features_pkey" PRIMARY KEY ("productId")
@@ -99,6 +100,7 @@ CREATE TABLE "market_item_feature_snapshots" (
     "trendScore" DOUBLE PRECISION,
     "qualityScore" DOUBLE PRECISION,
     "units28d" INTEGER,
+    "savesCount" INTEGER,
 
     CONSTRAINT "market_item_feature_snapshots_pkey" PRIMARY KEY ("epochId","productId")
 );
@@ -134,13 +136,18 @@ CREATE UNIQUE INDEX "market_feature_epochs_stateKey_generation_key" ON "market_f
 CREATE UNIQUE INDEX "market_feature_epochs_stateKey_id_key" ON "market_feature_epochs"("stateKey", "id");
 
 -- CreateIndex
-CREATE INDEX "market_item_feature_snapshots_epochId_trendEligible_trendSc_idx" ON "market_item_feature_snapshots"("epochId", "trendEligible", "trendScore" DESC, "productId");
+CREATE INDEX "market_item_feature_snapshots_epochId_trendEligible_trendSc_idx" ON "market_item_feature_snapshots"("epochId", "trendEligible" DESC, "trendScore" DESC, "decayedPopularity" DESC, "productId");
 
 -- CreateIndex
 CREATE INDEX "market_item_feature_snapshots_epochId_decayedPopularity_pro_idx" ON "market_item_feature_snapshots"("epochId", "decayedPopularity" DESC, "productId");
 
 -- CreateIndex
 CREATE INDEX "market_item_feature_snapshots_epochId_lowStockVariants_minV_idx" ON "market_item_feature_snapshots"("epochId", "lowStockVariants", "minVariantStock", "productId");
+
+CREATE INDEX "market_item_feature_snapshots_epochId_savesCount_productId_idx"
+  ON "market_item_feature_snapshots"("epochId","savesCount" DESC,"productId");
+CREATE INDEX "market_item_feature_snapshots_epochId_units28d_productId_idx"
+  ON "market_item_feature_snapshots"("epochId","units28d" DESC,"productId");
 
 -- AddForeignKey
 ALTER TABLE "market_item_features" ADD CONSTRAINT "market_item_features_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("_id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -170,7 +177,7 @@ BEGIN
     OR octet_length(document::text) > 8192 THEN RETURN FALSE; END IF;
   FOR metric IN SELECT key, value FROM jsonb_each(document) LOOP
     IF metric.key NOT IN ('actors7d','actors28d','intent3d','intent28d',
-      'impressions28d','decayedPopularity','trendScore','qualityScore','units28d')
+      'impressions28d','decayedPopularity','trendScore','qualityScore','units28d','savesCount')
       OR jsonb_typeof(metric.value) <> 'object' THEN RETURN FALSE; END IF;
     IF COALESCE(metric.value->>'completeness','') NOT IN ('UNAVAILABLE','PARTIAL','COMPLETE')
       OR COALESCE(metric.value->>'reason','') NOT IN
@@ -433,6 +440,7 @@ ALTER TABLE market_item_features ADD CONSTRAINT market_item_features_evidence_ch
   AND ("actors28d" IS NULL OR "actors28d">=0)
   AND ("impressions28d" IS NULL OR "impressions28d">=0)
   AND ("units28d" IS NULL OR "units28d">=0)
+  AND ("savesCount" IS NULL OR ("savesCount">=0 AND COALESCE(coverage->'savesCount'->>'completeness'='COMPLETE',false)))
   AND ("intent3d" IS NULL OR ("intent3d">=0 AND "intent3d"<'Infinity'::float8))
   AND ("intent28d" IS NULL OR ("intent28d">=0 AND "intent28d"<'Infinity'::float8))
   AND ("decayedPopularity" IS NULL OR ("decayedPopularity">=0 AND "decayedPopularity"<'Infinity'::float8))
@@ -457,6 +465,7 @@ ALTER TABLE market_item_feature_snapshots ADD CONSTRAINT market_item_feature_sna
   AND ("actors28d" IS NULL OR "actors28d">=0)
   AND ("impressions28d" IS NULL OR "impressions28d">=0)
   AND ("units28d" IS NULL OR "units28d">=0)
+  AND ("savesCount" IS NULL OR ("savesCount">=0 AND COALESCE(coverage->'savesCount'->>'completeness'='COMPLETE',false)))
   AND ("intent3d" IS NULL OR ("intent3d">=0 AND "intent3d"<'Infinity'::float8))
   AND ("intent28d" IS NULL OR ("intent28d">=0 AND "intent28d"<'Infinity'::float8))
   AND ("decayedPopularity" IS NULL OR ("decayedPopularity">=0 AND "decayedPopularity"<'Infinity'::float8))

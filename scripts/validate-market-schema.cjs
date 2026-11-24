@@ -8,6 +8,7 @@ const constraints = [
   ['Product', 'Product_base_price_finite_check'],
   ['Product', 'Product_sale_price_finite_check'],
   ['Product', 'Product_sale_dates_finite_check'],
+  ['Product', 'Product_market_price_cache_ready_check'],
   ['CollectionCategory', 'category_aliases_shape_check'],
   ['CollectionCategoryType', 'category_type_aliases_shape_check'],
   ['CartItem', 'cart_discovery_attribution_shape_check'],

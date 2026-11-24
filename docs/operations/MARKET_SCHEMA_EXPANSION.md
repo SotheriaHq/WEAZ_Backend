@@ -116,13 +116,13 @@ new columns and tables unused; do not drop data to reverse a release. Database
 write invariants remain deliberate: an old writer cannot mutate an already
 versioned section. Complete writer integration before converting live sections.
 
-If a concurrent build fails, inspect `_prisma_migrations`, the seven exact
+If a concurrent build fails, inspect `_prisma_migrations`, the nine exact
 `Product_market_*` index names and their definitions/validity. A failed group may
 have created a valid prefix and an invalid interrupted index. Under a reviewed
 recovery operation, drop only this group's verified indexes using individual
 `DROP INDEX CONCURRENTLY` statements outside a transaction, mark that failed
 migration rolled back with `prisma migrate resolve`, then rerun deploy and verify
-all seven definitions/flags. Never use `IF NOT EXISTS` to bless an invalid or
+all nine definitions/flags. Never use `IF NOT EXISTS` to bless an invalid or
 different index, and never drop an unrelated existing search index.
 
 The regression saves a read-only schema comparison in
@@ -136,3 +136,27 @@ difference separately from this expansion.
 Restore prior per-table autovacuum reloptions from the captured preflight record
 through a forward operational change if required. No global PostgreSQL setting,
 immutable feature history or unrelated table is part of that change.
+
+## Unreleased catalogue prerequisite refinements
+
+The held catalogue package refines the existing eleven migration groups; none has been applied to a live environment. Group2 adds Product_market_price_cache_ready_check (NOT VALID), and the bounded backfill repairs missing cache price, time or transaction metadata. Validate this constraint after backfill before admitting price reads. Group10 now contains nine concurrent indexes: newest UUID ties use DESC; price DESC/UUID ASC gets its own index; cache computed time gets an index for backwards-clock handling. The existing ascending-price, boundary, transaction-change and tag indexes remain. Group3 adds nullable savesCount to live and frozen features, COMPLETE evidence validation, saved/units frozen-order indexes, and the full descending trend order. Unknown saved counts remain NULL. The owner-approved Most saved contract replaces the unmaintained product-like counter; it does not add user-event retention.
+
+Before enabling catalogue pagination, configure an independent high-entropy MARKET_CURSOR_SECRET (at least32 bytes), optional MARKET_CURSOR_SECRET_PREVIOUS during rotation, and a UUID MARKET_CATALOG_NAMESPACE held outside the restored database. Rotate that namespace after any database restore, including restoring into the same host. Keeping the old namespace after restore would let old ordering state be reused. Keep both cursor keys private; never reuse sign-in or refresh secrets. No current APP_SECRET configuration exists.
+
+The prepared catalogue read runner admits at most four concurrent transactions
+per API process and rejects excess work before connection acquisition. Reads use
+READ ONLY / REPEATABLE READ, a 1500ms PostgreSQL statement deadline, 250ms lock
+deadline, 250ms transaction-acquisition budget and 2000ms transaction ceiling.
+This is a process-local bound; fleet-wide ingress admission remains a separate
+release requirement. A retryable read-limit response contains no database text.
+The installed PostgreSQL adapter exposes SQLSTATE through structured driver
+error metadata; do not classify errors by inspecting their private messages.
+
+Frozen-score readers require READY, time/version-compatible manifests and
+COMPLETE source-window evidence, then recheck current product eligibility.
+Unknown history is not zero. Product checks use a bounded primary-key lookup;
+the regression verifies that score pagination does not repeatedly traverse the
+newest-product index. This ordering helper alone does not establish source
+freshness, sample floors or permission to advertise a sort. Catalogue/facet
+responses, surface integration and full acceptance remain unfinished. Keep the
+surface selector empty until the complete integration is verified and approved.

@@ -36,7 +36,7 @@ async function checkMarketIndexPlans(db, brand) {
   const cases = [
     [
       'newest',
-      `SELECT "_id" FROM "Product" WHERE ${active} ORDER BY "firstPublishedAt" DESC,"_id" LIMIT 20`,
+      `SELECT "_id" FROM "Product" WHERE ${active} ORDER BY "firstPublishedAt" DESC,"_id" DESC LIMIT 20`,
       [],
       'Product_market_first_publication_idx',
     ],
@@ -48,15 +48,27 @@ async function checkMarketIndexPlans(db, brand) {
     ],
     [
       'category',
-      `SELECT "_id" FROM "Product" WHERE ${active} AND "categoryId"=$1 ORDER BY "firstPublishedAt" DESC,"_id" LIMIT 20`,
+      `SELECT "_id" FROM "Product" WHERE ${active} AND "categoryId"=$1 ORDER BY "firstPublishedAt" DESC,"_id" DESC LIMIT 20`,
       [categories[0]],
       'Product_market_category_publication_idx',
     ],
     [
       'brand',
-      `SELECT "_id" FROM "Product" WHERE ${active} AND "brandId"=$1 ORDER BY "firstPublishedAt" DESC,"_id" LIMIT 20`,
+      `SELECT "_id" FROM "Product" WHERE ${active} AND "brandId"=$1 ORDER BY "firstPublishedAt" DESC,"_id" DESC LIMIT 20`,
       [brand],
       ['Product_market_brand_publication_idx', 'Product_isActive_brandId_idx'],
+    ],
+    [
+      'price-desc',
+      `SELECT "_id" FROM "Product" WHERE ${active} ORDER BY "effectivePrice" DESC,"_id" ASC LIMIT 20`,
+      [],
+      'Product_market_effective_price_desc_idx',
+    ],
+    [
+      'price-computed',
+      `SELECT "_id" FROM "Product" WHERE "effectivePriceComputedAt">statement_timestamp()+interval '1 day' ORDER BY "effectivePriceComputedAt","_id" LIMIT 20`,
+      [],
+      'Product_market_price_computed_idx',
     ],
     [
       'tags',
@@ -108,7 +120,9 @@ async function checkMarketIndexPlans(db, brand) {
     );
   }
   console.log(
-    'PASS seven Product query shapes use appropriate indexes on 2,000 rows, reusing the existing selective brand index; not a production latency/capacity claim',
+    'PASS ' +
+      cases.length +
+      ' Product query shapes use appropriate indexes on 2,000 rows, reusing the existing selective brand index; not a production latency/capacity claim',
   );
 }
 

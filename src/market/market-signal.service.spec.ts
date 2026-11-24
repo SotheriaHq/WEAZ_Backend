@@ -9,6 +9,13 @@ import {
   MARKET_SIGNAL_MAX_METADATA_BYTES,
 } from './dto/market-signal.dto';
 import { MarketSignalService } from './market-signal.service';
+import { MarketSignalAggregationService } from './market-signal-aggregation.service';
+
+// Alert delivery is injected separately; avoid bootstrapping its email/payment
+// dependency graph while testing the actual ingestion transaction.
+jest.mock('src/monitoring/monitoring.service', () => ({
+  MonitoringService: class MonitoringService {},
+}));
 
 describe('MarketSignalService', () => {
   const event = (overrides: Record<string, any> = {}) => ({
@@ -24,44 +31,53 @@ describe('MarketSignalService', () => {
     ...overrides,
   });
 
-  const createPrisma = () => ({
-    userFeedSignal: {
-      findMany: jest.fn().mockResolvedValue([]),
-      createMany: jest
-        .fn()
-        .mockImplementation(({ data }) =>
-          Promise.resolve({ count: data.length }),
-        ),
-    },
-    userSeenItem: {
-      createMany: jest
-        .fn()
-        .mockImplementation(({ data }) =>
-          Promise.resolve({ count: data.length }),
-        ),
-    },
-    marketSectionSignal: {
-      createMany: jest
-        .fn()
-        .mockImplementation(({ data }) =>
-          Promise.resolve({ count: data.length }),
-        ),
-    },
-    suggestionSignal: {
-      createMany: jest
-        .fn()
-        .mockImplementation(({ data }) =>
-          Promise.resolve({ count: data.length }),
-        ),
-    },
-    marketSignalBatchReceipt: {
-      findFirst: jest.fn().mockResolvedValue(null),
-      create: jest.fn().mockResolvedValue({ id: 'receipt_1' }),
-    },
-    $transaction: jest.fn((writes: Array<Promise<unknown>>) =>
-      Promise.all(writes),
-    ),
-  });
+  const createPrisma = () => {
+    const prisma = {
+      user: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ status: 'ACTIVE', deactivatedAt: null }),
+      },
+      userFeedSignal: {
+        findMany: jest.fn().mockResolvedValue([]),
+        createMany: jest
+          .fn()
+          .mockImplementation(({ data }) =>
+            Promise.resolve({ count: data.length }),
+          ),
+      },
+      userSeenItem: {
+        createMany: jest
+          .fn()
+          .mockImplementation(({ data }) =>
+            Promise.resolve({ count: data.length }),
+          ),
+      },
+      marketSectionSignal: {
+        createMany: jest
+          .fn()
+          .mockImplementation(({ data }) =>
+            Promise.resolve({ count: data.length }),
+          ),
+      },
+      suggestionSignal: {
+        createMany: jest
+          .fn()
+          .mockImplementation(({ data }) =>
+            Promise.resolve({ count: data.length }),
+          ),
+      },
+      marketSignalBatchReceipt: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      $executeRaw: jest.fn().mockResolvedValue(0),
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      $transaction: jest.fn(),
+    };
+    prisma.$transaction.mockImplementation(async (work) => work(prisma));
+    return prisma;
+  };
 
   const createAggregation = () => ({
     aggregateBatch: jest.fn().mockResolvedValue({
@@ -110,13 +126,16 @@ describe('MarketSignalService', () => {
       skipDuplicates: true,
     });
     expect(aggregation.aggregateBatch).toHaveBeenCalledTimes(1);
-    expect(prisma.marketSignalBatchReceipt.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        userId: 'user_1',
-        anonymousSessionId: null,
-        batchId: 'batch_1',
-        received: 1,
-      }),
+    expect(prisma.marketSignalBatchReceipt.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          userId: 'user_1',
+          anonymousSessionId: null,
+          batchId: 'batch_1',
+          received: 1,
+        }),
+      ],
+      skipDuplicates: true,
     });
   });
 
@@ -146,6 +165,7 @@ describe('MarketSignalService', () => {
       [expect.objectContaining({ targetId: 'product_1' })],
       { userId: null, anonymousSessionId: 'anon_1' },
       expect.any(Date),
+      prisma,
     );
   });
 
@@ -439,6 +459,7 @@ describe('MarketSignalService', () => {
       [expect.objectContaining({ targetId: 'product_1' })],
       { userId: null, anonymousSessionId: 'anon_1' },
       expect.any(Date),
+      prisma,
     );
   });
 
@@ -471,5 +492,128 @@ describe('MarketSignalService', () => {
     expect(prisma.userFeedSignal.findMany.mock.calls[1][0].where).toEqual(
       expect.objectContaining({ userId: 'user_2' }),
     );
+  });
+
+  it('rejects erased authenticated accounts before reading or persisting signals', async () => {
+    const prisma = createPrisma();
+    prisma.user.findUnique.mockResolvedValue({
+      status: 'DEACTIVATED',
+      deactivatedAt: new Date(),
+    });
+    const service = new MarketSignalService(
+      prisma as any,
+      createAggregation() as any,
+    );
+    await expect(
+      service.ingestBatch({ events: [event()] }, { userId: 'erased' }),
+    ).rejects.toThrow('Inactive accounts');
+    expect(prisma.userFeedSignal.findMany).not.toHaveBeenCalled();
+    expect(prisma.userFeedSignal.createMany).not.toHaveBeenCalled();
+  });
+
+  it('bounds raw replay and batch-receipt reads to the absolute server24h window', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-11-21T12:00:00.000Z'));
+    try {
+      const prisma = createPrisma();
+      const service = new MarketSignalService(
+        prisma as any,
+        createAggregation() as any,
+      );
+      await service.ingestBatch(
+        { batchId: 'same-batch', events: [event()] },
+        { userId: 'user_1' },
+      );
+      const window = {
+        gte: new Date('2026-11-20T12:00:00.000Z'),
+        lte: new Date('2026-11-21T12:00:00.000Z'),
+      };
+      expect(
+        prisma.userFeedSignal.findMany.mock.calls[0][0].where.createdAt,
+      ).toEqual(window);
+      expect(
+        prisma.marketSignalBatchReceipt.findFirst.mock.calls[0][0].where
+          .createdAt,
+      ).toEqual(window);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+  it('keeps every write on the locked transaction client, including real aggregation', async () => {
+    const client: any = {
+      ...createPrisma(),
+      marketSignalAggregateDaily: { upsert: jest.fn().mockResolvedValue({}) },
+    };
+    const root: any = { $transaction: jest.fn(async (work) => work(client)) };
+    const service = new MarketSignalService(
+      root,
+      new MarketSignalAggregationService(root),
+    );
+    const result = await service.ingestBatch(
+      { batchId: 'atomic', events: [event()] },
+      { userId: 'user_1' },
+    );
+    expect(result.persisted.userFeedSignals).toBe(1);
+    expect(root.$transaction).toHaveBeenCalledTimes(1);
+    expect(root.$transaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({
+        maxWait: 500,
+        timeout: 5_000,
+        isolationLevel: 'ReadCommitted',
+      }),
+    );
+    expect(client.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      client.user.findUnique.mock.invocationCallOrder[0],
+    );
+    expect(client.user.findUnique.mock.invocationCallOrder[0]).toBeLessThan(
+      client.userFeedSignal.createMany.mock.invocationCallOrder[0],
+    );
+    expect(client.marketSignalAggregateDaily.upsert).not.toHaveBeenCalled();
+    expect(
+      client.$executeRaw.mock.calls.filter(
+        (call) => typeof call[0]?.text === 'string',
+      ),
+    ).toHaveLength(1);
+    expect(client.marketSignalBatchReceipt.createMany).toHaveBeenCalledTimes(1);
+    expect(client.$transaction).not.toHaveBeenCalled();
+  });
+  it('waits for the deletion lock before checking whether the actor is still active', async () => {
+    const prisma = createPrisma();
+    prisma.$queryRaw.mockImplementation(async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        status: 'DEACTIVATED',
+        deactivatedAt: new Date(),
+      });
+      return [];
+    });
+    await expect(
+      new MarketSignalService(prisma as any).ingestBatch(
+        { events: [event()] },
+        { userId: 'user_1' },
+      ),
+    ).rejects.toThrow('Inactive accounts');
+    expect(prisma.userFeedSignal.createMany).not.toHaveBeenCalled();
+    expect(prisma.marketSignalBatchReceipt.createMany).not.toHaveBeenCalled();
+  });
+  it('rejects the whole transaction when a projection or aggregate fails', async () => {
+    for (const failure of ['projection', 'aggregation']) {
+      const prisma = createPrisma();
+      const aggregation = createAggregation();
+      if (failure === 'projection')
+        prisma.userSeenItem.createMany.mockRejectedValueOnce(
+          new Error('projection rejected'),
+        );
+      else
+        aggregation.aggregateBatch.mockRejectedValueOnce(
+          new Error('aggregation rejected'),
+        );
+      await expect(
+        new MarketSignalService(prisma as any, aggregation as any).ingestBatch(
+          { batchId: 'must-not-ack', events: [event()] },
+          { userId: 'user_1' },
+        ),
+      ).rejects.toThrow(`${failure} rejected`);
+      expect(prisma.marketSignalBatchReceipt.createMany).not.toHaveBeenCalled();
+    }
   });
 });
