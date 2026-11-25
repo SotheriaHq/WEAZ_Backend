@@ -112,7 +112,7 @@ describe('signup pushes: welcome, verify your email, verified', () => {
     const payload = { action: 'VERIFY_EMAIL', email: 'ada@example.com', displayName: 'Ada', targetUrl: '/verify-email' };
     expect(signup.schema.validate(payload).error).toBeUndefined();
     const text = signup.formatter({ payload });
-    expect(text).toBe('Verify your email to enjoy WIEZ. Your code is in your inbox.');
+    expect(text).toBe('Verify your email to enjoy ARU. Your code is in your inbox.');
     expect(text).not.toMatch(/\d/);
   });
 });

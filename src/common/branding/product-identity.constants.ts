@@ -14,9 +14,11 @@
  */
 
 /** The product name. There is no former name to surface anywhere. */
-export const PRODUCT_NAME = 'WIEZ';
+export const PRODUCT_NAME = 'ARU';
 
-export const PRODUCT_TAGLINE = 'When you think WEARS, you think WIEZ.';
+export const PRODUCT_SLOGAN = 'Just wear';
+
+export const PRODUCT_TAGLINE = 'When you think WEARS, you think ARU.';
 
 export const PRODUCT_CATEGORY = 'African fashion social commerce marketplace';
 

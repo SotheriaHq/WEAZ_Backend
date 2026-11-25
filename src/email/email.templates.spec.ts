@@ -23,22 +23,22 @@ const legacyBrandPattern = new RegExp(
 );
 
 describe('email template branding polish', () => {
-  it('uses polished WIEZ subjects for representative active email flows', () => {
+  it('uses polished ARU subjects for representative active email flows', () => {
     expect(
       passwordResetEmail('https://wiez.test/reset', legacyBrandInput).subject,
-    ).toBe('🔐 Reset your WIEZ password');
+    ).toBe('🔐 Reset your ARU password');
     expect(
       emailVerificationEmail('https://wiez.test/verify', legacyBrandInput)
         .subject,
-    ).toBe("✨ You're almost in — confirm your WIEZ email");
+    ).toBe("✨ You're almost in — confirm your ARU email");
     expect(emailLoginCodeEmail('123456', legacyBrandInput).subject).toBe(
-      '🔐 Your WIEZ password setup code',
+      '🔐 Your ARU password setup code',
     );
     expect(
       emailLoginCodeEmail('123456', legacyBrandInput, 'DIRECT_LOGIN').subject,
-    ).toBe('🔐 Your WIEZ sign-in code');
+    ).toBe('🔐 Your ARU sign-in code');
     expect(breakGlassCodeEmail('CODE-123', legacyBrandInput).subject).toBe(
-      'URGENT: WIEZ break-glass recovery code',
+      'URGENT: ARU break-glass recovery code',
     );
     expect(
       brandStaffInviteEmail({
@@ -48,17 +48,17 @@ describe('email template branding polish', () => {
         inviteLink: 'https://wiez.test/brand/staff/invite?token=token',
         appName: legacyBrandInput,
       }).subject,
-    ).toBe("🏷️ You've been invited to join Aso Studio on WIEZ");
+    ).toBe("🏷️ You've been invited to join Aso Studio on ARU");
     expect(
       brandVerificationApprovedEmail('Aso Studio', legacyBrandInput).subject,
-    ).toBe('✅ "Aso Studio" is now verified on WIEZ');
+    ).toBe('✅ "Aso Studio" is now verified on ARU');
     expect(accountReactivatedEmail('Ada', legacyBrandInput).subject).toBe(
-      '✅ Your WIEZ account is active again',
+      '✅ Your ARU account is active again',
     );
     expect(
       adminEmailChangeOtpEmail('123456', 'admin@wiez.test', legacyBrandInput)
         .subject,
-    ).toBe('WIEZ admin email verification code');
+    ).toBe('ARU admin email verification code');
   });
 
   it('keeps old brand names and redirect metadata out of active email output', () => {
@@ -76,7 +76,7 @@ describe('email template branding polish', () => {
     ].map(joinedOutput);
 
     for (const output of outputs) {
-      expect(output).toContain('WIEZ');
+      expect(output).toContain('ARU');
       expect(output).not.toMatch(legacyBrandPattern);
       expect(output).not.toContain('[SIT');
       expect(output).not.toContain('REDIRECT');

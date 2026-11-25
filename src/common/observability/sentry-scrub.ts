@@ -24,6 +24,7 @@ const SAFE_HEADERS = new Set([
   'content-type',
   'user-agent',
   'x-request-id',
+  'x-aru-platform',
   'x-wiez-platform',
 ]);
 
