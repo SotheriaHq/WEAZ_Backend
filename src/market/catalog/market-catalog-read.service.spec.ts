@@ -29,13 +29,13 @@ describe('catalogue read admission', () => {
     const { tx, transaction, service } = fixture();
     await expect(
       service.run(async () => {
-        expect(
-          tx.$executeRaw.mock.calls.map((call) => String(call[0])),
-        ).toEqual([
-          'SET TRANSACTION READ ONLY',
-          "SET LOCAL statement_timeout='1500ms'",
-          "SET LOCAL lock_timeout='250ms'",
-        ]);
+        // One setup round trip: read-only mode and both limits together.
+        expect(tx.$executeRaw).not.toHaveBeenCalled();
+        expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+        const setup = tx.$queryRaw.mock.calls[0][0] as Prisma.Sql;
+        expect(setup.text).toBe(
+          "SELECT set_config('transaction_read_only','on',true),set_config('statement_timeout','1500ms',true),set_config('lock_timeout','250ms',true)",
+        );
         return ['result'];
       }),
     ).resolves.toEqual(['result']);
@@ -91,8 +91,10 @@ describe('catalogue read admission', () => {
     await expect(
       service.run(async () => 'result', { deadline: performance.now() + 550 }),
     ).resolves.toBe('result');
-    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(tx.$executeRaw).not.toHaveBeenCalled();
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
     const sql = tx.$queryRaw.mock.calls[0][0] as Prisma.Sql;
+    expect(sql.text).toContain("set_config('transaction_read_only','on',true)");
     expect(sql.text).toContain("set_config('transaction_timeout'");
     expect(Number(sql.values[0])).toBeLessThanOrEqual(250);
     expect(Number(sql.values[2])).toBeGreaterThan(0);
@@ -121,7 +123,7 @@ describe('catalogue read admission', () => {
   it('releases a slot after setup and validation failures without hiding their cause', async () => {
     const { service, tx } = fixture();
     const setupError = new Error('setup failed');
-    tx.$executeRaw.mockRejectedValueOnce(setupError);
+    tx.$queryRaw.mockRejectedValueOnce(setupError);
     await expect(service.run(async () => null)).rejects.toBe(setupError);
     const invalid = new BadRequestException({ code: 'INVALID_FILTER' });
     await expect(

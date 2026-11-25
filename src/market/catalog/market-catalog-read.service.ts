@@ -73,18 +73,20 @@ export class MarketCatalogReadService {
       const result = await this.prisma.$transaction(
         async (tx) => {
           assertMarketReadDeadline(options);
-          await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+          // One round trip sets read-only mode and every limit. A local
+          // transaction_read_only=on is PostgreSQL's SET TRANSACTION READ ONLY;
+          // readers that depend on it check it with current_setting.
           if (options.deadline === undefined) {
-            await tx.$executeRaw`SET LOCAL statement_timeout='1500ms'`;
-            await tx.$executeRaw`SET LOCAL lock_timeout='250ms'`;
+            await tx.$queryRaw(
+              Prisma.sql`SELECT set_config('transaction_read_only','on',true),set_config('statement_timeout','1500ms',true),set_config('lock_timeout','250ms',true)`,
+            );
           } else {
-            assertMarketReadDeadline(options);
             const transactionMs = remaining(),
               statementMs = Math.min(250, transactionMs);
             // PostgreSQL 17+ terminates the transaction's connection at the
             // absolute budget. No Promise.race leaves database work abandoned.
             await tx.$queryRaw(
-              Prisma.sql`SELECT set_config('statement_timeout',${String(statementMs)}::text,true),set_config('lock_timeout',${String(Math.min(250, transactionMs))}::text,true),set_config('transaction_timeout',${String(transactionMs)}::text,true)`,
+              Prisma.sql`SELECT set_config('transaction_read_only','on',true),set_config('statement_timeout',${String(statementMs)}::text,true),set_config('lock_timeout',${String(Math.min(250, transactionMs))}::text,true),set_config('transaction_timeout',${String(transactionMs)}::text,true)`,
             );
           }
           assertMarketReadDeadline(options);
