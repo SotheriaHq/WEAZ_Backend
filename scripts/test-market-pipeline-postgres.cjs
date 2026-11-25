@@ -35,8 +35,10 @@ async function main() {
     console.log('SETUP current Prisma schema applied to guarded disposable database (migration guards not claimed)');
     prisma=new PrismaClient({adapter:new PrismaPg({connectionString:withUtcDatabaseUrl(target.toString())}),log:[{level:'query',emit:'event'}]});
     let queryCount=0,controlCount=0;
-    prisma.$on('query',event=>{queryCount++;if(/^(?:BEGIN|COMMIT|ROLLBACK|SET\b|SELECT\s+set_config\b)/i.test(event.query.trimStart()))controlCount++;});
-    const result=await runPipelineFixture({db,prisma,queryCount:()=>queryCount,queryStats:()=>({total:queryCount,controls:controlCount}),now:new Date('2026-11-21T12:00:00.000Z')});
+    // Statement heads are kept so a failed query budget can name each statement.
+    const statementHeads=[];
+    prisma.$on('query',event=>{queryCount++;statementHeads.push(event.query.trimStart().replace(/\s+/g,' ').slice(0,140));if(/^(?:BEGIN|COMMIT|ROLLBACK|SET\b|SELECT\s+set_config\b)/i.test(event.query.trimStart()))controlCount++;});
+    const result=await runPipelineFixture({db,prisma,queryCount:()=>queryCount,queryStats:()=>({total:queryCount,controls:controlCount,statementsSince:from=>statementHeads.slice(from)}),now:new Date('2026-11-21T12:00:00.000Z')});
     console.log(`PASS ${result.checks} actual PostgreSQL pipeline source/transition proofs; ${result.plans} EXPLAIN executions`);
   } finally {
     try {

@@ -10,6 +10,9 @@ async function runMarketSourceKeysetAssertions({db,prisma,now,brand,owner,chosen
   const equal=(actual,expected,label)=>{assert.deepEqual(actual,expected,label);checks++;};
   const products=Array.from({length:70},(_,position)=>({id:randomUUID(),brandId:brand.id,name:'Beyond preview '+position,price:9000,totalStock:1,standardCheckoutEnabled:true,isActive:true,publicationStatus:'PUBLISHED',thumbnail:firstFile.s3Url,images:[firstFile.s3Url],firstPublishedAt:new Date(now.getTime()-1000)}));
   await prisma.product.createMany({data:products});
+  // Product sources only serve cards with an approved, renderable cover, so
+  // the paging fixture needs its media before the first seek.
+  await prisma.productMedia.createMany({data:products.map(product=>({productId:product.id,fileUploadId:firstFile.id,brandId:brand.id,createdById:owner.id,viewSlot:'FRONT',reviewStatus:'APPROVED'}))});
   const productIds=[chosen.id,...products.map(product=>product.id)];
   await prisma.featuredItem.createMany({data:productIds.map((entityId,position)=>({id:randomUUID(),entityType:'PRODUCT',entityId,brandId:brand.id,placementKey:'SCOPE_LONG',position,startsAt:now,expiresAt:new Date(now.getTime()+60000),isActive:true,featuredById:owner.id}))});
   const designs=Array.from({length:70},(_,position)=>({id:randomUUID(),ownerId:owner.id,title:'Beyond design preview '+position,domain:'DESIGN',status:'PUBLISHED',visibility:'PUBLIC',createdAt:new Date(now.getTime()-1000)}));
@@ -59,7 +62,6 @@ async function runMarketSourceKeysetAssertions({db,prisma,now,brand,owner,chosen
   await prisma.product.update({where:{id:products[0].id},data:{publicationStatus:'PUBLISHED'}});
   // Exercise the real two-phase public read and report every physical Prisma
   // query event. Transaction controls are reported separately, never hidden.
-  await prisma.productMedia.createMany({data:products.map(product=>({productId:product.id,fileUploadId:firstFile.id,brandId:brand.id,createdById:owner.id,viewSlot:'FRONT',reviewStatus:'APPROVED'}))});
   const {createMarketCatalogScope,marketCatalogScopeSql}=require('../../src/market/catalog/market-catalog-scope');
   const {Prisma}=require('@prisma/client');
   const trendScope=floor=>createMarketCatalogScope({key:'custom-trend-proof',version:'1',viewer:{},trendEvidence:{epochId:manifest.id,actorFloor:floor}});
@@ -91,7 +93,7 @@ async function runMarketSourceKeysetAssertions({db,prisma,now,brand,owner,chosen
     const result=await work();
     const after=queryStats();
     const total=after.total-before.total,controls=after.controls-before.controls;
-    return{result,total,controls,data:total-controls,elapsedMs:Math.round(performance.now()-started)};
+    return{result,total,controls,data:total-controls,elapsedMs:Math.round(performance.now()-started),statements:after.statementsSince?.(before.total)??[]};
   };
   console.log('STAGE full pipeline query budget and N+1 invariance');
   const shelf=preview=>buildMarketPipelinePage({read,media:new MarketPipelineMediaResolver(new MarketPublicMediaService(read,config)),viewer:{},surface:'HOME',filters:{},specs:[parsePipelineSpec({key:'bounded-read-proof',template:'CURATED_LIST',status:'ACTIVE',curated:{placementKey:'SCOPE_PERF'},capacity:{preview,minItems:1},params:{maxPerBrand:8,maxPerCategory:8,explorationShare:0}})]});
@@ -100,8 +102,9 @@ async function runMarketSourceKeysetAssertions({db,prisma,now,brand,owner,chosen
   equal(oneCard.result.public.sections[0]?.items.length,1,'A one-card shelf renders one card');
   equal(fullShelf.result.public.sections[0]?.items.length,8,'Real public capture and media authorization render the requested shelf');
   equal(fullShelf.total,oneCard.total,'N+1: Market page statements do not grow from 1 to 8 cards');
-  assert(fullShelf.total<=12,'Market page stays within its 12-statement budget, got '+fullShelf.total);checks++;
   console.log('QUERY_BUDGET '+JSON.stringify({page:{oneCard:oneCard.total,eightCards:fullShelf.total,controls:fullShelf.controls,data:fullShelf.data,limit:12,elapsedMs:fullShelf.elapsedMs}}));
+  if(fullShelf.total>12)fullShelf.statements.forEach((head,index)=>console.log('QUERY_BUDGET_STATEMENT '+(index+1)+' '+head));
+  assert(fullShelf.total<=12,'Market page stays within its 12-statement budget, got '+fullShelf.total);checks++;
   const cataloguePage=limit=>scopedCatalogue.getPage(new URLSearchParams('sort=newest&limit='+limit),{},{scope:createMarketCatalogScope({key:'catalog',version:'1',viewer:{}}),fixedFilters:{}});
   const catalogueOne=await measure(()=>cataloguePage(1));
   const catalogueMany=await measure(()=>cataloguePage(24));
