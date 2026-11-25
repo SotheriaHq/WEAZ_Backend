@@ -2,13 +2,25 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { MarketCatalogReadService } from './market-catalog-read.service';
 import {
+  MarketPublicMediaGrant,
+  MarketPublicMediaPlan,
   MarketPublicMediaService,
   MARKET_PUBLIC_MEDIA_MAX_FILES,
 } from './market-public-media.service';
+import {
+  MarketMediaAuthorityRow,
+  MarketMediaCandidates,
+  MarketMediaFileRow,
+  MarketMediaVariantRow,
+} from './market-public-media.sql';
 
 const first = '00000000-0000-0000-0000-000000000001';
 const second = '00000000-0000-0000-0000-000000000002';
 const third = '00000000-0000-0000-0000-000000000003';
+const product = '00000000-0000-0000-0000-00000000000a';
+const otherProduct = '00000000-0000-0000-0000-00000000000b';
+const owner = '00000000-0000-0000-0000-00000000000c';
+const asOf = new Date('2026-11-21T12:00:00.000Z');
 const gatewayConfig = () => ({
   STORAGE_PROVIDER: 'R2',
   R2_BUCKET: 'catalogue-test-media',
@@ -20,31 +32,22 @@ const gatewayConfig = () => ({
   MEDIA_GATEWAY_ENVIRONMENT: 'test',
   MEDIA_GATEWAY_TTL_SECONDS: '300',
 });
-type File = { id: string; s3Key: string; assetVersion: number };
-type Variant = {
-  fileUploadId: string;
-  s3Key: string;
-  variantKind: string;
-  format: string;
+const noGateway = {
+  MEDIA_GATEWAY_BASE_URL: undefined,
+  MEDIA_GATEWAY_SECRET: undefined,
+  MEDIA_GATEWAY_ENVIRONMENT: undefined,
+  MEDIA_GATEWAY_TTL_SECONDS: undefined,
 };
 function fixture(
-  files: File[] = [],
-  variants: Variant[] = [],
+  row: Partial<MarketMediaAuthorityRow> = {},
   overrides: Record<string, string | undefined> = {},
 ) {
   let inside = false;
-  const findFiles = jest.fn().mockImplementation(async () => {
-    expect(inside).toBe(true);
-    return files;
-  });
   const query = jest.fn().mockImplementation(async () => {
     expect(inside).toBe(true);
-    return variants;
+    return [{ guard: [], files: [], variants: [], ...row }];
   });
-  const tx = {
-    fileUpload: { findMany: findFiles },
-    $queryRaw: query,
-  } as unknown as Prisma.TransactionClient;
+  const tx = { $queryRaw: query } as unknown as Prisma.TransactionClient;
   const run = jest
     .fn()
     .mockImplementation(
@@ -72,86 +75,171 @@ function fixture(
     { run } as unknown as MarketCatalogReadService,
     { get: configRead } as unknown as ConfigService,
   );
-  return { service, tx, run, findFiles, query, configRead };
+  return { service, tx, run, query, configRead };
 }
-const file = (id = first, s3Key = 'products/approved original.webp'): File => ({
+const file = (
+  id = first,
+  overrides: Partial<MarketMediaFileRow> = {},
+): MarketMediaFileRow => ({
   id,
-  s3Key,
+  s3Key: 'products/approved original.webp',
+  assetVersion: 3,
+  productIds: [product],
+  ownerIds: [],
+  ...overrides,
+});
+const variant = (
+  fileUploadId: string,
+  variantKind: string,
+  format: string,
+  s3Key: string,
+): MarketMediaVariantRow => ({ fileUploadId, variantKind, format, s3Key });
+const cover = (fileId = first, productId = product) => ({
+  fileId,
+  productId,
   assetVersion: 3,
 });
+function plan<T = string>(
+  candidates: Partial<MarketMediaCandidates> = {},
+  grant: Partial<MarketPublicMediaGrant<T>> = {},
+): MarketPublicMediaPlan<T> {
+  return {
+    candidates: {
+      asOf,
+      covers: [],
+      logos: [],
+      guardedFileIds: [],
+      guard: null,
+      ...candidates,
+    },
+    grant: () => ({
+      covers: [],
+      logos: [],
+      guardedFileIds: [],
+      value: 'captured' as unknown as T,
+      ...grant,
+    }),
+  };
+}
+const covers = (...fileIds: string[]) =>
+  plan(
+    { covers: fileIds.map((id) => cover(id)) },
+    { covers: fileIds.map((fileId) => ({ fileId, productId: product })) },
+  );
 
 describe('bounded current-public media resolution', () => {
-  it('runs server parent authorization and file reads in the same bounded transaction', async () => {
-    const { service, tx, run, findFiles } = fixture([file()]);
-    const where: Prisma.FileUploadWhereInput = {
-      productMedias: { some: { productId: second, reviewStatus: 'APPROVED' } },
-    };
-    const authorize = jest.fn().mockImplementation(async (received) => {
+  it('reads parents, files and variants in one statement inside the bounded transaction', async () => {
+    const guardRow = { id: product, fileIds: [first] };
+    const { service, tx, run, query } = fixture({
+      guard: [guardRow],
+      files: [file()],
+      variants: [variant(first, 'CARD', 'WEBP', 'products/card.webp')],
+    });
+    const grant = jest.fn().mockReturnValue({
+      covers: [{ fileId: first, productId: product }],
+      logos: [],
+      guardedFileIds: [],
+      value: new Set([product]),
+    });
+    const prepare = jest.fn().mockImplementation(async (received) => {
       expect(received).toBe(tx);
       return {
-        fileIds: [first, first, third],
-        fileWhere: where,
-        value: new Set([second]),
+        ...plan({
+          covers: [cover()],
+          guard: Prisma.sql`SELECT ${product}::text AS id`,
+        }),
+        grant,
       };
     });
-    const result = await service.resolve(authorize);
+    const result = await service.resolve(prepare);
     expect(run).toHaveBeenCalledTimes(1);
-    expect(authorize).toHaveBeenCalledTimes(1);
-    expect(findFiles).toHaveBeenCalledWith({
-      where: {
-        id: { in: [first, third] },
-        processingStatus: 'READY',
-        originalDeletedAt: null,
-        mimeType: {
-          in: [
-            'image/jpeg',
-            'image/png',
-            'image/webp',
-            'image/avif',
-            'image/gif',
-          ],
-        },
-        AND: [where],
-      },
-      select: { id: true, s3Key: true, assetVersion: true },
-      take: MARKET_PUBLIC_MEDIA_MAX_FILES,
-    });
-    expect(result.value).toEqual(new Set([second]));
-    expect([...result.originals.keys()]).toEqual([first]);
-    expect(result.originals.has(third)).toBe(false);
-  });
-  it('never places unapproved or missing original IDs into the variant lookup or signed maps', async () => {
-    const { service, query } = fixture(
-      [file()],
-      [
-        {
-          fileUploadId: first,
-          variantKind: 'CARD',
-          format: 'WEBP',
-          s3Key: 'products/card.webp',
-        },
-      ],
-    );
-    const result = await service.resolve(async () => ({
-      fileIds: [first, second],
-      fileWhere: { id: first },
-      value: null,
-    }));
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(grant).toHaveBeenCalledWith([guardRow]);
     const sql = query.mock.calls[0][0] as Prisma.Sql;
-    expect(sql.values).toEqual([first]);
-    expect(sql.values).not.toContain(second);
+    expect(sql.text).toContain('WITH guard AS MATERIALIZED (SELECT');
+    expect(sql.text).toContain('file."processingStatus"=\'READY\'');
+    expect(sql.text).toContain('file."originalDeletedAt" IS NULL');
+    expect(sql.text).toContain(
+      "file.\"mimeType\" IN ('image/jpeg','image/png','image/webp','image/avif','image/gif')",
+    );
+    expect(sql.values).toContain(MARKET_PUBLIC_MEDIA_MAX_FILES);
+    expect(result.value).toEqual(new Set([product]));
     expect([...result.originals.keys()]).toEqual([first]);
     expect([...result.variants.get('CARD')!.keys()]).toEqual([first]);
   });
-  it('requires the active asset version and bounded CARD/AVATAR/BANNER kinds', async () => {
-    const { service, query } = fixture([file()]);
-    await service.resolve(async () => ({
-      fileIds: [first],
-      fileWhere: {},
-      value: true,
-    }));
+  it('proves covers by approved association, exact version and current eligibility', async () => {
+    const { service, query } = fixture({ files: [file()] });
+    await service.resolve(async () => covers(first));
     const sql = query.mock.calls[0][0] as Prisma.Sql;
-    expect(sql.text).toContain('file."assetVersion"=variant."assetVersion"');
+    expect(sql.text).toContain('media."reviewStatus"=\'APPROVED\'');
+    expect(sql.text).toContain('cover."assetVersion"=file."assetVersion"');
+    expect(sql.text).toContain('publicationStatus');
+    expect(sql.text).toContain("'ACTIVE'");
+    expect(sql.text).not.toContain('"UserProfile"');
+  });
+  it('proves logos by the active owner, the linked profile and, when given, an open store', async () => {
+    const { service, query } = fixture({
+      files: [file(third, { productIds: [], ownerIds: [owner] })],
+    });
+    const result = await service.resolve(async () =>
+      plan(
+        { logos: [{ fileId: third, ownerId: owner, brandId: product }] },
+        { logos: [{ fileId: third, ownerId: owner }] },
+      ),
+    );
+    const sql = query.mock.calls[0][0] as Prisma.Sql;
+    expect(sql.text).toContain('profile."profileImageId"=logo."fileId"');
+    expect(sql.text).toContain("owner.status='ACTIVE'");
+    expect(sql.text).toContain('file."fileType"=\'PROFILE_IMAGE\'');
+    expect(sql.text).toContain('brand."isStoreOpen"');
+    expect([...result.originals.keys()]).toEqual([third]);
+  });
+  it('never signs a file through a parent the guard did not grant', async () => {
+    const { service } = fixture({
+      files: [
+        // Another public product still proves this file; the granted one does not.
+        file(first, { productIds: [otherProduct] }),
+        file(second, { productIds: [], ownerIds: [owner] }),
+        file(third, { productIds: [product] }),
+      ],
+      variants: [
+        variant(first, 'CARD', 'WEBP', 'products/first.webp'),
+        variant(third, 'CARD', 'WEBP', 'products/third.webp'),
+      ],
+    });
+    const result = await service.resolve(async () =>
+      plan(
+        {
+          covers: [cover(first), cover(first, otherProduct), cover(third)],
+          logos: [{ fileId: second, ownerId: owner }],
+        },
+        {
+          covers: [
+            { fileId: first, productId: product },
+            { fileId: third, productId: product },
+          ],
+        },
+      ),
+    );
+    expect([...result.originals.keys()]).toEqual([third]);
+    expect([...result.variants.get('CARD')!.keys()]).toEqual([third]);
+  });
+  it('signs a guard-proven source file only while the guard still grants it', async () => {
+    const row = { files: [file(first, { productIds: [] })] };
+    const granted = await fixture(row).service.resolve(async () =>
+      plan({ guardedFileIds: [first] }, { guardedFileIds: [first] }),
+    );
+    expect([...granted.originals.keys()]).toEqual([first]);
+    const revoked = await fixture(row).service.resolve(async () =>
+      plan({ guardedFileIds: [first] }),
+    );
+    expect(revoked.originals.size).toBe(0);
+  });
+  it('requires the active asset version and bounded CARD/AVATAR/BANNER kinds', async () => {
+    const { service, query } = fixture({ files: [file()] });
+    await service.resolve(async () => covers(first));
+    const sql = query.mock.calls[0][0] as Prisma.Sql;
+    expect(sql.text).toContain('variant."assetVersion"=files."assetVersion"');
     expect(sql.text).toContain(
       "variant.\"variantKind\" IN ('CARD','AVATAR','BANNER')",
     );
@@ -160,172 +248,141 @@ describe('bounded current-public media resolution', () => {
     );
   });
   it('keeps the first format in SQL preference order independently for each authorized file and kind', async () => {
-    const variants: Variant[] = [
-      {
-        fileUploadId: first,
-        variantKind: 'AVATAR',
-        format: 'WEBP',
-        s3Key: 'products/avatar.webp',
-      },
-      {
-        fileUploadId: first,
-        variantKind: 'CARD',
-        format: 'WEBP',
-        s3Key: 'products/card.webp',
-      },
-      {
-        fileUploadId: first,
-        variantKind: 'CARD',
-        format: 'AVIF',
-        s3Key: 'products/card.avif',
-      },
-      {
-        fileUploadId: second,
-        variantKind: 'CARD',
-        format: 'JPEG',
-        s3Key: 'products/second.jpg',
-      },
-    ];
-    const { service } = fixture(
-      [file(), file(second, 'products/second-original.jpg')],
-      variants,
-    );
-    const result = await service.resolve(async () => ({
-      fileIds: [first, second],
-      fileWhere: {},
-      value: 'captured',
-    }));
-    expect(new URL(result.variants.get('CARD')!.get(first)!).pathname).toBe(
-      '/media/products/card.webp',
-    );
-    expect(new URL(result.variants.get('AVATAR')!.get(first)!).pathname).toBe(
-      '/media/products/avatar.webp',
-    );
-    expect(new URL(result.variants.get('CARD')!.get(second)!).pathname).toBe(
-      '/media/products/second.jpg',
-    );
+    const { service } = fixture({
+      files: [file(), file(second, { s3Key: 'products/second-original.jpg' })],
+      variants: [
+        variant(first, 'AVATAR', 'WEBP', 'products/avatar.webp'),
+        variant(first, 'CARD', 'WEBP', 'products/card.webp'),
+        variant(first, 'CARD', 'AVIF', 'products/card.avif'),
+        variant(second, 'CARD', 'JPEG', 'products/second.jpg'),
+      ],
+    });
+    const result = await service.resolve(async () => covers(first, second));
+    const path = (kind: string, id: string) =>
+      new URL(result.variants.get(kind)!.get(id)!).pathname;
+    expect(path('CARD', first)).toBe('/media/products/card.webp');
+    expect(path('AVATAR', first)).toBe('/media/products/avatar.webp');
+    expect(path('CARD', second)).toBe('/media/products/second.jpg');
     expect(result.value).toBe('captured');
   });
   it('signs only gateway URLs using encoded object keys after all bounded database work ends', async () => {
-    const { service, configRead, findFiles, query } = fixture([file()]);
-    const result = await service.resolve(async () => ({
-      fileIds: [first],
-      fileWhere: {},
-      value: 1,
-    }));
+    const { service, configRead, query } = fixture({ files: [file()] });
+    const result = await service.resolve(async () => covers(first));
     const signed = new URL(result.originals.get(first)!);
     expect(signed.origin).toBe('https://media.example.test');
     expect(signed.pathname).toBe('/media/products/approved%20original.webp');
     expect(signed.searchParams.get('method')).toBe('GET');
     expect(signed.searchParams.get('env')).toBe('test');
     expect(signed.searchParams.get('sig')).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(findFiles.mock.invocationCallOrder[0]).toBeLessThan(
-      configRead.mock.invocationCallOrder[0],
-    );
     expect(query.mock.invocationCallOrder[0]).toBeLessThan(
       configRead.mock.invocationCallOrder[0],
     );
-    expect(findFiles).toHaveBeenCalledTimes(1);
     expect(query).toHaveBeenCalledTimes(1);
   });
-  it('an empty authorized batch is safe without gateway credentials and performs no file query', async () => {
-    const { service, findFiles, query, configRead } = fixture([], [], {
-      MEDIA_GATEWAY_BASE_URL: undefined,
-      MEDIA_GATEWAY_SECRET: undefined,
-      MEDIA_GATEWAY_ENVIRONMENT: undefined,
-      MEDIA_GATEWAY_TTL_SECONDS: undefined,
-    });
-    const result = await service.resolve(async () => ({
-      fileIds: [],
-      fileWhere: {},
-      value: 'empty',
-    }));
-    expect(result.value).toBe('empty');
+  it('an empty batch is safe without gateway credentials and performs no query', async () => {
+    const { service, query, configRead } = fixture({}, noGateway);
+    const result = await service.resolve(async () => plan());
+    expect(result.value).toBe('captured');
     expect(result.originals.size).toBe(0);
     expect(result.variants.size).toBe(0);
-    expect(findFiles).not.toHaveBeenCalled();
     expect(query).not.toHaveBeenCalled();
     expect(configRead).not.toHaveBeenCalled();
   });
-  it('does not query variants or configure signing when no requested files survive authorization', async () => {
-    const { service, query, configRead } = fixture();
-    const result = await service.resolve(async () => ({
-      fileIds: [first],
-      fileWhere: { id: second },
-      value: false,
+  it('still revalidates parents when no file is requested', async () => {
+    const { service, query } = fixture({ guard: [{ id: product }] });
+    const grant = jest.fn().mockReturnValue(plan().grant([]));
+    await service.resolve(async () => ({
+      ...plan({ guard: Prisma.sql`SELECT ${product}::text AS id` }),
+      grant,
     }));
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(grant).toHaveBeenCalledWith([{ id: product }]);
+  });
+  it('does not configure signing when no requested file survives authorization', async () => {
+    const { service, configRead } = fixture({
+      files: [file()],
+      variants: [variant(first, 'CARD', 'WEBP', 'products/card.webp')],
+    });
+    const result = await service.resolve(async () =>
+      plan({ covers: [cover()] }),
+    );
     expect(result.originals.size).toBe(0);
     expect(result.variants.size).toBe(0);
-    expect(query).not.toHaveBeenCalled();
     expect(configRead).not.toHaveBeenCalled();
   });
   it('returns controlled 503 when authorized images exist but the gateway is not configured', async () => {
-    const { service } = fixture([file()], [], {
-      MEDIA_GATEWAY_BASE_URL: undefined,
-      MEDIA_GATEWAY_SECRET: undefined,
-      MEDIA_GATEWAY_ENVIRONMENT: undefined,
-      MEDIA_GATEWAY_TTL_SECONDS: undefined,
-    });
+    const { service } = fixture({ files: [file()] }, noGateway);
     await expect(
-      service.resolve(async () => ({
-        fileIds: [first],
-        fileWhere: {},
-        value: null,
-      })),
+      service.resolve(async () => covers(first)),
     ).rejects.toMatchObject({
       response: { code: 'CATALOGUE_MEDIA_UNAVAILABLE' },
       status: 503,
     });
   });
-  it.each([
-    ['invalid UUID', ['not-a-file-id']],
+  it.each<[string, Partial<MarketMediaCandidates>]>([
+    ['an invalid file', { covers: [cover('not-a-file-id')] }],
+    ['an invalid product', { covers: [cover(first, 'not-a-product')] }],
+    ['an invalid owner', { logos: [{ fileId: first, ownerId: 'nobody' }] }],
     [
-      'oversized batch',
-      Array.from(
-        { length: MARKET_PUBLIC_MEDIA_MAX_FILES + 1 },
-        (_, index) =>
-          `00000000-0000-0000-0000-${String(index).padStart(12, '0')}`,
-      ),
+      'an invalid brand',
+      { logos: [{ fileId: first, ownerId: owner, brandId: 'none' }] },
     ],
-  ])('rejects %s before file access', async (_label, ids) => {
-    const { service, findFiles, query } = fixture();
-    await expect(
-      service.resolve(async () => ({
-        fileIds: ids as string[],
-        fileWhere: {},
-        value: null,
-      })),
-    ).rejects.toThrow(RangeError);
-    expect(findFiles).not.toHaveBeenCalled();
+    [
+      'an oversized batch',
+      {
+        guardedFileIds: Array.from(
+          { length: MARKET_PUBLIC_MEDIA_MAX_FILES + 1 },
+          (_, index) =>
+            `00000000-0000-0000-0000-${String(index).padStart(12, '0')}`,
+        ),
+      },
+    ],
+  ])('rejects %s before any file access', async (_label, candidates) => {
+    const { service, query } = fixture();
+    await expect(service.resolve(async () => plan(candidates))).rejects.toThrow(
+      RangeError,
+    );
     expect(query).not.toHaveBeenCalled();
   });
   it('deduplicates repeated IDs before applying its distinct-file bound', async () => {
-    const { service, findFiles } = fixture([file()]);
-    await service.resolve(async () => ({
-      fileIds: Array(300).fill(first),
-      fileWhere: {},
-      value: null,
-    }));
-    expect(findFiles.mock.calls[0][0].where.id.in).toEqual([first]);
+    const { service, query } = fixture({ files: [file()] });
+    await service.resolve(async () =>
+      plan({
+        guardedFileIds: Array(MARKET_PUBLIC_MEDIA_MAX_FILES + 1).fill(first),
+      }),
+    );
+    const sql = query.mock.calls[0][0] as Prisma.Sql;
+    expect(sql.values.filter((value) => value === first)).toHaveLength(1);
   });
-  it('propagates parent/database failures and never signs partial authorization', async () => {
-    const { service, findFiles, configRead } = fixture([file()]),
-      error = new Error('Authorization unavailable');
+  it('propagates parent, database and grant failures and never signs partial authorization', async () => {
+    const error = new Error('Authorization unavailable');
+    const parent = fixture({ files: [file()] });
     await expect(
-      service.resolve(async () => {
+      parent.service.resolve(async () => {
         throw error;
       }),
     ).rejects.toBe(error);
-    expect(findFiles).not.toHaveBeenCalled();
-    expect(configRead).not.toHaveBeenCalled();
-    findFiles.mockRejectedValueOnce(error);
+    expect(parent.query).not.toHaveBeenCalled();
+    const database = fixture({ files: [file()] });
+    database.query.mockRejectedValueOnce(error);
     await expect(
-      service.resolve(async () => ({
-        fileIds: [first],
-        fileWhere: {},
-        value: null,
+      database.service.resolve(async () => covers(first)),
+    ).rejects.toBe(error);
+    const missing = fixture({ files: [file()] });
+    missing.query.mockResolvedValueOnce([]);
+    await expect(
+      missing.service.resolve(async () => covers(first)),
+    ).rejects.toThrow('Media authorization unavailable');
+    const granting = fixture({ files: [file()] });
+    await expect(
+      granting.service.resolve(async () => ({
+        ...covers(first),
+        grant: () => {
+          throw error;
+        },
       })),
     ).rejects.toBe(error);
-    expect(configRead).not.toHaveBeenCalled();
+    for (const used of [parent, database, missing, granting])
+      expect(used.configRead).not.toHaveBeenCalled();
   });
 });

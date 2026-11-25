@@ -1,4 +1,3 @@
-import { Prisma } from '@prisma/client';
 import {
   MARKET_FEATURE_PARAMETERS,
   MARKET_FEATURE_STATE_KEY,
@@ -7,13 +6,12 @@ import { MarketCursorState } from './market-cursor';
 import {
   CatalogEpoch,
   marketSortAvailability,
+  marketSortEvidenceSql,
   selectMarketSort,
 } from './market-sort-availability';
 
 const now = new Date('2026-11-21T12:00:00.000Z');
 const epochId = '00000000-0000-0000-0000-000000000001';
-const productId = (index: number) =>
-  `00000000-0000-0000-0000-${String(index + 1).padStart(12, '0')}`;
 const ordered = ['newest', 'price_asc', 'price_desc'];
 function epoch(overrides: Partial<CatalogEpoch> = {}): CatalogEpoch {
   return {
@@ -32,18 +30,16 @@ function epoch(overrides: Partial<CatalogEpoch> = {}): CatalogEpoch {
     ...overrides,
   };
 }
+const none = { popular: 0, trending: 0, saved: 0, paid: 0 };
 function fixture(
   value: CatalogEpoch | null,
-  pages: unknown[][] = [[], [], [], []],
+  counts: Partial<typeof none> = {},
 ) {
   const state = jest
     .fn()
     .mockResolvedValue(value ? { currentEpoch: value } : null);
   const byId = jest.fn().mockResolvedValue(value);
-  let index = 0;
-  const query = jest
-    .fn()
-    .mockImplementation(() => Promise.resolve(pages[index++] ?? []));
+  const query = jest.fn().mockResolvedValue([{ ...none, ...counts }]);
   const tx = {
     marketFeatureState: { findUnique: state },
     marketFeatureEpoch: { findUnique: byId },
@@ -51,11 +47,6 @@ function fixture(
   } as unknown as Parameters<typeof marketSortAvailability>[0];
   return { tx, query, state, byId };
 }
-const rows = (count: number, score = 1) =>
-  Array.from({ length: count }, (_, index) => ({
-    id: productId(index),
-    score,
-  }));
 const cursor = (overrides = {}) =>
   ({
     epoch: {
@@ -144,7 +135,7 @@ describe('evidence-based Market-wide sort admission', () => {
     );
   });
   it('validates a pinned epoch without whole-catalogue probes when probing is skipped', async () => {
-    const { tx, query, byId } = fixture(epoch(), [rows(8), rows(8)]);
+    const { tx, query, byId } = fixture(epoch(), { popular: 8, trending: 8 });
     await expect(
       marketSortAvailability(tx, now, cursor(), { probe: false }),
     ).resolves.toEqual({
@@ -159,104 +150,75 @@ describe('evidence-based Market-wide sort admission', () => {
       marketSortAvailability(stale.tx, now, cursor(), { probe: false }),
     ).resolves.toMatchObject({ epoch: null, currentMissing: true });
   });
-  it('does not advertise popular/trending below eight qualifying Market products', async () => {
-    const { tx } = fixture(epoch(), [
-      rows(7),
-      rows(7).map((row) => ({ ...row, trendEligible: true })),
-      [],
-      [],
-    ]);
-    expect((await marketSortAvailability(tx, now, null)).available).toEqual(
-      ordered,
-    );
-  });
-  it('excludes zero popularity and ineligible trend tails from the eight-product floor', async () => {
-    const { tx } = fixture(epoch(), [
-      [...rows(7), ...rows(10, 0)],
-      rows(20).map((row, index) => ({ ...row, trendEligible: index < 7 })),
-      [],
-      [],
-    ]);
-    expect((await marketSortAvailability(tx, now, null)).available).toEqual(
-      ordered,
-    );
-  });
-  it('advertises popular and trending at eight, using whole Market eligibility rather than shopper filters', async () => {
-    const { tx, query } = fixture(epoch(), [
-      rows(8),
-      rows(8).map((row) => ({ ...row, trendEligible: true })),
-      [],
-      [],
-    ]);
-    expect((await marketSortAvailability(tx, now, null)).available).toEqual([
-      ...ordered,
-      'popular',
-      'trending',
-    ]);
-    for (const call of query.mock.calls) {
-      const sql = call[0] as Prisma.Sql;
-      expect(sql.text).toContain('market_item_feature_snapshots');
-      expect(sql.text).toContain("'completeness'='COMPLETE'");
-      expect(sql.values).toContain(epochId);
-    }
-  });
   it.each([
-    [38, false],
-    [39, true],
+    ['popular', { popular: 7 }, { popular: 8 }],
+    ['trending', { trending: 7 }, { trending: 8 }],
+    ['most_saved', { saved: 99 }, { saved: 100 }],
+    ['best_selling', { paid: 49 }, { paid: 50 }],
   ])(
-    'requires one hundred saved products across bounded pages (second %i)',
-    async (secondCount, available) => {
-      const { tx, query } = fixture(epoch(), [
-        [],
-        [],
-        rows(61),
-        rows(secondCount as number),
-        [],
-      ]);
-      const result = await marketSortAvailability(tx, now, null);
-      expect(result.available.includes('most_saved')).toBe(available);
-      expect(query).toHaveBeenCalledTimes(5);
-      const secondSql = query.mock.calls[3][0] as Prisma.Sql;
-      expect(secondSql.values).toContain(productId(60));
-      expect(secondSql.text).toContain('f."savesCount" <=');
+    'advertises %s only at its Market-wide floor, in one statement',
+    async (sort, below, reached) => {
+      const under = fixture(epoch(), below);
+      expect(
+        (await marketSortAvailability(under.tx, now, null)).available,
+      ).toEqual(ordered);
+      const met = fixture(epoch(), reached);
+      expect(
+        (await marketSortAvailability(met.tx, now, null)).available,
+      ).toEqual([...ordered, sort]);
+      expect(met.query).toHaveBeenCalledTimes(1);
     },
   );
-  it('does not continue saved counting after the first page reaches known zero scores', async () => {
-    const { tx, query } = fixture(epoch(), [
-      [],
-      [],
-      [...rows(60), ...rows(1, 0)],
-      [],
-    ]);
-    expect(
-      (await marketSortAvailability(tx, now, null)).available,
-    ).not.toContain('most_saved');
-    expect(query).toHaveBeenCalledTimes(4);
+  it('counts only qualifying rows, using whole Market eligibility rather than shopper filters', () => {
+    const sql = marketSortEvidenceSql(epochId, now);
+    expect(sql.text).toContain('market_item_feature_snapshots');
+    expect(sql.text).toContain("'completeness'='COMPLETE'");
+    expect(sql.text).toContain('popular.score>0');
+    expect(sql.text).toContain('trending."trendEligible"');
+    expect(sql.text).toContain('saved.score>0');
+    expect(sql.values.filter((value) => value === epochId)).toHaveLength(4);
+    // Each ranked read stops at its own floor; best selling needs one row.
+    for (const limit of [8, 100, 1]) expect(sql.values).toContain(limit);
   });
-  it.each([
-    [49, false],
-    [50, true],
-  ])(
-    'requires the fifty-paid-order platform floor (%i)',
-    async (paidCount, available) => {
-      const { tx, query } = fixture(epoch(), [
-        [],
-        [],
-        [],
-        rows(1),
-        [{ count: paidCount }],
-      ]);
-      const result = await marketSortAvailability(tx, now, null);
-      expect(result.available.includes('best_selling')).toBe(available);
-      expect((query.mock.calls[4][0] as Prisma.Sql).text).toContain('LIMIT 50');
-    },
-  );
-  it('does not query paid orders when no eligible frozen sales products exist', async () => {
-    const { tx, query } = fixture(epoch());
+  it('counts paid orders only when an eligible frozen sales product exists', () => {
+    const { text } = marketSortEvidenceSql(epochId, now);
+    expect(text).toContain('CASE WHEN EXISTS(');
+    expect(text.indexOf('CASE WHEN EXISTS(')).toBeLessThan(
+      text.indexOf('paid_order'),
+    );
+    expect(text).toContain('LIMIT 50');
+    expect(text).toContain('ELSE 0 END AS paid');
+  });
+  it('uses an epoch captured with the request clock without another read', async () => {
+    const current = fixture(epoch());
+    const result = await marketSortAvailability(current.tx, now, null, {
+      probe: true,
+      currentEpoch: epoch(),
+    });
+    expect(result.epoch?.id).toBe(epochId);
+    expect(current.state).not.toHaveBeenCalled();
+    const pinned = fixture(epoch());
+    await marketSortAvailability(pinned.tx, now, cursor(), {
+      probe: false,
+      currentEpoch: epoch(),
+    });
+    expect(pinned.byId).not.toHaveBeenCalled();
+    const missing = fixture(epoch());
     expect(
-      (await marketSortAvailability(tx, now, null)).available,
-    ).not.toContain('best_selling');
-    expect(query).toHaveBeenCalledTimes(4);
+      await marketSortAvailability(missing.tx, now, null, {
+        probe: true,
+        currentEpoch: null,
+      }),
+    ).toEqual({ available: ordered, epoch: null, currentMissing: true });
+    expect(missing.state).not.toHaveBeenCalled();
+  });
+  it('reads a pinned epoch that is no longer the current one', async () => {
+    const { tx, byId } = fixture(epoch());
+    await marketSortAvailability(tx, now, cursor(), {
+      probe: false,
+      currentEpoch: epoch({ id: '00000000-0000-0000-0000-000000000009' }),
+    });
+    expect(byId).toHaveBeenCalledTimes(1);
   });
   it('propagates missing database availability rather than fabricating an empty market', async () => {
     const { tx, query } = fixture(epoch()),

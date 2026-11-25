@@ -2,7 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import {
   MarketPublicMediaService,
-  MarketPublicMediaAuthorization,
+  MarketPublicMediaPlan,
 } from './market-public-media.service';
 import {
   MarketCatalogAdmissionException,
@@ -15,10 +15,8 @@ import {
 import { MarketCursorCodec } from './market-cursor';
 import { captureMarketReadContext } from './market-read-context';
 import { readMarketOrderedPage } from './market-ordered-reader';
-import {
-  captureMarketCatalogCards,
-  hydrateMarketCatalogCards,
-} from './market-catalog-cards';
+import { hydrateMarketCatalogCards } from './market-catalog-cards';
+import { captureMarketCatalogCardsBatched as captureMarketCatalogCards } from './market-catalog-card-batch';
 import { marketSortAvailability } from './market-sort-availability';
 import { CatalogEpoch } from './market-sort-availability';
 import {
@@ -36,8 +34,10 @@ jest.mock('./market-ordered-reader', () => ({
   readMarketOrderedPage: jest.fn(),
 }));
 jest.mock('./market-catalog-cards', () => ({
-  captureMarketCatalogCards: jest.fn(),
   hydrateMarketCatalogCards: jest.fn(),
+}));
+jest.mock('./market-catalog-card-batch', () => ({
+  captureMarketCatalogCardsBatched: jest.fn(),
 }));
 jest.mock('./market-sort-availability', () => ({
   ...jest.requireActual('./market-sort-availability'),
@@ -61,7 +61,7 @@ const orderRow = (id: string) => ({ id, firstPublishedAt: new Date(now) });
 const capturedCard = (id: string, logoFileId: string | null = null) =>
   ({
     product: { id, brand: { owner: { id: second } } },
-    file: { id },
+    file: { id, assetVersion: 4 },
     logoFileId,
   }) as Awaited<ReturnType<typeof captureMarketCatalogCards>>[number];
 function fixture(settings: Record<string, string | undefined> = {}) {
@@ -77,21 +77,23 @@ function fixture(settings: Record<string, string | undefined> = {}) {
     .mockImplementation(
       (read: (value: Prisma.TransactionClient) => Promise<unknown>) => read(tx),
     );
-  const publicProducts = jest.fn().mockResolvedValue([]);
-  const mediaTx = {
-    $queryRaw: publicProducts,
-  } as unknown as Prisma.TransactionClient;
+  // The guard rows the media statement would return for current parents.
+  const publicProducts = jest.fn().mockReturnValue([]);
+  const mediaTx = {} as unknown as Prisma.TransactionClient;
   const resolve = jest
     .fn()
     .mockImplementation(
       async (
-        authorize: (
+        prepare: (
           value: Prisma.TransactionClient,
-        ) => Promise<MarketPublicMediaAuthorization<Set<string>>>,
+        ) => Promise<MarketPublicMediaPlan<Set<string>>>,
       ) => {
-        const authorized = await authorize(mediaTx);
+        const plan = await prepare(mediaTx);
+        const granted = plan.grant(
+          plan.candidates.guard ? publicProducts(plan.candidates.guard) : [],
+        );
         return {
-          value: authorized.value,
+          value: granted.value,
           originals: new Map<string, string>(),
           variants: new Map<string, Map<string, string>>(),
         };
@@ -383,7 +385,10 @@ describe('catalogue service boundary and composed read', () => {
     jest
       .mocked(captureMarketCatalogCards)
       .mockResolvedValue([capturedCard(first), capturedCard(third)]);
-    publicProducts.mockResolvedValue([{ id: first }, { id: third }]);
+    publicProducts.mockReturnValue([
+      { id: first, fileIds: [first] },
+      { id: third, fileIds: [third] },
+    ]);
     const response = await service.getPage(
       new URLSearchParams('sort=newest&limit=1'),
     );
@@ -411,16 +416,18 @@ describe('catalogue service boundary and composed read', () => {
     jest
       .mocked(captureMarketCatalogCards)
       .mockResolvedValue([capturedCard(first)]);
-    publicProducts.mockResolvedValue([]);
+    publicProducts.mockReturnValue([]);
     const response = await service.getPage(new URLSearchParams('sort=newest'));
     expect(response.items).toEqual([]);
     expect(response.pagination.hasNextPage).toBe(false);
     expect(resolve).toHaveBeenCalledTimes(1);
-    // The actual server authorizer runs with the second bounded transaction;
+    // The actual server grant runs on the second transaction's guard rows;
     // mocked rendering alone cannot bypass an intervening parent unpublish.
-    const authorization = await resolve.mock.calls[0][0](mediaTx);
-    expect(authorization.fileIds).toEqual([]);
-    expect(authorization.value.size).toBe(0);
+    const plan = await resolve.mock.calls[0][0](mediaTx);
+    const grant = plan.grant([]);
+    expect(grant.covers).toEqual([]);
+    expect(grant.logos).toEqual([]);
+    expect(grant.value.size).toBe(0);
     const sql = publicProducts.mock.calls[0][0] as Prisma.Sql;
     expect(sql.text).toContain('publicationStatus');
     expect(sql.text).toContain("'PUBLISHED'");
@@ -428,39 +435,28 @@ describe('catalogue service boundary and composed read', () => {
   });
   it('revalidates approved cover associations and same-owner profile logos before media signing', async () => {
     const { service, publicProducts, resolve, mediaTx } = fixture();
-    publicProducts.mockResolvedValue([{ id: first, fileIds: [first] }]);
+    publicProducts.mockReturnValue([{ id: first, fileIds: [first] }]);
     jest
       .mocked(captureMarketCatalogCards)
       .mockResolvedValue([capturedCard(first, third)]);
     await service.getPage(new URLSearchParams('sort=newest'));
-    const authorization = await resolve.mock.calls[0][0](mediaTx);
-    expect(authorization.fileIds).toEqual([first, third]);
-    expect(authorization.value).toEqual(new Set([first]));
-    expect(authorization.fileWhere).toMatchObject({
-      OR: [
-        {
-          id: first,
-          productMedias: {
-            some: {
-              productId: first,
-              reviewStatus: 'APPROVED',
-              product: {
-                publicationStatus: 'PUBLISHED',
-                brand: { isStoreOpen: true, owner: { status: 'ACTIVE' } },
-              },
-            },
-          },
-        },
-        {
-          id: third,
-          userId: second,
-          fileType: 'PROFILE_IMAGE',
-          userProfileImages: {
-            some: { userId: second, user: { status: 'ACTIVE' } },
-          },
-        },
-      ],
+    const plan = await resolve.mock.calls[0][0](mediaTx);
+    expect(plan.candidates).toMatchObject({
+      asOf: now,
+      covers: [{ fileId: first, assetVersion: 4, productId: first }],
+      logos: [{ fileId: third, ownerId: second }],
+      guardedFileIds: [],
     });
+    expect(plan.candidates.guard.text).toContain(
+      'media."reviewStatus"=\'APPROVED\'',
+    );
+    expect(plan.grant([{ id: first, fileIds: [first] }])).toMatchObject({
+      covers: [{ fileId: first, productId: first }],
+      logos: [{ fileId: third, ownerId: second }],
+      value: new Set([first]),
+    });
+    // The product is current but its cover association is not: nothing signs.
+    expect(plan.grant([{ id: first, fileIds: [] }]).covers).toEqual([]);
   });
   it('binds a signed continuation to its original viewer and trusted source context', async () => {
     const { service } = fixture();

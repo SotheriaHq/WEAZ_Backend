@@ -668,14 +668,11 @@ export async function resolveCapturedPipelinePorts(
   };
 }
 
-/** Fresh MVCC gate after signing, constrained to the globally bounded capture. */
-export async function readCurrentPipelineSources(
-  tx: Pick<Prisma.TransactionClient, '$queryRaw' | '$executeRaw'>,
+/** Fresh MVCC gate, constrained to the globally bounded capture. Null when the
+ * capture holds nothing to revalidate. */
+export function currentPipelineSourcesSql(
   capture: CapturedPipelinePage,
-): Promise<readonly PipelineDatabaseRow[]> {
-  if (capture.context.signal?.aborted) throw new Error('Request ended');
-  if (!Number.isFinite(capture.context.deadline))
-    await tx.$executeRaw`SET LOCAL statement_timeout='250ms'`;
+): Prisma.Sql | null {
   const covers = new Map(
     capture.products.map((card) => [
       card.product.id,
@@ -721,19 +718,26 @@ export async function readCurrentPipelineSources(
       };
     })
     .filter((entry) => entry.request.cachedIds.length);
-  if (!requests.length) return [];
+  if (!requests.length) return null;
   // Always enforce this viewer's CURRENT suppression at the final public gate.
-  const viewer = capture.viewer;
-  const rows = await tx.$queryRaw<PipelineDatabaseRow[]>(
-    pipelineBatchSourcesSql(
-      requests.map((entry) => ({
-        ...entry,
-        request: { ...entry.request, suppressionMode: 'viewer' },
-      })),
-      viewer,
-    ),
+  return pipelineBatchSourcesSql(
+    requests.map((entry) => ({
+      ...entry,
+      request: { ...entry.request, suppressionMode: 'viewer' },
+    })),
+    capture.viewer,
   );
-  return rows;
+}
+
+export async function readCurrentPipelineSources(
+  tx: Pick<Prisma.TransactionClient, '$queryRaw' | '$executeRaw'>,
+  capture: CapturedPipelinePage,
+): Promise<readonly PipelineDatabaseRow[]> {
+  if (capture.context.signal?.aborted) throw new Error('Request ended');
+  if (!Number.isFinite(capture.context.deadline))
+    await tx.$executeRaw`SET LOCAL statement_timeout='250ms'`;
+  const current = currentPipelineSourcesSql(capture);
+  return current ? tx.$queryRaw<PipelineDatabaseRow[]>(current) : [];
 }
 
 export async function recheckPipelineSourceMembership(

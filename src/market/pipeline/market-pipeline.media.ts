@@ -1,10 +1,9 @@
 import { Prisma } from '@prisma/client';
 import { MarketPublicMediaService } from '../catalog/market-public-media.service';
-import { eligibleProductWhere } from '../eligibility/market-eligibility';
 import {
   CapturedPipelinePage,
+  currentPipelineSourcesSql,
   guardPipelineMembership,
-  readCurrentPipelineSources,
   resolveCapturedPipelinePorts,
 } from './market-pipeline.database';
 import { PipelinePorts } from './market-pipeline.types';
@@ -12,6 +11,12 @@ import { PIPELINE_CAPTURE_LIMIT } from './market-pipeline.composer';
 
 export interface PipelineMediaResolver {
   resolve(capture: CapturedPipelinePage): Promise<PipelinePorts>;
+}
+interface CurrentSource {
+  readonly requestKey: string;
+  readonly entityType: string;
+  readonly id: string;
+  readonly fileId: string | null;
 }
 
 /** Same bounded public media gateway as catalogue cards; no legacy upload queries. */
@@ -25,87 +30,80 @@ export class MarketPipelineMediaResolver implements PipelineMediaResolver {
       capture.context.signal?.aborted
     )
       throw new Error('Request context ended');
-    const resolved = await this.media.resolve(
-      async (tx) => {
-        const current = await readCurrentPipelineSources(tx, capture);
-        const membership = new Set(
-          current.map(
-            (row) =>
-              `${row.requestKey}:${row.candidate.entityType}:${row.candidate.id}`,
-          ),
-        );
-        const liveProducts = new Set(
-          current
-            .filter((row) => row.candidate.entityType === 'PRODUCT')
-            .map((row) => row.candidate.id),
-        );
-        const originalRows = new Map(
-          capture.rows.map((row) => [
-            `${row.requestKey}:${row.candidate.entityType}:${row.candidate.id}`,
-            row,
-          ]),
-        );
-        const nonproductIds = [
-          ...new Set(
-            current
-              .filter(
-                (row) =>
-                  row.candidate.entityType !== 'PRODUCT' &&
-                  row.fileId &&
-                  row.fileId ===
-                    originalRows.get(
-                      `${row.requestKey}:${row.candidate.entityType}:${row.candidate.id}`,
-                    )?.fileId,
-              )
-              .map((row) => row.fileId!),
-          ),
-        ];
-        const products = capture.products.filter((card) =>
-          liveProducts.has(card.product.id),
-        );
-        const conditions: Prisma.FileUploadWhereInput[] = products.map(
-          (card) => ({
-            id: card.file.id,
-            assetVersion: card.file.assetVersion,
-            productMedias: {
-              some: {
-                productId: card.product.id,
-                reviewStatus: 'APPROVED',
-                product: eligibleProductWhere(capture.context.asOf),
-              },
+    const originalFiles = new Map(
+      capture.rows.map((row) => [
+        `${row.requestKey}:${row.candidate.entityType}:${row.candidate.id}`,
+        row.fileId,
+      ]),
+    );
+    const logoOf = (card: CapturedPipelinePage['products'][number]) =>
+      card.logoFileId
+        ? [
+            {
+              fileId: card.logoFileId,
+              ownerId: card.product.brand.owner.id,
+              brandId: card.product.brand.id,
             },
-          }),
-        );
-        for (const card of products)
-          if (card.logoFileId)
-            conditions.push({
-              id: card.logoFileId,
-              userId: card.product.brand.owner.id,
-              fileType: 'PROFILE_IMAGE',
-              userProfileImages: {
-                some: {
-                  userId: card.product.brand.owner.id,
-                  user: {
-                    status: 'ACTIVE',
-                    brand: { id: card.product.brand.id, isStoreOpen: true },
-                  },
-                },
-              },
-            });
-        // Exact approved public parent joins selected these IDs in the current
-        // source batch above, inside this same authorization transaction.
-        if (nonproductIds.length)
-          conditions.push({ id: { in: nonproductIds } });
-        const fileIds = [
-          ...new Set([
-            ...products.flatMap((card) => [
-              card.file.id,
-              ...(card.logoFileId ? [card.logoFileId] : []),
-            ]),
-            ...nonproductIds,
-          ]),
-        ];
-        return { fileIds, fileWhere: { OR: conditions }, value: membership };
+          ]
+        : [];
+    const resolved = await this.media.resolve<ReadonlySet<string>>(
+      async (tx) => {
+        if (!Number.isFinite(capture.context.deadline))
+          await tx.$executeRaw`SET LOCAL statement_timeout='250ms'`;
+        const current = currentPipelineSourcesSql(capture);
+        return {
+          candidates: {
+            asOf: capture.context.asOf,
+            covers: capture.products.map((card) => ({
+              fileId: card.file.id,
+              assetVersion: card.file.assetVersion,
+              productId: card.product.id,
+            })),
+            logos: capture.products.flatMap(logoOf),
+            guardedFileIds: capture.rows.flatMap((row) =>
+              row.candidate.entityType !== 'PRODUCT' &&
+              row.fileId &&
+              capture.captureIds.has(
+                `${row.candidate.entityType}:${row.candidate.id}`,
+              )
+                ? [row.fileId]
+                : [],
+            ),
+            guard: current
+              ? Prisma.sql`SELECT source."requestKey",source.candidate->>'entityType' AS "entityType",source.candidate->>'id' AS id,source."fileId" FROM (${current}) source`
+              : null,
+          },
+          grant: (guard) => {
+            const sources = guard as readonly CurrentSource[];
+            const keyOf = (source: CurrentSource) =>
+              `${source.requestKey}:${source.entityType}:${source.id}`;
+            const live = new Set(
+              sources
+                .filter((source) => source.entityType === 'PRODUCT')
+                .map((source) => source.id),
+            );
+            const cards = capture.products.filter((card) =>
+              live.has(card.product.id),
+            );
+            return {
+              covers: cards.map((card) => ({
+                fileId: card.file.id,
+                productId: card.product.id,
+              })),
+              logos: cards.flatMap(logoOf),
+              // The guard joined this exact approved file to its public parent
+              // in the same statement; a replacement file is never granted.
+              guardedFileIds: sources.flatMap((source) =>
+                source.entityType !== 'PRODUCT' &&
+                source.fileId &&
+                source.fileId === originalFiles.get(keyOf(source))
+                  ? [source.fileId]
+                  : [],
+              ),
+              value: new Set(sources.map(keyOf)),
+            };
+          },
+        };
       },
       { deadline: capture.context.deadline, signal: capture.context.signal },
     );

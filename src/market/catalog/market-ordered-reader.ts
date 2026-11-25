@@ -90,30 +90,39 @@ export async function readMarketOrderedPage(
   if (sort === 'newest') {
     // A missing first-publication backfill is a readiness failure, not a reason
     // to silently omit those products or substitute a mutable createdAt key.
-    const readiness = await tx.$queryRaw<
-      Array<{ ready: boolean }>
-    >(Prisma.sql`SELECT NOT EXISTS (
+    // Readiness travels with the page: the left join always returns a row, so
+    // an empty page still reports whether the backfill finished.
+    const newest = marketNewestPageSql({
+      filters,
+      fixedFilters,
+      scope: input.scope,
+      now: asOf,
+      limit,
+      ...(activeCursor
+        ? {
+            after: {
+              publishedAt: activeCursor.key[0] as string,
+              id: activeCursor.key[1] as string,
+            },
+          }
+        : {}),
+    });
+    const page = await tx.$queryRaw<
+      Array<{
+        ready: boolean;
+        id: string | null;
+        firstPublishedAt: Date | null;
+      }>
+    >(Prisma.sql`SELECT readiness.ready,page.id,page."firstPublishedAt" FROM (SELECT NOT EXISTS (
       SELECT 1 FROM "Product" WHERE "isActive" AND "publicationStatus"='PUBLISHED'
         AND "deletedAt" IS NULL AND "archivedAt" IS NULL AND "firstPublishedAt" IS NULL
-    ) AS ready`);
-    if (!readiness[0]?.ready)
-      unavailable('CATALOGUE_PUBLICATION_BACKFILL_REQUIRED');
-    rows = await tx.$queryRaw<MarketOrderedRow[]>(
-      marketNewestPageSql({
-        filters,
-        fixedFilters,
-        scope: input.scope,
-        now: asOf,
-        limit,
-        ...(activeCursor
-          ? {
-              after: {
-                publishedAt: activeCursor.key[0] as string,
-                id: activeCursor.key[1] as string,
-              },
-            }
-          : {}),
-      }),
+    ) AS ready) readiness LEFT JOIN (${newest}) page ON readiness.ready
+      ORDER BY page."firstPublishedAt" DESC,page.id DESC`);
+    if (!page[0]?.ready) unavailable('CATALOGUE_PUBLICATION_BACKFILL_REQUIRED');
+    rows = page.flatMap((row) =>
+      row.id === null || row.firstPublishedAt === null
+        ? []
+        : [{ id: row.id, firstPublishedAt: row.firstPublishedAt }],
     );
   } else {
     try {
@@ -121,12 +130,19 @@ export async function readMarketOrderedPage(
     } catch {
       unavailable('CATALOGUE_PRICE_SNAPSHOT_BUSY');
     }
-    const readiness = await tx.$queryRaw<Array<{ ready: boolean }>>(
-      marketPriceCacheReadinessSql(),
-    );
-    if (!readiness[0]?.ready) unavailable('CATALOGUE_PRICE_BACKFILL_REQUIRED');
+    const priceCursor = activeCursor?.price ?? null;
+    // Readiness, the write fence and the repair set in one statement. The CASE
+    // arms stay unevaluated until the cache is ready.
+    const states = await tx.$queryRaw<
+      Array<{ ready: boolean; changed: boolean | null; ids: string[] | null }>
+    >(Prisma.sql`SELECT readiness.ready,
+      ${priceCursor ? Prisma.sql`CASE WHEN readiness.ready THEN ${marketPriceWritesSinceSql(priceCursor.snapshot)} END` : Prisma.sql`NULL::boolean`} AS changed,
+      CASE WHEN readiness.ready THEN ARRAY(SELECT repair.id::text FROM (${marketPriceDirtyIdsSql(asOf)}) repair) END AS ids
+      FROM (${marketPriceCacheReadinessSql()}) readiness`);
+    const state = states[0];
+    if (!state?.ready) unavailable('CATALOGUE_PRICE_BACKFILL_REQUIRED');
     if (activeCursor) {
-      if (!activeCursor.price)
+      if (!priceCursor)
         throw new BadRequestException({
           code: 'INVALID_CURSOR',
           message: 'Refresh this list to continue.',
@@ -134,23 +150,14 @@ export async function readMarketOrderedPage(
       // Recheck against the database clock even when the HTTP codec checked a
       // slightly earlier application clock. No sale boundary may slip through.
       reanchored =
-        activeCursor.price.nextChangeAt !== null &&
-        activeCursor.price.nextChangeAt <= asOf.getTime();
-      if (!reanchored) {
-        const writes = await tx.$queryRaw<
-          Array<{ changed: boolean }>
-        >(Prisma.sql`
-          SELECT ${marketPriceWritesSinceSql(activeCursor.price.snapshot)} AS changed`);
-        reanchored = writes[0]?.changed !== false;
-      }
+        (priceCursor.nextChangeAt !== null &&
+          priceCursor.nextChangeAt <= asOf.getTime()) ||
+        state.changed !== false;
       if (reanchored) notice = 'Prices updated';
     }
-    const dirty = await tx.$queryRaw<Array<{ id: string }>>(
-      marketPriceDirtyIdsSql(asOf),
-    );
-    if (dirty.length > MARKET_PRICE_DIRTY_LIMIT)
+    const ids = state.ids ?? [];
+    if (ids.length > MARKET_PRICE_DIRTY_LIMIT)
       unavailable('CATALOGUE_PRICE_REFRESH_BUSY');
-    const ids = dirty.map((row) => row.id);
     const boundary = await tx.$queryRaw<Array<{ boundary: Date | null }>>(
       marketNextPriceBoundarySql(asOf, ids),
     );

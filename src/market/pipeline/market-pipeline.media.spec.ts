@@ -1,4 +1,7 @@
-import { MarketPublicMediaService } from '../catalog/market-public-media.service';
+import {
+  MarketPublicMediaPlan,
+  MarketPublicMediaService,
+} from '../catalog/market-public-media.service';
 import {
   CapturedPipelinePage,
   pipelineRequestKey,
@@ -110,19 +113,23 @@ function capture(): CapturedPipelinePage {
 
 describe('Market pipeline bounded shared media authorization', () => {
   function service(currentRows: readonly PipelineDatabaseRow[]) {
-    const tx = {
-      $queryRaw: jest.fn().mockResolvedValue(currentRows),
-      $executeRaw: jest.fn().mockResolvedValue(0),
-    };
+    const tx = { $executeRaw: jest.fn().mockResolvedValue(0) };
+    let plan: MarketPublicMediaPlan<ReadonlySet<string>> | undefined;
     let fileIds: readonly string[] = [];
-    let fileWhere: unknown;
     const media = {
-      resolve: jest.fn(async (authorize) => {
-        const authorization = await authorize(tx);
-        fileIds = authorization.fileIds;
-        fileWhere = authorization.fileWhere;
+      resolve: jest.fn(async (prepare) => {
+        plan = (await prepare(tx)) as NonNullable<typeof plan>;
+        const granted = plan.grant(
+          currentRows.map((current) => ({
+            requestKey: current.requestKey,
+            entityType: current.candidate.entityType,
+            id: current.candidate.id,
+            fileId: current.fileId,
+          })),
+        );
+        fileIds = granted.guardedFileIds;
         return {
-          value: authorization.value,
+          value: granted.value,
           originals: new Map(
             fileIds.map((fileId) => [fileId, 'https://gateway.example/signed']),
           ),
@@ -130,7 +137,7 @@ describe('Market pipeline bounded shared media authorization', () => {
         };
       }),
     };
-    return { tx, media, fileIds: () => fileIds, fileWhere: () => fileWhere };
+    return { media, fileIds: () => fileIds, plan: () => plan! };
   }
   it('authorizes the exact current approved public source file inside the shared transaction', async () => {
     const fake = service([row]);
@@ -142,10 +149,13 @@ describe('Market pipeline bounded shared media authorization', () => {
     const items = await ports.hydrate(candidates, asOf, request.signal);
     expect(items[0].item.media?.url).toBe('https://gateway.example/signed');
     expect(fake.fileIds()).toEqual([fileId]);
-    expect(fake.fileWhere()).toEqual({ OR: [{ id: { in: [fileId] } }] });
-    expect(fake.tx.$queryRaw).toHaveBeenCalledTimes(1);
     expect(fake.media.resolve).toHaveBeenCalledTimes(1);
-    const query = fake.tx.$queryRaw.mock.calls[0][0];
+    expect(fake.plan().candidates).toMatchObject({
+      covers: [],
+      logos: [],
+      guardedFileIds: [fileId],
+    });
+    const query = fake.plan().candidates.guard!;
     expect(query.text).toContain("c.visibility='PUBLIC'");
     expect(query.text).toContain('media."reviewStatus"=\'APPROVED\'');
   });

@@ -14,12 +14,24 @@ import {
   rememberReadResource,
   FileReadSource,
 } from '../../auth/access/read-resource-context';
+import {
+  MarketMediaAuthorityRow,
+  MarketMediaCandidates,
+  marketMediaAuthoritySql,
+} from './market-public-media.sql';
 
-export interface MarketPublicMediaAuthorization<T> {
-  readonly fileIds: readonly string[];
-  readonly fileWhere: Prisma.FileUploadWhereInput;
+/** Exact parents the guard returned; a file needs one of its own to be signed. */
+export interface MarketPublicMediaGrant<T> {
+  readonly covers: readonly { fileId: string; productId: string }[];
+  readonly logos: readonly { fileId: string; ownerId: string }[];
+  readonly guardedFileIds: readonly string[];
   readonly value: T;
   readonly sources?: readonly { fileId: string; source: FileReadSource }[];
+}
+export interface MarketPublicMediaPlan<T> {
+  readonly candidates: MarketMediaCandidates;
+  /** Pure decision over the guard rows of the same statement. */
+  readonly grant: (guard: readonly unknown[]) => MarketPublicMediaGrant<T>;
 }
 export interface MarketPublicMediaResult<T> {
   readonly value: T;
@@ -32,8 +44,8 @@ const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 export const MARKET_PUBLIC_MEDIA_MAX_FILES =
   61 * (Object.values(ContentMediaViewSlot).length + 1);
 
-/** Parent authorization is performed by a server-owned query in the SAME
- * bounded transaction. No endpoint accepts a callback or caller-vouched IDs. */
+/** Parent authorization is a server-owned query inside the SAME statement that
+ * reads the files. No endpoint accepts a callback or caller-vouched IDs. */
 @Injectable()
 export class MarketPublicMediaService {
   constructor(
@@ -42,65 +54,71 @@ export class MarketPublicMediaService {
   ) {}
 
   async resolve<T>(
-    authorize: (
+    prepare: (
       tx: Prisma.TransactionClient,
-    ) => Promise<MarketPublicMediaAuthorization<T>>,
+    ) => Promise<MarketPublicMediaPlan<T>>,
     options: MarketReadOptions = {},
   ): Promise<MarketPublicMediaResult<T>> {
-    const captured = await this.reads.run(async (tx) => {
-      const authorization = await authorize(tx);
-      const ids = [...new Set(authorization.fileIds)];
+    const read = await this.reads.run(async (tx) => {
+      const plan = await prepare(tx);
+      const { candidates } = plan;
+      const ids = new Set([
+        ...candidates.covers.map((cover) => cover.fileId),
+        ...candidates.logos.map((logo) => logo.fileId),
+        ...candidates.guardedFileIds,
+      ]);
       if (
-        ids.length > MARKET_PUBLIC_MEDIA_MAX_FILES ||
-        ids.some((id) => !uuid.test(id))
+        ids.size > MARKET_PUBLIC_MEDIA_MAX_FILES ||
+        [...ids].some((id) => !uuid.test(id)) ||
+        [...candidates.covers].some((cover) => !uuid.test(cover.productId)) ||
+        [...candidates.logos].some(
+          (logo) =>
+            !uuid.test(logo.ownerId) ||
+            (logo.brandId !== undefined && !uuid.test(logo.brandId)),
+        )
       )
         throw new RangeError('Invalid public media batch');
-      const files = ids.length
-        ? await tx.fileUpload.findMany({
-            where: {
-              id: { in: ids },
-              processingStatus: 'READY',
-              originalDeletedAt: null,
-              mimeType: {
-                in: [
-                  'image/jpeg',
-                  'image/png',
-                  'image/webp',
-                  'image/avif',
-                  'image/gif',
-                ],
-              },
-              AND: [authorization.fileWhere],
-            },
-            select: { id: true, s3Key: true, assetVersion: true },
-            take: MARKET_PUBLIC_MEDIA_MAX_FILES,
-          })
-        : [];
-      const variants = files.length
-        ? await tx.$queryRaw<
-            Array<{
-              fileUploadId: string;
-              s3Key: string;
-              variantKind: string;
-              format: string;
-            }>
-          >(Prisma.sql`
-        SELECT variant."fileUploadId",variant."s3Key",variant."variantKind",variant.format
-        FROM "FileVariant" variant JOIN "FileUpload" file ON file."_id"=variant."fileUploadId"
-          AND file."assetVersion"=variant."assetVersion"
-        WHERE file."_id" IN (${Prisma.join(files.map((file) => Prisma.sql`${file.id}::uuid`))})
-          AND variant."variantKind" IN ('CARD','AVATAR','BANNER')
-        ORDER BY variant."fileUploadId",variant."variantKind",CASE variant.format::text WHEN 'WEBP' THEN 0 WHEN 'AVIF' THEN 1 WHEN 'JPEG' THEN 2 ELSE 3 END,variant."_id"`)
-        : [];
-      const sources = new Map<string, FileReadSource[]>();
-      for (const item of authorization.sources ?? []) {
-        const entries = sources.get(item.fileId) ?? [];
-        entries.push(item.source);
-        sources.set(item.fileId, entries);
-      }
-      return { value: authorization.value, files, variants, sources };
+      const rows =
+        ids.size || candidates.guard
+          ? await tx.$queryRaw<MarketMediaAuthorityRow[]>(
+              marketMediaAuthoritySql(
+                candidates,
+                MARKET_PUBLIC_MEDIA_MAX_FILES,
+              ),
+            )
+          : [];
+      if ((ids.size || candidates.guard) && rows.length !== 1)
+        throw new Error('Media authorization unavailable');
+      return { plan, row: rows[0] ?? { guard: [], files: [], variants: [] } };
     }, options);
     assertMarketReadDeadline(options);
+    const grant = read.plan.grant(read.row.guard);
+    const key = (fileId: string, parent: string) => `${fileId}:${parent}`;
+    const grantedProducts = new Set(
+      grant.covers.map((cover) => key(cover.fileId, cover.productId)),
+    );
+    const grantedOwners = new Set(
+      grant.logos.map((logo) => key(logo.fileId, logo.ownerId)),
+    );
+    const guarded = new Set(grant.guardedFileIds);
+    const files = read.row.files.filter(
+      (file) =>
+        guarded.has(file.id) ||
+        file.productIds.some((id) => grantedProducts.has(key(file.id, id))) ||
+        file.ownerIds.some((id) => grantedOwners.has(key(file.id, id))),
+    );
+    const readSources = new Map<string, FileReadSource[]>();
+    for (const item of grant.sources ?? []) {
+      const entries = readSources.get(item.fileId) ?? [];
+      entries.push(item.source);
+      readSources.set(item.fileId, entries);
+    }
+    const captured = {
+      value: grant.value,
+      files,
+      variants: read.row.variants,
+      sources: readSources,
+    };
     const originals = new Map<string, string>(),
       variants = new Map<string, Map<string, string>>();
     if (!captured.files.length)

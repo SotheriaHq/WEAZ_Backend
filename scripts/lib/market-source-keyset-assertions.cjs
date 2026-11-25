@@ -95,7 +95,7 @@ async function runMarketSourceKeysetAssertions({db,prisma,now,brand,owner,chosen
     const total=after.total-before.total,controls=after.controls-before.controls;
     // wire = statements the pg driver actually sent (includes the adapter's BEGIN).
     const wire=Number.isFinite(after.wire)?after.wire-before.wire:null;
-    return{result,total,wire,controls,data:total-controls,elapsedMs:Math.round(performance.now()-started),statements:after.statementsSince?.(before.total)??[]};
+    return{result,total,wire,controls,data:total-controls,elapsedMs:Math.round(performance.now()-started),statements:after.statementsSince?.(before.total)??[],wireStatements:after.wireSince?.(before.wire)??[]};
   };
   console.log('STAGE full pipeline query budget and N+1 invariance');
   const shelf=preview=>buildMarketPipelinePage({read,media:new MarketPipelineMediaResolver(new MarketPublicMediaService(read,config)),viewer:{},surface:'HOME',filters:{},specs:[parsePipelineSpec({key:'bounded-read-proof',template:'CURATED_LIST',status:'ACTIVE',curated:{placementKey:'SCOPE_PERF'},capacity:{preview,minItems:1},params:{maxPerBrand:8,maxPerCategory:8,explorationShare:0}})]});
@@ -116,6 +116,8 @@ async function runMarketSourceKeysetAssertions({db,prisma,now,brand,owner,chosen
   equal(catalogueMany.total,catalogueOne.total,'N+1: catalogue page statements do not grow with page size');
   if(catalogueMany.wire!==null){equal(catalogueMany.wire,catalogueOne.wire,'N+1: catalogue wire round trips do not grow with page size');}
   console.log('QUERY_BUDGET '+JSON.stringify({catalogue:{oneItem:catalogueOne.total,manyItems:catalogueMany.total,wireOneItem:catalogueOne.wire,wireManyItems:catalogueMany.wire,itemsServed:catalogueMany.result.items.length,controls:catalogueMany.controls,elapsedMs:catalogueMany.elapsedMs}}));
+  for(const[label,measured]of [['Market page',fullShelf],['Catalogue page',catalogueMany]]){assert(measured.wire<=12,label+' stays within 12 wire round trips, got '+measured.wire);checks++;}
+  if(process.env.MARKET_QUERY_TRACE==='1')for(const[label,measured]of[['page',fullShelf],['catalogue',catalogueMany]])measured.wireStatements.forEach(({head,ms},index)=>console.log(`WIRE ${label} ${index+1} ${ms===null?'?':ms.toFixed(1)}ms ${head}`));
   console.log(`PASS ${checks} complete product/nonproduct source-keyset proofs beyond preview capacity`);
   return{checks};
 }

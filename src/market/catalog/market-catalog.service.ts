@@ -7,14 +7,12 @@ import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { MarketPublicMediaService } from './market-public-media.service';
-import { eligibleProductWhere } from '../eligibility/market-eligibility';
 import {
   MarketCatalogAdmissionException,
   MarketCatalogReadService,
 } from './market-catalog-read.service';
 import {
   MarketCursorCodec,
-  MarketCursorState,
   MarketCursorKey,
   MARKET_CURSOR_TTL_MS,
 } from './market-cursor';
@@ -42,9 +40,10 @@ import {
 } from './market-sort-availability';
 import { marketSnapshotPageSql } from './market-snapshot-order.sql';
 import {
-  captureMarketCatalogCards,
+  CapturedMarketCard,
   hydrateMarketCatalogCards,
 } from './market-catalog-cards';
+import { captureMarketCatalogCardsBatched as captureMarketCatalogCards } from './market-catalog-card-batch';
 import { readMarketFacets } from './market-facets';
 import { validateMarketDimensionLayers } from './market-filter-dictionary';
 import { MARKET_FEATURE_MAX_SOURCE_AGE_MS } from '../intelligence/market-intelligence.contracts';
@@ -169,87 +168,85 @@ export class MarketCatalogService {
         throw error;
       });
     const authorizedGallery = new Map<string, ReadonlySet<string>>();
-    const delivery = await this.media.resolve(async (tx) => {
+    const mediaOf = (card: CapturedMarketCard) =>
+      trusted?.includeLegacyOptions
+        ? card.product.media.map((media) => media.file)
+        : [card.file];
+    const logosOf = (cards: readonly CapturedMarketCard[]) =>
+      cards.flatMap((card) =>
+        card.logoFileId
+          ? [
+              {
+                fileId: card.logoFileId,
+                ownerId: card.product.brand.owner.id,
+              },
+            ]
+          : [],
+      );
+    const delivery = await this.media.resolve<Set<string>>(async (tx) => {
+      // A fresh clock and snapshot: a product unpublished after the capture is
+      // never signed. Parents, files and variants are read in one statement.
       const { asOf: now } = await captureMarketReadContext(tx, false);
       const expectedMedia = captured.cards.flatMap((card) =>
-        (trusted?.includeLegacyOptions
-          ? card.product.media.map((media) => media.file)
-          : [card.file]
-        ).map((file) => ({
+        mediaOf(card).map((file) => ({
           productId: card.product.id,
           file,
           isCover: file.id === card.file.id,
         })),
       );
-      const current = captured.cards.length
-        ? await tx.$queryRaw<Array<{ id: string; fileIds: string[] }>>(
-            Prisma.sql`SELECT p."_id"::text AS id,array_agg(DISTINCT expected."fileId"::text) AS "fileIds"
+      return {
+        candidates: {
+          asOf: now,
+          covers: expectedMedia.map((media) => ({
+            fileId: media.file.id,
+            assetVersion: media.file.assetVersion,
+            productId: media.productId,
+          })),
+          logos: logosOf(captured.cards),
+          guardedFileIds: [],
+          guard: expectedMedia.length
+            ? Prisma.sql`SELECT p."_id"::text AS id,array_agg(DISTINCT expected."fileId"::text) AS "fileIds"
               FROM (VALUES ${Prisma.join(expectedMedia.map((media) => Prisma.sql`(${media.productId}::uuid,${media.file.id}::uuid,${media.file.assetVersion}::int,${media.isCover}::boolean)`))}) expected("productId","fileId","assetVersion","isCover")
               JOIN "Product" p ON p."_id"=expected."productId"
               JOIN "ProductMedia" media ON media."productId"=p."_id" AND media."fileUploadId"=expected."fileId" AND media."reviewStatus"='APPROVED'
               JOIN "FileUpload" file ON file."_id"=expected."fileId" AND file."assetVersion"=expected."assetVersion"
                 AND file."processingStatus"='READY' AND file."originalDeletedAt" IS NULL AND file."mimeType" IN ('image/jpeg','image/png','image/webp','image/avif','image/gif')
               WHERE ${marketCatalogProductFiltersSql([request.filters, fixedFilters], now, 'p', captured.scope)}
-              GROUP BY p."_id" HAVING bool_or(expected."isCover") LIMIT 61`,
-          )
-        : [];
-      authorizedGallery.clear();
-      for (const product of current)
-        authorizedGallery.set(product.id, new Set(product.fileIds));
-      const currentIds = current.map((product) => product.id);
-      for (const id of currentIds)
-        rememberReadResource({ type: 'PRODUCT', id });
-      const cards = captured.cards.filter((card) =>
-        currentIds.includes(card.product.id),
-      );
-      const mediaFiles = cards
-        .flatMap((card) =>
-          trusted?.includeLegacyOptions
-            ? card.product.media.map((media) => ({
-                file: media.file,
+              GROUP BY p."_id" HAVING bool_or(expected."isCover") LIMIT 61`
+            : null,
+        },
+        grant: (guard) => {
+          authorizedGallery.clear();
+          for (const product of guard as ReadonlyArray<{
+            id: string;
+            fileIds: string[];
+          }>) {
+            authorizedGallery.set(product.id, new Set(product.fileIds));
+            rememberReadResource({ type: 'PRODUCT', id: product.id });
+          }
+          const cards = captured.cards.filter((card) =>
+            authorizedGallery.has(card.product.id),
+          );
+          const covers = cards.flatMap((card) =>
+            mediaOf(card)
+              .filter((file) =>
+                authorizedGallery.get(card.product.id)?.has(file.id),
+              )
+              .map((file) => ({
+                fileId: file.id,
                 productId: card.product.id,
-              }))
-            : [{ file: card.file, productId: card.product.id }],
-        )
-        .filter((media) =>
-          authorizedGallery.get(media.productId)?.has(media.file.id),
-        );
-      const coverIds = mediaFiles.map((media) => media.file.id);
-      const logos = cards
-        .filter((card) => !!card.logoFileId)
-        .map((card) => ({
-          id: card.logoFileId!,
-          userId: card.product.brand.owner.id,
-          fileType: 'PROFILE_IMAGE' as const,
-          userProfileImages: {
-            some: {
-              userId: card.product.brand.owner.id,
-              user: { status: 'ACTIVE' as const },
-            },
-          },
-        }));
-      return {
-        fileIds: [...coverIds, ...logos.map((logo) => logo.id)],
-        value: new Set(currentIds),
-        sources: mediaFiles.map((media) => ({
-          fileId: media.file.id,
-          source: { type: 'PRODUCT' as const, id: media.productId },
-        })),
-        fileWhere: {
-          OR: [
-            ...mediaFiles.map((media) => ({
-              id: media.file.id,
-              assetVersion: media.file.assetVersion,
-              productMedias: {
-                some: {
-                  productId: media.productId,
-                  reviewStatus: 'APPROVED' as const,
-                  product: eligibleProductWhere(now),
-                },
-              },
+              })),
+          );
+          return {
+            covers,
+            logos: logosOf(cards),
+            guardedFileIds: [],
+            value: new Set(authorizedGallery.keys()),
+            sources: covers.map((cover) => ({
+              fileId: cover.fileId,
+              source: { type: 'PRODUCT' as const, id: cover.productId },
             })),
-            ...logos,
-          ],
+          };
         },
       };
     });
@@ -454,7 +451,7 @@ export class MarketCatalogService {
       readonly includeLegacyOptions?: boolean;
     },
   ) {
-    const context = await captureMarketReadContext(tx);
+    const context = await captureMarketReadContext(tx, true, true);
     const { asOf } = context;
     await validateMarketDimensionLayers(tx, [
       request.filters,
@@ -494,9 +491,13 @@ export class MarketCatalogService {
     // whole-catalogue evidence probes on every page would not change it.
     let availability = await marketSortAvailability(tx, asOf, cursor, {
       probe: !(cursor && isOrdered(cursor.sort as CatalogSort)),
+      currentEpoch: context.currentEpoch,
     });
     if (cursor?.epoch && availability.currentMissing) {
-      availability = await marketSortAvailability(tx, asOf, null);
+      availability = await marketSortAvailability(tx, asOf, null, {
+        probe: true,
+        currentEpoch: context.currentEpoch,
+      });
       cursor = null;
       reanchored = true;
       notice = 'Updated';

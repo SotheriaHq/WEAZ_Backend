@@ -1,10 +1,17 @@
 import { ServiceUnavailableException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { MARKET_SNAPSHOT_MAX_LENGTH } from './market-cursor';
+import {
+  CatalogEpoch,
+  marketCurrentEpochJsonSql,
+  parseCatalogEpoch,
+} from './market-catalog-epoch';
 
 export interface MarketReadContext {
   readonly asOf: Date;
   readonly snapshot: string;
+  /** Only when requested; null means the Market has no current epoch. */
+  readonly currentEpoch?: CatalogEpoch | null;
 }
 const transactions = new WeakMap<MarketReadContext, object>();
 
@@ -12,6 +19,7 @@ const transactions = new WeakMap<MarketReadContext, object>();
 export async function captureMarketReadContext(
   tx: Pick<Prisma.TransactionClient, '$queryRaw'>,
   withSnapshot = true,
+  withCurrentEpoch = false,
 ): Promise<MarketReadContext> {
   const rows = await tx.$queryRaw<
     Array<{
@@ -22,6 +30,7 @@ export async function captureMarketReadContext(
       encoding: string;
       statementTimeoutMs: number;
       lockTimeoutMs: number;
+      currentEpoch?: unknown;
     }>
   >(Prisma.sql`
     SELECT date_trunc('milliseconds',statement_timestamp()) AS "asOf",
@@ -29,7 +38,8 @@ export async function captureMarketReadContext(
       current_setting('transaction_isolation') AS isolation,current_setting('transaction_read_only') AS "readOnly",
       current_setting('server_encoding') AS encoding,
       (extract(epoch FROM current_setting('statement_timeout')::interval)*1000)::float8 AS "statementTimeoutMs",
-      (extract(epoch FROM current_setting('lock_timeout')::interval)*1000)::float8 AS "lockTimeoutMs"`);
+      (extract(epoch FROM current_setting('lock_timeout')::interval)*1000)::float8 AS "lockTimeoutMs"
+      ${withCurrentEpoch ? Prisma.sql`,${marketCurrentEpochJsonSql()} AS "currentEpoch"` : Prisma.empty}`);
   const row = rows[0];
   if (
     !(row?.asOf instanceof Date) ||
@@ -54,6 +64,9 @@ export async function captureMarketReadContext(
       return new Date(instant);
     },
     snapshot: row.snapshot,
+    ...(withCurrentEpoch
+      ? { currentEpoch: parseCatalogEpoch(row.currentEpoch) }
+      : {}),
   });
   transactions.set(context, tx);
   return context;

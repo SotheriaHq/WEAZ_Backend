@@ -3,6 +3,7 @@ import {
   captureMarketCatalogCards,
   CapturedMarketCard,
   hydrateMarketCatalogCards,
+  MARKET_CARD_CAPTURE_MAX,
 } from './market-catalog-cards';
 import { MarketOrderedRow } from './market-ordered-reader';
 
@@ -422,7 +423,7 @@ describe('catalogue public card signing after capture', () => {
     );
     await expect(
       hydrateMarketCatalogCards(
-        Array.from({ length: 62 }, () => captured()),
+        Array.from({ length: MARKET_CARD_CAPTURE_MAX + 1 }, () => captured()),
         urls.service,
       ),
     ).rejects.toThrow(RangeError);

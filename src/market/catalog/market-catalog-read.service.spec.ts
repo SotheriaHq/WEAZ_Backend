@@ -6,12 +6,16 @@ import {
   MarketCatalogReadService,
   MARKET_CATALOG_CONCURRENT_READS,
   isEndedConnection,
+  marketReadSetupSql,
 } from './market-catalog-read.service';
 
 describe('catalogue read on a connection the server already ended', () => {
   const ended = () => new Error('Connection terminated unexpectedly');
   const setup = () => {
-    const tx = { $queryRaw: jest.fn().mockResolvedValue([]) };
+    const tx = {
+      $executeRawUnsafe: jest.fn().mockResolvedValue(0),
+      $queryRaw: jest.fn().mockResolvedValue([]),
+    };
     const transaction = jest.fn(async (read: (value: typeof tx) => unknown) =>
       read(tx),
     );
@@ -76,14 +80,16 @@ describe('catalogue read admission', () => {
   const fixture = () => {
     const tx = {
       $executeRaw: jest.fn().mockResolvedValue(0),
+      $executeRawUnsafe: jest.fn().mockResolvedValue(0),
       $queryRaw: jest.fn().mockResolvedValue([]),
     };
-    const transaction = jest.fn(
-      async (
+    const transaction: jest.Mock<
+      Promise<unknown>,
+      [
         read: (value: typeof tx) => unknown,
-        _options?: { timeout: number; maxWait: number },
-      ) => read(tx),
-    );
+        options?: { timeout: number; maxWait: number },
+      ]
+    > = jest.fn(async (read) => read(tx));
     const service = new MarketCatalogReadService({
       $transaction: transaction,
     } as unknown as PrismaService);
@@ -94,21 +100,33 @@ describe('catalogue read admission', () => {
     const { tx, transaction, service } = fixture();
     await expect(
       service.run(async () => {
-        // One setup round trip: read-only mode and both limits together.
+        // One setup round trip: isolation, read-only mode and both limits.
         expect(tx.$executeRaw).not.toHaveBeenCalled();
-        expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
-        const setup = tx.$queryRaw.mock.calls[0][0] as Prisma.Sql;
-        expect(setup.text).toBe(
-          "SELECT set_config('transaction_read_only','on',true),set_config('statement_timeout','1500ms',true),set_config('lock_timeout','250ms',true)",
-        );
+        expect(tx.$queryRaw).not.toHaveBeenCalled();
+        expect(tx.$executeRawUnsafe.mock.calls).toEqual([
+          [
+            'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY;SET LOCAL statement_timeout=1500;SET LOCAL lock_timeout=250',
+          ],
+        ]);
         return ['result'];
       }),
     ).resolves.toEqual(['result']);
+    // No isolationLevel option: the adapter would send it as another trip.
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
-      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
       maxWait: 250,
       timeout: 2000,
     });
+  });
+  it.each([0, -1, 1.5, NaN, Infinity])(
+    'refuses a %p budget instead of writing it into the setup statement',
+    (budget) => {
+      expect(() => marketReadSetupSql(budget)).toThrow(RangeError);
+    },
+  );
+  it('keeps statement and lock limits inside a shorter transaction budget', () => {
+    expect(marketReadSetupSql(90)).toBe(
+      'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY;SET LOCAL statement_timeout=90;SET LOCAL lock_timeout=90;SET LOCAL transaction_timeout=90',
+    );
   });
 
   it('rejects excess work before pool acquisition and releases every slot', async () => {
@@ -156,14 +174,14 @@ describe('catalogue read admission', () => {
     await expect(
       service.run(async () => 'result', { deadline: performance.now() + 550 }),
     ).resolves.toBe('result');
-    expect(tx.$executeRaw).not.toHaveBeenCalled();
-    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
-    const sql = tx.$queryRaw.mock.calls[0][0] as Prisma.Sql;
-    expect(sql.text).toContain("set_config('transaction_read_only','on',true)");
-    expect(sql.text).toContain("set_config('transaction_timeout'");
-    expect(Number(sql.values[0])).toBeLessThanOrEqual(250);
-    expect(Number(sql.values[2])).toBeGreaterThan(0);
-    expect(Number(sql.values[2])).toBeLessThanOrEqual(550);
+    expect(tx.$executeRawUnsafe).toHaveBeenCalledTimes(1);
+    const setup = String(tx.$executeRawUnsafe.mock.calls[0][0]);
+    expect(setup).toContain('REPEATABLE READ, READ ONLY');
+    const limit = (name: string) =>
+      Number(new RegExp(`${name}=(\\d+)`).exec(setup)?.[1]);
+    expect(limit('statement_timeout')).toBeLessThanOrEqual(250);
+    expect(limit('transaction_timeout')).toBeGreaterThan(0);
+    expect(limit('transaction_timeout')).toBeLessThanOrEqual(550);
     const options = transaction.mock.calls[0][1];
     expect(options.timeout).toBeLessThanOrEqual(550);
     expect(options.maxWait).toBeLessThanOrEqual(250);
@@ -188,7 +206,7 @@ describe('catalogue read admission', () => {
   it('releases a slot after setup and validation failures without hiding their cause', async () => {
     const { service, tx } = fixture();
     const setupError = new Error('setup failed');
-    tx.$queryRaw.mockRejectedValueOnce(setupError);
+    tx.$executeRawUnsafe.mockRejectedValueOnce(setupError);
     await expect(service.run(async () => null)).rejects.toBe(setupError);
     const invalid = new BadRequestException({ code: 'INVALID_FILTER' });
     await expect(

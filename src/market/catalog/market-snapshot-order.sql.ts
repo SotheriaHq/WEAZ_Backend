@@ -30,13 +30,15 @@ export function marketSnapshotPageSql(input: {
   readonly limit: number;
   readonly after?: MarketSnapshotKey;
   readonly countOnly?: boolean;
+  /** Market-wide sample floor: an unpaged read of up to one hundred rows. */
+  readonly evidence?: boolean;
 }): Prisma.Sql {
   const { epochId, sort, filters, now, limit, after } = input;
   if (
     !uuid.test(epochId) ||
     !Number.isSafeInteger(limit) ||
     limit < 1 ||
-    limit > 61 ||
+    limit > (input.evidence ? 100 : 61) ||
     !['popular', 'trending', 'best_selling', 'most_saved'].includes(sort) ||
     !Number.isFinite(now.getTime())
   )
@@ -44,6 +46,8 @@ export function marketSnapshotPageSql(input: {
 
   if (after && !isMarketSortKey(sort, after))
     throw new RangeError('Invalid frozen catalogue key');
+  if (input.evidence && (after || input.countOnly))
+    throw new RangeError('Invalid catalogue evidence read');
   if (input.countOnly && after)
     throw new RangeError('A catalogue count has no continuation key');
 

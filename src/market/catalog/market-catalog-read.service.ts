@@ -111,29 +111,19 @@ export class MarketCatalogReadService {
       async (tx) => {
         onEntered();
         assertMarketReadDeadline(options);
-        // One round trip sets read-only mode and every limit. A local
-        // transaction_read_only=on is PostgreSQL's SET TRANSACTION READ ONLY;
-        // readers that depend on it check it with current_setting.
-        if (options.deadline === undefined) {
-          await tx.$queryRaw(
-            Prisma.sql`SELECT set_config('transaction_read_only','on',true),set_config('statement_timeout','1500ms',true),set_config('lock_timeout','250ms',true)`,
-          );
-        } else {
-          const transactionMs = remaining(),
-            statementMs = Math.min(250, transactionMs);
-          // PostgreSQL 17+ terminates the transaction's connection at the
-          // absolute budget. No Promise.race leaves database work abandoned.
-          await tx.$queryRaw(
-            Prisma.sql`SELECT set_config('transaction_read_only','on',true),set_config('statement_timeout',${String(statementMs)}::text,true),set_config('lock_timeout',${String(Math.min(250, transactionMs))}::text,true),set_config('transaction_timeout',${String(transactionMs)}::text,true)`,
-          );
-        }
+        // PostgreSQL 17+ terminates the transaction's connection at the
+        // absolute budget. No Promise.race leaves database work abandoned.
+        const transactionMs =
+          options.deadline === undefined ? undefined : remaining();
+        await tx.$executeRawUnsafe(marketReadSetupSql(transactionMs));
         assertMarketReadDeadline(options);
         const value = await read(tx);
         assertMarketReadDeadline(options);
         return value;
       },
       {
-        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+        // Isolation is part of the setup statement: passing it here makes the
+        // driver adapter send it as one more round trip per transaction.
         maxWait: Math.min(250, remaining()),
         timeout: Math.min(MARKET_CATALOG_TRANSACTION_MS, remaining()),
       },
@@ -141,6 +131,31 @@ export class MarketCatalogReadService {
     assertMarketReadDeadline(options);
     return result;
   }
+}
+
+/**
+ * Isolation, read-only mode and every limit in one round trip. The statement
+ * has no parameters, so the driver sends it with the simple protocol, which
+ * accepts several utility commands; if that ever stops being true PostgreSQL
+ * refuses the whole string and the read fails closed. Only integers computed
+ * here are interpolated.
+ */
+export function marketReadSetupSql(transactionMs?: number): string {
+  if (
+    transactionMs !== undefined &&
+    (!Number.isSafeInteger(transactionMs) || transactionMs < 1)
+  )
+    throw new RangeError('Invalid catalogue transaction budget');
+  const statementMs =
+    transactionMs === undefined ? 1500 : Math.min(250, transactionMs);
+  const lockMs = Math.min(250, transactionMs ?? 250);
+  return (
+    'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY;' +
+    `SET LOCAL statement_timeout=${statementMs};SET LOCAL lock_timeout=${lockMs}` +
+    (transactionMs === undefined
+      ? ''
+      : `;SET LOCAL transaction_timeout=${transactionMs}`)
+  );
 }
 
 /** Retrying at less than this remaining budget cannot finish a read. */
