@@ -1,4 +1,8 @@
-const LEGACY_VERIFICATION_DRAFT_SECRET = 'wiez-verification-draft-secret';
+/** Every default this code ever shipped. Historical values: never rename them. */
+export const LEGACY_VERIFICATION_DRAFT_SECRETS: readonly string[] = [
+  'threadly-verification-draft-secret',
+  'wiez-verification-draft-secret',
+];
 const MIN_SECRET_LENGTH = 32;
 
 function isProduction(config: Record<string, unknown>): boolean {
@@ -20,16 +24,17 @@ function boolFlag(value: unknown): boolean {
 function assertStrongSecret(
   config: Record<string, unknown>,
   key: string,
-  options?: { disallow?: string[] },
+  options?: { disallow?: readonly string[] },
 ): void {
   const value = String(config[key] ?? '').trim();
+  // Named before length, so a short legacy value is still reported as legacy.
+  if (options?.disallow?.includes(value)) {
+    throw new Error(`${key} uses an unsafe legacy value.`);
+  }
   if (value.length < MIN_SECRET_LENGTH) {
     throw new Error(
       `${key} must be configured with at least ${MIN_SECRET_LENGTH} characters in production.`,
     );
-  }
-  if (options?.disallow?.includes(value)) {
-    throw new Error(`${key} uses an unsafe legacy value.`);
   }
 }
 
@@ -39,7 +44,7 @@ export function validateProductionSecurityEnv(
   if (!isProduction(config)) return;
 
   assertStrongSecret(config, 'VERIFICATION_DRAFT_SECRET', {
-    disallow: [LEGACY_VERIFICATION_DRAFT_SECRET],
+    disallow: LEGACY_VERIFICATION_DRAFT_SECRETS,
   });
 
   if (boolFlag(config.BREAK_GLASS_ENABLED)) {

@@ -52,6 +52,7 @@ import {
   resolveProfileImage,
   resolveRequiredProfileField,
 } from 'src/common/user-profile-source.helper';
+import { LEGACY_VERIFICATION_DRAFT_SECRETS } from 'src/common/config/production-env.validation';
 import {
   isEmptyPhone,
   normalizePhoneToE164,
@@ -122,8 +123,6 @@ const DEFAULT_LETTER_TEMPLATE = {
   title: 'WIEZ Seller Verification Agreement',
   body: `LETTER OF CONFIRMATION\n\nI confirm that the information and documents submitted for store verification are accurate and belong to me or to the business I am authorized to represent. I understand that WIEZ may reject, suspend, or revoke verification if the submitted information is false, misleading, incomplete, or becomes stale. I consent to the processing of the submitted verification materials for trust, safety, fraud review, legal compliance, and audit purposes.`,
 };
-
-const LEGACY_VERIFICATION_DRAFT_SECRET = 'wiez-verification-draft-secret';
 
 @Injectable()
 export class BrandVerificationService {
@@ -2302,7 +2301,11 @@ export class BrandVerificationService {
       );
     }
 
-    if (isProduction && secret === LEGACY_VERIFICATION_DRAFT_SECRET) {
+    if (
+      isProduction &&
+      secret &&
+      LEGACY_VERIFICATION_DRAFT_SECRETS.includes(secret)
+    ) {
       throw new ServiceUnavailableException(
         'Verification draft encryption secret is unsafe',
       );
