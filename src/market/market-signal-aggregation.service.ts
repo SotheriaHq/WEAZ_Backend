@@ -11,6 +11,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { lockSecurityAccount } from '../auth/access/lock-security-account';
+import { databaseErrorCode } from './catalog/market-catalog-read.service';
 import { MARKET_SIGNAL_MAX_BATCH_EVENTS } from './dto/market-signal.dto';
 import { createHash } from 'node:crypto';
 
@@ -90,23 +91,49 @@ const ITEM_TARGET_TYPES = new Set<MarketSignalTargetType>([
   MarketSignalTargetType.CATEGORY,
 ]);
 
-/** Account erasure and telemetry share one bounded database unit of work. */
-export function withMarketSignalTransaction<T>(
+// Bounded waits that lost: pool or transaction start, connection limit, lock,
+// statement and deadlock. Every one rolls the whole unit of work back.
+const BUSY_PRISMA_CODES = new Set(['P2024', 'P2028', 'P2034', 'P2037']);
+const BUSY_DATABASE_CODES = new Set(['55P03', '57014', '40P01', '53300']);
+
+function isMarketSignalContention(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    (BUSY_PRISMA_CODES.has(error.code) ||
+      BUSY_DATABASE_CODES.has(String(databaseErrorCode(error.meta))))
+  );
+}
+
+/**
+ * Account erasure and telemetry share one bounded database unit of work.
+ * Contention is a retryable 503: clients keep the batch queued, and receipts
+ * make the replay idempotent. Other failures keep their own meaning.
+ */
+export async function withMarketSignalTransaction<T>(
   prisma: PrismaService,
   work: (tx: Prisma.TransactionClient) => Promise<T>,
 ): Promise<T> {
-  return prisma.$transaction(
-    async (tx) => {
-      await tx.$executeRaw`SET LOCAL lock_timeout = '250ms'`;
-      await tx.$executeRaw`SET LOCAL statement_timeout = '1500ms'`;
-      return work(tx);
-    },
-    {
-      maxWait: 500,
-      timeout: 5_000,
-      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
-    },
-  );
+  try {
+    return await prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SET LOCAL lock_timeout = '250ms'`;
+        await tx.$executeRaw`SET LOCAL statement_timeout = '1500ms'`;
+        return work(tx);
+      },
+      {
+        maxWait: 500,
+        timeout: 5_000,
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+      },
+    );
+  } catch (error) {
+    if (isMarketSignalContention(error))
+      throw new ServiceUnavailableException({
+        code: 'MARKET_SIGNALS_BUSY',
+        message: 'Activity could not be recorded. Please try again shortly.',
+      });
+    throw error;
+  }
 }
 
 @Injectable()

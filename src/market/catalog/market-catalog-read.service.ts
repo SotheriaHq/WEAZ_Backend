@@ -37,7 +37,9 @@ export class MarketCatalogAdmissionException extends ServiceUnavailableException
   }
 }
 
-function databaseErrorCode(meta: Record<string, unknown> | undefined): unknown {
+export function databaseErrorCode(
+  meta: Record<string, unknown> | undefined,
+): unknown {
   if (typeof meta?.code === 'string') return meta.code;
   // Prisma's PostgreSQL driver adapter retains SQLSTATE in a structured cause.
   // Do not infer a database code from error messages containing private SQL.

@@ -118,11 +118,26 @@ async function main() {
         ).rows[0].total,
       );
 
+    const isBusy = (error) =>
+      error.getStatus?.() === 503 &&
+      error.getResponse?.().code === 'MARKET_SIGNALS_BUSY';
+    // Clients keep a batch queued after a busy 503 and send it again. Only that
+    // response is retried here; any other failure still fails the proof.
+    const ingestAsClient = async (...args) => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await service.ingestBatch(...args);
+        } catch (error) {
+          if (attempt >= 8 || !isBusy(error)) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 50 << attempt));
+        }
+      }
+    };
     const guest = 'fixture-guest-' + randomUUID();
     const before = await countGlobal();
     const results = await Promise.all(
       Array.from({ length: 4 }, () =>
-        service.ingestBatch(
+        ingestAsClient(
           { batchId: 'same-batch', events: [event('same-event')] },
           { anonymousSessionId: guest },
         ),
@@ -160,7 +175,7 @@ async function main() {
     const eventBefore = await countGlobal();
     await Promise.all(
       Array.from({ length: 4 }, (_, index) =>
-        service.ingestBatch(
+        ingestAsClient(
           { batchId: 'batch-' + index, events: [event('shared-event')] },
           { anonymousSessionId: secondGuest },
         ),
@@ -450,6 +465,7 @@ async function main() {
         { batchId: 'blocked', events: [event('blocked-event')] },
         { userId: blocked.id },
       ),
+      isBusy,
     );
     checks++;
     assert(
@@ -524,10 +540,16 @@ async function main() {
   }
 }
 main().catch((error) => {
+  const redact = (text) =>
+    String(text ?? '').replace(/postgres(?:ql)?:\/\/\S+/g, '[redacted]');
+  console.error(error.name + ': ' + redact(error.message));
+  // Frames only: they name the failing step without repeating SQL or values.
   console.error(
-    error.name +
-      ': ' +
-      error.message.replace(/postgres(?:ql)?:\/\/\S+/g, '[redacted]'),
+    redact(error.stack)
+      .split('\n')
+      .filter((line) => /^\s+at /.test(line))
+      .slice(0, 12)
+      .join('\n'),
   );
   process.exitCode = 1;
 });

@@ -242,6 +242,48 @@ describe('MarketSignalAggregationService', () => {
     ).rejects.toThrow('Inactive accounts');
     expect(writes()).toEqual([]);
   });
+  describe('contention', () => {
+    const known = (code: string, databaseCode?: string) =>
+      new Prisma.PrismaClientKnownRequestError('private SQL', {
+        code,
+        clientVersion: 'test',
+        meta: databaseCode ? { code: databaseCode } : undefined,
+      });
+    const aggregateFailing = (error: unknown) => {
+      const { service, prisma } = fixture();
+      prisma.$transaction.mockRejectedValueOnce(error);
+      return service.aggregateBatch(
+        [event()],
+        { anonymousSessionId: 'guest' },
+        observedAt,
+      );
+    };
+    it.each([
+      ['P2024', undefined],
+      ['P2028', undefined],
+      ['P2034', undefined],
+      ['P2037', undefined],
+      ['P2010', '55P03'],
+      ['P2010', '57014'],
+      ['P2010', '40P01'],
+      ['P2010', '53300'],
+    ])('maps %s %s to a retryable 503', async (code, databaseCode) => {
+      await expect(
+        aggregateFailing(known(code, databaseCode)),
+      ).rejects.toMatchObject({
+        status: 503,
+        response: { code: 'MARKET_SIGNALS_BUSY' },
+      });
+    });
+    it.each([
+      known('P2002'),
+      known('P2010', '42703'),
+      known('P2010', '23514'),
+      new Error('canceling statement due to lock timeout'),
+    ])('keeps other failures unchanged', async (error) => {
+      await expect(aggregateFailing(error)).rejects.toBe(error);
+    });
+  });
   it('reuses the caller transaction without acquiring a second connection', async () => {
     const { service, tx, prisma, writes } = fixture();
     await service.aggregateBatch(
