@@ -24,7 +24,10 @@ const {
 const {
   productEffectivePriceSql,
 } = require('../src/common/pricing/product-price.sql');
-const { withUtcDatabaseUrl } = require('../src/prisma/database-connection');
+const {
+  withUtcDatabaseUrl,
+  createResilientPgPool,
+} = require('../src/prisma/database-connection');
 const {
   marketNewestPageSql,
 } = require('../src/market/catalog/market-newest-order.sql');
@@ -54,6 +57,9 @@ async function main() {
   tu.pathname = '/' + name;
   const admin = new Client({ connectionString: au.toString() });
   const db = new Client({ connectionString: tu.toString() });
+  // A server-ended session must surface as a rejected query, never as an
+  // unhandled 'error' event that kills the proof mid-run.
+  for (const client of [admin, db]) client.on('error', () => undefined);
   let created = false,
     connected = false,
     prisma,
@@ -135,10 +141,13 @@ async function main() {
       'options',
       `${readUrl.searchParams.get('options')} -c statement_timeout=1500 -c lock_timeout=250`,
     );
+    // The same resilient pool production uses: the deadline proof below ends a
+    // session with transaction_timeout, which must never crash the process.
     prisma = new PrismaClient({
-      adapter: new PrismaPg({
-        connectionString: readUrl.toString(),
-      }),
+      adapter: new PrismaPg(
+        createResilientPgPool(readUrl.toString(), () => undefined),
+        { disposeExternalPool: true },
+      ),
     });
     const query = (sql) => prisma.$queryRaw(sql);
     const assertSnapshotOrder = require('./lib/market-snapshot-order-assertions.cjs');
@@ -582,6 +591,15 @@ async function main() {
   }
 }
 main().catch((error) => {
-  console.error(error.name + ': ' + error.message);
+  const redact = (text) =>
+    String(text ?? '').replace(/postgres(?:ql)?:\/\/\S+/g, '[redacted]');
+  console.error(error.name + ': ' + redact(error.message));
+  console.error(
+    redact(error.stack)
+      .split('\n')
+      .filter((line) => /^\s+at /.test(line))
+      .slice(0, 12)
+      .join('\n'),
+  );
   process.exitCode = 1;
 });

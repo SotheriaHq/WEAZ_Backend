@@ -93,7 +93,9 @@ async function runMarketSourceKeysetAssertions({db,prisma,now,brand,owner,chosen
     const result=await work();
     const after=queryStats();
     const total=after.total-before.total,controls=after.controls-before.controls;
-    return{result,total,controls,data:total-controls,elapsedMs:Math.round(performance.now()-started),statements:after.statementsSince?.(before.total)??[]};
+    // wire = statements the pg driver actually sent (includes the adapter's BEGIN).
+    const wire=Number.isFinite(after.wire)?after.wire-before.wire:null;
+    return{result,total,wire,controls,data:total-controls,elapsedMs:Math.round(performance.now()-started),statements:after.statementsSince?.(before.total)??[]};
   };
   console.log('STAGE full pipeline query budget and N+1 invariance');
   const shelf=preview=>buildMarketPipelinePage({read,media:new MarketPipelineMediaResolver(new MarketPublicMediaService(read,config)),viewer:{},surface:'HOME',filters:{},specs:[parsePipelineSpec({key:'bounded-read-proof',template:'CURATED_LIST',status:'ACTIVE',curated:{placementKey:'SCOPE_PERF'},capacity:{preview,minItems:1},params:{maxPerBrand:8,maxPerCategory:8,explorationShare:0}})]});
@@ -102,7 +104,8 @@ async function runMarketSourceKeysetAssertions({db,prisma,now,brand,owner,chosen
   equal(oneCard.result.public.sections[0]?.items.length,1,'A one-card shelf renders one card');
   equal(fullShelf.result.public.sections[0]?.items.length,8,'Real public capture and media authorization render the requested shelf');
   equal(fullShelf.total,oneCard.total,'N+1: Market page statements do not grow from 1 to 8 cards');
-  console.log('QUERY_BUDGET '+JSON.stringify({page:{oneCard:oneCard.total,eightCards:fullShelf.total,controls:fullShelf.controls,data:fullShelf.data,limit:12,elapsedMs:fullShelf.elapsedMs}}));
+  if(fullShelf.wire!==null){equal(fullShelf.wire,oneCard.wire,'N+1: Market page wire round trips do not grow from 1 to 8 cards');}
+  console.log('QUERY_BUDGET '+JSON.stringify({page:{oneCard:oneCard.total,eightCards:fullShelf.total,wireOneCard:oneCard.wire,wireEightCards:fullShelf.wire,controls:fullShelf.controls,data:fullShelf.data,limit:12,elapsedMs:fullShelf.elapsedMs}}));
   if(fullShelf.total>12)fullShelf.statements.forEach((head,index)=>console.log('QUERY_BUDGET_STATEMENT '+(index+1)+' '+head));
   assert(fullShelf.total<=12,'Market page stays within its 12-statement budget, got '+fullShelf.total);checks++;
   const cataloguePage=limit=>scopedCatalogue.getPage(new URLSearchParams('sort=newest&limit='+limit),{},{scope:createMarketCatalogScope({key:'catalog',version:'1',viewer:{}}),fixedFilters:{}});
@@ -111,7 +114,8 @@ async function runMarketSourceKeysetAssertions({db,prisma,now,brand,owner,chosen
   equal(catalogueOne.result.items.length,1,'A one-item catalogue page renders one item');
   assert(catalogueMany.result.items.length>=12,'A larger catalogue page renders many items');checks++;
   equal(catalogueMany.total,catalogueOne.total,'N+1: catalogue page statements do not grow with page size');
-  console.log('QUERY_BUDGET '+JSON.stringify({catalogue:{oneItem:catalogueOne.total,manyItems:catalogueMany.total,itemsServed:catalogueMany.result.items.length,controls:catalogueMany.controls,elapsedMs:catalogueMany.elapsedMs}}));
+  if(catalogueMany.wire!==null){equal(catalogueMany.wire,catalogueOne.wire,'N+1: catalogue wire round trips do not grow with page size');}
+  console.log('QUERY_BUDGET '+JSON.stringify({catalogue:{oneItem:catalogueOne.total,manyItems:catalogueMany.total,wireOneItem:catalogueOne.wire,wireManyItems:catalogueMany.wire,itemsServed:catalogueMany.result.items.length,controls:catalogueMany.controls,elapsedMs:catalogueMany.elapsedMs}}));
   console.log(`PASS ${checks} complete product/nonproduct source-keyset proofs beyond preview capacity`);
   return{checks};
 }

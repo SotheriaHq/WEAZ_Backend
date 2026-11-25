@@ -5,7 +5,72 @@ import {
   MarketCatalogAdmissionException,
   MarketCatalogReadService,
   MARKET_CATALOG_CONCURRENT_READS,
+  isEndedConnection,
 } from './market-catalog-read.service';
+
+describe('catalogue read on a connection the server already ended', () => {
+  const ended = () => new Error('Connection terminated unexpectedly');
+  const setup = () => {
+    const tx = { $queryRaw: jest.fn().mockResolvedValue([]) };
+    const transaction = jest.fn(async (read: (value: typeof tx) => unknown) =>
+      read(tx),
+    );
+    const service = new MarketCatalogReadService({
+      $transaction: transaction,
+    } as unknown as PrismaService);
+    return { transaction, service };
+  };
+  it('retries once on a fresh connection when BEGIN fails before any read', async () => {
+    const { transaction, service } = setup();
+    transaction.mockRejectedValueOnce(ended());
+    const read = jest.fn().mockResolvedValue('value');
+    await expect(service.run(read)).resolves.toBe('value');
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+  it('never retries once the read has started, and maps the failure to 503', async () => {
+    const { transaction, service } = setup();
+    const read = jest.fn().mockRejectedValue(ended());
+    await expect(service.run(read)).rejects.toMatchObject({
+      response: { code: 'CATALOGUE_READ_LIMIT' },
+    });
+    expect(transaction).toHaveBeenCalledTimes(1);
+  });
+  it('retries at most once', async () => {
+    const { transaction, service } = setup();
+    transaction.mockRejectedValueOnce(ended()).mockRejectedValueOnce(ended());
+    await expect(service.run(jest.fn())).rejects.toMatchObject({
+      response: { code: 'CATALOGUE_READ_LIMIT' },
+    });
+    expect(transaction).toHaveBeenCalledTimes(2);
+  });
+  it('does not retry pool waits, timeouts or unrelated errors', async () => {
+    const { transaction, service } = setup();
+    const poolWait = new Prisma.PrismaClientKnownRequestError('pool', {
+      code: 'P2024',
+      clientVersion: 'test',
+    });
+    transaction.mockRejectedValueOnce(poolWait);
+    await expect(service.run(jest.fn())).rejects.toMatchObject({
+      response: { code: 'CATALOGUE_READ_LIMIT' },
+    });
+    expect(transaction).toHaveBeenCalledTimes(1);
+    const unrelated = new Error('private failure');
+    transaction.mockRejectedValueOnce(unrelated);
+    await expect(service.run(jest.fn())).rejects.toBe(unrelated);
+    expect(transaction).toHaveBeenCalledTimes(2);
+  });
+  it('recognises only server-ended connections', () => {
+    expect(isEndedConnection(ended())).toBe(true);
+    expect(
+      isEndedConnection(Object.assign(new Error('x'), { code: '57P01' })),
+    ).toBe(true);
+    expect(
+      isEndedConnection(Object.assign(new Error('x'), { code: '57014' })),
+    ).toBe(false);
+    expect(isEndedConnection('Connection terminated unexpectedly')).toBe(false);
+  });
+});
 
 describe('catalogue read admission', () => {
   const fixture = () => {
@@ -149,13 +214,17 @@ describe('catalogue read admission', () => {
     'returns a retryable error for %s / %s without database text',
     async (code, databaseCode) => {
       const { service, transaction } = fixture();
-      transaction.mockRejectedValueOnce(
-        new Prisma.PrismaClientKnownRequestError('private database detail', {
+      const failure = new Prisma.PrismaClientKnownRequestError(
+        'private database detail',
+        {
           code,
           clientVersion: 'test',
           meta: databaseCode ? { code: databaseCode } : undefined,
-        }),
+        },
       );
+      // A closed server connection (P1017) is retried once before it maps.
+      for (let i = 0; i < (code === 'P1017' ? 2 : 1); i++)
+        transaction.mockRejectedValueOnce(failure);
       await expect(service.run(async () => null)).rejects.toMatchObject({
         response: { code: 'CATALOGUE_READ_LIMIT' },
       });

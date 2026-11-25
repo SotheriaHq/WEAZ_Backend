@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { Client } = require('pg');
+const { Client, Pool } = require('pg');
 const { PrismaClient } = require('@prisma/client');
 const { PrismaPg } = require('@prisma/adapter-pg');
 require('dotenv').config({ quiet: true });
@@ -20,7 +20,7 @@ async function main() {
   adminUrl.pathname='/postgres'; target.pathname='/'+name;
   const admin = new Client({ connectionString: adminUrl.toString(), connectionTimeoutMillis: 10000 });
   const db = new Client({ connectionString: target.toString(), connectionTimeoutMillis: 10000 });
-  let created=false,connected=false,prisma;
+  let created=false,connected=false,prisma,pool,wireCount=0;
   await admin.connect();
   try {
     await admin.query('CREATE DATABASE "'+name+'"'); created=true;
@@ -33,16 +33,20 @@ async function main() {
     assert(generated.stdout.includes('CREATE TABLE "Product"'),'Expected actual current schema');
     await db.query(generated.stdout);
     console.log('SETUP current Prisma schema applied to guarded disposable database (migration guards not claimed)');
-    prisma=new PrismaClient({adapter:new PrismaPg({connectionString:withUtcDatabaseUrl(target.toString())}),log:[{level:'query',emit:'event'}]});
+    // Count at the driver too: Prisma query events omit the adapter's own BEGIN,
+    // so only the pg connection sees every statement sent over the wire.
+    pool=new Pool({connectionString:withUtcDatabaseUrl(target.toString())});
+    pool.on('connect',client=>{const send=client.query.bind(client);client.query=(...args)=>{wireCount++;return send(...args);};});
+    prisma=new PrismaClient({adapter:new PrismaPg(pool),log:[{level:'query',emit:'event'}]});
     let queryCount=0,controlCount=0;
     // Statement heads are kept so a failed query budget can name each statement.
     const statementHeads=[];
     prisma.$on('query',event=>{queryCount++;statementHeads.push(event.query.trimStart().replace(/\s+/g,' ').slice(0,140));if(/^(?:BEGIN|COMMIT|ROLLBACK|SET\b|SELECT\s+set_config\b)/i.test(event.query.trimStart()))controlCount++;});
-    const result=await runPipelineFixture({db,prisma,queryCount:()=>queryCount,queryStats:()=>({total:queryCount,controls:controlCount,statementsSince:from=>statementHeads.slice(from)}),now:new Date('2026-11-21T12:00:00.000Z')});
+    const result=await runPipelineFixture({db,prisma,queryCount:()=>queryCount,queryStats:()=>({total:queryCount,controls:controlCount,wire:wireCount,statementsSince:from=>statementHeads.slice(from)}),now:new Date('2026-11-21T12:00:00.000Z')});
     console.log(`PASS ${result.checks} actual PostgreSQL pipeline source/transition proofs; ${result.plans} EXPLAIN executions`);
   } finally {
     try {
-      try { if(prisma) await prisma.$disconnect(); }
+      try { if(prisma) await prisma.$disconnect(); if(pool) await pool.end(); }
       finally { if(connected) await db.end(); }
     } finally {
       try {
