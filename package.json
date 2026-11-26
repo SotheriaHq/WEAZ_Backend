@@ -67,6 +67,7 @@
     "test:market-intelligence": "jest src/market/intelligence --runInBand && node scripts/test-market-intelligence-contracts.cjs && node scripts/test-market-intelligence-postgres.cjs && node scripts/test-market-intelligence-ingest-postgres.cjs",
     "test:market-intelligence-redis": "node scripts/test-market-intelligence-redis.cjs",
     "test:market-catalog": "jest src/market/catalog/ src/market/market-flags.service.spec.ts --runInBand",
+    "test:discovery-attribution-postgres": "node scripts/test-discovery-attribution-postgres.cjs",
     "test:market-catalog-postgres": "node scripts/test-market-catalog-filters-postgres.cjs && node scripts/test-market-price-fence-postgres.cjs && node scripts/test-market-price-order-postgres.cjs"
   },
   "_moduleAliases": {
