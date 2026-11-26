@@ -4,6 +4,21 @@ import { PostsService } from './posts.service';
 import { CollectionsService } from '../collections/collections.service';
 import { CommentsV2Service } from '../commentsv2/commentsv2.service';
 import { CommentsService } from './comments/comments.service';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
+/**
+ * The real column behind a Prisma field. Raw SQL bypasses `@map`, so a lock
+ * query naming the FIELD (`"threadsCount"`) fails in Postgres with 42703 —
+ * which is what every thread toggle did on SIT until 20 Nov 2026, while these
+ * in-memory tests passed.
+ */
+const schema = readFileSync(join(__dirname, '../../prisma/schema.prisma'), 'utf8');
+function columnFor(model: string, field: string): string {
+  const block = schema.match(new RegExp(`\\nmodel ${model} \\{([\\s\\S]*?)\\n\\}`))?.[1] ?? '';
+  const line = block.split('\n').find((entry) => entry.trim().startsWith(`${field} `)) ?? '';
+  return line.match(/@map\("([^"]+)"\)/)?.[1] ?? field;
+}
 
 /** In-memory DB semantics exercise the real methods; PostgreSQL lock behavior is an integration gate. */
 function reactionFixture(kind: 'post' | 'collection' | 'media' | 'comment' | 'legacy', initialCount = 0) {
@@ -45,6 +60,11 @@ function reactionFixture(kind: 'post' | 'collection' | 'media' | 'comment' | 'le
         const query = sql.join('?');
         expect(query).toContain(`FROM "${table}"`);
         expect(query).toContain('FOR UPDATE');
+        if (query.includes('threadsCount')) {
+          const column = columnFor(table, 'threadsCount');
+          // Selected by its real column name, aliased back to the field.
+          expect(query).toContain(column === 'threadsCount' ? '"threadsCount"' : `"${column}" AS "threadsCount"`);
+        }
         locks.push(query);
         const previous = tail;
         tail = new Promise<void>((resolve) => { release = resolve; });
@@ -77,7 +97,7 @@ function reactionFixture(kind: 'post' | 'collection' | 'media' | 'comment' | 'le
         : kind === 'media' ? service.toggleMediaThread('target', userId)
           : kind === 'legacy' ? service.toggleReaction('target', userId, reactionType)
             : service.toggleThread('target', userId);
-  return { state, rows, update, locks, prisma, toggle };
+  return { state, rows, update, locks, prisma, toggle, service };
 }
 
 describe.each(['post', 'collection', 'media', 'comment'] as const)('%s reaction concurrency', (kind) => {
@@ -109,6 +129,34 @@ describe.each(['post', 'collection', 'media', 'comment'] as const)('%s reaction 
     fixture.rows.set('one-user', { id: 'one-user', type: ReactionType.THREAD });
     await fixture.toggle('one-user');
     expect(fixture.state.threadsCount).toBe(0);
+  });
+});
+
+describe('media thread with a desired state', () => {
+  const setThread = (fixture: ReturnType<typeof reactionFixture>, userId: string, desired: boolean) =>
+    (fixture as any).service.toggleMediaThread('target', userId, desired);
+
+  it('a request for the state that already holds writes nothing and reports unchanged', async () => {
+    const fixture = reactionFixture('media', 1);
+    fixture.rows.set('one-user', { id: 'one-user', type: ReactionType.THREAD });
+    await expect(setThread(fixture, 'one-user', true)).resolves.toEqual({ threads: 1, threaded: true, changed: false });
+    expect(fixture.update).not.toHaveBeenCalled();
+    expect(fixture.rows.size).toBe(1);
+  });
+
+  it('two simultaneous "thread it" requests add exactly one thread', async () => {
+    const fixture = reactionFixture('media');
+    const results = await Promise.all([setThread(fixture, 'one-user', true), setThread(fixture, 'one-user', true)]);
+    expect(fixture.rows.size).toBe(1);
+    expect(fixture.state.threadsCount).toBe(1);
+    expect(results.map((r: any) => r.changed).sort()).toEqual([false, true]);
+  });
+
+  it('removes only when asked to remove', async () => {
+    const fixture = reactionFixture('media', 1);
+    fixture.rows.set('one-user', { id: 'one-user', type: ReactionType.THREAD });
+    await expect(setThread(fixture, 'one-user', false)).resolves.toEqual({ threads: 0, threaded: false, changed: true });
+    expect(fixture.rows.size).toBe(0);
   });
 });
 

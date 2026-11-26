@@ -12,6 +12,7 @@ import {
 } from '../eligibility/market-eligibility';
 import { resolveProductPrice } from '../../common/pricing/product-price';
 import { trimSql } from '../../common/utils/sql-text-normalization';
+import { marketPlan } from './market-read-plans';
 
 type Product = CapturedMarketCard['product'];
 type File = CapturedMarketCard['file'];
@@ -65,7 +66,9 @@ export function marketCatalogCardBatchSql(input: {
     throw new RangeError('Invalid catalogue hydration budget');
   const cover = Prisma.sql`COALESCE(NULLIF(${trimSql(Prisma.sql`p.thumbnail`)},''),(SELECT ${trimSql(Prisma.sql`image.value`)} FROM unnest(p.images) WITH ORDINALITY image(value,position) WHERE length(${trimSql(Prisma.sql`image.value`)})>0 ORDER BY image.position LIMIT 1))`;
   const fileJson = Prisma.sql`jsonb_build_object('id',file."_id",'s3Url',file."s3Url",'width',file.width,'height',file.height,'assetVersion',file."assetVersion")`;
-  return Prisma.sql`SELECT jsonb_build_object(
+  return marketPlan(
+    'cards',
+    Prisma.sql`SELECT jsonb_build_object(
     'id',p."_id",'name',p.name,'description',p.description,'slug',p.slug,'brandId',p."brandId",
     'isActive',p."isActive",'publicationStatus',p."publicationStatus",'deletedAt',${utc(Prisma.sql`p."deletedAt"`)},'archivedAt',${utc(Prisma.sql`p."archivedAt"`)},'publishAt',${utc(Prisma.sql`p."publishAt"`)},
     'price',p.price::text,'salePrice',p."salePrice"::text,'saleStartAt',${utc(Prisma.sql`p."saleStartAt"`)},'saleEndAt',${utc(Prisma.sql`p."saleEndAt"`)},'currency',p.currency,
@@ -92,7 +95,8 @@ export function marketCatalogCardBatchSql(input: {
     LEFT JOIN LATERAL (SELECT array_agg(tag."normalizedName" ORDER BY tag."normalizedName",tag."_id") AS values FROM (
       SELECT tag."normalizedName",tag."_id" FROM "TagBinding" binding JOIN "Tag" tag ON tag."_id"=binding."tagId"
       WHERE binding."entityType"='PRODUCT' AND binding."entityId"=p."_id" AND tag.status='APPROVED' AND NOT tag."isBanned" AND tag."aliasOfTagId" IS NULL ORDER BY tag."normalizedName",tag."_id" LIMIT 25) tag) tags ON true
-    WHERE p."_id" IN (${Prisma.join(input.rows.map((row) => Prisma.sql`${row.id}::uuid`))}) AND ${eligibleProductSql(input.asOf)} AND p.currency='NGN' AND p.price<'Infinity'::numeric LIMIT ${MARKET_CARD_CAPTURE_MAX}`;
+    WHERE p."_id"=ANY(${input.rows.map((row) => row.id)}::uuid[]) AND ${eligibleProductSql(input.asOf)} AND p.currency='NGN' AND p.price<'Infinity'::numeric LIMIT ${MARKET_CARD_CAPTURE_MAX}`,
+  );
 }
 
 const date = (value: string | null) =>

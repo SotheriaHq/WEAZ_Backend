@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { MarketPublicMediaService } from '../catalog/market-public-media.service';
+import { isUnfilteredMarketRead } from '../catalog/market-read-plans';
 import {
   CapturedPipelinePage,
   currentPipelineSourcesSql,
@@ -47,9 +48,8 @@ export class MarketPipelineMediaResolver implements PipelineMediaResolver {
           ]
         : [];
     const resolved = await this.media.resolve<ReadonlySet<string>>(
-      async (tx) => {
-        if (!Number.isFinite(capture.context.deadline))
-          await tx.$executeRaw`SET LOCAL statement_timeout='250ms'`;
+      async () => {
+        // The read pool's sessions already limit each statement to 250 ms.
         const current = currentPipelineSourcesSql(capture);
         return {
           candidates: {
@@ -69,6 +69,7 @@ export class MarketPipelineMediaResolver implements PipelineMediaResolver {
                 ? [row.fileId]
                 : [],
             ),
+            reusablePlan: isUnfilteredMarketRead(capture.context.filters),
             guard: current
               ? Prisma.sql`SELECT source."requestKey",source.candidate->>'entityType' AS "entityType",source.candidate->>'id' AS id,source."fileId" FROM (${current}) source`
               : null,

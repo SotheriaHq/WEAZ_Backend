@@ -3,7 +3,10 @@ import { productEffectivePriceSql } from '../../common/pricing/product-price.sql
 import { normalizeTokenSql } from '../../common/utils/sql-text-normalization';
 import { CanonicalMarketFilters } from './market-filters';
 import { filtersForMarketFacet, MarketFacetKey } from './market-facet-filters';
-import { marketCatalogProductFiltersSql } from './market-filter.sql';
+import {
+  marketCatalogLayerFiltersSql,
+  marketCatalogProductFiltersSql,
+} from './market-filter.sql';
 import { marketStockSelectionSql } from './market-stock-selection.sql';
 import { MarketCatalogScope } from './market-catalog-scope';
 
@@ -70,6 +73,27 @@ function boundedOptions(
     ORDER BY key COLLATE "C",count DESC,value COLLATE "C"`;
 }
 
+/** Statement-level CTE name holding the canonical public catalogue ids. */
+const MARKET_FACET_PUBLIC = Prisma.raw('market_facet_public');
+/** Public catalogue rows; every facet adds only its own layers and scope. */
+const products = Prisma.sql`(SELECT p.* FROM "Product" p JOIN ${MARKET_FACET_PUBLIC} pub ON pub.id=p."_id")`;
+
+/**
+ * Wraps the facet groups in one statement. Canonical eligibility and the
+ * renderable-cover rule are planned and evaluated once, not once per group:
+ * planning that repeated predicate dominated the statement's cost.
+ */
+export function marketFacetStatementSql(
+  input: Pick<MarketFacetsInput, 'now'>,
+  groups: readonly Prisma.Sql[],
+): Prisma.Sql {
+  if (!groups.length) throw new RangeError('Empty catalogue facet statement');
+  return Prisma.sql`WITH ${MARKET_FACET_PUBLIC} AS MATERIALIZED (
+    SELECT p."_id" AS id,p."brandId" AS brand_id FROM "Product" p
+    WHERE ${marketCatalogProductFiltersSql([{}], input.now)}
+  ) ${Prisma.join(groups, ' UNION ALL ')}`;
+}
+
 export function marketFacetQueries(
   input: MarketFacetsInput,
 ): readonly Prisma.Sql[] {
@@ -80,12 +104,11 @@ export function marketFacetQueries(
     fixed,
   ];
   const predicate = (key: MarketFacetKey) =>
-    marketCatalogProductFiltersSql(layers(key), now, 'p', input.scope);
+    marketCatalogLayerFiltersSql(layers(key), now, 'p', input.scope);
   const stockLayers = (key: MarketFacetKey) => [
     ...layers(key),
     ...(input.scope?.filterLayers ?? []),
   ];
-  const publicPredicate = marketCatalogProductFiltersSql([{}], now);
   const row = (
     key: string,
     value: Prisma.Sql,
@@ -107,7 +130,7 @@ export function marketFacetQueries(
       Prisma.sql`count(p."_id")`,
       selectedSql(Prisma.sql`c."_id"::text`, filters.categoryIds),
     )}
-    FROM "CollectionCategory" c LEFT JOIN "Product" p ON p."categoryId"=c."_id" AND ${predicate('category')}
+    FROM "CollectionCategory" c LEFT JOIN ${products} p ON p."categoryId"=c."_id" AND ${predicate('category')}
     WHERE c."isActive"=true GROUP BY c."_id",c.name
     UNION ALL
     SELECT ${row(
@@ -119,7 +142,7 @@ export function marketFacetQueries(
       Prisma.sql`t."categoryId"::text`,
     )}
     FROM "CollectionCategoryType" t JOIN "CollectionCategory" c ON c."_id"=t."categoryId" AND c."isActive"=true
-    LEFT JOIN "Product" p ON p."categoryTypeId"=t."_id" AND p."categoryId"=t."categoryId" AND ${predicate('type')}
+    LEFT JOIN ${products} p ON p."categoryTypeId"=t."_id" AND p."categoryId"=t."categoryId" AND ${predicate('type')}
     WHERE t."isActive"=true GROUP BY t."_id",t.name,t."categoryId"`,
     MARKET_FACET_LIMITS.type,
     MARKET_FACET_LIMITS.category,
@@ -134,8 +157,8 @@ export function marketFacetQueries(
       selectedSql(Prisma.sql`b."_id"::text`, filters.brandIds),
     )}
     FROM "Brand" b JOIN "User" u ON u."_id"=b."ownerId" AND u.status='ACTIVE'
-    LEFT JOIN "Product" p ON p."brandId"=b."_id" AND ${predicate('brand')}
-    WHERE b."isStoreOpen"=true AND EXISTS(SELECT 1 FROM "Product" p WHERE p."brandId"=b."_id" AND ${publicPredicate})
+    LEFT JOIN ${products} p ON p."brandId"=b."_id" AND ${predicate('brand')}
+    WHERE b."isStoreOpen"=true AND EXISTS(SELECT 1 FROM ${MARKET_FACET_PUBLIC} pub WHERE pub.brand_id=b."_id")
     GROUP BY b."_id",b.name`,
     MARKET_FACET_LIMITS.brand,
   );
@@ -157,7 +180,7 @@ export function marketFacetQueries(
     selectedSql(Prisma.sql`r.value`, filters.tags),
   )}
     FROM roots r LEFT JOIN "TagBinding" binding ON binding."tagId"=r."_id" AND binding."entityType"='PRODUCT'
-    LEFT JOIN "Product" p ON p."_id"=binding."entityId" AND ${predicate('tag')}
+    LEFT JOIN ${products} p ON p."_id"=binding."entityId" AND ${predicate('tag')}
     WHERE r."aliasOfTagId" IS NULL GROUP BY r.value,r.label
     HAVING count(DISTINCT p."_id")>=2 OR ${selectedSql(Prisma.sql`r.value`, filters.tags)}`,
     MARKET_FACET_LIMITS.tag,
@@ -166,7 +189,7 @@ export function marketFacetQueries(
     ([slug, values]) =>
       Prisma.sql`(d.slug=${slug} AND ${selectedSql(Prisma.sql`v.slug`, values)})`,
   );
-  const dimensionPredicate = marketCatalogProductFiltersSql(
+  const dimensionPredicate = marketCatalogLayerFiltersSql(
     [filters, fixed],
     now,
     'p',
@@ -187,7 +210,7 @@ export function marketFacetQueries(
   )},d.slug AS dimension
     FROM "FilterDimension" d JOIN "FilterValue" v ON v."dimensionId"=d."_id" AND v."isActive"=true
     LEFT JOIN "EntityFilter" binding ON binding."filterValueId"=v."_id" AND binding."entityType"='PRODUCT'
-    LEFT JOIN "Product" p ON p."_id"=binding."entityId" AND ${dimensionPredicate}
+    LEFT JOIN ${products} p ON p."_id"=binding."entityId" AND ${dimensionPredicate}
     WHERE d."isActive"=true AND 'PRODUCT'=ANY(d."appliesTo")
     GROUP BY d.slug,d.name,d."isMulti",v.slug,v.name`;
   const dimensions = Prisma.sql`WITH raw AS (${dimensionRows}), options AS (
@@ -208,10 +231,10 @@ export function marketFacetQueries(
   const colors = boundedOptions(
     Prisma.sql`WITH vocabulary AS (
     SELECT DISTINCT lower(${normalizeTokenSql(Prisma.sql`option.value`)}) AS value
-    FROM "Product" p CROSS JOIN LATERAL (${colorVocabulary}) option WHERE ${publicPredicate}
+    FROM ${products} p CROSS JOIN LATERAL (${colorVocabulary}) option
   ), counts AS (
     SELECT lower(${normalizeTokenSql(Prisma.sql`option.value`)}) AS value,count(DISTINCT p."_id") AS count
-    FROM "Product" p CROSS JOIN LATERAL (${colorVocabulary}) option
+    FROM ${products} p CROSS JOIN LATERAL (${colorVocabulary}) option
     WHERE ${predicate('color')} AND ${marketStockSelectionSql(stockLayers('color'), 'p', { color: Prisma.sql`option.value` })}
     GROUP BY 1
   ) SELECT ${row(
@@ -234,14 +257,14 @@ export function marketFacetQueries(
   });
   const sizes = boundedOptions(
     Prisma.sql`WITH base AS MATERIALIZED (
-    SELECT p.* FROM "Product" p WHERE ${predicate('size')}
+    SELECT p.* FROM ${products} p WHERE ${predicate('size')}
   ), custom AS (SELECT count(*) AS count FROM base p WHERE ${custom}), vocabulary AS (
     SELECT DISTINCT ${normalizeTokenSql(Prisma.sql`option.value`)} AS value
-    FROM "Product" p CROSS JOIN LATERAL (${sizeVocabulary}) option WHERE ${publicPredicate}
+    FROM ${products} p CROSS JOIN LATERAL (${sizeVocabulary}) option
     ${
       filters.sizes?.length
         ? Prisma.sql`UNION SELECT unnest(ARRAY[${Prisma.join([...filters.sizes])}]::text[])
-      WHERE EXISTS(SELECT 1 FROM "Product" p WHERE ${publicPredicate} AND p."customOrderEnabled"=true)`
+      WHERE EXISTS(SELECT 1 FROM ${products} p WHERE p."customOrderEnabled"=true)`
         : Prisma.empty
     }
   ), counts AS (
@@ -265,7 +288,7 @@ export function marketFacetQueries(
   );
   const effective = productEffectivePriceSql(now, 'p');
   const price = Prisma.sql`WITH prices AS MATERIALIZED (
-    SELECT (${effective})::numeric AS amount FROM "Product" p WHERE ${predicate('price')}
+    SELECT (${effective})::numeric AS amount FROM ${products} p WHERE ${predicate('price')}
   ), stats AS (SELECT count(*)::text AS count,min(amount)::text AS min,max(amount)::text AS max,
     percentile_cont(ARRAY[0.30,0.60,0.85]) WITHIN GROUP(ORDER BY amount) AS percentiles FROM prices),
   cuts AS (SELECT DISTINCT round(value/(CASE WHEN value<100000 THEN 5000 ELSE 10000 END))
@@ -302,7 +325,7 @@ export function marketFacetQueries(
               : Boolean(filters.inStockOnly)
       }`,
     )}
-      FROM "Product" p WHERE ${marketCatalogProductFiltersSql([...layers(key), candidate], now, 'p', input.scope)}`;
+      FROM ${products} p WHERE ${marketCatalogLayerFiltersSql([...layers(key), candidate], now, 'p', input.scope)}`;
   const toggles = boundedOptions(
     Prisma.join(
       [

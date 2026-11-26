@@ -192,9 +192,9 @@ export class AdaptiveAccessInterceptor implements NestInterceptor {
       requiredAdminPermissions,
       requiredRoles,
       proof:
-        typeof request.headers['x-wiez-action-proof'] === 'string'
-          ? request.headers['x-wiez-action-proof']
-          : undefined,
+        (typeof request.headers['x-aru-action-proof'] === 'string' && request.headers['x-aru-action-proof'].trim()) ||
+        (typeof request.headers['x-wiez-action-proof'] === 'string' && request.headers['x-wiez-action-proof'].trim()) ||
+        undefined,
     };
     const operation: AdaptiveOperation = {
       ...candidate,

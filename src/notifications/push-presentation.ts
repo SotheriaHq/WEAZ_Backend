@@ -43,7 +43,7 @@ const SECURITY_TYPES = new Set<string>([
  */
 const SIGNUP_PRESENTATION: Record<string, { title: string; hiddenBody: string }> = {
   SIGNUP: {
-    title: 'Welcome to WIEZ 👋',
+    title: 'Welcome to ARU 👋',
     hiddenBody: 'Wiez 👋 Your account is ready.',
   },
   VERIFY_EMAIL: {
@@ -122,7 +122,7 @@ const VERIFICATION_PRESENTATION: Record<
   VERIFICATION_INFO_REQUESTED: {
     title: 'More information needed 📎',
     hiddenBody:
-      'Wiez 👋 Your verification needs a little more information. Open WIEZ to see what to add.',
+      'Wiez 👋 Your verification needs a little more information. Open ARU to see what to add.',
   },
   VERIFICATION_INFO_RESUBMITTED: {
     title: 'Verification updated 📎',
@@ -141,7 +141,7 @@ const VERIFICATION_PRESENTATION: Record<
   VERIFICATION_VISIT_PROPOSED: {
     title: 'Pick a time 📅',
     hiddenBody:
-      'Wiez 👋 Times for your verification are ready. Open WIEZ to choose one.',
+      'Wiez 👋 Times for your verification are ready. Open ARU to choose one.',
   },
   VERIFICATION_VISIT_CONFIRMED: {
     title: 'Visit confirmed 📅',
@@ -169,7 +169,7 @@ const VERIFICATION_PRESENTATION: Record<
   VERIFICATION_VISIT_REMINDER: {
     title: 'Verification coming up 📅',
     hiddenBody:
-      'Wiez 👋 A verification appointment is coming up. Open WIEZ for the time.',
+      'Wiez 👋 A verification appointment is coming up. Open ARU for the time.',
   },
   VERIFICATION_VISIT_RESPONSE_DUE: {
     title: 'Visit needs your answer 📅',
@@ -196,12 +196,12 @@ const VERIFICATION_PRESENTATION: Record<
   VERIFICATION_PHYSICAL_FAILED: {
     title: 'Visit didn’t pass',
     hiddenBody:
-      'Wiez 👋 Your verification visit didn’t pass. Open WIEZ to see why.',
+      'Wiez 👋 Your verification visit didn’t pass. Open ARU to see why.',
   },
   VERIFICATION_REJECTED: {
     title: 'Verification not approved',
     hiddenBody:
-      'Wiez 👋 Your brand verification wasn’t approved this time. Open WIEZ to see why.',
+      'Wiez 👋 Your brand verification wasn’t approved this time. Open ARU to see why.',
   },
   VERIFICATION_CANCELLED: {
     title: 'Verification cancelled',
@@ -424,8 +424,8 @@ export function getPushPresentation(
   // when any existing type lands here, so this is never what users see.
   return {
     channelId: PUSH_CHANNEL_IDS.default,
-    title: 'WIEZ',
-    hiddenBody: 'Wiez 👋 You have an update waiting in WIEZ.',
+    title: 'ARU',
+    hiddenBody: 'Wiez 👋 You have an update waiting in ARU.',
     isFallback: true,
   };
 }

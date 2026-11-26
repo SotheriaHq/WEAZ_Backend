@@ -11,6 +11,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { Throttle } from '@nestjs/throttler';
 import { PatchingService } from './patching.service';
 import { CheckPatchBatchDto } from './dto/check-patch-batch.dto';
 import { UserTypeGuard } from '../auth/guard/user-type.guard';
@@ -28,13 +29,20 @@ export class PatchingController {
     return userId;
   }
 
+  /**
+   * Counted per ACCOUNT (see AppThrottlerGuard). The app coalesces rapid taps
+   * into one request for the final state, so 20 a minute is far above any
+   * real use and only stops a script or a stuck client from hammering it.
+   */
   @Post('patches')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @UseGuards(AuthGuard('jwt'), new UserTypeGuard(UserType.REGULAR))
   async patchBrand(@Param('brandId') brandId: string, @Req() req) {
     return this.patchingService.patchBrand(this.getAuthUserId(req), brandId);
   }
 
   @Delete('patches')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @UseGuards(AuthGuard('jwt'), new UserTypeGuard(UserType.REGULAR))
   async unpatchBrand(@Param('brandId') brandId: string, @Req() req) {
     return this.patchingService.unpatchBrand(this.getAuthUserId(req), brandId);

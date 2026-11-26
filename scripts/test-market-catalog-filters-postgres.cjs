@@ -46,6 +46,7 @@ async function main() {
     checks = 0,
     prisma,
     encodingCreated = false;
+  const slowest = [];
   const now = new Date('2026-11-20T12:00:00.000Z');
   await admin.connect();
   try {
@@ -94,6 +95,17 @@ async function main() {
       adapter: new PrismaPg({
         connectionString: readUrl.toString(),
       }),
+      log: [{ level: 'query', emit: 'event' }],
+    });
+    // The slowest statements are named on failure, so a CI timeout points at
+    // a statement instead of an anonymous raw query. No parameter values.
+    prisma.$on('query', (event) => {
+      slowest.push({
+        ms: Number(event.duration),
+        head: event.query.trimStart().replace(/\s+/g, ' ').slice(0, 120),
+      });
+      slowest.sort((a, b) => b.ms - a.ms);
+      slowest.length = Math.min(slowest.length, 5);
     });
     const owner = randomUUID(),
       brand = randomUUID(),
@@ -626,6 +638,10 @@ async function main() {
         ' PostgreSQL filter/text/facet/capability cases, closed aliases and hostile values',
     );
   } finally {
+    console.log(
+      'SLOWEST ' +
+        slowest.map((entry) => `${entry.ms}ms ${entry.head}`).join('\n  '),
+    );
     if (prisma) await prisma.$disconnect();
     if (connected) await db.end();
     if (encodingCreated) {

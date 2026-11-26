@@ -47,20 +47,18 @@ function fixture(
     expect(inside).toBe(true);
     return [{ guard: [], files: [], variants: [], ...row }];
   });
-  const tx = { $queryRaw: query } as unknown as Prisma.TransactionClient;
+  // One autocommit statement: the whole authorization is a single read.
   const run = jest
     .fn()
-    .mockImplementation(
-      async (read: (value: Prisma.TransactionClient) => Promise<unknown>) => {
-        expect(inside).toBe(false);
-        inside = true;
-        try {
-          return await read(tx);
-        } finally {
-          inside = false;
-        }
-      },
-    );
+    .mockImplementation(async (sql: Prisma.Sql, options: unknown) => {
+      expect(inside).toBe(false);
+      inside = true;
+      try {
+        return await query(sql, options);
+      } finally {
+        inside = false;
+      }
+    });
   const values: Record<string, string | undefined> = {
     ...gatewayConfig(),
     ...overrides,
@@ -72,10 +70,10 @@ function fixture(
     return values[key];
   });
   const service = new MarketPublicMediaService(
-    { run } as unknown as MarketCatalogReadService,
+    { statement: run } as unknown as MarketCatalogReadService,
     { get: configRead } as unknown as ConfigService,
   );
-  return { service, tx, run, query, configRead };
+  return { service, run, query, configRead };
 }
 const file = (
   id = first,
@@ -130,7 +128,7 @@ const covers = (...fileIds: string[]) =>
 describe('bounded current-public media resolution', () => {
   it('reads parents, files and variants in one statement inside the bounded transaction', async () => {
     const guardRow = { id: product, fileIds: [first] };
-    const { service, tx, run, query } = fixture({
+    const { service, run, query } = fixture({
       guard: [guardRow],
       files: [file()],
       variants: [variant(first, 'CARD', 'WEBP', 'products/card.webp')],
@@ -141,8 +139,7 @@ describe('bounded current-public media resolution', () => {
       guardedFileIds: [],
       value: new Set([product]),
     });
-    const prepare = jest.fn().mockImplementation(async (received) => {
-      expect(received).toBe(tx);
+    const prepare = jest.fn().mockImplementation(async () => {
       return {
         ...plan({
           covers: [cover()],
@@ -352,7 +349,9 @@ describe('bounded current-public media resolution', () => {
       }),
     );
     const sql = query.mock.calls[0][0] as Prisma.Sql;
-    expect(sql.values.filter((value) => value === first)).toHaveLength(1);
+    expect(sql.values.flat().filter((value) => value === first)).toHaveLength(
+      1,
+    );
   });
   it('propagates parent, database and grant failures and never signs partial authorization', async () => {
     const error = new Error('Authorization unavailable');

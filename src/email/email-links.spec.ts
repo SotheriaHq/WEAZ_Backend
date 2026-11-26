@@ -71,7 +71,7 @@ describe('email links', () => {
   });
 
   it('every template links only to the web app', () => {
-    const app = 'WIEZ';
+    const app = 'ARU';
     const rendered: Record<string, { html: string; text?: string }> = {
       passwordResetEmail: templates.passwordResetEmail(
         links.buildPasswordResetLink('tok'),
@@ -213,7 +213,7 @@ describe('email links', () => {
 
   it('turns a notification path into one absolute link everywhere', () => {
     const email = policy.renderNotificationEmail({
-      appName: 'WIEZ',
+      appName: 'ARU',
       heading: 'Order shipped',
       message: 'Your order is on its way.',
       notificationType: NotificationType.ORDER_STATUS_UPDATED,

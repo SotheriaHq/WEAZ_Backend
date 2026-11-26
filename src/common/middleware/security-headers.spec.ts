@@ -1,3 +1,5 @@
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 import {
   createServer,
   get,
@@ -67,6 +69,16 @@ describe('securityHeadersFor', () => {
   });
 });
 
+describe('reverse-proxy transport policy', () => {
+  it('keeps raw WebSocket upgrade errors under the same policy as polling', () => {
+    const snippet = readFileSync(resolve(process.cwd(), 'infrastructure/caddy/realtime-security.caddy'), 'utf8');
+    const expected = securityHeadersFor({ headers: {}, secure: true }, { contentSecurityPolicy: REALTIME_CONTENT_SECURITY_POLICY });
+    for (const [name, value] of Object.entries(expected)) expect(snippet).toContain('>' + name + ' "' + value + '"');
+    expect(snippet).toContain('path /socket.io /socket.io/*');
+    expect(snippet).toContain('>Cache-Control "no-store"');
+  });
+});
+
 describe('Socket.IO transport responses', () => {
   let http: HttpServer;
   let io: Server;
@@ -85,14 +97,14 @@ describe('Socket.IO transport responses', () => {
     await new Promise<void>((resolve) => io.close(() => resolve()));
   });
 
-  const handshake = (headers: Record<string, string> = {}) =>
+  const handshake = (headers: Record<string, string> = {}, path = '/socket.io/?EIO=4&transport=polling') =>
     new Promise<{ status: number; headers: IncomingHttpHeaders }>(
       (resolve, reject) => {
         const req = get(
           {
             host: '127.0.0.1',
             port,
-            path: '/socket.io/?EIO=4&transport=polling',
+            path,
             headers,
           },
           (res) => {
@@ -115,6 +127,19 @@ describe('Socket.IO transport responses', () => {
       REALTIME_CONTENT_SECURITY_POLICY,
     );
     expect(res.headers['strict-transport-security']).toBeUndefined();
+  });
+
+  it.each([
+    '/socket.io/?EIO=3&transport=polling',
+    '/socket.io/?EIO=4&transport=polling&sid=invalid-session',
+    '/socket.io/?EIO=4&transport=invalid',
+  ])('keeps headers on a rejected transport request: %s', async path => {
+    const res = await handshake({ 'X-Forwarded-Proto': 'https' }, path);
+    expect(res.status).toBe(400);
+    expect(res.headers['x-frame-options']).toBe('DENY');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.headers['strict-transport-security']).toBe(STRICT_TRANSPORT_SECURITY);
+    expect(res.headers['content-security-policy']).toBe(REALTIME_CONTENT_SECURITY_POLICY);
   });
 
   it('adds HSTS when the TLS proxy says the client used HTTPS', async () => {

@@ -158,6 +158,38 @@ async function runMarketFacetAssertions({ db, prisma, now }) {
     checks++;
   };
   const all = await read();
+  if (process.env.MARKET_QUERY_TRACE === '1') {
+    // Planning and execution of the exact grouped facet statement, measured
+    // separately: statement_timeout covers both.
+    const {
+      marketFacetQueries,
+      marketFacetStatementSql,
+    } = require('../../src/market/catalog/market-facets.sql');
+    const union = marketFacetStatementSql(
+      { now },
+      marketFacetQueries({
+        filters: {},
+        fixedFilters: { brandIds: [brand] },
+        now,
+      }).map(
+        (query, index) =>
+          Prisma.sql`SELECT ${index}::int AS "group",COALESCE(jsonb_agg(to_jsonb(facet_row)),'[]'::jsonb) AS rows FROM (${query}) facet_row`,
+      ),
+    );
+    const values = union.values.map((value) =>
+      value instanceof Date ? value.toISOString() : value,
+    );
+    for (let run = 1; run <= 3; run++) {
+      const plan = await db.query(
+        'EXPLAIN (ANALYZE,SUMMARY,FORMAT JSON) ' + union.text,
+        values,
+      );
+      const top = plan.rows[0]['QUERY PLAN'][0];
+      console.log(
+        `TRACE facets run ${run}: planning ${top['Planning Time'].toFixed(1)} ms, execution ${top['Execution Time'].toFixed(1)} ms, ${union.text.length} chars, ${values.length} parameters`,
+      );
+    }
+  }
   check(
     all.price && [all.price.min, all.price.max, all.price.count],
     [10000, 100000, 4],

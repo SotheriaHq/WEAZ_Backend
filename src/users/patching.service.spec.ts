@@ -158,6 +158,16 @@ describe('PatchingService brand id resolution', () => {
         },
       });
     });
+
+    it('is idempotent: unpatching a brand that is not patched succeeds and writes nothing', async () => {
+      prisma.patchConnection.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.unpatchBrand(SHOPPER_ID, BRAND_RECORD_ID),
+      ).resolves.toEqual({ message: 'Brand is not patched', isPatched: false });
+
+      expect(prisma.patchConnection.deleteMany).not.toHaveBeenCalled();
+    });
   });
 
   describe('checkPatchStatus', () => {

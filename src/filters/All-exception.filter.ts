@@ -15,6 +15,29 @@ import { MonitoringService } from 'src/monitoring/monitoring.service';
 import * as Sentry from '@sentry/nestjs';
 import { isSentryEnabled } from 'src/common/observability/sentry.instrument';
 
+/**
+ * A 428 security challenge is only useful if the client can act on it: the web
+ * and mobile apps open the step-up dialog from these fields (fthreadly
+ * `parseSecurityChallenge` rejects a challenge without `sensitivity`,
+ * `challengeId`/`parentSessionId`, `expiresAt` and `serverNow`). The generic
+ * body below used to drop them, so no real user could complete a step-up.
+ * Allowlisted and only for these codes on a 428; proofs never travel here.
+ */
+const SECURITY_CHALLENGE_CODES = new Set([
+  'STEP_UP_REQUIRED',
+  'MFA_ENROLLMENT_REQUIRED',
+  'PARENT_SESSION_VERIFICATION_REQUIRED',
+]);
+const SECURITY_CHALLENGE_FIELDS = [
+  'action',
+  'challengeId',
+  'expiresAt',
+  'sensitivity',
+  'serverNow',
+  'review',
+  'parentSessionId',
+] as const;
+
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
@@ -65,6 +88,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
      * message is not: a server fault tells the client nothing about itself.
      */
     let code: string | undefined;
+    let challenge: Record<string, unknown> | undefined;
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
@@ -87,6 +111,18 @@ export class AllExceptionsFilter implements ExceptionFilter {
             typeof responseObj.code === 'string' && responseObj.code.trim()
               ? responseObj.code.trim()
               : undefined;
+          if (
+            status === HttpStatus.PRECONDITION_REQUIRED &&
+            code &&
+            SECURITY_CHALLENGE_CODES.has(code)
+          ) {
+            challenge = {};
+            for (const field of SECURITY_CHALLENGE_FIELDS) {
+              if (responseObj[field] !== undefined) {
+                challenge[field] = responseObj[field];
+              }
+            }
+          }
         }
       } else {
         message =
@@ -116,6 +152,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       path: safePath,
       message,
       ...(code && { code }),
+      ...(challenge ?? {}),
       ...(errors && { errors }),
     };
 

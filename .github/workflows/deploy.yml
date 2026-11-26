@@ -120,6 +120,8 @@ jobs:
         run: |
           npm test -- src/auth/access src/auth/auth-password-reset-hardening.spec.ts src/auth/studio-handoff.service.spec.ts src/realtime src/upload/file-read-response.spec.ts src/store/store-payment-account-sync.spec.ts --runInBand
           node --test scripts/check-adaptive-runtime.test.cjs
+      - name: HTTP and realtime transport security headers
+        run: npm test -- src/common/middleware/security-headers.spec.ts --runInBand
       - name: Adaptive access real database and Redis verification
         env:
           DATABASE_URL: postgresql://postgres:ci-disposable-only@localhost:5432/postgres

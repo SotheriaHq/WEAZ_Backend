@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { MarketCursorState, MarketSort } from './market-cursor';
 import { marketSnapshotPageSql } from './market-snapshot-order.sql';
 import { CatalogEpoch, catalogEpochSelect } from './market-catalog-epoch';
+import { marketPlan } from './market-read-plans';
 import {
   MARKET_FEATURE_STATE_KEY,
   MARKET_FEATURE_PARAMETERS,
@@ -43,11 +44,14 @@ export function marketSortEvidenceSql(epochId: string, now: Date): Prisma.Sql {
       limit,
       evidence: true,
     });
-  return Prisma.sql`SELECT
+  return marketPlan(
+    'sort-evidence',
+    Prisma.sql`SELECT
     (SELECT count(*)::int FROM (${ranked('popular', MARKET_SORT_FLOORS.popular)}) popular WHERE popular.score>0) AS popular,
     (SELECT count(*)::int FROM (${ranked('trending', MARKET_SORT_FLOORS.trending)}) trending WHERE trending."trendEligible") AS trending,
     (SELECT count(*)::int FROM (${ranked('most_saved', MARKET_SORT_FLOORS.saved)}) saved WHERE saved.score>0) AS saved,
-    CASE WHEN EXISTS(${ranked('best_selling', 1)}) THEN (${marketPlatformPaidOrderFloorSql(now)}) ELSE 0 END AS paid`;
+    CASE WHEN EXISTS(${ranked('best_selling', 1)}) THEN (${marketPlatformPaidOrderFloorSql(now)}) ELSE 0 END AS paid`,
+  );
 }
 
 /**

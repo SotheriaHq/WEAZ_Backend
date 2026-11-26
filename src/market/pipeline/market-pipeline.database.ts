@@ -20,6 +20,11 @@ import {
   marketCatalogProductFiltersSql,
   marketProductFiltersSql,
 } from '../catalog/market-filter.sql';
+import {
+  isUnfilteredMarketRead,
+  marketPlan,
+  marketPlanIf,
+} from '../catalog/market-read-plans';
 import { pipelineTrendRatioSql } from './market-pipeline.trend';
 import {
   MARKET_FEATURE_PARAMETERS,
@@ -194,7 +199,11 @@ export async function readPipelineEpochContext(
       readSummary: string | null;
       eligibleProductCount?: number;
     }>
-  >(Prisma.sql`
+  >(
+    marketPlanIf(
+      !probe || isUnfilteredMarketRead(probe.filters),
+      'page-epoch',
+      Prisma.sql`
     WITH clock AS MATERIALIZED(SELECT ${capturedClock.asOf.toISOString()}::timestamptz AS "asOf",current_setting('transaction_isolation') AS isolation,current_setting('transaction_read_only') AS "readOnly"),
     epoch AS (SELECT jsonb_build_object('id',e.id,'generation',e.generation::text,'rowCount',e."rowCount",'epochStart',e."epochStart",'epochEnd',e."epochEnd",'sourceAsOf',e."sourceAsOf",'acceptUntil',e."acceptUntil",
       'featureSchemaVersion',e."featureSchemaVersion",'policyVersion',e."policyVersion",'stateKey',e."stateKey",'status',e.status,
@@ -214,7 +223,9 @@ export async function readPipelineEpochContext(
       AND e."sourceAsOf" BETWEEN ${now}-interval '2 hours' AND ${now} AND e."acceptUntil">${now} LIMIT 1)
     SELECT clock.*,(SELECT epoch FROM epoch LIMIT 1) AS epoch,(SELECT value FROM system_config WHERE key='market.features.snapshot') AS "readSummary"
       ${probe ? Prisma.sql`,(SELECT count(*)::int FROM(SELECT 1 FROM "Product" p WHERE ${marketCatalogProductFiltersSql([probe.filters], capturedClock.asOf, 'p', createMarketCatalogScope({ key: 'pipeline', version: '1', viewer: probe.viewer }))} LIMIT 8) bounded) AS "eligibleProductCount"` : Prisma.empty}
-      FROM clock`);
+      FROM clock`,
+    ),
+  );
   const clock = rows[0];
   if (
     !clock ||
@@ -439,7 +450,11 @@ export async function captureMarketPipelinePage(
   }
   const rows = requests.length
     ? await tx.$queryRaw<PipelineDatabaseRow[]>(
-        pipelineBatchSourcesSql(requests, input.viewer),
+        marketPlanIf(
+          isUnfilteredMarketRead(input.context.filters),
+          'page-sources',
+          pipelineBatchSourcesSql(requests, input.viewer),
+        ),
       )
     : [];
   if (rows.length > requests.length * 61)
@@ -465,7 +480,10 @@ export async function captureMarketPipelinePage(
         }
       >;
     }>
-  >(Prisma.sql`
+  >(
+    marketPlan(
+      'page-preferences',
+      Prisma.sql`
     WITH candidates AS (SELECT * FROM jsonb_to_recordset(${JSON.stringify(rows.map((row) => ({ id: row.candidate.id, type: row.candidate.entityType, brand: row.candidate.brandId, category: row.candidate.categoryId })))}::jsonb)
       AS selected(id text,type text,brand text,category text)),
     suppressed AS (SELECT DISTINCT s.* FROM user_content_suppressions s WHERE ${marketCatalogOwnerSql(input.viewer)} AND (s."expiresAt" IS NULL OR s."expiresAt">${input.context.asOf.toISOString()}::timestamptz)
@@ -490,7 +508,9 @@ export async function captureMarketPipelinePage(
       ARRAY(SELECT COALESCE(s."brandId"::text,s."targetId") FROM suppressed s WHERE s."targetType"='BRAND' OR s."suppressionType"='HIDE_BRAND') AS brands,
       ARRAY(SELECT COALESCE(s."categoryId"::text,s."targetId") FROM suppressed s WHERE s."targetType"='CATEGORY' OR s."suppressionType"='HIDE_CATEGORY') AS categories,
       ARRAY(SELECT COALESCE(s."sectionKey",s."targetId") FROM suppressed s WHERE (s."targetType"='SECTION' OR s."suppressionType"='HIDE_SECTION') AND COALESCE(s."sectionKey",s."targetId") IS NOT NULL) AS sections,
-      COALESCE((SELECT jsonb_object_agg("sectionKey"||':PRODUCT:'||"productId"::text,jsonb_build_object('consecutive',consecutive,'lastEpochStart',latest,'entryTrendRatio',"entryTrendRatio")) FROM tenure_evidence),'{}'::jsonb) AS tenure`);
+      COALESCE((SELECT jsonb_object_agg("sectionKey"||':PRODUCT:'||"productId"::text,jsonb_build_object('consecutive',consecutive,'lastEpochStart',latest,'entryTrendRatio',"entryTrendRatio")) FROM tenure_evidence),'{}'::jsonb) AS tenure`,
+    ),
+  );
   if (!preferences[0]) throw new Error('Suppression context unavailable');
   const preference = preferences[0];
   const context: PipelineContext = {

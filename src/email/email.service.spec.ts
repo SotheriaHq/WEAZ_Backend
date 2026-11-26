@@ -19,11 +19,11 @@ describe('EmailService', () => {
     overrides: Record<string, string | undefined> = {},
   ): ConfigService => {
     const values: Record<string, string | undefined> = {
-      APP_NAME: 'WIEZ',
+      APP_NAME: 'ARU',
       EMAIL_PROVIDER: 'resend',
       EMAIL_MODE: 'live',
       RESEND_API_KEY: 're_test_key',
-      RESEND_FROM: 'WIEZ <noreply@weaz.me>',
+      RESEND_FROM: 'ARU <noreply@weaz.me>',
       RESEND_REPLY_TO: 'support@weaz.me',
       EMAIL_DAILY_LIMIT: undefined,
       EMAIL_LOG_INTENDED_RECIPIENT: 'false',
@@ -188,7 +188,7 @@ describe('EmailService', () => {
 
     const result = await service.sendNow(
       'recipient@example.com',
-      "✨ You're almost in — confirm your WIEZ email",
+      "✨ You're almost in — confirm your ARU email",
       '<p>Verify</p>',
       'Verify',
       { idempotencyKey: 'outbox:1' },
@@ -198,9 +198,9 @@ describe('EmailService', () => {
     expect(result.emailMode).toBe('redirect');
     expect(mockResendSend).toHaveBeenCalledWith(
       expect.objectContaining({
-        from: 'WIEZ <noreply@weaz.me>',
+        from: 'ARU <noreply@weaz.me>',
         to: 'sit-inbox@example.com',
-        subject: "✨ You're almost in — confirm your WIEZ email",
+        subject: "✨ You're almost in — confirm your ARU email",
         html: '<p>Verify</p>',
         text: 'Verify',
         replyTo: 'support@weaz.me',
@@ -225,7 +225,7 @@ describe('EmailService', () => {
 
     const result = await service.sendNow(
       'recipient@example.com',
-      "✨ You're almost in — confirm your WIEZ email",
+      "✨ You're almost in — confirm your ARU email",
       '<p>Verify</p>',
       'Verify',
       { idempotencyKey: 'outbox:2' },
@@ -238,7 +238,7 @@ describe('EmailService', () => {
     expect(mockResendSend).toHaveBeenCalledWith(
       expect.objectContaining({
         to: 'recipient@example.com',
-        subject: "✨ You're almost in — confirm your WIEZ email",
+        subject: "✨ You're almost in — confirm your ARU email",
       }),
       { idempotencyKey: 'outbox:2' },
     );

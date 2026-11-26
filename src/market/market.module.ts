@@ -18,6 +18,7 @@ import { MarketRankingScorerService } from './market-ranking-scorer.service';
 import { MarketGovernanceConfigService } from './market-governance-config.service';
 import { MarketFlagsService } from './market-flags.service';
 import { MarketCatalogReadService } from './catalog/market-catalog-read.service';
+import { MarketReadPrismaService } from './catalog/market-read-prisma.service';
 import { MarketCatalogService } from './catalog/market-catalog.service';
 import { MarketCatalogController } from './catalog/market-catalog.controller';
 import { MarketPublicMediaService } from './catalog/market-public-media.service';
@@ -39,6 +40,7 @@ import { marketPipelineCacheProvider } from './pipeline/market-pipeline-cache.pr
     MarketSuppressionController,
   ],
   providers: [
+    MarketReadPrismaService,
     marketPipelineCacheProvider,
     MarketPipelineService,
     MarketPipelineDeliveryService,

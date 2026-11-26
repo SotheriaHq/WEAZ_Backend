@@ -323,10 +323,10 @@ async function bootstrap() {
     );
     if (enableSwagger) {
       const swaggerConfig = new DocumentBuilder()
-        .setTitle('voguely API')
-        .setDescription('API documentation for voguely')
+        .setTitle('ARU API')
+        .setDescription('API documentation for ARU')
         .setVersion('1.0')
-        .addTag('voguely')
+        .addTag('ARU')
         .build();
       const document = SwaggerModule.createDocument(app, swaggerConfig);
       SwaggerModule.setup('api', app, document);
@@ -399,6 +399,10 @@ async function bootstrap() {
     [
       'x-client-event-id',
       'x-request-id',
+      'x-aru-device-id',
+      'x-aru-security-device',
+      'x-aru-device-name',
+      'x-aru-action-proof',
       'x-wiez-device-id',
       'x-wiez-security-device',
       'x-wiez-device-name',

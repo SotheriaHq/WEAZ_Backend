@@ -806,14 +806,28 @@ export class CollectionsController {
       req.user.id,
     );
   }
+  /**
+   * Body `{ threaded: boolean }` sets that state; no body flips (older apps).
+   * Counted per account. The app coalesces rapid taps into one request for the
+   * final state, so 30 a minute only ever stops a script or a stuck client.
+   */
   @UseGuards(JwtAuthGuard)
-  @Throttle({ default: { limit: 60, ttl: 60000 } })
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   @Post('media/:mediaId/reaction/thread')
-  async toggleMediaThread(@Param('mediaId') mediaId: string, @Req() req: any) {
+  async toggleMediaThread(
+    @Param('mediaId') mediaId: string,
+    @Req() req: any,
+    @Body() body?: { threaded?: unknown },
+  ) {
+    const desired =
+      typeof body?.threaded === 'boolean' ? body.threaded : undefined;
     const res = await this.collectionsService.toggleMediaThread(
       mediaId,
       req.user.id,
+      desired,
     );
+    // Nothing changed, nothing to tell anyone.
+    if (!res.changed) return res;
     this.events.emitThread(res.threaded ? 'thread.created' : 'thread.removed', {
       contentType: 'COLLECTION_MEDIA',
       contentId: mediaId,

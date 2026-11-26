@@ -13,6 +13,7 @@ import {
 } from './market-read-context';
 import { MarketCatalogScope } from './market-catalog-scope';
 import { marketNewestPageSql } from './market-newest-order.sql';
+import { isUnfilteredMarketRead, marketPlan } from './market-read-plans';
 import { marketPriceWritesSinceSql } from './market-price-fence.sql';
 import {
   marketNextPriceBoundarySql,
@@ -107,17 +108,22 @@ export async function readMarketOrderedPage(
           }
         : {}),
     });
+    const newestWithReadiness = Prisma.sql`SELECT readiness.ready,page.id,page."firstPublishedAt" FROM (SELECT NOT EXISTS (
+      SELECT 1 FROM "Product" WHERE "isActive" AND "publicationStatus"='PUBLISHED'
+        AND "deletedAt" IS NULL AND "archivedAt" IS NULL AND "firstPublishedAt" IS NULL
+    ) AS ready) readiness LEFT JOIN (${newest}) page ON readiness.ready
+      ORDER BY page."firstPublishedAt" DESC,page.id DESC`;
     const page = await tx.$queryRaw<
       Array<{
         ready: boolean;
         id: string | null;
         firstPublishedAt: Date | null;
       }>
-    >(Prisma.sql`SELECT readiness.ready,page.id,page."firstPublishedAt" FROM (SELECT NOT EXISTS (
-      SELECT 1 FROM "Product" WHERE "isActive" AND "publicationStatus"='PUBLISHED'
-        AND "deletedAt" IS NULL AND "archivedAt" IS NULL AND "firstPublishedAt" IS NULL
-    ) AS ready) readiness LEFT JOIN (${newest}) page ON readiness.ready
-      ORDER BY page."firstPublishedAt" DESC,page.id DESC`);
+    >(
+      isUnfilteredMarketRead(filters, fixedFilters, input.scope)
+        ? marketPlan('newest', newestWithReadiness)
+        : newestWithReadiness,
+    );
     if (!page[0]?.ready) unavailable('CATALOGUE_PUBLICATION_BACKFILL_REQUIRED');
     rows = page.flatMap((row) =>
       row.id === null || row.firstPublishedAt === null

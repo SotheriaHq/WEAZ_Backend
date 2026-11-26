@@ -47,7 +47,7 @@ describe('AuthService', () => {
   };
 
   const mockEmailVerificationHelper = {
-    generateVerificationCode: jest.fn(),
+    issueVerificationToken: jest.fn(),
     generateVerificationLink: jest.fn(),
   };
 
@@ -1167,9 +1167,11 @@ describe('AuthService', () => {
     mockPrisma.user.findUnique.mockResolvedValue(null);
     mockUserHelperService.generateUniqueUsername.mockResolvedValue('alex-doe');
     mockPasswordService.hashPassword.mockResolvedValue('hashed-password');
-    mockEmailVerificationHelper.generateVerificationCode.mockReturnValue(
-      '123456',
-    );
+    mockEmailVerificationHelper.issueVerificationToken.mockReturnValue({
+      token: '123456',
+      stored: 'digest-123456',
+      expiresAt: new Date(),
+    });
     mockEmailVerificationHelper.generateVerificationLink.mockReturnValue(
       'https://wiez.test/verify',
     );
@@ -1339,9 +1341,11 @@ describe('AuthService', () => {
     );
     mockUserHelperService.generateIndustriNumber.mockResolvedValue('IND-123');
     mockPasswordService.hashPassword.mockResolvedValue('hashed-password');
-    mockEmailVerificationHelper.generateVerificationCode.mockReturnValue(
-      '123456',
-    );
+    mockEmailVerificationHelper.issueVerificationToken.mockReturnValue({
+      token: '123456',
+      stored: 'digest-123456',
+      expiresAt: new Date(),
+    });
     mockEmailVerificationHelper.generateVerificationLink.mockReturnValue(
       'https://wiez.test/verify',
     );

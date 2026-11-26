@@ -218,8 +218,11 @@ export class PatchingService {
       },
     });
 
+    // Idempotent, like patchBrand: unpatching a brand you no longer patch is
+    // the state you asked for, not an error. A double tap, or an unpatch made
+    // on another device first, used to come back as a 404 and an error toast.
     if (!existing) {
-      throw new NotFoundException('Patch connection not found');
+      return { message: 'Brand is not patched', isPatched: false };
     }
 
     const result = await this.prisma.patchConnection.deleteMany({

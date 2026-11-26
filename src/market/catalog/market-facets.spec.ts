@@ -205,7 +205,7 @@ describe('transaction-local market facets', () => {
     expect(queries).toHaveLength(8);
     for (const query of queries) {
       expect(query.text).not.toContain("red'); SELECT 1; --");
-      expect(query.values).toContain(id);
+      expect(query.values).toContainEqual([id]);
     }
     expect(queries[3].text).toContain('d.slug =');
     expect(queries[5].text).toContain('custom.count');

@@ -150,15 +150,15 @@ function productQuery(
   const quality = metric('qualityScore', Prisma.sql`f."qualityScore"`);
   const trend = metric('trendScore', Prisma.sql`f."trendScore"`);
   const actors = metric('actors7d', Prisma.sql`f."actors7d"`);
-  const stock = Prisma.sql`CASE WHEN EXISTS(SELECT 1 FROM "ProductVariant" variant WHERE variant."productId"=p."_id")
+  const stockValue = Prisma.sql`CASE WHEN EXISTS(SELECT 1 FROM "ProductVariant" variant WHERE variant."productId"=p."_id")
     THEN (SELECT min(variant.stock) FROM "ProductVariant" variant WHERE variant."productId"=p."_id" AND variant.stock>0) ELSE NULLIF(p."totalStock",0) END`;
-  const order =
+  const orderValue =
     source.kind === 'curated'
       ? Prisma.sql`(SELECT min(placement.position) FROM "FeaturedItem" placement WHERE placement."entityType"='PRODUCT'
     AND placement."entityId"=p."_id" AND placement."placementKey"=${source.placementKey} AND placement."isActive"
     AND placement."removedAt" IS NULL AND placement."startsAt"<=${time} AND placement."expiresAt">${time})`
       : Prisma.sql`0::int`;
-  const similarity =
+  const similarityValue =
     source.kind === 'similar'
       ? Prisma.sql`(SELECT
     0.30*CASE WHEN EXISTS(SELECT 1 FROM "CollectionCategory" active_category WHERE active_category."_id"=p."categoryId" AND active_category."isActive" AND p."categoryId"=mp."categoryId") THEN 1 ELSE 0 END+
@@ -170,6 +170,25 @@ function productQuery(
     0.10*(1-LEAST(1,abs((${amount})-(${productEffectivePriceSql(now, 'mp')}))/GREATEST((${amount}),(${productEffectivePriceSql(now, 'mp')}))))
     FROM "Product" mp WHERE mp."_id"=${source.productId}::uuid)`
       : Prisma.sql`NULL::float8`;
+  // The key these sources sort by is needed for the order, its cursor and the
+  // candidate. OFFSET 0 keeps it one evaluation per product; keys the sort does
+  // not use stay in the select list, where only the served rows pay for them.
+  const sorted =
+    options.keysOnly === true
+      ? null
+      : source.kind === 'curated'
+        ? orderValue
+        : source.kind === 'low_stock'
+          ? stockValue
+          : source.kind === 'similar'
+            ? similarityValue
+            : null;
+  const sortedValue = Prisma.sql`sorted.value`;
+  const order = sorted && source.kind === 'curated' ? sortedValue : orderValue;
+  const stock =
+    sorted && source.kind === 'low_stock' ? sortedValue : stockValue;
+  const similarity =
+    sorted && source.kind === 'similar' ? sortedValue : similarityValue;
   const features = Prisma.sql`jsonb_build_object('popularity',${popularity},'quality',${quality},'trend',${trend},'trendRatio',${pipelineTrendRatioSql('f')},'actors7d',${actors},
     'trendEligible',COALESCE(f."trendEligible",false),'intent7d',NULL,'minStock',${stock},'sourceOrder',${order},'similarity',${similarity})`;
   let ordering = Prisma.sql`p."firstPublishedAt" DESC,p."_id" DESC`;
@@ -211,6 +230,7 @@ function productQuery(
     LEFT JOIN "CollectionCategoryType" category_type ON category_type."_id"=p."categoryTypeId"
     LEFT JOIN market_item_feature_snapshots f ON f."productId"=p."_id" AND f."epochId"=${epoch}::uuid
       AND f."sourceFeatureSchemaVersion"=1 AND f."sourcePolicyVersion"=1
+    ${sorted ? Prisma.sql`CROSS JOIN LATERAL (SELECT ${sorted} AS value OFFSET 0) sorted` : Prisma.empty}
     WHERE ${eligibility} AND ${restriction} AND p."firstPublishedAt" IS NOT NULL AND p."firstPublishedAt"<=${time}
     ORDER BY ${ordering} ${options.unbounded ? Prisma.empty : Prisma.sql`LIMIT ${Math.min(request.limit, 61)}`}`;
 }
@@ -242,7 +262,7 @@ function idBoundary(
   if (request.cachedIds.some((id) => !uuid.test(id)))
     throw new RangeError('Invalid captured IDs');
   return request.cachedIds.length
-    ? Prisma.sql`${entity} IN (${Prisma.join(request.cachedIds.map((id) => Prisma.sql`${id}::uuid`))})`
+    ? Prisma.sql`${entity}=ANY(${[...request.cachedIds]}::uuid[])`
     : Prisma.sql`false`;
 }
 function nonproductSuppression(

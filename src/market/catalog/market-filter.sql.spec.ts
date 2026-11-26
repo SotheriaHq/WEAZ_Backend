@@ -7,7 +7,10 @@ import {
 import { marketNewestPageSql } from './market-newest-order.sql';
 import { marketPricePageSql } from './market-price-order.sql';
 import { marketSnapshotPageSql } from './market-snapshot-order.sql';
-import { marketFacetQueries } from './market-facets.sql';
+import {
+  marketFacetQueries,
+  marketFacetStatementSql,
+} from './market-facets.sql';
 
 const now = new Date('2026-11-21T12:00:00.000Z');
 const epochId = '00000000-0000-0000-0000-000000000001';
@@ -96,7 +99,22 @@ describe('catalogue renderable cover predicate', () => {
   it('applies the same requirement to every facet count group', () => {
     const queries = marketFacetQueries({ filters: { colors: ['red'] }, now });
     expect(queries).toHaveLength(8);
-    for (const query of queries)
-      expect(occurrences(query.text, cover)).toBeGreaterThan(0);
+    // Each group reads products only through the shared public set...
+    for (const query of queries) {
+      expect(occurrences(query.text, 'market_facet_public')).toBeGreaterThan(0);
+      expect(
+        occurrences(query.text, '"Product" p') -
+          occurrences(
+            query.text,
+            '"Product" p JOIN market_facet_public pub ON pub.id=p."_id"',
+          ),
+      ).toBe(0);
+    }
+    // ...whose single definition carries eligibility and the cover rule.
+    const statement = marketFacetStatementSql({ now }, queries).text;
+    expect(occurrences(statement, cover)).toBe(1);
+    expect(occurrences(statement, 'market_facet_public AS MATERIALIZED')).toBe(
+      1,
+    );
   });
 });

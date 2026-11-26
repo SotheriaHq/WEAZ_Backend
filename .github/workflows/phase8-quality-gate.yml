@@ -65,6 +65,8 @@ jobs:
           node scripts/verify-redis-rate-limit.cjs
       - name: Adaptive access and payout-account boundaries
         run: npm test -- src/auth/access src/realtime src/upload/file-read-response.spec.ts src/brand-verification/physical-verification.service.spec.ts src/collections/collections.service.spec.ts src/dev-tools/metadata-only-upload.storage.spec.ts src/common/content-audience.spec.ts src/common/read-content-access.spec.ts src/store/store-payment-account-sync.spec.ts src/store/store.service.spec.ts src/store/store.controller.spec.ts src/admin/payouts/payout-outcome-authority.spec.ts --runInBand
+      - name: HTTP and realtime transport security headers
+        run: npm test -- src/common/middleware/security-headers.spec.ts --runInBand
       - name: Security runtime configuration preflight contracts
         run: node --test scripts/check-adaptive-runtime.test.cjs
       - name: Adaptive access real database and Redis verification
