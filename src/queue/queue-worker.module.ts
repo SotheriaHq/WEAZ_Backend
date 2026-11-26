@@ -30,6 +30,7 @@ import { ViewCountingModule } from 'src/view-counting/view-counting.module';
 import { TelegramMonitoringModule } from 'src/telegram-monitoring/telegram-monitoring.module';
 import { TelegramMonitoringProcessor } from 'src/telegram-monitoring/telegram-monitoring.processor';
 import { TelegramMonitoringScheduler } from 'src/telegram-monitoring/telegram-monitoring.scheduler';
+import { MarketIntelligenceWorkerModule } from '../market/intelligence/market-intelligence-worker.module';
 
 @Module({
   imports: [
@@ -56,6 +57,7 @@ import { TelegramMonitoringScheduler } from 'src/telegram-monitoring/telegram-mo
     NotificationsModule,
     AnalyticsModule,
     QueueModule,
+    MarketIntelligenceWorkerModule,
     SearchModule,
     TagsModule,
     CategoriesModule,

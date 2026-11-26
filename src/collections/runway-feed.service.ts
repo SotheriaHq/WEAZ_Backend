@@ -9,6 +9,14 @@ import { Prisma } from '@prisma/client';
 import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  RUNWAY_BEHAVIOR_RETENTION_MS,
+  RUNWAY_BEHAVIOR_CACHE_VERSION,
+  RUNWAY_BEHAVIOR_USABLE_WINDOW_MS,
+  RUNWAY_SESSION_MS,
+  earliestRunwayBehaviorSource,
+  readableRunwayBehaviorCache,
+} from './runway-affinity-retention';
+import {
   RUNWAY_CASUAL_TERMS,
   RUNWAY_AFRICAN_TERMS,
   emptyRunwayAffinity,
@@ -21,8 +29,8 @@ import {
 
 const isUuid = (value: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
-const WINDOW_MS = 90 * 86400000;
-const SESSION_MS = 30 * 60000;
+const WINDOW_MS = RUNWAY_BEHAVIOR_RETENTION_MS;
+const SESSION_MS = RUNWAY_SESSION_MS;
 const EXPIRY_BATCH_SIZE = 500;
 const MAX_ACTIVE_PAGES = 16;
 const AFRICAN_COUNTRIES = new Set([
@@ -149,6 +157,10 @@ export class RunwayFeedService {
   private activePages = 0;
   private expiring = false;
   private readonly affinityLoads = new Map<string, Promise<RunwayAffinity>>();
+  private readonly affinitySourceDeadlines = new WeakMap<
+    RunwayAffinity,
+    number
+  >();
   private readonly candidateCache = new Map<
     string,
     { expiresAt: number; promise: Promise<unknown> }
@@ -292,50 +304,101 @@ export class RunwayFeedService {
     }
   }
 
+  /** `actorActive` is the caller's account check from the same request. */
   private async affinity(
     userId: string | undefined,
     key: RunwayKey,
     now: Date,
+    actorActive = false,
   ): Promise<RunwayAffinity> {
     const result = emptyRunwayAffinity();
     if (!userId) return result;
-    const [reset, cached] = await Promise.all([
+    const [reset, cached, actor] = await Promise.all([
       this.prisma.personalizationReset.findFirst({
         where: { userId, resetType: { in: ['FEED', 'ALL'] } },
         orderBy: { resetAt: 'desc' },
       }),
       this.prisma.runwayAffinityCache.findUnique({ where: { userId } }),
+      actorActive
+        ? { status: 'ACTIVE', deactivatedAt: null }
+        : this.prisma.user.findUnique({
+            where: { id: userId },
+            select: { status: true, deactivatedAt: true },
+          }),
     ]);
+    if (!actor || actor.status !== 'ACTIVE' || actor.deactivatedAt !== null)
+      return result;
+    const readAt = new Date(Math.max(now.getTime(), Date.now()));
+    // A profile whose earliest source expires within one session is rebuilt
+    // from the usable window instead of ranking a session it cannot outlive.
     if (
       cached &&
-      (cached.payload as Record<string, unknown>)?.version === 'runway-v2' &&
-      cached.expiresAt > now &&
-      (!reset || cached.builtAt >= reset.resetAt)
+      readableRunwayBehaviorCache(cached, readAt, reset?.resetAt) &&
+      Date.parse(
+        (cached.payload as Record<string, unknown>).sourceWindowStart as string,
+      ) +
+        WINDOW_MS >=
+        readAt.getTime() + SESSION_MS
     ) {
       const payload = cached.payload as Record<string, unknown>;
       for (const name of ['brands', 'tags', 'categories', 'fashion'] as const)
         result[name] = new Map(payload[name] as Array<[string, number]>);
       result.seen = new Set(payload.seen as string[]);
       result.negative = new Set(payload.negative as string[]);
+      this.affinitySourceDeadlines.set(
+        result,
+        Date.parse(payload.sourceWindowStart as string) + WINDOW_MS,
+      );
       return result;
     }
     const loadKey = `${userId}:${reset?.resetAt.toISOString() ?? 'initial'}`;
     const existing = this.affinityLoads.get(loadKey);
-    if (existing) return existing;
-    const pending = this.buildAffinity(userId, now, reset?.resetAt);
+    if (existing) {
+      const resolved = await existing;
+      return (this.affinitySourceDeadlines.get(resolved) ?? Infinity) <=
+        Date.now()
+        ? emptyRunwayAffinity()
+        : resolved;
+    }
+    const pending = this.buildAffinity(userId, readAt, reset?.resetAt, true);
     this.affinityLoads.set(loadKey, pending);
     try {
-      return await pending;
+      const resolved = await pending;
+      return (this.affinitySourceDeadlines.get(resolved) ?? Infinity) <=
+        Date.now()
+        ? emptyRunwayAffinity()
+        : resolved;
     } finally {
       if (this.affinityLoads.get(loadKey) === pending)
         this.affinityLoads.delete(loadKey);
     }
   }
 
-  private async buildAffinity(userId: string, now: Date, resetAt?: Date) {
+  private async buildAffinity(
+    userId: string,
+    now: Date,
+    resetAt?: Date,
+    actorVerified = false,
+  ) {
     const result = emptyRunwayAffinity();
+    const signalActor = actorVerified
+      ? { status: 'ACTIVE', deactivatedAt: null }
+      : await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { status: true, deactivatedAt: true },
+        });
+    if (
+      !signalActor ||
+      signalActor.status !== 'ACTIVE' ||
+      signalActor.deactivatedAt !== null
+    )
+      return result;
+    now = new Date(Math.max(now.getTime(), Date.now()));
     const since = new Date(
-      Math.max(now.getTime() - WINDOW_MS, resetAt?.getTime() ?? 0),
+      Math.max(
+        now.getTime() - RUNWAY_BEHAVIOR_USABLE_WINDOW_MS,
+        resetAt?.getTime() ?? 0,
+      ),
     );
     const [
       reactions,
@@ -348,7 +411,7 @@ export class RunwayFeedService {
       standardPurchases,
     ] = await Promise.all([
       this.prisma.collectionMediaReaction.findMany({
-        where: { userId, type: 'THREAD', createdAt: { gte: since } },
+        where: { userId, type: 'THREAD', createdAt: { gte: since, lte: now } },
         orderBy: { createdAt: 'desc' },
         take: 150,
         select: { createdAt: true, media: { select: { collectionId: true } } },
@@ -358,7 +421,7 @@ export class RunwayFeedService {
           userId,
           deletedAt: null,
           targetType: { in: ['DESIGN', 'COLLECTION', 'COLLECTION_MEDIA'] },
-          createdAt: { gte: since },
+          createdAt: { gte: since, lte: now },
         },
         orderBy: { createdAt: 'desc' },
         take: 150,
@@ -368,7 +431,7 @@ export class RunwayFeedService {
         where: {
           userId,
           targetType: { in: ['DESIGN', 'COLLECTION', 'COLLECTION_MEDIA'] },
-          createdAt: { gte: since },
+          createdAt: { gte: since, lte: now },
         },
         orderBy: { createdAt: 'desc' },
         take: 150,
@@ -378,7 +441,7 @@ export class RunwayFeedService {
         where: {
           userId,
           targetType: 'DESIGN',
-          createdAt: { gte: since },
+          createdAt: { gte: since, lte: now },
           signalType: {
             in: [
               'DWELL_MEDIUM',
@@ -405,7 +468,7 @@ export class RunwayFeedService {
             notIn: ['REJECTED_BY_BRAND', 'CANCELLED_BY_BUYER_PRE_ACCEPTANCE'],
           },
           sourceType: 'DESIGN',
-          createdAt: { gte: since },
+          createdAt: { gte: since, lte: now },
         },
         orderBy: { createdAt: 'desc' },
         take: 100,
@@ -415,14 +478,14 @@ export class RunwayFeedService {
         where: {
           requesterId: userId,
           status: 'ACCEPTED',
-          createdAt: { gte: since },
+          createdAt: { gte: since, lte: now },
         },
         take: 100,
         orderBy: { createdAt: 'desc' },
-        select: { targetId: true },
+        select: { targetId: true, createdAt: true },
       }),
       this.prisma.collectionReaction.findMany({
-        where: { userId, type: 'THREAD', createdAt: { gte: since } },
+        where: { userId, type: 'THREAD', createdAt: { gte: since, lte: now } },
         orderBy: { createdAt: 'desc' },
         take: 150,
         select: { collectionId: true, createdAt: true },
@@ -432,7 +495,7 @@ export class RunwayFeedService {
           buyerId: userId,
           paymentStatus: 'PAID',
           status: { not: 'CANCELLED' },
-          createdAt: { gte: since },
+          createdAt: { gte: since, lte: now },
         },
         orderBy: { createdAt: 'desc' },
         take: 100,
@@ -459,7 +522,14 @@ export class RunwayFeedService {
       weight: number,
       at: Date,
     ) => {
-      if (!id || !isUuid(id) || voted.has(`${kind}:${id}`)) return;
+      if (
+        !id ||
+        !isUuid(id) ||
+        voted.has(`${kind}:${id}`) ||
+        at < since ||
+        at > now
+      )
+        return;
       voted.add(`${kind}:${id}`);
       votes.set(
         id,
@@ -498,6 +568,7 @@ export class RunwayFeedService {
     );
     purchases.forEach((row) => add(row.sourceId, 'purchase', 5, row.createdAt));
     for (const row of signals) {
+      if (row.createdAt < since || row.createdAt > now) continue;
       if (!isUuid(row.targetId)) continue;
       if (['IMPRESSION', 'ITEM_IMPRESSION'].includes(row.signalType))
         result.seen.add(row.targetId);
@@ -547,9 +618,16 @@ export class RunwayFeedService {
       if (design.categoryId) bump(result.categories, design.categoryId, weight);
       design.tags.forEach((tag) => bump(result.tags, normalized(tag), weight));
     }
-    patches.forEach((row) => bump(result.brands, row.targetId, 8));
+    patches.forEach((row) => {
+      if (row.createdAt >= since && row.createdAt <= now)
+        bump(result.brands, row.targetId, 8);
+    });
     standardPurchases.forEach((row) => {
-      if (row.brand.ownerId !== userId)
+      if (
+        row.brand.ownerId !== userId &&
+        row.createdAt >= since &&
+        row.createdAt <= now
+      )
         bump(
           result.brands,
           row.brand.ownerId,
@@ -569,8 +647,39 @@ export class RunwayFeedService {
       [...map].sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 64);
     for (const name of ['brands', 'tags', 'categories', 'fashion'] as const)
       result[name] = new Map(trim(result[name]));
+    const sourceWindowStart = earliestRunwayBehaviorSource(
+      now,
+      [
+        ...reactions,
+        ...comments,
+        ...saved,
+        ...signals,
+        ...purchases,
+        ...patches,
+        ...designReactions,
+        ...standardPurchases,
+      ],
+      since,
+    );
+    const expiresAt = new Date(
+      Math.min(now.getTime() + 30_000, sourceWindowStart.getTime() + WINDOW_MS),
+    );
+    const completedActor = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { status: true, deactivatedAt: true },
+    });
+    if (
+      expiresAt.getTime() <= Date.now() ||
+      !completedActor ||
+      completedActor.status !== 'ACTIVE' ||
+      completedActor.deactivatedAt !== null
+    )
+      return emptyRunwayAffinity();
     const payload = {
-      version: 'runway-v2',
+      version: RUNWAY_BEHAVIOR_CACHE_VERSION,
+      retentionHours: 24,
+      sourceWindowStart: sourceWindowStart.toISOString(),
+      sourceWindowEnd: now.toISOString(),
       brands: [...result.brands],
       tags: [...result.tags],
       categories: [...result.categories],
@@ -581,13 +690,18 @@ export class RunwayFeedService {
     const snapshot = {
       payload,
       builtAt: now,
-      expiresAt: new Date(now.getTime() + 30000),
+      expiresAt,
     };
     await this.prisma.runwayAffinityCache.upsert({
       where: { userId },
       create: { userId, ...snapshot },
       update: snapshot,
     });
+    if (expiresAt.getTime() <= Date.now()) return emptyRunwayAffinity();
+    this.affinitySourceDeadlines.set(
+      result,
+      sourceWindowStart.getTime() + WINDOW_MS,
+    );
     return result;
   }
 
@@ -622,7 +736,26 @@ export class RunwayFeedService {
     const startedAt = performance.now();
     const key = runwayKey(category);
     const now = new Date();
+    const emptyPage = () => ({
+      ids: [] as string[],
+      hasNextPage: false,
+      nextCursor: null,
+    });
+    const activeActor = async () => {
+      if (!userId) return true;
+      const actor = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { status: true, deactivatedAt: true },
+      });
+      return actor?.status === 'ACTIVE' && actor.deactivatedAt === null;
+    };
+    if (!(await activeActor())) return emptyPage();
+    // The request's account check is reused for affinity; only a first page,
+    // after its long asynchronous construction, checks the account again.
+    let recheckActor = false;
     const scope =
+      RUNWAY_BEHAVIOR_CACHE_VERSION +
+      ':' +
       key +
       ':' +
       createHash('sha256')
@@ -631,6 +764,7 @@ export class RunwayFeedService {
         .slice(0, 32);
     let ids: string[];
     let sessionId: string;
+    let behaviorDeadline = Infinity;
     let offset = 0;
     if (cursor?.startsWith('rw_')) {
       const match =
@@ -650,6 +784,7 @@ export class RunwayFeedService {
         },
       });
       if (!session) return { ids: [], hasNextPage: false, nextCursor: null };
+      behaviorDeadline = session.expiresAt.getTime();
       if (userId) {
         const reset = await this.prisma.personalizationReset.findFirst({
           where: {
@@ -700,12 +835,22 @@ export class RunwayFeedService {
             )
           : load();
       };
-      const [[fresh, popular], affinity] = await Promise.all([
+      const [[fresh, popular], loaded] = await Promise.all([
         this.publicCandidates(JSON.stringify(where), () =>
           Promise.all([read(160), read(80, true)]),
         ),
-        this.affinity(userId, key, now),
+        this.affinity(userId, key, now, true),
       ]);
+      recheckActor = Boolean(userId);
+      // A session never outlives the behaviour it is ranked from. Evidence that
+      // expires sooner gives this session the non-personalised ranking.
+      const loadedDeadline =
+        this.affinitySourceDeadlines.get(loaded) ?? Infinity;
+      const coversSession =
+        loadedDeadline >= now.getTime() + SESSION_MS &&
+        loadedDeadline > Date.now();
+      let affinity = coversSession ? loaded : emptyRunwayAffinity();
+      behaviorDeadline = coversSession ? loadedDeadline : Infinity;
       const top = (map: Map<string, number>) =>
         [...map]
           .filter(([, weight]) => weight > 0)
@@ -757,6 +902,9 @@ export class RunwayFeedService {
           ]),
         ).values(),
       ];
+      const publicIds = new Set(
+        [...laneRows, ...fresh, ...popular].map((row) => row.id),
+      );
       const metadataKey =
         'metadata:' +
         createHash('sha256')
@@ -817,7 +965,7 @@ export class RunwayFeedService {
           ...(classifications.get(filter.entityId) ?? []),
           filter.filterValue.slug,
         ]);
-      const candidates = pool
+      let candidates = pool
         .filter((row) => {
           const terms = [...row.tags, ...(classifications.get(row.id) ?? [])];
           if (AFRICAN_COUNTRIES.has(normalized(row.owner.brand?.country ?? '')))
@@ -830,6 +978,13 @@ export class RunwayFeedService {
           fashionFeatures: features.get(row.id) ?? [],
         }));
       sessionId = randomUUID();
+      if (behaviorDeadline <= Date.now()) {
+        // Behaviour expired during construction: continue with the
+        // non-personalised ranking and drop behaviour-derived candidates.
+        affinity = emptyRunwayAffinity();
+        behaviorDeadline = Infinity;
+        candidates = candidates.filter((row) => publicIds.has(row.id));
+      }
       ids = rankRunwayCandidates(
         candidates,
         key,
@@ -845,7 +1000,9 @@ export class RunwayFeedService {
             categoryKey: scope,
             designIds: ids,
             createdAt: now,
-            expiresAt: new Date(now.getTime() + SESSION_MS),
+            expiresAt: new Date(
+              Math.min(now.getTime() + SESSION_MS, behaviorDeadline),
+            ),
           },
         });
     }
@@ -866,6 +1023,9 @@ export class RunwayFeedService {
     `)
         : [];
     const hiddenIds = new Set(hidden.map((row) => row.id));
+    // Reached only once the session's own lifetime has ended.
+    if (behaviorDeadline <= Date.now()) return emptyPage();
+    if (recheckActor && !(await activeActor())) return emptyPage();
     const page: string[] = [];
     while (offset < ids.length && page.length < take) {
       const id = ids[offset++];

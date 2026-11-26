@@ -1,4 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import {
   MarketSignalSurface,
   MarketSignalTargetType,
@@ -6,6 +10,10 @@ import {
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { lockSecurityAccount } from '../auth/access/lock-security-account';
+import { databaseErrorCode } from './catalog/market-catalog-read.service';
+import { MARKET_SIGNAL_MAX_BATCH_EVENTS } from './dto/market-signal.dto';
+import { createHash } from 'node:crypto';
 
 export type MarketSignalAggregationIdentity = {
   userId?: string | null;
@@ -83,8 +91,50 @@ const ITEM_TARGET_TYPES = new Set<MarketSignalTargetType>([
   MarketSignalTargetType.CATEGORY,
 ]);
 
-const DEFAULT_REBUILD_BATCH_SIZE = 500;
-const MAX_REBUILD_BATCH_SIZE = 1000;
+// Bounded waits that lost: pool or transaction start, connection limit, lock,
+// statement and deadlock. Every one rolls the whole unit of work back.
+const BUSY_PRISMA_CODES = new Set(['P2024', 'P2028', 'P2034', 'P2037']);
+const BUSY_DATABASE_CODES = new Set(['55P03', '57014', '40P01', '53300']);
+
+function isMarketSignalContention(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    (BUSY_PRISMA_CODES.has(error.code) ||
+      BUSY_DATABASE_CODES.has(String(databaseErrorCode(error.meta))))
+  );
+}
+
+/**
+ * Account erasure and telemetry share one bounded database unit of work.
+ * Contention is a retryable 503: clients keep the batch queued, and receipts
+ * make the replay idempotent. Other failures keep their own meaning.
+ */
+export async function withMarketSignalTransaction<T>(
+  prisma: PrismaService,
+  work: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  try {
+    return await prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SET LOCAL lock_timeout = '250ms'`;
+        await tx.$executeRaw`SET LOCAL statement_timeout = '1500ms'`;
+        return work(tx);
+      },
+      {
+        maxWait: 500,
+        timeout: 5_000,
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+      },
+    );
+  } catch (error) {
+    if (isMarketSignalContention(error))
+      throw new ServiceUnavailableException({
+        code: 'MARKET_SIGNALS_BUSY',
+        message: 'Activity could not be recorded. Please try again shortly.',
+      });
+    throw error;
+  }
+}
 
 @Injectable()
 export class MarketSignalAggregationService {
@@ -94,6 +144,28 @@ export class MarketSignalAggregationService {
     events: MarketSignalAggregationEvent[],
     identity: MarketSignalAggregationIdentity,
     observedAt = new Date(),
+    transaction?: Prisma.TransactionClient,
+  ): Promise<MarketSignalAggregationResult> {
+    if (
+      events.length > MARKET_SIGNAL_MAX_BATCH_EVENTS ||
+      !Number.isFinite(observedAt.getTime())
+    )
+      throw new RangeError('Invalid Market signal aggregate batch');
+    if (events.length === 0) {
+      return { bucketsUpdated: 0, eventsAggregated: 0, mode: 'synchronous-db' };
+    }
+    return transaction
+      ? this.aggregateInTransaction(events, identity, observedAt, transaction)
+      : withMarketSignalTransaction(this.prisma, (tx) =>
+          this.aggregateInTransaction(events, identity, observedAt, tx),
+        );
+  }
+
+  private async aggregateInTransaction(
+    events: MarketSignalAggregationEvent[],
+    identity: MarketSignalAggregationIdentity,
+    observedAt: Date,
+    client: Prisma.TransactionClient,
   ): Promise<MarketSignalAggregationResult> {
     if (events.length === 0) {
       return { bucketsUpdated: 0, eventsAggregated: 0, mode: 'synchronous-db' };
@@ -101,37 +173,62 @@ export class MarketSignalAggregationService {
 
     const bucketDate = this.toUtcBucketDate(observedAt);
     const buckets = new Map<string, AggregateBucket>();
+    if (identity.userId) {
+      await lockSecurityAccount(client, identity.userId);
+      const actor = await client.user.findUnique({
+        where: { id: identity.userId },
+        select: { status: true, deactivatedAt: true },
+      });
+      if (!actor || actor.status !== 'ACTIVE' || actor.deactivatedAt !== null)
+        throw new ForbiddenException(
+          'Inactive accounts cannot contribute Market signals',
+        );
+    }
 
     for (const event of events) {
-      this.addEventToBuckets(buckets, event, identity, bucketDate, observedAt);
-      this.addEventToBuckets(
-        buckets,
-        event,
-        { userId: null, anonymousSessionId: null },
-        bucketDate,
-        observedAt,
-        'global',
-      );
+      this.addEventToBuckets(buckets, event, bucketDate, observedAt);
     }
 
-    for (const bucket of buckets.values()) {
-      await this.prisma.marketSignalAggregateDaily.upsert({
-        where: { aggregateKey: bucket.aggregateKey },
-        create: {
-          aggregateKey: bucket.aggregateKey,
-          bucketDate: bucket.bucketDate,
-          userId: bucket.userId,
-          anonymousSessionId: bucket.anonymousSessionId,
-          surface: bucket.surface,
-          sectionKey: bucket.sectionKey,
-          suggestionBlockKey: bucket.suggestionBlockKey,
-          targetType: bucket.targetType,
-          targetId: bucket.targetId,
-          ...bucket.counters,
-        },
-        update: this.buildCounterUpdate(bucket.counters),
-      });
-    }
+    // One parameterized statement increments every global bucket. Ordering the
+    // inserts inside PostgreSQL gives all accounts the same row-lock order.
+    const ordered = [...buckets.values()].sort((a, b) =>
+      a.aggregateKey < b.aggregateKey
+        ? -1
+        : a.aggregateKey > b.aggregateKey
+          ? 1
+          : 0,
+    );
+    const rows = ordered.map((bucket) => ({
+      aggregateKey: bucket.aggregateKey,
+      bucketDate: bucket.bucketDate.toISOString(),
+      surface: bucket.surface,
+      sectionKey: bucket.sectionKey,
+      suggestionBlockKey: bucket.suggestionBlockKey,
+      targetType: bucket.targetType,
+      targetId: bucket.targetId,
+      ...bucket.counters,
+      latestSeenAt: bucket.counters.latestSeenAt?.toISOString() ?? null,
+    }));
+    await client.$executeRaw(Prisma.sql`INSERT INTO market_signal_aggregate_daily (
+      "_id","aggregateKey","bucketDate","surface","sectionKey","suggestionBlockKey","targetType","targetId",
+      "sectionImpressions","itemImpressions","productOpens","itemOpens",clicks,"viewAllClicks",suppressions,"seenItems","eventCount","latestSeenAt","updatedAt")
+      SELECT gen_random_uuid(),input."aggregateKey",input."bucketDate",input.surface::"MarketSignalSurface",input."sectionKey",input."suggestionBlockKey",input."targetType"::"MarketSignalTargetType",input."targetId",
+        input."sectionImpressions",input."itemImpressions",input."productOpens",input."itemOpens",input.clicks,input."viewAllClicks",input.suppressions,input."seenItems",input."eventCount",input."latestSeenAt",statement_timestamp()
+      FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) AS input("aggregateKey" text,"bucketDate" timestamptz,surface text,"sectionKey" text,"suggestionBlockKey" text,"targetType" text,"targetId" text,
+        "sectionImpressions" integer,"itemImpressions" integer,"productOpens" integer,"itemOpens" integer,clicks integer,"viewAllClicks" integer,suppressions integer,"seenItems" integer,"eventCount" integer,"latestSeenAt" timestamptz)
+      ORDER BY input."aggregateKey" COLLATE "C"
+      ON CONFLICT("aggregateKey") DO UPDATE SET
+        "sectionImpressions"=market_signal_aggregate_daily."sectionImpressions"+EXCLUDED."sectionImpressions",
+        "itemImpressions"=market_signal_aggregate_daily."itemImpressions"+EXCLUDED."itemImpressions",
+        "productOpens"=market_signal_aggregate_daily."productOpens"+EXCLUDED."productOpens",
+        "itemOpens"=market_signal_aggregate_daily."itemOpens"+EXCLUDED."itemOpens",
+        clicks=market_signal_aggregate_daily.clicks+EXCLUDED.clicks,
+        "viewAllClicks"=market_signal_aggregate_daily."viewAllClicks"+EXCLUDED."viewAllClicks",
+        suppressions=market_signal_aggregate_daily.suppressions+EXCLUDED.suppressions,
+        "seenItems"=market_signal_aggregate_daily."seenItems"+EXCLUDED."seenItems",
+        "eventCount"=market_signal_aggregate_daily."eventCount"+EXCLUDED."eventCount",
+        "latestSeenAt"=GREATEST(market_signal_aggregate_daily."latestSeenAt",EXCLUDED."latestSeenAt"),
+        "updatedAt"=statement_timestamp()`);
 
     return {
       bucketsUpdated: buckets.size,
@@ -143,165 +240,23 @@ export class MarketSignalAggregationService {
   async rebuildDailyAggregatesFromStoredSignals(
     options: MarketSignalAggregateRebuildOptions,
   ): Promise<MarketSignalAggregateRebuildResult> {
-    const bucketDate = this.toUtcBucketDate(options.bucketDate);
-    const nextBucketDate = new Date(bucketDate.getTime() + 24 * 60 * 60 * 1000);
-    const batchSize = this.normalizeRebuildBatchSize(options.batchSize);
-    const buckets = new Map<string, AggregateBucket>();
-    let cursorId: string | undefined;
-    let eventsRead = 0;
-    let batchesRead = 0;
-
-    for (;;) {
-      const rows = await this.prisma.userFeedSignal.findMany({
-        where: {
-          createdAt: {
-            gte: bucketDate,
-            lt: nextBucketDate,
-          },
-        },
-        orderBy: { id: 'asc' },
-        take: batchSize,
-        ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
-        select: {
-          id: true,
-          userId: true,
-          anonymousSessionId: true,
-          targetType: true,
-          targetId: true,
-          signalType: true,
-          surface: true,
-          sectionKey: true,
-          suggestionBlockKey: true,
-          createdAt: true,
-        },
-      });
-
-      if (rows.length === 0) break;
-      batchesRead += 1;
-      eventsRead += rows.length;
-
-      for (const row of rows) {
-        const event = {
-          targetType: row.targetType,
-          targetId: row.targetId,
-          signalType: row.signalType,
-          surface: row.surface ?? MarketSignalSurface.MARKET_HOME,
-          sectionKey: row.sectionKey,
-          suggestionBlockKey: row.suggestionBlockKey,
-        };
-        const identity = row.userId
-          ? { userId: row.userId, anonymousSessionId: null }
-          : { userId: null, anonymousSessionId: row.anonymousSessionId };
-        this.addEventToBuckets(
-          buckets,
-          event,
-          identity,
-          bucketDate,
-          row.createdAt,
-        );
-        this.addEventToBuckets(
-          buckets,
-          event,
-          { userId: null, anonymousSessionId: null },
-          bucketDate,
-          row.createdAt,
-          'global',
-        );
-      }
-
-      cursorId = rows[rows.length - 1]?.id;
-      if (rows.length < batchSize) break;
-    }
-
-    for (const bucket of buckets.values()) {
-      await this.prisma.marketSignalAggregateDaily.upsert({
-        where: { aggregateKey: bucket.aggregateKey },
-        create: {
-          aggregateKey: bucket.aggregateKey,
-          bucketDate: bucket.bucketDate,
-          userId: bucket.userId,
-          anonymousSessionId: bucket.anonymousSessionId,
-          surface: bucket.surface,
-          sectionKey: bucket.sectionKey,
-          suggestionBlockKey: bucket.suggestionBlockKey,
-          targetType: bucket.targetType,
-          targetId: bucket.targetId,
-          ...bucket.counters,
-        },
-        update: this.buildCounterSet(bucket.counters),
-      });
-    }
-
-    return {
-      bucketsUpserted: buckets.size,
-      eventsRead,
-      batchesRead,
-      mode: 'date-scoped-rebuild',
-    };
-  }
-
-  private buildCounterUpdate(
-    counters: AggregateCounters,
-  ): Prisma.MarketSignalAggregateDailyUpdateInput {
-    const update: Prisma.MarketSignalAggregateDailyUpdateInput = {
-      eventCount: { increment: counters.eventCount },
-    };
-    if (counters.sectionImpressions) {
-      update.sectionImpressions = { increment: counters.sectionImpressions };
-    }
-    if (counters.itemImpressions) {
-      update.itemImpressions = { increment: counters.itemImpressions };
-    }
-    if (counters.productOpens) {
-      update.productOpens = { increment: counters.productOpens };
-    }
-    if (counters.itemOpens) {
-      update.itemOpens = { increment: counters.itemOpens };
-    }
-    if (counters.clicks) update.clicks = { increment: counters.clicks };
-    if (counters.viewAllClicks) {
-      update.viewAllClicks = { increment: counters.viewAllClicks };
-    }
-    if (counters.suppressions) {
-      update.suppressions = { increment: counters.suppressions };
-    }
-    if (counters.seenItems)
-      update.seenItems = { increment: counters.seenItems };
-    if (counters.latestSeenAt) update.latestSeenAt = counters.latestSeenAt;
-    return update;
-  }
-
-  private buildCounterSet(
-    counters: AggregateCounters,
-  ): Prisma.MarketSignalAggregateDailyUpdateInput {
-    return {
-      sectionImpressions: counters.sectionImpressions,
-      itemImpressions: counters.itemImpressions,
-      productOpens: counters.productOpens,
-      itemOpens: counters.itemOpens,
-      clicks: counters.clicks,
-      viewAllClicks: counters.viewAllClicks,
-      suppressions: counters.suppressions,
-      seenItems: counters.seenItems,
-      eventCount: counters.eventCount,
-      latestSeenAt: counters.latestSeenAt,
-    };
+    // A closed UTC day cannot remain wholly inside a rolling 24-hour source
+    // window once a rebuild starts. Replacing totals would also lose concurrent
+    // incremental contributions. Retain the endpoint, but require an audited
+    // complete, anonymized source before implementing a replacement rebuild.
+    void options;
+    throw new ServiceUnavailableException(
+      'A complete daily source window is unavailable under R1; retained global totals are preserved',
+    );
   }
 
   private addEventToBuckets(
     buckets: Map<string, AggregateBucket>,
     event: MarketSignalAggregationEvent,
-    identity: MarketSignalAggregationIdentity,
     bucketDate: Date,
     observedAt: Date,
-    ownerOverride?: 'global',
   ) {
-    const aggregateKey = this.buildAggregateKey(
-      event,
-      identity,
-      bucketDate,
-      ownerOverride,
-    );
+    const aggregateKey = this.buildAggregateKey(event, bucketDate);
     const existing = buckets.get(aggregateKey);
     if (existing) {
       this.addCounters(existing.counters, event, observedAt);
@@ -313,11 +268,8 @@ export class MarketSignalAggregationService {
     buckets.set(aggregateKey, {
       aggregateKey,
       bucketDate,
-      userId: ownerOverride === 'global' ? null : (identity.userId ?? null),
-      anonymousSessionId:
-        ownerOverride === 'global' || identity.userId
-          ? null
-          : (identity.anonymousSessionId ?? null),
+      userId: null,
+      anonymousSessionId: null,
       surface: event.surface,
       sectionKey: event.sectionKey ?? null,
       suggestionBlockKey: event.suggestionBlockKey ?? null,
@@ -418,33 +370,20 @@ export class MarketSignalAggregationService {
 
   private buildAggregateKey(
     event: MarketSignalAggregationEvent,
-    identity: MarketSignalAggregationIdentity,
     bucketDate: Date,
-    ownerOverride?: 'global',
   ) {
-    const owner =
-      ownerOverride === 'global'
-        ? 'global'
-        : identity.userId
-          ? `user:${identity.userId}`
-          : `anon:${identity.anonymousSessionId ?? 'none'}`;
-    return [
-      bucketDate.toISOString().slice(0, 10),
-      owner,
+    const day = bucketDate.toISOString().slice(0, 10);
+    const tuple = [
+      day,
       event.surface,
-      event.sectionKey ?? '',
-      event.suggestionBlockKey ?? '',
+      event.sectionKey ?? null,
+      event.suggestionBlockKey ?? null,
       event.targetType,
       event.targetId,
-    ].join('|');
-  }
-
-  private normalizeRebuildBatchSize(value?: number) {
-    if (!Number.isFinite(value)) return DEFAULT_REBUILD_BATCH_SIZE;
-    return Math.min(
-      MAX_REBUILD_BATCH_SIZE,
-      Math.max(1, Math.floor(value as number)),
-    );
+    ];
+    // Delimiters inside a section, block or target cannot alias another tuple.
+    // Existing totals remain untouched and readers group their explicit columns.
+    return `${day}|global|v2|${createHash('sha256').update(JSON.stringify(tuple)).digest('hex')}`;
   }
 
   private toUtcBucketDate(value: Date) {

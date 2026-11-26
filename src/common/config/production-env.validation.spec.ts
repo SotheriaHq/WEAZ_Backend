@@ -6,12 +6,16 @@ describe('validateProductionSecurityEnv', () => {
       validateProductionSecurityEnv({ NODE_ENV: 'production' }),
     ).toThrow('VERIFICATION_DRAFT_SECRET');
 
-    expect(() =>
-      validateProductionSecurityEnv({
-        NODE_ENV: 'production',
-        VERIFICATION_DRAFT_SECRET: 'wiez-verification-draft-secret',
-      }),
-    ).toThrow('unsafe legacy value');
+    for (const legacy of [
+      'threadly-verification-draft-secret',
+      'wiez-verification-draft-secret',
+    ])
+      expect(() =>
+        validateProductionSecurityEnv({
+          NODE_ENV: 'production',
+          VERIFICATION_DRAFT_SECRET: legacy,
+        }),
+      ).toThrow('unsafe legacy value');
   });
 
   it('allows non-production without production-only secrets', () => {

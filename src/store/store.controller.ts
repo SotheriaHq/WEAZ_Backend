@@ -12,6 +12,9 @@ import {
   ValidationPipe,
   UploadedFile,
   UseInterceptors,
+  Optional,
+  Header,
+  BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { StoreService } from './store.service';
@@ -45,12 +48,29 @@ import { multerOptionsForFileType } from 'src/upload/upload-policy';
 import { FileType } from 'src/upload/upload.enums';
 import { Request } from 'express';
 import { LegalActionDto } from 'src/legal/dto/legal-acceptance.dto';
+import { MarketFlagsService } from '../market/market-flags.service';
+import { MarketCatalogService } from '../market/catalog/market-catalog.service';
+import {
+  createMarketCatalogScope,
+  MarketCatalogViewer,
+} from '../market/catalog/market-catalog-scope';
+import {
+  mapLegacyMarketPage,
+  parseLegacyMarketRoute,
+  isLegacyMarketCursor,
+  legacyMarketFallbackReason,
+  MarketLegacyFallbackLog,
+} from '../market/catalog/market-legacy-facade';
 
 @Controller()
 export class StoreController {
+  private readonly marketFallbackLog = new MarketLegacyFallbackLog();
+
   constructor(
     private readonly storeService: StoreService,
     private readonly sizeComputation: SizeComputationService,
+    @Optional() private readonly marketFlags?: MarketFlagsService,
+    @Optional() private readonly marketCatalog?: MarketCatalogService,
   ) {}
 
   private parseListParam(value?: string | string[]): string[] | undefined {
@@ -333,6 +353,7 @@ export class StoreController {
 
   @UseGuards(OptionalJwtAuthGuard)
   @Get(['products/market', 'store/products/market'])
+  @Header('Cache-Control', 'private, no-store')
   @Throttle({ default: { limit: 120, ttl: 60000 } })
   async getMarketplaceProducts(
     @Query('page') page?: string,
@@ -353,7 +374,51 @@ export class StoreController {
     @Query('sort') sort?: 'newest' | 'price_asc' | 'price_desc' | 'popular',
     @Query('q') q?: string,
     @Query('search') search?: string,
+    @Req() req?: Request & { user?: { id?: string; sub?: string } },
   ) {
+    const catalogEnabled = this.marketFlags?.isEnabled('CATALOG') ?? false;
+    if (!catalogEnabled && req) {
+      const currentCursor = new URL(
+        req.originalUrl,
+        'https://catalog.invalid',
+      ).searchParams.get('cursor');
+      if (currentCursor && !isLegacyMarketCursor(currentCursor))
+        throw new BadRequestException({
+          code: 'INVALID_CURSOR',
+          message: 'Refresh this list to continue after a Market update.',
+        });
+    }
+    if (catalogEnabled && this.marketCatalog && req) {
+      const route = parseLegacyMarketRoute(
+        new URL(req.originalUrl, 'https://catalog.invalid').searchParams,
+      );
+      if (route.kind === 'catalogue') {
+        const id = req.user?.id ?? req.user?.sub;
+        const viewer: MarketCatalogViewer = id ? { userId: id } : {};
+        const trusted = {
+          scope: createMarketCatalogScope({
+            key: 'catalog',
+            version: '1',
+            viewer,
+            ...(route.collectionId ? { collectionId: route.collectionId } : {}),
+          }),
+          fixedFilters: {},
+          includeTotal: true,
+          includeLegacyOptions: true,
+        };
+        try {
+          return mapLegacyMarketPage(
+            await this.marketCatalog.getPage(route.query, viewer, trusted),
+          );
+        } catch (error) {
+          // Refused before any database work: the existing V1 reader answers
+          // this unsigned request. Everything else surfaces unchanged.
+          const reason = legacyMarketFallbackReason(error, route);
+          if (!reason) throw error;
+          this.marketFallbackLog.record(reason);
+        }
+      }
+    }
     const resolvedSortBy = sortBy ?? sort;
     const resolvedOnSale =
       this.parseBoolParam(onSale) ?? this.parseBoolParam(isOnSale);

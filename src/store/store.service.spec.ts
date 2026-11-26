@@ -752,7 +752,7 @@ describe('StoreService', () => {
           publicationStatus: CollectionStatus.PUBLISHED,
           deletedAt: null,
           archivedAt: null,
-          brand: { isStoreOpen: true },
+          brand: { isStoreOpen: true, owner: { status: 'ACTIVE' } },
           AND: expect.arrayContaining([
             {
               OR: [
@@ -796,31 +796,17 @@ describe('StoreService', () => {
 
     await storefrontService.getBrandProducts('brand-1');
 
-    expect(productFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          brandId: 'brand-1',
-          isActive: true,
+    const publicWhere = productFindMany.mock.calls[0][0].where;
+    expect(publicWhere.brandId).toBe('brand-1');
+    expect(publicWhere.AND).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
           publicationStatus: CollectionStatus.PUBLISHED,
-          deletedAt: null,
-          archivedAt: null,
-          AND: expect.arrayContaining([
-            {
-              OR: [
-                { publishAt: null },
-                { publishAt: { lte: expect.any(Date) } },
-              ],
-            },
-          ]),
+          brand: { isStoreOpen: true, owner: { status: 'ACTIVE' } },
+          price: { gt: 0 },
         }),
-      }),
+      ]),
     );
-    expect(productCount).toHaveBeenCalledWith({
-      where: expect.objectContaining({
-        brandId: 'brand-1',
-        publicationStatus: CollectionStatus.PUBLISHED,
-        archivedAt: null,
-      }),
-    });
+    expect(productCount).toHaveBeenCalledWith({ where: publicWhere });
   });
 });

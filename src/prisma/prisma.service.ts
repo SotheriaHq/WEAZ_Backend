@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { withUtcDatabaseUrl } from './database-connection';
+import { createResilientPgPool } from './database-connection';
 
 @Injectable()
 export class PrismaService
@@ -22,8 +22,18 @@ export class PrismaService
       throw new Error('DATABASE_URL is required to initialize PrismaClient.');
     }
 
-    // The adapter owns its connections so $disconnect also closes the pool.
-    const adapter = new PrismaPg({ connectionString: withUtcDatabaseUrl(datasourceUrl) });
+    // A server-ended session (transaction_timeout, terminate, restart) must not
+    // crash the process; the pool attaches a permanent client error listener.
+    // disposeExternalPool keeps $disconnect closing the pool, as before.
+    const connectionLogger = new Logger('PostgresConnection');
+    const pool = createResilientPgPool(datasourceUrl, (error) =>
+      connectionLogger.warn({
+        event: 'postgres.connection_ended',
+        code: (error as { code?: string }).code ?? null,
+        message: error.message,
+      }),
+    );
+    const adapter = new PrismaPg(pool, { disposeExternalPool: true });
 
     const enableQueryLogs =
       String(process.env.PRISMA_LOG_QUERIES || '')

@@ -88,6 +88,32 @@ jobs:
         run: npm test -- src/custom-orders/custom-order-refund.service.spec.ts src/order/order.service.spec.ts src/common/payments/order-payment-reconciliation.util.spec.ts src/custom-order-admin/custom-order-admin.service.spec.ts src/payout/payout.service.spec.ts src/finance/refund-provider.client.spec.ts src/payment/currency-policy.spec.ts src/locations/locations.service.spec.ts src/admin/payouts/admin-payouts.service.spec.ts src/admin/payouts/admin-payouts-webhook.controller.spec.ts src/collections/collections.service.spec.ts src/categories/categories.service.spec.ts src/tags/tag-index.service.spec.ts --runInBand
       - name: Focused upload and design mapper tests
         run: npm test -- src/upload/upload.service.spec.ts src/upload/upload.controller.spec.ts src/upload/storage-provider.config.spec.ts src/upload/file-deletion-query.spec.ts src/collections/collection-cleanup-concurrency.spec.ts src/queue/image-processing.processor.spec.ts src/media-processing/media-processing.service.spec.ts src/designs/mappers/design-response.mapper.spec.ts --runInBand
+      - name: Canonical Market eligibility and leak regressions
+        env:
+          DATABASE_URL: postgresql://postgres:ci-disposable-only@localhost:5432/postgres
+        run: |
+          npm run test:market-eligibility
+          npm run test:market-eligibility-postgres
+
+      - name: Market schema, migration replay and writer regressions
+        env:
+          DATABASE_URL: postgresql://postgres:ci-disposable-only@localhost:5432/postgres
+        run: |
+          npm test -- src/common/pricing --runInBand
+          npm run test:market-schema-postgres
+
+      - name: Catalogue contracts and exact-price pagination regressions
+        env:
+          DATABASE_URL: postgresql://postgres:ci-disposable-only@localhost:5432/postgres
+        run: |
+          npm run test:market-catalog
+          npm run test:market-catalog-postgres
+
+      - name: Market Intelligence worker gating, privacy cleanup and ingestion regressions
+        env:
+          DATABASE_URL: postgresql://postgres:ci-disposable-only@localhost:5432/postgres
+        run: npm run test:market-intelligence
+
       - name: Runway ranking, privacy and workload regressions
         run: npm test -- src/collections/runway-load.spec.ts src/collections/runway-feed.service.spec.ts src/collections/runway-ranking.util.spec.ts src/market/feed-category.service.spec.ts src/search/search-concurrency.spec.ts src/search/search.service.spec.ts src/search/core/search-core.service.spec.ts --runInBand
       - name: Provider protocol and upload-content boundaries

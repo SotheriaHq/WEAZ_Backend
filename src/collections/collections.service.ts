@@ -1,3 +1,12 @@
+import {
+  eligibleProductWhere,
+  eligibleStoreCollectionWhere,
+  isEligibleProduct,
+  usableProductImage,
+  isPublicStoreCollectionMembership,
+  PRODUCT_ELIGIBILITY_FIELDS,
+  PRODUCT_ELIGIBILITY_BRAND_FIELDS,
+} from 'src/market/eligibility/market-eligibility';
 import { lockForTransaction } from 'src/common/transaction-lock.util';
 import { draftListPage, draftListCursor, type DraftListOptions } from './draft-list-query';
 import { canViewContent, canViewStoreContent } from 'src/common/content-audience';
@@ -6027,7 +6036,11 @@ export class CollectionsService {
         products: {
           include: {
             product: {
-              include: { variants: { select: { id: true } } },
+              include: {
+                variants: { select: { id: true } },
+                brand: { select: PRODUCT_ELIGIBILITY_BRAND_FIELDS },
+                collections: PRODUCT_ELIGIBILITY_FIELDS.collections,
+              },
             },
           },
           orderBy: { orderIndex: 'asc' },
@@ -6090,14 +6103,11 @@ export class CollectionsService {
 
     if (!isOwner && Array.isArray(collection.products)) {
       const now = new Date();
-      collection.products = collection.products.filter((link: any) => {
-        const p = link?.product;
-        if (!p) return false;
-        if (p.deletedAt || p.archivedAt || !p.isActive) return false;
-        if (p.publishAt && new Date(p.publishAt).getTime() > now.getTime())
-          return false;
-        return true;
-      });
+      collection.products = collection.products.filter(
+        (link: any) =>
+          isEligibleProduct(link?.product, now) &&
+          usableProductImage(link.product),
+      );
     }
 
     const mediaAgg = await this.prisma.collectionMedia.aggregate({
@@ -6114,17 +6124,9 @@ export class CollectionsService {
     const totalThreads =
       collection.threadsCount + (mediaAgg._sum.threadsCount ?? 0);
 
-    let products = collection.products;
-    if (!isOwner) {
-      const now = new Date();
-      products = (collection.products || []).filter((link) => {
-        const p = (link as any)?.product;
-        if (!p) return false;
-        if (p.deletedAt || p.archivedAt || !p.isActive) return false;
-        if (p.publishAt && p.publishAt > now) return false;
-        return true;
-      }) as any;
-    }
+    const products = (collection.products ?? []).map((link: any) =>
+      this.storeCollectionProductProjection(link, isOwner),
+    );
 
     const preferredCover = collection.coverMediaId
       ? collection.medias?.find((m: any) => m.id === collection.coverMediaId)
@@ -6132,21 +6134,12 @@ export class CollectionsService {
     const coverFromMedia = preferredCover?.file?.s3Url ?? null;
     const primaryProductLink = (products || [])[0] ?? null;
     const primaryProduct = primaryProductLink?.product;
-    const primaryProductImages = Array.isArray(primaryProduct?.images)
-      ? primaryProduct.images
-      : [];
-    const firstProductWithCover = (products || []).find((link: any) => {
-      const p = link?.product;
-      const images = Array.isArray(p?.images) ? p.images : [];
-      return Boolean(p?.thumbnail) || images.length > 0;
-    });
     const productCoverUrl =
-      primaryProduct?.thumbnail ??
-      (primaryProductImages.length > 0 ? primaryProductImages[0] : null) ??
-      firstProductWithCover?.product?.thumbnail ??
-      (Array.isArray(firstProductWithCover?.product?.images)
-        ? firstProductWithCover.product.images[0]
-        : null);
+      usableProductImage(primaryProduct) ??
+      products
+        .map((link: any) => usableProductImage(link.product))
+        .find(Boolean) ??
+      null;
 
     const { threadsCount, collectionCollabsCount, medias, ...rest } =
       collection as any;
@@ -6237,12 +6230,40 @@ export class CollectionsService {
     return canViewStoreContent(this.prisma, collectionId, requesterId);
   }
 
+  private storeCollectionProductProjection(link: any, owner: boolean) {
+    // Relations below were selected only to authorize discovery. They are not
+    // part of the product DTO, and private collection membership stays private.
+    const { brand, collections, ...product } = link.product;
+    void brand;
+    if (!owner) {
+      delete product.costPerItem;
+      delete product.profitMargin;
+      const publicLinks = (collections ?? []).filter((entry: any) =>
+        isPublicStoreCollectionMembership(entry.collection),
+      );
+      if (
+        product.collectionId &&
+        !publicLinks.some(
+          (entry: any) => entry.collectionId === product.collectionId,
+        )
+      )
+        product.collectionId = null;
+    }
+    return { ...link, product };
+  }
+
   private async getStoreCollection(id: string, requesterId?: string) {
     const ok = await this.canViewStoreCollection(id, requesterId);
     if (!ok) throw new NotFoundException('Collection not found');
 
-    const collection = await this.prisma.storeCollection.findUnique({
-      where: { id },
+    const collection = await this.prisma.storeCollection.findFirst({
+      where: {
+        id,
+        OR: [
+          ...(requesterId ? [{ ownerId: requesterId, deletedAt: null }] : []),
+          eligibleStoreCollectionWhere(),
+        ],
+      },
       include: {
         owner: {
           select: this.selectCollectionOwnerDisplay(),
@@ -6250,7 +6271,11 @@ export class CollectionsService {
         products: {
           include: {
             product: {
-              include: { variants: { select: { id: true } } },
+              include: {
+                variants: { select: { id: true } },
+                brand: { select: PRODUCT_ELIGIBILITY_BRAND_FIELDS },
+                collections: PRODUCT_ELIGIBILITY_FIELDS.collections,
+              },
             },
           },
           orderBy: { orderIndex: 'asc' },
@@ -6265,29 +6290,18 @@ export class CollectionsService {
     const products = (collection.products || []).filter((link: any) => {
       const p = link?.product;
       if (!p) return false;
+      if (!isOwner)
+        return isEligibleProduct(p, now) && Boolean(usableProductImage(p));
       if (p.deletedAt || p.archivedAt) return false;
       if (!allowInactiveDraftProducts && !p.isActive) return false;
       if (!isOwner && p.publishAt && p.publishAt > now) return false;
       return true;
     }) as any[];
 
-    const primaryProductLink = (products || [])[0] ?? null;
-    const primaryProduct = primaryProductLink?.product;
-    const primaryProductImages = Array.isArray(primaryProduct?.images)
-      ? primaryProduct.images
-      : [];
-    const firstProductWithCover = (products || []).find((link: any) => {
-      const p = link?.product;
-      const images = Array.isArray(p?.images) ? p.images : [];
-      return Boolean(p?.thumbnail) || images.length > 0;
-    });
     const productCoverUrl =
-      primaryProduct?.thumbnail ??
-      (primaryProductImages.length > 0 ? primaryProductImages[0] : null) ??
-      firstProductWithCover?.product?.thumbnail ??
-      (Array.isArray(firstProductWithCover?.product?.images)
-        ? firstProductWithCover.product.images[0]
-        : null);
+      products
+        .map((link: any) => usableProductImage(link.product))
+        .find(Boolean) ?? null;
 
     const appliedFilters = this.categoriesService
       ? await this.categoriesService.getEntityFilters('STORE_COLLECTION', id)
@@ -6319,7 +6333,9 @@ export class CollectionsService {
       filters: appliedFilters,
       filterValueIds,
       filterSelection,
-      products,
+      products: products.map((link) =>
+        this.storeCollectionProductProjection(link, isOwner),
+      ),
       coverImageUrl: productCoverUrl,
     };
   }
@@ -6485,14 +6501,7 @@ export class CollectionsService {
     }
     const now = new Date();
     const productVisibilityWhere =
-      requesterId === resolvedOwnerId
-        ? undefined
-        : {
-            deletedAt: null,
-            archivedAt: null,
-            isActive: true,
-            OR: [{ publishAt: null }, { publishAt: { lte: now } }],
-          };
+      requesterId === resolvedOwnerId ? undefined : eligibleProductWhere(now);
     // Default: published only for non-owner
     if (requesterId !== resolvedOwnerId) {
       where.deletedAt = null;
@@ -6602,6 +6611,8 @@ export class CollectionsService {
           include: {
             product: {
               select: {
+                ...PRODUCT_ELIGIBILITY_FIELDS,
+                brand: { select: PRODUCT_ELIGIBILITY_BRAND_FIELDS },
                 id: true,
                 thumbnail: true,
                 images: true,
@@ -6755,6 +6766,19 @@ export class CollectionsService {
 
         return {
           ...rest,
+          products: (c.products ?? [])
+            .filter(
+              (link: any) =>
+                requesterId === resolvedOwnerId ||
+                (isEligibleProduct(link.product, now) &&
+                  usableProductImage(link.product)),
+            )
+            .map((link: any) =>
+              this.storeCollectionProductProjection(
+                link,
+                requesterId === resolvedOwnerId,
+              ),
+            ),
           entityType: 'DESIGN',
           designId: c.id,
           legacyCollectionId: c.id,
@@ -6782,17 +6806,7 @@ export class CollectionsService {
     const { cursor, limit = 20 } = options || {};
     const take = Math.min(Math.max(limit || 20, 1), 50);
     const items = await this.prisma.storeCollection.findMany({
-      where: {
-        status: CollectionStatus.PUBLISHED,
-        visibility: CollectionVisibility.PUBLIC,
-        isAvailableInStore: true,
-        deletedAt: null,
-        owner: {
-          brand: {
-            isStoreOpen: true,
-          },
-        },
-      },
+      where: eligibleStoreCollectionWhere(),
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: take + 1,
       ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
@@ -6810,10 +6824,13 @@ export class CollectionsService {
         createdAt: true,
         updatedAt: true,
         products: {
+          where: { product: eligibleProductWhere() },
           orderBy: [{ orderIndex: 'asc' }],
           include: {
             product: {
               select: {
+                ...PRODUCT_ELIGIBILITY_FIELDS,
+                brand: { select: PRODUCT_ELIGIBILITY_BRAND_FIELDS },
                 id: true,
                 name: true,
                 thumbnail: true,
@@ -6847,66 +6864,58 @@ export class CollectionsService {
     const now = new Date();
 
     return {
-      items: data.map((collection: any) => {
-        const visibleLinks = (collection.products || []).filter((link: any) => {
-          const product = link?.product;
-          if (!product) return false;
-          if (
-            product.deletedAt ||
-            product.archivedAt ||
-            product.isActive === false
-          )
-            return false;
-          if (product.publishAt && product.publishAt > now) return false;
-          return true;
-        });
-        const products = visibleLinks.map((link: any) => link.product);
-        const coverImage =
-          products.find((product: any) => product.thumbnail)?.thumbnail ??
-          products
-            .flatMap((product: any) =>
-              Array.isArray(product.images) ? product.images : [],
+      items: data
+        .map((collection: any) => {
+          const visibleLinks = (collection.products || []).filter(
+            (link: any) =>
+              isEligibleProduct(link?.product, now) &&
+              usableProductImage(link.product),
+          );
+          const products = visibleLinks.map((link: any) => link.product);
+          const coverImage =
+            products
+              .map((product: any) => usableProductImage(product))
+              .find(Boolean) ?? null;
+          const prices = products
+            .map((product: any) =>
+              Number(product.salePrice ?? product.price ?? 0),
             )
-            .find(
-              (image: unknown) => typeof image === 'string' && image.trim(),
-            ) ??
-          null;
-        const prices = products
-          .map((product: any) =>
-            Number(product.salePrice ?? product.price ?? 0),
-          )
-          .filter((price: number) => Number.isFinite(price) && price > 0);
-        const owner = this.mapCollectionOwner(collection.owner);
+            .filter((price: number) => Number.isFinite(price) && price > 0);
+          const owner = this.mapCollectionOwner(collection.owner);
 
-        return {
-          id: collection.id,
-          entityType: 'COLLECTION',
-          domain: 'STORE',
-          ownerId: collection.ownerId,
-          title: collection.title,
-          description: collection.description,
-          status: collection.status,
-          visibility: collection.visibility,
-          brandId: owner?.brand?.id ?? null,
-          brandName: owner?.brand?.name ?? owner?.brandFullName ?? null,
-          brandLogo: owner?.profileImage ?? null,
-          coverImage,
-          productCount: collection._count?.products ?? products.length,
-          itemCount: products.length,
-          priceRange: {
-            min: prices.length
-              ? Math.min(...prices)
-              : (collection.minPrice ?? null),
-            max: prices.length
-              ? Math.max(...prices)
-              : (collection.maxPrice ?? null),
-            currency: products[0]?.currency ?? owner?.brand?.currency ?? 'NGN',
-          },
-          products: visibleLinks,
-          createdAt: collection.createdAt,
-          updatedAt: collection.updatedAt,
-        };
-      }),
+          return {
+            id: collection.id,
+            entityType: 'COLLECTION',
+            domain: 'STORE',
+            ownerId: collection.ownerId,
+            title: collection.title,
+            description: collection.description,
+            status: collection.status,
+            visibility: collection.visibility,
+            brandId: owner?.brand?.id ?? null,
+            brandName: owner?.brand?.name ?? owner?.brandFullName ?? null,
+            brandLogo: owner?.profileImage ?? null,
+            coverImage,
+            productCount: products.length,
+            itemCount: products.length,
+            priceRange: {
+              min: prices.length
+                ? Math.min(...prices)
+                : (collection.minPrice ?? null),
+              max: prices.length
+                ? Math.max(...prices)
+                : (collection.maxPrice ?? null),
+              currency:
+                products[0]?.currency ?? owner?.brand?.currency ?? 'NGN',
+            },
+            products: visibleLinks.map((link: any) =>
+              this.storeCollectionProductProjection(link, false),
+            ),
+            createdAt: collection.createdAt,
+            updatedAt: collection.updatedAt,
+          };
+        })
+        .filter((item) => item.itemCount > 0),
       hasNextPage,
       endCursor: data.length ? data[data.length - 1].id : null,
     };
@@ -6947,8 +6956,7 @@ export class CollectionsService {
       // Store collections have no private-access grant table (unlike design
       // CollectionAccess). Non-owners may only list PUBLISHED + PUBLIC rows.
       // visibility=private|all must not leak private store catalogs.
-      where.status = 'PUBLISHED';
-      where.visibility = CollectionVisibility.PUBLIC;
+      Object.assign(where, eligibleStoreCollectionWhere());
     } else if (visibility === 'public') {
       where.visibility = CollectionVisibility.PUBLIC;
     } else if (visibility === 'private') {
@@ -6993,10 +7001,15 @@ export class CollectionsService {
           },
         },
         products: {
+          ...(requesterId !== userId
+            ? { where: { product: eligibleProductWhere() } }
+            : {}),
           orderBy: [{ orderIndex: 'asc' }],
           include: {
             product: {
               select: {
+                ...PRODUCT_ELIGIBILITY_FIELDS,
+                brand: { select: PRODUCT_ELIGIBILITY_BRAND_FIELDS },
                 id: true,
                 thumbnail: true,
                 images: true,
@@ -7062,6 +7075,11 @@ export class CollectionsService {
       const visibleLinks = links.filter((link: any) => {
         const product = link?.product;
         if (!product) return false;
+        if (!isOwnerRequester)
+          return (
+            isEligibleProduct(product, now) &&
+            Boolean(usableProductImage(product))
+          );
         if (product.deletedAt || product.archivedAt || !product.isActive) {
           return false;
         }
@@ -7156,66 +7174,75 @@ export class CollectionsService {
         : new Map<string, string>();
 
     return {
-      items: data.map((c: any) => {
-        const logoOwner = this.mapCollectionOwner(c.owner);
-        const logoId =
-          logoOwner?.profileImageFile?.id || logoOwner?.profileImageId;
-        const previewMeta = collectionPreviewById.get(c.id);
-        const visibleCount = previewMeta?.visibleCount ?? 0;
-        const coverFromFileId =
-          previewMeta?.coverFileId && signedUrlMap.has(previewMeta.coverFileId)
-            ? (signedUrlMap.get(previewMeta.coverFileId) ?? null)
-            : null;
-        const coverImage = previewMeta?.coverUrl ?? coverFromFileId ?? null;
-        const previewImages = (previewMeta?.preview ?? [])
-          .map((item) => {
-            if (item.url) {
-              return { url: item.url, fileId: null };
-            }
-            if (item.fileId && signedUrlMap.has(item.fileId)) {
-              return {
-                url: signedUrlMap.get(item.fileId) ?? null,
-                fileId: item.fileId,
-              };
-            }
-            if (item.fileId) {
-              return { url: null, fileId: item.fileId };
-            }
-            return null;
-          })
-          .filter(
-            (item): item is { url: string | null; fileId: string | null } =>
-              Boolean(item && (item.url || item.fileId)),
-          );
-        let owner = logoOwner;
-        if (logoId && signedUrlMap.has(logoId)) {
-          const logoUrl = avatarUrlMap.get(logoId) ?? signedUrlMap.get(logoId)!;
-          owner = {
-            ...owner,
-            profileImage: logoUrl,
-            profileImageFile: owner.profileImageFile
-              ? { ...owner.profileImageFile, s3Url: logoUrl }
-              : null,
+      items: data
+        .map((c: any) => {
+          const logoOwner = this.mapCollectionOwner(c.owner);
+          const logoId =
+            logoOwner?.profileImageFile?.id || logoOwner?.profileImageId;
+          const previewMeta = collectionPreviewById.get(c.id);
+          const visibleCount = previewMeta?.visibleCount ?? 0;
+          const coverFromFileId =
+            previewMeta?.coverFileId &&
+            signedUrlMap.has(previewMeta.coverFileId)
+              ? (signedUrlMap.get(previewMeta.coverFileId) ?? null)
+              : null;
+          const coverImage = previewMeta?.coverUrl ?? coverFromFileId ?? null;
+          const previewImages = (previewMeta?.preview ?? [])
+            .map((item) => {
+              if (item.url) {
+                return { url: item.url, fileId: null };
+              }
+              if (item.fileId && signedUrlMap.has(item.fileId)) {
+                return {
+                  url: signedUrlMap.get(item.fileId) ?? null,
+                  fileId: item.fileId,
+                };
+              }
+              if (item.fileId) {
+                return { url: null, fileId: item.fileId };
+              }
+              return null;
+            })
+            .filter(
+              (item): item is { url: string | null; fileId: string | null } =>
+                Boolean(item && (item.url || item.fileId)),
+            );
+          let owner = logoOwner;
+          if (logoId && signedUrlMap.has(logoId)) {
+            const logoUrl =
+              avatarUrlMap.get(logoId) ?? signedUrlMap.get(logoId)!;
+            owner = {
+              ...owner,
+              profileImage: logoUrl,
+              profileImageFile: owner.profileImageFile
+                ? { ...owner.profileImageFile, s3Url: logoUrl }
+                : null,
+            };
+          }
+          return {
+            ...c,
+            ...(!isOwnerRequester
+              ? { _count: { products: visibleCount } }
+              : {}),
+            entityType: 'COLLECTION',
+            domain: 'STORE',
+            isAvailableInStore: true,
+            deletedAt: c.deletedAt ?? null,
+            deleteExpiresAt: c.deleteExpiresAt ?? null,
+            medias: [],
+            coverMediaId: null,
+            coverImage,
+            coverFileId: previewMeta?.coverFileId ?? null,
+            previewImages,
+            products: (previewMeta?.visibleLinks ?? []).map((link: any) =>
+              this.storeCollectionProductProjection(link, isOwnerRequester),
+            ),
+            itemCount: visibleCount,
+            collectionCollabCount: c.collectionCollabsCount,
+            owner,
           };
-        }
-        return {
-          ...c,
-          entityType: 'COLLECTION',
-          domain: 'STORE',
-          isAvailableInStore: true,
-          deletedAt: c.deletedAt ?? null,
-          deleteExpiresAt: c.deleteExpiresAt ?? null,
-          medias: [],
-          coverMediaId: null,
-          coverImage,
-          coverFileId: previewMeta?.coverFileId ?? null,
-          previewImages,
-          products: previewMeta?.visibleLinks ?? [],
-          itemCount: visibleCount,
-          collectionCollabCount: c.collectionCollabsCount,
-          owner,
-        };
-      }),
+        })
+        .filter((item) => isOwnerRequester || item.itemCount > 0),
       hasNextPage: hasNext,
       endCursor: data.length ? data[data.length - 1].id : null,
     };

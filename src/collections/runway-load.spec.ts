@@ -15,6 +15,11 @@ function setup() {
   const prisma = {
     personalizationReset: { findFirst: jest.fn().mockResolvedValue(null) },
     runwayAffinityCache: { findUnique: jest.fn().mockResolvedValue(null) },
+    user: {
+      findUnique: jest
+        .fn()
+        .mockResolvedValue({ status: 'ACTIVE', deactivatedAt: null }),
+    },
     $executeRaw: jest.fn().mockResolvedValue(0),
   };
   const service = new RunwayFeedService(prisma as any);
@@ -37,6 +42,36 @@ describe('Runway workload limits', () => {
     await Promise.all([first, second, other]);
     expect((service as any).affinityLoads.size).toBe(0);
   });
+
+  it.each([
+    { status: 'DEACTIVATED', deactivatedAt: new Date() },
+    { status: 'ACTIVE', deactivatedAt: new Date() },
+    { status: 'SUSPENDED', deactivatedAt: null },
+    null,
+  ])(
+    'never builds or reads behaviour for an inactive account: %j',
+    async (actor) => {
+      const { service, prisma } = setup();
+      prisma.user.findUnique.mockResolvedValue(actor);
+      prisma.runwayAffinityCache.findUnique.mockResolvedValue({
+        payload: { version: 'runway-r1-v1', seen: ['cached-behaviour'] },
+        builtAt: new Date(),
+        expiresAt: new Date(Date.now() + 30_000),
+      });
+      const build = jest.spyOn(service as any, 'buildAffinity');
+      const result = await (service as any).affinity(
+        'one',
+        'discover',
+        new Date(),
+      );
+      expect(result.seen.size).toBe(0);
+      expect(build).not.toHaveBeenCalled();
+      expect(prisma.user.findUnique).toHaveBeenCalledWith({
+        where: { id: 'one' },
+        select: { status: true, deactivatedAt: true },
+      });
+    },
+  );
 
   it('does not share an old calculation after a personalization reset', async () => {
     const { service, prisma } = setup();

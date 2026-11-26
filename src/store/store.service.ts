@@ -1,4 +1,20 @@
-import { withSecurityWrite, withSecurityTransaction } from 'src/auth/access/transactional-enforcement';
+import {
+  resolveProductPrice,
+  type ProductPriceInput,
+} from 'src/common/pricing/product-price';
+import {
+  eligibleProductWhere,
+  isEligibleProduct,
+  usableProductImage,
+  isPublicStoreCollectionMembership,
+  PRODUCT_ELIGIBILITY_FIELDS,
+  PRODUCT_ELIGIBILITY_BRAND_FIELDS,
+  type ProductEligibilityRow,
+} from 'src/market/eligibility/market-eligibility';
+import {
+  withSecurityWrite,
+  withSecurityTransaction,
+} from 'src/auth/access/transactional-enforcement';
 import { assertOperationBrand } from 'src/auth/access/operation-brand-binding';
 import { StorePaymentAccountSynchronizer, STORE_PAYMENT_PROVIDER_STATUS } from './store-payment-account-sync';
 import { getLiveSecurityContext, securityRequestContext } from 'src/auth/access/security-request-context';
@@ -4909,6 +4925,7 @@ export class StoreService {
             title: true,
             description: true,
             status: true,
+            visibility: true,
             isAvailableInStore: true,
             deletedAt: true,
           },
@@ -4923,6 +4940,7 @@ export class StoreService {
                 title: true,
                 description: true,
                 status: true,
+                visibility: true,
                 isAvailableInStore: true,
                 deletedAt: true,
               },
@@ -4936,7 +4954,7 @@ export class StoreService {
             logo: true,
             currency: true,
             ownerId: true,
-            isStoreOpen: true,
+            ...PRODUCT_ELIGIBILITY_BRAND_FIELDS,
           },
         },
         // Inline wishlist check - avoids separate query
@@ -5042,6 +5060,7 @@ export class StoreService {
         collection: {
           select: {
             status: true,
+            visibility: true,
             isAvailableInStore: true,
             deletedAt: true,
           },
@@ -5051,6 +5070,7 @@ export class StoreService {
             collection: {
               select: {
                 status: true,
+                visibility: true,
                 isAvailableInStore: true,
                 deletedAt: true,
               },
@@ -5368,6 +5388,7 @@ export class StoreService {
         deletedAt: null,
       },
       select: {
+        ...PRODUCT_ELIGIBILITY_FIELDS,
         id: true,
         slug: true,
         name: true,
@@ -5385,6 +5406,7 @@ export class StoreService {
             title: true,
             description: true,
             status: true,
+            visibility: true,
             isAvailableInStore: true,
             deletedAt: true,
           },
@@ -5399,6 +5421,7 @@ export class StoreService {
                 title: true,
                 description: true,
                 status: true,
+                visibility: true,
                 isAvailableInStore: true,
                 deletedAt: true,
               },
@@ -5408,7 +5431,7 @@ export class StoreService {
         brand: {
           select: {
             ownerId: true,
-            isStoreOpen: true,
+            ...PRODUCT_ELIGIBILITY_BRAND_FIELDS,
           },
         },
         variants: {
@@ -5573,31 +5596,7 @@ export class StoreService {
         where.deletedAt = null;
       }
     } else {
-      // Public: only active products available in storefront.
-      where.isActive = true;
-      where.publicationStatus = CollectionStatus.PUBLISHED;
-      where.deletedAt = null;
-      where.archivedAt = null;
-      andFilters.push({
-        OR: [{ publishAt: null }, { publishAt: { lte: new Date() } }],
-      });
-      andFilters.push({
-        OR: [
-          { collections: { none: {} } },
-          {
-            collections: {
-              some: {
-                collection: {
-                  status: 'PUBLISHED',
-                  isAvailableInStore: true,
-                  deletedAt: null,
-                },
-              },
-            },
-          },
-        ],
-      });
-      andFilters.push(this.buildMarketplaceInventoryWhereFilter());
+      andFilters.push(eligibleProductWhere());
     }
 
     // Gender filter
@@ -5718,12 +5717,26 @@ export class StoreService {
               id: true,
               title: true,
               status: true,
+              visibility: true,
               isAvailableInStore: true,
+              deletedAt: true,
             },
           },
-          collections: { select: { collectionId: true, orderIndex: true } },
+          collections: {
+            select: {
+              ...PRODUCT_ELIGIBILITY_FIELDS.collections.select,
+              collectionId: true,
+              orderIndex: true,
+            },
+          },
           brand: {
-            select: { id: true, name: true, logo: true, currency: true },
+            select: {
+              ...PRODUCT_ELIGIBILITY_BRAND_FIELDS,
+              id: true,
+              name: true,
+              logo: true,
+              currency: true,
+            },
           },
           categoryType: {
             select: { id: true, categoryId: true, slug: true, name: true },
@@ -5747,7 +5760,13 @@ export class StoreService {
     const nextCursor =
       products.length > 0 ? products[products.length - 1].id : null;
 
-    const baseItems = products.map((p) => this.transformProduct(p));
+    const baseItems = products
+      .filter((p) => isOwner || (isEligibleProduct(p) && usableProductImage(p)))
+      .map((p) =>
+        this.transformProduct(p, {
+          includePrivateCollections: Boolean(isOwner),
+        }),
+      );
     const productFilterRows = await this.getProductFilterRows(
       baseItems.map((item: any) => item.id).filter(Boolean),
     );
@@ -5910,36 +5929,8 @@ export class StoreService {
     const safePage = Math.max(1, Number(page) || 1);
     const safeLimit = Math.min(120, Math.max(1, Number(limit) || 40));
 
-    const where: Prisma.ProductWhereInput = {
-      isActive: true,
-      publicationStatus: CollectionStatus.PUBLISHED,
-      deletedAt: null,
-      archivedAt: null,
-      brand: { isStoreOpen: true },
-    };
-
-    const andFilters: Prisma.ProductWhereInput[] = [
-      {
-        OR: [{ publishAt: null }, { publishAt: { lte: new Date() } }],
-      },
-      {
-        OR: [
-          { collections: { none: {} } },
-          {
-            collections: {
-              some: {
-                collection: {
-                  status: 'PUBLISHED',
-                  isAvailableInStore: true,
-                  deletedAt: null,
-                },
-              },
-            },
-          },
-        ],
-      },
-      this.buildMarketplaceInventoryWhereFilter(),
-    ];
+    const where = eligibleProductWhere();
+    const andFilters: Prisma.ProductWhereInput[] = [];
 
     if (
       gender &&
@@ -5949,9 +5940,12 @@ export class StoreService {
     }
 
     if (minPrice !== undefined || maxPrice !== undefined) {
-      where.price = {};
-      if (minPrice !== undefined) where.price.gte = minPrice;
-      if (maxPrice !== undefined) where.price.lte = maxPrice;
+      andFilters.push({
+        price: {
+          ...(minPrice !== undefined ? { gte: minPrice } : {}),
+          ...(maxPrice !== undefined ? { lte: maxPrice } : {}),
+        },
+      });
     }
 
     if (sizes && sizes.length > 0) {
@@ -6055,12 +6049,26 @@ export class StoreService {
               id: true,
               title: true,
               status: true,
+              visibility: true,
               isAvailableInStore: true,
+              deletedAt: true,
             },
           },
-          collections: { select: { collectionId: true, orderIndex: true } },
+          collections: {
+            select: {
+              ...PRODUCT_ELIGIBILITY_FIELDS.collections.select,
+              collectionId: true,
+              orderIndex: true,
+            },
+          },
           brand: {
-            select: { id: true, name: true, logo: true, currency: true },
+            select: {
+              ...PRODUCT_ELIGIBILITY_BRAND_FIELDS,
+              id: true,
+              name: true,
+              logo: true,
+              currency: true,
+            },
           },
           categoryType: {
             select: { id: true, categoryId: true, slug: true, name: true },
@@ -6084,7 +6092,9 @@ export class StoreService {
     const nextCursor =
       products.length > 0 ? products[products.length - 1].id : null;
 
-    const baseItems = products.map((p) => this.transformProduct(p));
+    const baseItems = products
+      .filter((p) => isEligibleProduct(p) && usableProductImage(p))
+      .map((p) => this.transformProduct(p));
     const productFilterRows = await this.getProductFilterRows(
       baseItems.map((item: any) => item.id).filter(Boolean),
     );
@@ -6766,7 +6776,9 @@ export class StoreService {
       brandName: product.brand?.name ?? null,
       brandId: product.brandId,
       currency: product.currency ?? product.brand?.currency ?? null,
-      price: this.toMoneyNumber(product.salePrice ?? product.price),
+      price: this.toMoneyNumber(
+        resolveProductPrice(product)?.effectivePrice ?? product.price,
+      ),
       quantity: resultingQuantity,
       selectedSize: resolvedSelectedSize,
       selectedColor: dto.selectedColor || null,
@@ -6797,6 +6809,7 @@ export class StoreService {
                   select: {
                     id: true,
                     status: true,
+                    visibility: true,
                     isAvailableInStore: true,
                     deletedAt: true,
                   },
@@ -7092,10 +7105,14 @@ export class StoreService {
       };
     }
 
-    if (!this.hasPublicStoreAccess(product)) {
+    if (!this.isProductPubliclyAvailable(product)) {
+      const onlyStockMissing = this.isProductPubliclyAvailable({
+        ...product,
+        totalStock: 1,
+      });
       return {
-        status: 'UNPUBLISHED',
-        reason: 'not_in_store',
+        status: onlyStockMissing ? 'OUT_OF_STOCK' : 'UNPUBLISHED',
+        reason: onlyStockMissing ? 'out_of_stock' : 'not_in_store',
         isAvailable: false,
         canAddToCart: false,
       };
@@ -7222,6 +7239,7 @@ export class StoreService {
                   currency: true,
                   isStoreOpen: true,
                   ownerId: true,
+                  ...PRODUCT_ELIGIBILITY_BRAND_FIELDS,
                 },
               },
               collections: {
@@ -7231,6 +7249,7 @@ export class StoreService {
                     select: {
                       id: true,
                       status: true,
+                      visibility: true,
                       isAvailableInStore: true,
                       deletedAt: true,
                     },
@@ -7258,7 +7277,19 @@ export class StoreService {
       return {
         id: item.id,
         addedAt: item.createdAt,
-        product: this.transformProduct(item.product),
+        product: this.isProductPubliclyAvailable(item.product)
+          ? this.transformProduct(item.product)
+          : this.transformProduct({
+              id: item.productId,
+              name: 'Unavailable piece',
+              price: 0,
+              currency: 'NGN',
+              images: [],
+              thumbnail: null,
+              sizes: [],
+              variants: [],
+              collections: [],
+            }),
         availabilityStatus: availability.status,
         availabilityReason: availability.reason,
         isAvailable: availability.isAvailable,
@@ -7287,12 +7318,11 @@ export class StoreService {
 
   // ==================== HELPERS ====================
 
-  private isProductOnSale(product: any): boolean {
-    if (!product.salePrice) return false;
-    const now = new Date();
-    if (product.saleStartAt && product.saleStartAt > now) return false;
-    if (product.saleEndAt && product.saleEndAt < now) return false;
-    return true;
+  private isProductOnSale(
+    product: ProductPriceInput,
+    now = new Date(),
+  ): boolean {
+    return resolveProductPrice(product, now)?.isOnSale ?? false;
   }
 
   private hasPublicStoreAccess(
@@ -7311,36 +7341,8 @@ export class StoreService {
     });
   }
 
-  private isProductPubliclyAvailable(product: {
-    deletedAt?: Date | null;
-    archivedAt?: Date | null;
-    isActive?: boolean | null;
-    publicationStatus?: CollectionStatus | string | null;
-    brand?: { isStoreOpen?: boolean | null } | null;
-    collections?: Array<any> | null;
-    totalStock?: number | null;
-    customOrderEnabled?: boolean | null;
-    variants?: Array<{ size?: string | null } | null> | null;
-  }): boolean {
-    if (product.deletedAt || product.archivedAt || product.isActive === false) {
-      return false;
-    }
-    if (
-      product.publicationStatus &&
-      product.publicationStatus !== CollectionStatus.PUBLISHED
-    ) {
-      return false;
-    }
-
-    if (!product.brand?.isStoreOpen) {
-      return false;
-    }
-
-    if (!this.hasPublicStoreAccess(product)) {
-      return false;
-    }
-
-    return this.isProductPubliclyInventoryEligible(product);
+  private isProductPubliclyAvailable(product: ProductEligibilityRow): boolean {
+    return isEligibleProduct(product) && Boolean(usableProductImage(product));
   }
 
   private shouldAllowCustomOrderCarry(product: {
@@ -7364,21 +7366,27 @@ export class StoreService {
    */
   private transformProduct(
     product: any,
-    options?: { includeOwnerFinancials?: boolean },
+    options?: {
+      includeOwnerFinancials?: boolean;
+      includePrivateCollections?: boolean;
+    },
   ) {
     const collectionLinks = Array.isArray(product?.collections)
-      ? product.collections
+      ? product.collections.filter(
+          (link: any) =>
+            options?.includePrivateCollections ||
+            options?.includeOwnerFinancials ||
+            isPublicStoreCollectionMembership(link?.collection),
+        )
       : [];
     const sortedCollections = [...collectionLinks].sort(
       (a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0),
     );
     const primaryCollectionId = sortedCollections[0]?.collectionId ?? null;
     const collectionIds = sortedCollections.map((c) => c.collectionId);
-    const isOnSale = this.isProductOnSale(product);
-    const effectivePrice =
-      isOnSale && product.salePrice
-        ? Number(product.salePrice)
-        : Number(product.price);
+    const pricing = resolveProductPrice(product);
+    const isOnSale = pricing?.isOnSale ?? false;
+    const effectivePrice = Number(pricing?.effectivePrice ?? product.price);
 
     // Calculate discount percentage
     let discountPercent: number | null = null;
@@ -7483,7 +7491,7 @@ export class StoreService {
       })),
       // Media
       images: product.images || [],
-      thumbnail: product.thumbnail,
+      thumbnail: usableProductImage(product),
       // Inventory
       totalStock: product.totalStock,
       lowStockThreshold: product.lowStockThreshold,
@@ -7532,8 +7540,21 @@ export class StoreService {
       createdAt: product.createdAt,
       updatedAt: product.updatedAt,
       // Relations
-      collection: product.collection,
-      brand: product.brand,
+      collection:
+        options?.includePrivateCollections ||
+        options?.includeOwnerFinancials ||
+        isPublicStoreCollectionMembership(product.collection)
+          ? product.collection
+          : (sortedCollections.find(
+              (link: any) =>
+                typeof link.collection?.id === 'string' &&
+                typeof link.collection?.title === 'string',
+            )?.collection ?? null),
+      brand: product.brand
+        ? Object.fromEntries(
+            Object.entries(product.brand).filter(([key]) => key !== 'owner'),
+          )
+        : product.brand,
     };
   }
 

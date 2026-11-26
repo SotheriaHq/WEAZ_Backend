@@ -20,6 +20,11 @@ model User {
   securityRecoveryCodes SecurityRecoveryCode[]
   securityStepUpChallenges SecurityStepUpChallenge[]
   runwayAffinityCache RunwayAffinityCache?
+  marketAffinity UserMarketAffinity?
+  marketSectionPublications MarketSectionConfigVersion[] @relation("MarketSectionPublisher")
+  proposedProductComplements ProductComplement[] @relation("ComplementCreator")
+  reviewedProductComplements ProductComplement[] @relation("ComplementReviewer")
+  searchSynonyms SearchSynonym[]
   runwayFeedSessions RunwayFeedSession[]
   id                       String                        @id @map("_id") @db.Uuid
   username                 String                        @unique
@@ -219,6 +224,8 @@ model FileUpload {
 }
 
 model UserProfile {
+  marketPersonalization Boolean @default(true)
+  marketRegionalOptIn Boolean @default(false)
   id                    String            @id @default(uuid()) @map("_id") @db.Uuid
   userId                String            @unique @db.Uuid
   user                  User              @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1813,6 +1820,7 @@ enum CollectionType {
 }
 
 model CollectionCategory {
+  aliases String[] @default([])
   id                  String                         @id @map("_id") @db.Uuid
   slug                String                         @unique
   name                String
@@ -1832,6 +1840,7 @@ model CollectionCategory {
 }
 
 model CollectionCategoryType {
+  aliases String[] @default([])
   id               String             @id @map("_id") @db.Uuid
   categoryId       String             @db.Uuid
   category         CollectionCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
@@ -4972,6 +4981,7 @@ model CardValidationSession {
 }
 
 model OrderItem {
+  sourceSection String? @db.VarChar(80)
   id                         String                           @id @default(uuid()) @db.Uuid
   orderId                    String                           @db.Uuid
   order                      Order                            @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -5455,7 +5465,15 @@ model FinancialDocument {
 
 // ===== E-Commerce Store Models =====
 
+enum ProductFirstPublicationSource {
+  OBSERVED
+  SCHEDULED
+  INFERRED
+}
+
 model Product {
+  complements ProductComplement[] @relation("ComplementSource")
+  complementOf ProductComplement[] @relation("ComplementTarget")
   id             String                  @id @map("_id") @db.Uuid
   collectionId   String?                 @db.Uuid
   collection     StoreCollection?        @relation("PrimaryStoreCollection", fields: [collectionId], references: [id], onDelete: SetNull)
@@ -5478,6 +5496,10 @@ model Product {
   salePrice               Decimal?                 @db.Decimal(10, 2)
   saleStartAt             DateTime?
   saleEndAt               DateTime?
+  effectivePrice          Decimal?                 @db.Decimal(10, 2)
+  effectivePriceComputedAt DateTime?                @db.Timestamptz(3)
+  effectivePriceValidUntil DateTime?                @db.Timestamptz(3)
+  priceChangeXid          Unsupported("xid8")?
 
   // Product details
   sku              String?
@@ -5537,6 +5559,9 @@ model Product {
   // Scheduling
   publishAt         DateTime?
   publishNotifiedAt DateTime?
+  firstPublishedAt       DateTime? @db.Timestamptz(3)
+  firstPublicationSource ProductFirstPublicationSource?
+  lastRelistedAt         DateTime? @db.Timestamptz(3)
 
   // Engagement
   viewsCount   Int @default(0)
@@ -5570,9 +5595,16 @@ model Product {
   entityFilters         EntityFilter[]           @relation("ProductEntityFilters")
   reviews               ProductReview[]          @relation("ProductReviews")
   lifecycleReviews      Review[]                 @relation("ReviewProduct")
+  marketFeatures        MarketItemFeatures?
+  marketRegionalFeatures MarketItemFeaturesRegional[]
+  marketFeatureSnapshots MarketItemFeatureSnapshot[]
+  marketSectionExposures MarketSectionExposure[]
   reviewPrompts         ReviewPrompt[]           @relation("ReviewPromptProduct")
 
   // Performance indexes
+  @@index([tags], type: Gin, map: "Product_market_tags_idx")
+  @@index([priceChangeXid, id], map: "Product_market_price_change_idx")
+  @@index([effectivePriceComputedAt, id], map: "Product_market_price_computed_idx")
   @@index([brandId])
   @@index([brandId, isActive])
   @@index([brandId, publicationStatus, createdAt])
@@ -5755,6 +5787,8 @@ enum SavedItemType {
 }
 
 model CartItem {
+  sourceSection String? @db.VarChar(80)
+  sourcePosition Int?
   id        String  @id @map("_id") @db.Uuid
   userId    String  @db.Uuid
   user      User    @relation("UserCartItems", fields: [userId], references: [id], onDelete: Cascade)
@@ -5858,6 +5892,8 @@ model EntityFilter {
 // ===== Featured System =====
 
 model FeaturedItem {
+  placementKey String @default("HOME_FEATURED") @db.VarChar(80)
+  position Int @default(0)
   id         String @id @map("_id") @db.Uuid
   entityType String // "PRODUCT" | "DESIGN"
   entityId   String @db.Uuid
@@ -6235,7 +6271,195 @@ model FeedCategory {
   @@index([status, displayOrder])
 }
 
+enum MarketEvidenceCompleteness {
+  UNAVAILABLE
+  PARTIAL
+  COMPLETE
+}
+
+model UserMarketAffinity {
+  userId String @id @db.Uuid
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  brands Json @default("[]")
+  categories Json @default("[]")
+  dimensions Json @default("[]")
+  recentBrands Json @default("[]")
+  recentCategories Json @default("[]")
+  recentDimensions Json @default("[]")
+  priceBand String? @db.VarChar(2)
+  sizes String[] @default([])
+  hardActions Int?
+  recentOpens Int?
+  recentHardActions Int?
+  sourceWindowStart DateTime @db.Timestamptz(3)
+  sourceWindowEnd DateTime @db.Timestamptz(3)
+  sourceCompleteness MarketEvidenceCompleteness @default(UNAVAILABLE)
+  recentWindowStart DateTime? @db.Timestamptz(3)
+  recentWindowEnd DateTime? @db.Timestamptz(3)
+  recentCompleteness MarketEvidenceCompleteness @default(UNAVAILABLE)
+  featureSchemaVersion Int @default(1)
+  computedAt DateTime @default(dbgenerated("statement_timestamp()")) @db.Timestamptz(3)
+  expiresAt DateTime @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([expiresAt, userId])
+  @@map("user_market_affinity")
+}
+
+enum MarketFeatureEpochStatus {
+  BUILDING
+  READY
+  FAILED
+}
+
+model MarketItemFeatures {
+  productId String @id @db.Uuid
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  featureSchemaVersion Int @default(1)
+  policyVersion Int @default(1)
+  computedAt DateTime @db.Timestamptz(3)
+  sourceAsOf DateTime @db.Timestamptz(3)
+  coverage Json @default("{}")
+  purchasable Boolean @default(false)
+  minVariantStock Int?
+  lowStockVariants Int @default(0)
+  actors7d Int?
+  actors28d Int?
+  intent3d Float?
+  intent28d Float?
+  impressions28d Int?
+  decayedPopularity Float?
+  trendEligible Boolean @default(false)
+  trendScore Float?
+  qualityScore Float?
+  units28d Int?
+  savesCount Int?
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([trendEligible, trendScore(sort: Desc)])
+  @@index([decayedPopularity(sort: Desc)])
+  @@index([lowStockVariants, minVariantStock])
+  @@index([computedAt, productId])
+  @@map("market_item_features")
+}
+
+model MarketItemFeaturesRegional {
+  productId String @db.Uuid
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  state String @db.VarChar(64)
+  intent28d Float?
+  actors28d Int?
+  coverage Json @default("{}")
+  computedAt DateTime @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@id([productId, state])
+  @@index([state, intent28d(sort: Desc)])
+  @@map("market_item_features_regional")
+}
+
+model MarketFeatureState {
+  key String @id @db.VarChar(80)
+  parameters Json @default("{}")
+  generation BigInt @default(0)
+  currentEpochId String? @db.Uuid
+  currentEpoch MarketFeatureEpoch? @relation("CurrentMarketFeatureEpoch", fields: [key, currentEpochId], references: [stateKey, id], onDelete: NoAction, onUpdate: NoAction)
+  epochs MarketFeatureEpoch[] @relation("MarketFeatureBuildState")
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([key, currentEpochId])
+  @@map("market_feature_state")
+}
+
+model MarketFeatureEpoch {
+  id String @id @default(uuid()) @db.Uuid
+  stateKey String @db.VarChar(80)
+  state MarketFeatureState @relation("MarketFeatureBuildState", fields: [stateKey], references: [key], onDelete: Restrict, onUpdate: NoAction)
+  currentForState MarketFeatureState? @relation("CurrentMarketFeatureEpoch")
+  writerXid Unsupported("xid8")?
+  generation BigInt
+  epochStart DateTime @db.Timestamptz(3)
+  epochEnd DateTime @db.Timestamptz(3)
+  featureSchemaVersion Int @default(1)
+  policyVersion Int @default(1)
+  status MarketFeatureEpochStatus @default(BUILDING)
+  buildStartedAt DateTime @default(now()) @db.Timestamptz(3)
+  readyAt DateTime? @db.Timestamptz(3)
+  sourceAsOf DateTime @db.Timestamptz(3)
+  acceptUntil DateTime @db.Timestamptz(3)
+  parameters Json @default("{}")
+  cleanupAfter DateTime @db.Timestamptz(3)
+  rowCount Int @default(0)
+  failureCode String? @db.VarChar(40)
+  snapshots MarketItemFeatureSnapshot[]
+  exposures MarketSectionExposure[]
+
+  @@unique([stateKey, generation])
+  @@unique([stateKey, id])
+  @@index([stateKey, status, epochStart(sort: Desc)])
+  @@index([cleanupAfter, status])
+  @@map("market_feature_epochs")
+}
+
+model MarketItemFeatureSnapshot {
+  epochId String @db.Uuid
+  epoch MarketFeatureEpoch @relation(fields: [epochId], references: [id], onDelete: Cascade)
+  productId String @db.Uuid
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  sourceComputedAt DateTime @db.Timestamptz(3)
+  sourceFeatureSchemaVersion Int @default(1)
+  sourcePolicyVersion Int @default(1)
+  sourceAsOf DateTime @db.Timestamptz(3)
+  coverage Json @default("{}")
+  purchasable Boolean @default(false)
+  minVariantStock Int?
+  lowStockVariants Int @default(0)
+  actors7d Int?
+  actors28d Int?
+  intent3d Float?
+  intent28d Float?
+  impressions28d Int?
+  decayedPopularity Float?
+  trendEligible Boolean @default(false)
+  trendScore Float?
+  qualityScore Float?
+  units28d Int?
+  savesCount Int?
+
+  @@id([epochId, productId])
+  @@index([epochId, trendEligible(sort: Desc), trendScore(sort: Desc), decayedPopularity(sort: Desc), productId], map: "market_item_feature_snapshots_epochId_trendEligible_trendSc_idx")
+  @@index([epochId, decayedPopularity(sort: Desc), productId])
+  @@index([epochId, lowStockVariants, minVariantStock, productId])
+  @@index([epochId, units28d(sort: Desc), productId])
+  @@index([epochId, savesCount(sort: Desc), productId])
+  @@map("market_item_feature_snapshots")
+}
+
+model MarketSectionExposure {
+  sectionKey String @db.VarChar(80)
+  productId String @db.Uuid
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  epoch DateTime @db.Timestamptz(3)
+  epochId String? @db.Uuid
+  featureEpoch MarketFeatureEpoch? @relation(fields: [epochId], references: [id], onDelete: SetNull)
+  slot Int
+
+  @@id([sectionKey, productId, epoch])
+  @@index([sectionKey, epoch])
+  @@index([epoch, sectionKey, productId])
+  @@map("market_section_exposure")
+}
+
 model MarketSectionConfig {
+  draftDefinition Json?
+  draftRevision Int @default(0)
+  spec Json?
+  specVersion Int @default(0)
+  startsAt DateTime? @db.Timestamptz(3)
+  endsAt DateTime? @db.Timestamptz(3)
+  publishedVersionId String? @db.Uuid
+  publishedVersion MarketSectionConfigVersion? @relation("PublishedSectionVersion", fields: [id, publishedVersionId], references: [configId, id], onDelete: NoAction, onUpdate: NoAction)
+  versions MarketSectionConfigVersion[] @relation("SectionVersions")
   id                    String                        @id @default(uuid()) @map("_id") @db.Uuid
   sectionKey            String                        @unique @db.VarChar(80)
   title                 String                        @db.VarChar(120)
@@ -6265,6 +6489,90 @@ model MarketSectionConfig {
   @@index([status, displayOrder])
   @@index([createdById])
   @@index([updatedById])
+}
+
+model MarketSectionConfigVersion {
+  id String @id @default(uuid()) @db.Uuid
+  configId String @db.Uuid
+  config MarketSectionConfig @relation("SectionVersions", fields: [configId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  version Int
+  draftRevision Int
+  spec Json
+  presentation Json
+  schemaVersion Int @default(1)
+  policyVersion Int @default(1)
+  publishedById String? @db.Uuid
+  publishedBy User? @relation("MarketSectionPublisher", fields: [publishedById], references: [id], onDelete: SetNull)
+  publishedAt DateTime @default(dbgenerated("statement_timestamp()")) @db.Timestamptz(3)
+  reason String @db.VarChar(500)
+  publishedFor MarketSectionConfig[] @relation("PublishedSectionVersion")
+
+  @@unique([configId, version])
+  @@unique([configId, id])
+  @@index([publishedById])
+}
+
+enum ProductComplementStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum SearchSynonymKind {
+  TERM
+  COLOR
+  BRAND_ALIAS
+}
+
+model ProductComplement {
+  productId String @db.Uuid
+  product Product @relation("ComplementSource", fields: [productId], references: [id], onDelete: Cascade)
+  complementId String @db.Uuid
+  complement Product @relation("ComplementTarget", fields: [complementId], references: [id], onDelete: Cascade)
+  status ProductComplementStatus @default(PENDING)
+  createdById String? @db.Uuid
+  createdBy User? @relation("ComplementCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  reviewedById String? @db.Uuid
+  reviewedBy User? @relation("ComplementReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt DateTime? @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@id([productId, complementId])
+  @@index([complementId])
+  @@index([status, productId])
+  @@index([createdById])
+  @@index([reviewedById])
+}
+
+model SearchSynonym {
+  id String @id @default(uuid()) @db.Uuid
+  kind SearchSynonymKind
+  term String @db.VarChar(120)
+  canonical String @db.VarChar(120)
+  createdById String? @db.Uuid
+  createdBy User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([kind, term])
+  @@index([kind, canonical])
+  @@index([createdById])
+}
+
+model MarketChipSet {
+  id String @id @default(uuid()) @db.Uuid
+  key String @unique @db.VarChar(80)
+  surface FeedCategorySurface
+  label String @db.VarChar(120)
+  chips Json
+  startsAt DateTime? @db.Timestamptz(3)
+  endsAt DateTime? @db.Timestamptz(3)
+  status FeedCategoryStatus @default(DRAFT)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([surface, status, startsAt])
 }
 
 model MarketRankingProfile {
@@ -6823,6 +7131,7 @@ model UserSeenItem {
   @@index([sectionKey, createdAt])
   @@index([suggestionBlockKey, createdAt])
   @@index([userId, targetType, targetId])
+  @@index([createdAt, id])
   @@map("user_seen_items")
 }
 
@@ -6847,6 +7156,7 @@ model MarketSectionSignal {
   @@index([anonymousSessionId, clientEventId])
   @@index([clientEventId, createdAt])
   @@index([sectionKey, createdAt])
+  @@index([createdAt, id])
   @@map("market_section_signals")
 }
 
@@ -6874,6 +7184,7 @@ model SuggestionSignal {
   @@index([clientEventId, createdAt])
   @@index([targetType, targetId, createdAt])
   @@index([blockKey, createdAt])
+  @@index([createdAt, id])
   @@map("suggestion_signals")
 }
 
@@ -6890,6 +7201,7 @@ model MarketSignalBatchReceipt {
   @@unique([anonymousSessionId, batchId])
   @@index([userId, createdAt])
   @@index([anonymousSessionId, createdAt])
+  @@index([createdAt, id])
   @@map("market_signal_batch_receipts")
 }
 
