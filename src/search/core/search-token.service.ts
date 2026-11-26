@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 
 const SEARCH_TOKEN_MIN_LENGTH = 2;
 
-const SEARCH_STOP_WORDS = new Set([
+export const SEARCH_STOP_WORDS: ReadonlySet<string> = new Set([
   'a',
   'an',
   'and',
@@ -21,7 +21,7 @@ const SEARCH_STOP_WORDS = new Set([
   'with',
 ]);
 
-const SEARCH_GENERIC_COMMERCE_TERMS = new Set([
+export const SEARCH_GENERIC_COMMERCE_TERMS: ReadonlySet<string> = new Set([
   'brand',
   'brands',
   'cloth',

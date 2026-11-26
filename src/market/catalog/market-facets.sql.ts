@@ -38,11 +38,11 @@ const positiveWhole = (value: Prisma.Sql) => Prisma.sql`CASE
 
 /** Size vocabulary is declared sizes plus actual positive inventory, never a
  * fabricated finite enumeration of the custom-fit channel. */
-const sizeVocabulary = Prisma.sql`SELECT unnest(p.sizes) AS value
+export const sizeVocabulary = Prisma.sql`SELECT unnest(p.sizes) AS value
   UNION SELECT v.size FROM "ProductVariant" v WHERE v."productId"=p."_id" AND v.stock>0
   UNION SELECT s.key FROM jsonb_each(CASE WHEN jsonb_typeof(p."sizeStock"::jsonb)='object'
     THEN p."sizeStock"::jsonb ELSE '{}'::jsonb END) s WHERE ${positiveWhole(Prisma.sql`s.value`)}`;
-const colorVocabulary = Prisma.sql`SELECT unnest(p.colors) AS value
+export const colorVocabulary = Prisma.sql`SELECT unnest(p.colors) AS value
   WHERE p."customOrderEnabled"=true OR NOT EXISTS(SELECT 1 FROM "ProductVariant" any_variant WHERE any_variant."productId"=p."_id")
   UNION SELECT v.color FROM "ProductVariant" v WHERE v."productId"=p."_id" AND v.stock>0`;
 
