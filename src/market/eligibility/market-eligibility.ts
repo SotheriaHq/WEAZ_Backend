@@ -235,6 +235,9 @@ export function eligibleProductSql(
     throw new Error('Unsupported product eligibility SQL alias');
   }
   const p = PRODUCT_ALIASES[alias];
+  // Collection rule: no collection link, or at least one link to a live
+  // collection, in one probe of the links. No rows gives NULL (eligible); a
+  // link whose collection is missing or not live counts false.
   return Prisma.sql`
     ${p}."isActive" = true
     AND ${p}."publicationStatus" = 'PUBLISHED'
@@ -250,21 +253,16 @@ export function eligibleProductSql(
         AND eligibility_brand."isStoreOpen" = true
         AND eligibility_owner.status = 'ACTIVE'
     )
-    AND (
-      NOT EXISTS (
-        SELECT 1 FROM "StoreCollectionProduct" eligibility_link
-        WHERE eligibility_link."productId" = ${p}."_id"
-      )
-      OR EXISTS (
-        SELECT 1 FROM "StoreCollectionProduct" eligibility_link
-        JOIN "StoreCollection" eligibility_collection
-          ON eligibility_collection."_id" = eligibility_link."collectionId"
-        WHERE eligibility_link."productId" = ${p}."_id"
-          AND eligibility_collection.status = 'PUBLISHED'
+    AND COALESCE((
+      SELECT bool_or(COALESCE(
+        eligibility_collection.status = 'PUBLISHED'
           AND eligibility_collection."isAvailableInStore" = true
-          AND eligibility_collection."deletedAt" IS NULL
-      )
-    )`;
+          AND eligibility_collection."deletedAt" IS NULL, false))
+      FROM "StoreCollectionProduct" eligibility_link
+      LEFT JOIN "StoreCollection" eligibility_collection
+        ON eligibility_collection."_id" = eligibility_link."collectionId"
+      WHERE eligibility_link."productId" = ${p}."_id"
+    ), true)`;
 }
 
 export function isEligibleProduct(
