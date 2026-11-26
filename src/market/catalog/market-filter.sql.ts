@@ -120,6 +120,32 @@ export function marketProductFiltersSql(
   scope?: MarketCatalogScope,
   excludedUserDimension?: Prisma.Sql,
 ): Prisma.Sql {
+  return filterSql(layers, now, alias, scope, excludedUserDimension, true);
+}
+
+/**
+ * Only the scope, filter layers and stock selection, for rows already drawn
+ * from the canonical public catalogue set (`marketCatalogProductFiltersSql([{}])`).
+ * Never use it on raw "Product" rows: it omits eligibility and the cover rule.
+ */
+export function marketCatalogLayerFiltersSql(
+  layers: readonly CanonicalMarketFilters[],
+  now: Date,
+  alias: Alias = 'p',
+  scope?: MarketCatalogScope,
+  excludedUserDimension?: Prisma.Sql,
+): Prisma.Sql {
+  return filterSql(layers, now, alias, scope, excludedUserDimension, false);
+}
+
+function filterSql(
+  layers: readonly CanonicalMarketFilters[],
+  now: Date,
+  alias: Alias,
+  scope: MarketCatalogScope | undefined,
+  excludedUserDimension: Prisma.Sql | undefined,
+  eligibility: boolean,
+): Prisma.Sql {
   if (!Object.prototype.hasOwnProperty.call(aliases, alias))
     throw new RangeError('Unsupported catalogue product alias');
   if (!Number.isFinite(now.getTime()))
@@ -138,10 +164,14 @@ export function marketProductFiltersSql(
     throw new RangeError('Invalid catalogue filter scope');
   const p = aliases[alias];
   const conditions: Prisma.Sql[] = [
-    eligibleProductSql(now, alias),
-    usableProductImageSql(alias),
-    Prisma.sql`${p}.currency = 'NGN'`,
-    Prisma.sql`${p}.price < 'Infinity'::numeric`,
+    ...(eligibility
+      ? [
+          eligibleProductSql(now, alias),
+          usableProductImageSql(alias),
+          Prisma.sql`${p}.currency = 'NGN'`,
+          Prisma.sql`${p}.price < 'Infinity'::numeric`,
+        ]
+      : []),
     marketCatalogScopeSql(scope, alias, now),
   ];
   for (const [index, filters] of combinedLayers.entries())
