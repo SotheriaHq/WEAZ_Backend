@@ -76,7 +76,11 @@ export class SearchLexiconRebuilder implements MarketLexiconRebuilder {
         throw new SearchLexiconCapacityError(
           'Serialized search lexicon exceeds its byte ceiling',
         );
-      const replaced = await this.replace(serialized, blob.sourceAsOf, remaining);
+      const replaced = await this.replace(
+        serialized,
+        blob.sourceAsOf,
+        remaining,
+      );
       const result: SearchLexiconRebuildResult = {
         status: replaced ? 'replaced' : 'superseded',
         version: blob.version,
@@ -129,7 +133,10 @@ export class SearchLexiconRebuilder implements MarketLexiconRebuilder {
             set_config('lock_timeout','1000',true),
             date_trunc('milliseconds',statement_timestamp()) AS "asOf"`);
         const sourceAsOf = clock[0]?.asOf;
-        if (!(sourceAsOf instanceof Date) || !Number.isFinite(sourceAsOf.getTime()))
+        if (
+          !(sourceAsOf instanceof Date) ||
+          !Number.isFinite(sourceAsOf.getTime())
+        )
           throw new Error('Lexicon source clock unavailable');
         const rows = await tx.$queryRaw<SearchLexiconSourceRow[]>(
           searchLexiconSourceSql(sourceAsOf, maxRows),
