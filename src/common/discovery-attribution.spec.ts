@@ -1,3 +1,4 @@
+import 'reflect-metadata';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { BagCollectionAllDto } from 'src/bagging/dto/collection-bagging.dto';
@@ -87,7 +88,7 @@ describe('StoreService cart attribution (first touch)', () => {
       ownerId: 'owner-1',
       name: 'Brand',
       currency: 'NGN',
-      verificationStatus: 'VERIFIED',
+      verificationStatus: 'APPROVED',
     },
   };
 

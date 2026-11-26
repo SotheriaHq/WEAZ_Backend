@@ -51,7 +51,7 @@ describe('checkout discovery attribution', () => {
         brand: {
           ownerId: 'owner-1',
           isStoreOpen: true,
-          verificationStatus: 'VERIFIED',
+          verificationStatus: 'APPROVED',
         },
         variants: [],
       },
