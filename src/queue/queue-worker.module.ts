@@ -31,6 +31,8 @@ import { TelegramMonitoringModule } from 'src/telegram-monitoring/telegram-monit
 import { TelegramMonitoringProcessor } from 'src/telegram-monitoring/telegram-monitoring.processor';
 import { TelegramMonitoringScheduler } from 'src/telegram-monitoring/telegram-monitoring.scheduler';
 import { MarketIntelligenceWorkerModule } from '../market/intelligence/market-intelligence-worker.module';
+import { MARKET_LEXICON_REBUILDER } from '../market/intelligence/market-intelligence.contracts';
+import { SearchLexiconRebuilder } from '../search/lexicon/search-lexicon.rebuilder';
 
 @Module({
   imports: [
@@ -57,7 +59,14 @@ import { MarketIntelligenceWorkerModule } from '../market/intelligence/market-in
     NotificationsModule,
     AnalyticsModule,
     QueueModule,
-    MarketIntelligenceWorkerModule,
+    // The lexicon job itself runs only when SEARCH_LEXICON_V1 is exactly true.
+    MarketIntelligenceWorkerModule.withLexicon({
+      imports: [],
+      provider: {
+        provide: MARKET_LEXICON_REBUILDER,
+        useClass: SearchLexiconRebuilder,
+      },
+    }),
     SearchModule,
     TagsModule,
     CategoriesModule,
