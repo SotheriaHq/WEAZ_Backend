@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import {
   marketFacetQueries,
+  marketFacetStatementSql,
   MarketFacetsInput,
   MARKET_FACET_LIMITS,
 } from './market-facets.sql';
@@ -121,12 +122,12 @@ export async function readMarketFacets(
   const groups = await tx.$queryRaw<
     Array<{ group: number; rows: FacetRow[] | PriceRow[] }>
   >(
-    Prisma.join(
+    marketFacetStatementSql(
+      input,
       queries.map(
         (query, index) =>
           Prisma.sql`SELECT ${index}::int AS "group",COALESCE(jsonb_agg(to_jsonb(facet_row)),'[]'::jsonb) AS rows FROM (${query}) facet_row`,
       ),
-      ' UNION ALL ',
     ),
   );
   if (
