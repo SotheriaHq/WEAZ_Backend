@@ -98,6 +98,41 @@ export class MarketCatalogReadService {
     }
   }
 
+  /**
+   * One statement with no transaction around it: PostgreSQL gives a single
+   * statement its own consistent snapshot, so this costs one round trip. The
+   * read pool's connections are read-only and carry their own short limits.
+   * Retrying is safe because nothing is written.
+   */
+  async statement<T>(
+    sql: Prisma.Sql,
+    options: MarketReadOptions = {},
+  ): Promise<T> {
+    assertMarketReadDeadline(options);
+    if (this.active >= MARKET_CATALOG_CONCURRENT_READS)
+      throw new MarketCatalogAdmissionException();
+    this.active++;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const result = await this.prisma.$queryRaw<T>(sql);
+          assertMarketReadDeadline(options);
+          return result;
+        } catch (error) {
+          const budgetLeft =
+            options.deadline === undefined ||
+            options.deadline - performance.now() > MARKET_READ_RETRY_MIN_MS;
+          if (attempt === 0 && budgetLeft && isEndedConnection(error)) continue;
+          throw error;
+        }
+      }
+    } catch (error) {
+      throw mapMarketReadError(error, options);
+    } finally {
+      this.active--;
+    }
+  }
+
   private async transaction<T>(
     read: (tx: Prisma.TransactionClient) => Promise<T>,
     options: MarketReadOptions,

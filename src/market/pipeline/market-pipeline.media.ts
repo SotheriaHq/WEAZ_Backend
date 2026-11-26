@@ -48,9 +48,8 @@ export class MarketPipelineMediaResolver implements PipelineMediaResolver {
           ]
         : [];
     const resolved = await this.media.resolve<ReadonlySet<string>>(
-      async (tx) => {
-        if (!Number.isFinite(capture.context.deadline))
-          await tx.$executeRaw`SET LOCAL statement_timeout='250ms'`;
+      async () => {
+        // The read pool's sessions already limit each statement to 250 ms.
         const current = currentPipelineSourcesSql(capture);
         return {
           candidates: {

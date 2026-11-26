@@ -1,6 +1,6 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma, ContentMediaViewSlot } from '@prisma/client';
+import { ContentMediaViewSlot } from '@prisma/client';
 import {
   resolveStorageProviderSettings,
   signPublicGatewayUrl,
@@ -54,13 +54,12 @@ export class MarketPublicMediaService {
   ) {}
 
   async resolve<T>(
-    prepare: (
-      tx: Prisma.TransactionClient,
-    ) => Promise<MarketPublicMediaPlan<T>>,
+    prepare: () => Promise<MarketPublicMediaPlan<T>>,
     options: MarketReadOptions = {},
   ): Promise<MarketPublicMediaResult<T>> {
-    const read = await this.reads.run(async (tx) => {
-      const plan = await prepare(tx);
+    assertMarketReadDeadline(options);
+    const plan = await prepare();
+    const read = await (async () => {
       const { candidates } = plan;
       const ids = new Set([
         ...candidates.covers.map((cover) => cover.fileId),
@@ -78,19 +77,21 @@ export class MarketPublicMediaService {
         )
       )
         throw new RangeError('Invalid public media batch');
+      // Parents, files and variants in one statement and one snapshot.
       const rows =
         ids.size || candidates.guard
-          ? await tx.$queryRaw<MarketMediaAuthorityRow[]>(
+          ? await this.reads.statement<MarketMediaAuthorityRow[]>(
               marketMediaAuthoritySql(
                 candidates,
                 MARKET_PUBLIC_MEDIA_MAX_FILES,
               ),
+              options,
             )
           : [];
       if ((ids.size || candidates.guard) && rows.length !== 1)
         throw new Error('Media authorization unavailable');
       return { plan, row: rows[0] ?? { guard: [], files: [], variants: [] } };
-    }, options);
+    })();
     assertMarketReadDeadline(options);
     const grant = read.plan.grant(read.row.guard);
     const key = (fileId: string, parent: string) => `${fileId}:${parent}`;

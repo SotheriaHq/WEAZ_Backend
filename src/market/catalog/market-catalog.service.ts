@@ -184,10 +184,10 @@ export class MarketCatalogService {
             ]
           : [],
       );
-    const delivery = await this.media.resolve<Set<string>>(async (tx) => {
-      // A fresh clock and snapshot: a product unpublished after the capture is
-      // never signed. Parents, files and variants are read in one statement.
-      const { asOf: now } = await captureMarketReadContext(tx, false);
+    const delivery = await this.media.resolve<Set<string>>(async () => {
+      // A fresh snapshot: a product unpublished after the capture is never
+      // signed. Time windows use the capture clock, as the Market page does.
+      const now = captured.asOf;
       const expectedMedia = captured.cards.flatMap((card) =>
         mediaOf(card).map((file) => ({
           productId: card.product.id,
