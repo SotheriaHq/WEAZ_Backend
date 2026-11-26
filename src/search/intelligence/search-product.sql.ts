@@ -84,7 +84,9 @@ function assertInput(input: SearchProductQuery): void {
       (group) =>
         !group.length ||
         group.length > SEARCH_PRODUCT_LIMITS.alternatives ||
-        group.some((word) => typeof word !== 'string' || !word || word.length > 120),
+        group.some(
+          (word) => typeof word !== 'string' || !word || word.length > 120,
+        ),
     ) ||
     input.residual.length > 200 ||
     input.fullQuery.length > 200 ||
@@ -111,7 +113,10 @@ function attributeScore(input: SearchProductQuery): Prisma.Sql {
   if (boosts.colors.length)
     add(Prisma.sql`EXISTS (SELECT 1 FROM unnest(p.colors) boost_color
       WHERE lower(${normalizeTokenSql(Prisma.sql`boost_color`)}) IN (${Prisma.join(
-        boosts.colors.map((color) => Prisma.sql`lower(${normalizeTokenSql(Prisma.sql`${color}::text`)})`),
+        boosts.colors.map(
+          (color) =>
+            Prisma.sql`lower(${normalizeTokenSql(Prisma.sql`${color}::text`)})`,
+        ),
       )}))`);
   if (boosts.tags.length)
     add(Prisma.sql`EXISTS (SELECT 1 FROM "TagBinding" boost_binding
@@ -125,7 +130,9 @@ function attributeScore(input: SearchProductQuery): Prisma.Sql {
       WHERE boost_filter."entityType"='PRODUCT' AND boost_filter."entityId"=p."_id"
         AND boost_dimension.slug=${dimension} AND boost_value.slug = ANY(${texts(values)}))`);
   if (boosts.audience.length)
-    add(Prisma.sql`p.gender::text IN (${Prisma.join(audienceGenders(boosts.audience))})`);
+    add(
+      Prisma.sql`p.gender::text IN (${Prisma.join(audienceGenders(boosts.audience))})`,
+    );
   if (boosts.price) {
     const effective = productEffectivePriceSql(now, 'p');
     const bounds: Prisma.Sql[] = [];
@@ -137,7 +144,9 @@ function attributeScore(input: SearchProductQuery): Prisma.Sql {
   }
   // A size asked for but not applied: +15 when sellable in it, -15 otherwise.
   if (boosts.sizes.length)
-    terms.push(Prisma.sql`CASE WHEN ${marketStockSelectionSql([{ sizes: boosts.sizes }], 'p')} THEN 15 ELSE -15 END`);
+    terms.push(
+      Prisma.sql`CASE WHEN ${marketStockSelectionSql([{ sizes: boosts.sizes }], 'p')} THEN 15 ELSE -15 END`,
+    );
   return terms.length ? Prisma.join(terms, ' + ') : Prisma.sql`0`;
 }
 
@@ -151,7 +160,11 @@ function attributeScore(input: SearchProductQuery): Prisma.Sql {
 export function searchProductSql(input: SearchProductQuery): Prisma.Sql {
   assertInput(input);
   const { now } = input;
-  if (!Array.isArray(input.layers) || input.layers.length < 1 || input.layers.length > 4)
+  if (
+    !Array.isArray(input.layers) ||
+    input.layers.length < 1 ||
+    input.layers.length > 4
+  )
     throw new RangeError('Invalid product search filters');
   const filters = marketCatalogProductFiltersSql(input.layers, now, 'p');
   const effective = productEffectivePriceSql(now, 'p');
@@ -161,7 +174,10 @@ export function searchProductSql(input: SearchProductQuery): Prisma.Sql {
         input.residualGroups.map(
           (group) =>
             Prisma.sql`(${Prisma.join(
-              group.map((word) => Prisma.sql`plainto_tsquery('english', immutable_unaccent(${word}))`),
+              group.map(
+                (word) =>
+                  Prisma.sql`plainto_tsquery('english', immutable_unaccent(${word}))`,
+              ),
               ' || ',
             )})`,
         ),
@@ -169,13 +185,18 @@ export function searchProductSql(input: SearchProductQuery): Prisma.Sql {
       )
     : Prisma.sql`NULL::tsquery`;
   const combined = Prisma.sql`immutable_unaccent(COALESCE(p.name,'') || ' ' || COALESCE(p."brandNameCache",'') || ' ' || COALESCE(p.description,''))`;
-  const gateGroups = input.residualGroups.filter((group) => group.some((word) => word.length >= 2));
+  const gateGroups = input.residualGroups.filter((group) =>
+    group.some((word) => word.length >= 2),
+  );
   const gate = gateGroups.length
     ? Prisma.join(
         gateGroups.map(
           (group) =>
             Prisma.sql`GREATEST(${Prisma.join(
-              group.map((word) => Prisma.sql`word_similarity(immutable_unaccent(${word}), ${combined})`),
+              group.map(
+                (word) =>
+                  Prisma.sql`word_similarity(immutable_unaccent(${word}), ${combined})`,
+              ),
             )}) >= ${SEARCH_PRODUCT_LIMITS.coverage}`,
         ),
         ' AND ',
@@ -215,7 +236,8 @@ export function searchProductSql(input: SearchProductQuery): Prisma.Sql {
     ? Prisma.sql`CASE WHEN p."brandId" = ANY(${uuids(input.showLessBrandIds)}) THEN -10 ELSE 0 END`
     : Prisma.sql`0`;
   const exact = Prisma.sql`(${name} = ${input.fullQuery})`;
-  const popular = input.sort === 'popular' || (!text && input.sort === 'relevance');
+  const popular =
+    input.sort === 'popular' || (!text && input.sort === 'relevance');
   const popularity =
     popular && input.epochId
       ? Prisma.sql`(SELECT s."decayedPopularity" FROM "market_item_feature_snapshots" s
@@ -232,7 +254,9 @@ export function searchProductSql(input: SearchProductQuery): Prisma.Sql {
     price_asc: Prisma.sql`m.amount ASC, m.id ASC`,
     price_desc: Prisma.sql`m.amount DESC, m.id ASC`,
   }[input.sort];
-  const hardSizes = [...new Set(input.layers.flatMap((layer) => layer.sizes ?? []))];
+  const hardSizes = [
+    ...new Set(input.layers.flatMap((layer) => layer.sizes ?? [])),
+  ];
   const lowStock = hardSizes.length
     ? Prisma.sql`COALESCE((SELECT jsonb_build_object('size', v.size, 'left', v.stock)
         FROM "ProductVariant" v WHERE v."productId"=p."_id" AND v.stock BETWEEN 1 AND 3

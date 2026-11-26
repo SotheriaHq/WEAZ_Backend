@@ -151,9 +151,7 @@ describe('checkout discovery attribution', () => {
     (target as any).prisma = {
       $transaction: jest.fn((work: any) => work(tx)),
     };
-    jest
-      .spyOn(target as any, 'resolveShippingCostForState')
-      .mockReturnValue(0);
+    jest.spyOn(target as any, 'resolveShippingCostForState').mockReturnValue(0);
     jest
       .spyOn(target as any, 'recordUnifiedFinalizationFailure')
       .mockResolvedValue(undefined);

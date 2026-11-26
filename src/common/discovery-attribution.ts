@@ -1,4 +1,11 @@
-import { IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
+import {
+  IsInt,
+  IsOptional,
+  IsString,
+  Matches,
+  Max,
+  Min,
+} from 'class-validator';
 
 /**
  * Discovery attribution names the Market section a bag line came from. It is
@@ -41,9 +48,13 @@ export type DiscoveryAttribution = {
  * section, or any malformed value read back from a stored snapshot, becomes
  * null instead of failing the write that carries it.
  */
-export function resolveDiscoveryAttribution(input: unknown): DiscoveryAttribution {
+export function resolveDiscoveryAttribution(
+  input: unknown,
+): DiscoveryAttribution {
   const record =
-    input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
+    input && typeof input === 'object'
+      ? (input as Record<string, unknown>)
+      : {};
   const section =
     typeof record.sourceSection === 'string' &&
     DISCOVERY_SECTION_PATTERN.test(record.sourceSection)

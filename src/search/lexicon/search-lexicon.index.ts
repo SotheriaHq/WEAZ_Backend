@@ -84,7 +84,8 @@ export class SearchLexiconIndex {
         if (matches.some((match) => match.entry === entry)) continue;
         matches.push({
           entry,
-          full: entry.forms.includes(form) && (label === null || label === form),
+          full:
+            entry.forms.includes(form) && (label === null || label === form),
         });
         this.forms.set(form, matches);
         const compact = form.replace(/ /g, '');
@@ -153,7 +154,11 @@ export class SearchLexiconIndex {
 
   /** Best lexicon word for an unknown token, or null below the floor. */
   correct(word: string, floor: number): SearchLexiconCorrection | null {
-    if (word.length < FUZZY_MIN_LENGTH || /\d/.test(word) || this.known.has(word))
+    if (
+      word.length < FUZZY_MIN_LENGTH ||
+      /\d/.test(word) ||
+      this.known.has(word)
+    )
       return null;
     const shared = new Map<number, number>();
     for (const gram of trigrams(word))

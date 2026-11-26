@@ -23,7 +23,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SLUG = /^[a-z0-9][a-z0-9-]{0,79}$/;
 const CONTROL = /[\u0000-\u001f\u007f�]/u;
 /** Category labels like "Senator Wear" are searched as "senator" too. */
-const CATEGORY_SUFFIX = /\s+(?:wear|wears|set|sets|style|styles|clothing|outfit|outfits)$/;
+const CATEGORY_SUFFIX =
+  /\s+(?:wear|wears|set|sets|style|styles|clothing|outfit|outfits)$/;
 
 export class SearchLexiconCapacityError extends Error {
   constructor(message: string) {
@@ -83,7 +84,10 @@ function formsFor(kind: SearchLexiconKind, names: readonly string[]): string[] {
       // "Dresses & Gowns" also answers to "dress" and "gown".
       for (const part of [name, ...name.split(/\s*[&/+]\s*|\s+and\s+/i)]) {
         raw.add(part);
-        const stripped = normalizeLexiconText(part).replace(CATEGORY_SUFFIX, '');
+        const stripped = normalizeLexiconText(part).replace(
+          CATEGORY_SUFFIX,
+          '',
+        );
         if (stripped.length >= 3) raw.add(stripped);
       }
     }
@@ -137,7 +141,12 @@ export function buildSearchLexiconBlob(
   const entries: SearchLexiconEntry[] = [];
   const words = new Set<string>();
   for (const row of bounded) {
-    if (!Object.prototype.hasOwnProperty.call(SEARCH_LEXICON_SOURCE_PRIORITY, row.kind))
+    if (
+      !Object.prototype.hasOwnProperty.call(
+        SEARCH_LEXICON_SOURCE_PRIORITY,
+        row.kind,
+      )
+    )
       throw new RangeError('Unexpected lexicon source row');
     if (row.kind === 'price') {
       const p30 = money(row.p30),
@@ -286,13 +295,12 @@ export function parseSearchLexiconBlob(
       !Array.isArray(entry.forms) ||
       !entry.forms.length ||
       entry.forms.length > SEARCH_LEXICON_LIMITS.formsPerEntry ||
-      !entry.forms.every(
-        (form) =>
-          entry.kind === 'size'
-            ? typeof form === 'string' &&
-              form.length > 0 &&
-              form.length <= SEARCH_LEXICON_LIMITS.formCharacters
-            : isKey(form),
+      !entry.forms.every((form) =>
+        entry.kind === 'size'
+          ? typeof form === 'string' &&
+            form.length > 0 &&
+            form.length <= SEARCH_LEXICON_LIMITS.formCharacters
+          : isKey(form),
       ) ||
       (entry.kind === 'dimension'
         ? typeof entry.dimension !== 'string' || !SLUG.test(entry.dimension)

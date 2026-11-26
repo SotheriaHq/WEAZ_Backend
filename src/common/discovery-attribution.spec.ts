@@ -56,12 +56,12 @@ describe('discovery attribution', () => {
       expect(await errors({ sourceSection: 'Hot Right Now' })).toEqual([
         'sourceSection',
       ]);
-      expect(
-        await errors({ sourceSection: 'a', sourcePosition: 501 }),
-      ).toEqual(['sourcePosition']);
-      expect(await errors({ sourceSection: 'a', sourcePosition: -1 })).toEqual(
+      expect(await errors({ sourceSection: 'a', sourcePosition: 501 })).toEqual(
         ['sourcePosition'],
       );
+      expect(await errors({ sourceSection: 'a', sourcePosition: -1 })).toEqual([
+        'sourcePosition',
+      ]);
     },
   );
 });
