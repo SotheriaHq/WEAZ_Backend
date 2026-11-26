@@ -37,4 +37,21 @@ export class SearchQueryDto {
   @Min(1)
   @Max(50)
   limit?: number;
+
+  /** Product order; read only while SEARCH_LEXICON_V1 is on. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  sort?: string;
+
+  /** Canonical catalogue filter encoding, e.g. `color=red&size=42`. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(8192)
+  filters?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1)
+  includeFacets?: string;
 }

@@ -69,6 +69,9 @@ export class SearchController {
       limit: query.limit,
       brandId: query.brandId,
       userId: req?.user?.id ?? req?.user?.sub,
+      sort: query.sort,
+      filters: query.filters,
+      includeFacets: query.includeFacets,
     });
   }
 

@@ -47,6 +47,14 @@ import {
   type SearchResponse,
   type SearchSuggestionResponse,
 } from './search.types';
+import {
+  parseSearchProductRequest,
+  searchLexiconEnabled,
+  SearchProductIntelligence,
+  type SearchProductRequest,
+} from './intelligence/search-product.intelligence';
+import { SEARCH_PRODUCT_SORTS } from './intelligence/search-product.sql';
+import type { SearchParsedQuery } from './lexicon/search-lexicon.parser';
 
 interface SearchParams {
   query?: string;
@@ -55,6 +63,15 @@ interface SearchParams {
   limit?: number;
   brandId?: string;
   userId?: string;
+  /** Read only while SEARCH_LEXICON_V1 is on. */
+  sort?: string;
+  filters?: string;
+  includeFacets?: string;
+}
+
+interface LexiconProductSearch {
+  readonly request: SearchProductRequest;
+  readonly parsed: SearchParsedQuery;
 }
 
 type ParsedSearchQuery = SearchQueryAnalysis;
@@ -224,6 +241,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     private readonly tagsService: TagsService,
     @Optional() private readonly searchQueue?: SearchQueueService,
     @Optional() searchCore?: SearchCoreService,
+    @Optional()
+    private readonly productIntelligence?: SearchProductIntelligence,
   ) {
     this.searchCore = searchCore ?? new SearchCoreService();
   }
@@ -415,6 +434,8 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     limit: number;
     brandId?: string;
     versionToken: string;
+    /** Every lexicon-path input; absent keeps the previous key exactly. */
+    variant?: string;
   }) {
     return [
       'search:results:v4',
@@ -424,7 +445,67 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       params.limit,
       params.brandId || 'all',
       params.versionToken,
+      ...(params.variant ? [params.variant] : []),
     ].join(':');
+  }
+
+  /** Validates the v2 controls, then parses the query against the lexicon. */
+  private async understandProductQuery(
+    params: SearchParams,
+  ): Promise<LexiconProductSearch> {
+    const request = parseSearchProductRequest(params);
+    const parsed = await this.productIntelligence!.understand(
+      params.query ?? '',
+      request,
+    );
+    return { request, parsed };
+  }
+
+  /** Lexicon product page: one bounded statement (plus the epoch for "popular"). */
+  private async searchProductsLexicon(
+    lexicon: LexiconProductSearch,
+    tokens: string[],
+    limit: number,
+    offset: number,
+    brandId: string | undefined,
+    facets: boolean,
+  ): Promise<SearchPageResult & { facets: unknown }> {
+    const result = await this.productIntelligence!.page(
+      lexicon.parsed,
+      lexicon.request,
+      { limit, offset, brandId, facets },
+    );
+    const query = lexicon.parsed.normalizedQuery;
+    return {
+      total: result.total,
+      facets: result.facets,
+      items: result.items
+        .filter((row) => usableProductImage(row))
+        .map((row) => {
+          const item = this.productToItem(
+            {
+              ...row,
+              images: row.images || [],
+              brand: { name: row.brandName, ownerId: row.brandOwnerId },
+              viewsCount: 0,
+            },
+            query,
+            tokens,
+          );
+          return {
+            ...item,
+            score: Number(row.score),
+            effectivePrice:
+              row.effectivePrice != null ? Number(row.effectivePrice) : null,
+            metadata: {
+              ...item.metadata,
+              matchTier: row.tier,
+              exact: row.exact,
+              ...(row.lowStock ? { lowStock: row.lowStock } : {}),
+            },
+          };
+        }),
+    };
   }
 
   private suggestionWords(
@@ -1451,6 +1532,14 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       if (item.type !== 'product') return [item];
       const current = productMap.get(item.id);
       if (!current || !current.imageUrl?.trim()) return [];
+      // A lexicon item carries a computed effective price and stock hint; a
+      // price change drops it so the caller rebuilds the page instead.
+      const lexiconItem = item.effectivePrice !== undefined;
+      if (
+        lexiconItem &&
+        (item.price !== current.price || item.salePrice !== current.salePrice)
+      )
+        return [];
       return [
         {
           ...item,
@@ -1461,7 +1550,9 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           price: current.price,
           salePrice: current.salePrice,
           currency: current.currency,
-          metadata: current.metadata,
+          metadata: lexiconItem
+            ? { ...item.metadata, ...current.metadata }
+            : current.metadata,
         },
       ];
     });
@@ -3353,7 +3444,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
 
   async search(params: SearchParams): Promise<SearchResponse> {
     const parsed = this.parseSearchQuery(params.query);
-    const key = JSON.stringify([parsed.normalizedQuery, parsed.mode, [...(params.types ?? [])].sort(), params.brandId, params.page ?? 1, params.limit ?? 20]);
+    const key = JSON.stringify([parsed.normalizedQuery, parsed.mode, [...(params.types ?? [])].sort(), params.brandId, params.page ?? 1, params.limit ?? 20, params.sort, params.filters, params.includeFacets]);
     let flight = this.searchFlights.get(key);
     if (!flight) {
       if (this.searchFlights.size >= 16) throw new ServiceUnavailableException('Search is busy. Please try again.');
@@ -3384,6 +3475,12 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
+    const lexicon =
+      searchLexiconEnabled() &&
+      this.productIntelligence &&
+      types.includes('product')
+        ? await this.understandProductQuery(params)
+        : null;
     const versionToken = await this.getSearchCacheVersionToken(types);
 
     const cacheKey = this.buildSearchCacheKey({
@@ -3393,6 +3490,15 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
       limit,
       brandId: params.brandId,
       versionToken,
+      variant: lexicon
+        ? [
+            'lexicon',
+            lexicon.parsed.lexiconVersion ?? 'none',
+            lexicon.request.sort,
+            lexicon.request.filterKey,
+            lexicon.request.includeFacets && types.length === 1 ? 1 : 0,
+          ].join(':')
+        : undefined,
     });
 
     let cached = await this.getCachedSearchResult(cacheKey);
@@ -3424,6 +3530,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
     let items: SearchItem[] = [];
     let hasNextPage = false;
     let paginationMode: 'single' | 'mixed' = 'mixed';
+    let productFacets: unknown = null;
 
     if (types.length === 1) {
       paginationMode = 'single';
@@ -3440,13 +3547,26 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           );
           break;
         case 'product':
-          result = await this.searchProductsPage(
-            normalizedQuery,
-            tokens,
-            limit,
-            offset,
-            params.brandId,
-          );
+          if (lexicon) {
+            const lexiconPage = await this.searchProductsLexicon(
+              lexicon,
+              tokens,
+              limit,
+              offset,
+              params.brandId,
+              lexicon.request.includeFacets,
+            );
+            result = lexiconPage;
+            productFacets = lexiconPage.facets;
+          } else {
+            result = await this.searchProductsPage(
+              normalizedQuery,
+              tokens,
+              limit,
+              offset,
+              params.brandId,
+            );
+          }
           break;
         case 'brand':
           result = await this.searchBrandsPage(
@@ -3495,15 +3615,24 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           types.includes('profile')
             ? this.searchProfilesPage(normalizedQuery, tokens, mixedLimit, 0)
             : Promise.resolve({ items: [], total: 0 }),
-          types.includes('product')
-            ? this.searchProductsPage(
-                normalizedQuery,
-                tokens,
-                mixedLimit,
-                0,
-                params.brandId,
-              )
-            : Promise.resolve({ items: [], total: 0 }),
+          !types.includes('product')
+            ? Promise.resolve({ items: [], total: 0 })
+            : lexicon
+              ? this.searchProductsLexicon(
+                  lexicon,
+                  tokens,
+                  mixedLimit,
+                  0,
+                  params.brandId,
+                  false,
+                )
+              : this.searchProductsPage(
+                  normalizedQuery,
+                  tokens,
+                  mixedLimit,
+                  0,
+                  params.brandId,
+                ),
           types.includes('brand')
             ? this.searchBrandsPage(normalizedQuery, tokens, mixedLimit, 0)
             : Promise.resolve({ items: [], total: 0 }),
@@ -3563,6 +3692,27 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
         hasNextPage,
         paginationMode,
       },
+      ...(lexicon
+        ? {
+            parsed: {
+              attributes: lexicon.parsed.attributes.map((attribute) => ({
+                type: attribute.type,
+                value: attribute.value,
+                label: attribute.label,
+                confidence: attribute.confidence,
+                applied: attribute.applied,
+              })),
+              residual: lexicon.parsed.residual,
+              corrections: lexicon.parsed.corrections.map((correction) => ({
+                from: correction.from,
+                to: correction.to,
+                applied: correction.applied,
+              })),
+            },
+            availableSorts: SEARCH_PRODUCT_SORTS,
+            ...(productFacets ? { facets: productFacets } : {}),
+          }
+        : {}),
     };
 
     await this.setCachedSearchResult(cacheKey, response);
