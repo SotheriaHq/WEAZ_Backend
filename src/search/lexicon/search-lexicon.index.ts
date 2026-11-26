@@ -73,10 +73,12 @@ export class SearchLexiconIndex {
       this.entriesByKind.set(entry.kind, list);
       const label = entry.kind === 'size' ? null : formKey(entry.label);
       // "blue" also finds "royal blue" and "sky blue" (never the reverse).
+      // Only the colour's own label gives a head: the alias "off white" of
+      // cream must not make a plain "white" mean cream.
       const heads =
         entry.kind === 'color'
           ? entry.forms
-              .filter((form) => form.includes(' '))
+              .filter((form) => form.includes(' ') && form === label)
               .map((form) => form.slice(form.lastIndexOf(' ') + 1))
           : [];
       for (const form of [...entry.forms, ...heads]) {

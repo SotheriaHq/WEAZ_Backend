@@ -41,6 +41,13 @@ export interface SearchProductQuery {
   readonly residualGroups: readonly (readonly string[])[];
   /** The whole normalized query, for exact product-name matches. */
   readonly fullQuery: string;
+  /**
+   * Layers that still bind a product whose whole name equals the query
+   * (explicit request filters and brand scope; never parsed attributes), so
+   * typing a product's exact name finds it even when the name contains a
+   * colour or fabric word the product does not have. Omit to disable.
+   */
+  readonly exactNameLayers?: readonly CanonicalMarketFilters[];
   readonly boosts: SearchSoftBoosts;
   readonly showLessBrandIds: readonly string[];
   readonly sort: SearchProductSort;
@@ -90,6 +97,8 @@ function assertInput(input: SearchProductQuery): void {
     ) ||
     input.residual.length > 200 ||
     input.fullQuery.length > 200 ||
+    (input.exactNameLayers !== undefined &&
+      (input.exactNameLayers.length < 1 || input.exactNameLayers.length > 4)) ||
     (input.epochId !== null && !uuid.test(input.epochId)) ||
     input.showLessBrandIds.length > 100 ||
     input.showLessBrandIds.some((id) => !uuid.test(id))
@@ -272,15 +281,16 @@ export function searchProductSql(input: SearchProductQuery): Prisma.Sql {
   const facets = input.facets
     ? facetSql(input.layers)
     : Prisma.sql`NULL::jsonb`;
+  const candidates = text ? candidateSql(input, tsq) : null;
   return Prisma.sql`WITH sp AS (
       SELECT ${tsq} AS tsq, immutable_unaccent(${input.residual}) AS q,
         ${'%' + input.residual + '%'}::text AS pattern
-    ), scored AS MATERIALIZED (
+    )${candidates ? Prisma.sql`, candidate AS MATERIALIZED (${candidates})` : Prisma.empty}, scored AS MATERIALIZED (
       SELECT p."_id" AS id, p."brandId", p."firstPublishedAt", (${effective})::numeric AS amount,
         ${tier} AS tier, ${exact} AS exact,
         (${textual}) + (${attributeScore(input)}) + ${quality} + ${freshness} + ${negative} AS score
       FROM "Product" p CROSS JOIN sp
-      WHERE ${filters} AND ${textPredicate}
+      WHERE ${candidates ? Prisma.sql`p."_id" IN (SELECT "_id" FROM candidate) AND ` : Prisma.empty}((${filters} AND ${textPredicate})${exactNameSql(input)})
     ), m AS (
       SELECT scored.*, ${popularity} AS popularity FROM scored
     ), page AS (
@@ -298,6 +308,67 @@ export function searchProductSql(input: SearchProductQuery): Prisma.Sql {
       ) ORDER BY page.position)
       FROM page JOIN "Product" p ON p."_id"=page.id JOIN "Brand" b ON b."_id"=p."brandId"), '[]'::jsonb) AS items,
       ${facets} AS facets`;
+}
+
+/** One extra row source: the product whose whole normalized name is the query. */
+function exactNamePattern(input: SearchProductQuery): string | null {
+  const words = input.fullQuery.split(' ').filter(Boolean);
+  if (!input.exactNameLayers || !words.length) return null;
+  return (
+    '%' +
+    words
+      .map((word) => word.replace(/[\\%_]/g, (character) => '\\' + character))
+      .join('%') +
+    '%'
+  );
+}
+
+/**
+ * Text candidates from indexed routes only: the search_vector GIN index
+ * (name, description, tags, brand), the name and brand trigram indexes for
+ * similarity and substring, and the exact-name lookup. Scoring and every
+ * filter then run on this set instead of the whole catalogue. Literal
+ * arguments (not CTE columns) keep each route an index scan.
+ */
+function candidateSql(input: SearchProductQuery, tsq: Prisma.Sql): Prisma.Sql {
+  const routes: Prisma.Sql[] = [];
+  const q = Prisma.sql`immutable_unaccent(${input.residual})`;
+  const pattern = Prisma.sql`immutable_unaccent(${'%' + input.residual + '%'}::text)`;
+  const brand = Prisma.sql`immutable_unaccent(COALESCE(c."brandNameCache",''))`;
+  if (input.residualGroups.length) {
+    routes.push(
+      Prisma.sql`SELECT c."_id" FROM "Product" c WHERE c.search_vector @@ (${tsq})`,
+    );
+    routes.push(
+      Prisma.sql`SELECT c."_id" FROM "Product" c WHERE immutable_unaccent(c.name) % ${q}`,
+    );
+    routes.push(
+      Prisma.sql`SELECT c."_id" FROM "Product" c WHERE ${brand} % ${q}`,
+    );
+    if (input.sort === 'relevance') {
+      routes.push(
+        Prisma.sql`SELECT c."_id" FROM "Product" c WHERE immutable_unaccent(c.name) ILIKE ${pattern}`,
+      );
+      routes.push(
+        Prisma.sql`SELECT c."_id" FROM "Product" c WHERE ${brand} ILIKE ${pattern}`,
+      );
+    }
+  }
+  const exact = exactNamePattern(input);
+  if (exact)
+    routes.push(
+      Prisma.sql`SELECT c."_id" FROM "Product" c WHERE immutable_unaccent(c.name) ILIKE ${exact}`,
+    );
+  return Prisma.join(routes, ' UNION ');
+}
+
+function exactNameSql(input: SearchProductQuery): Prisma.Sql {
+  const pattern = exactNamePattern(input);
+  if (!pattern || !input.exactNameLayers) return Prisma.empty;
+  // An indexed ILIKE prefilter before the normalizing comparison.
+  return Prisma.sql` OR (immutable_unaccent(p.name) ILIKE ${pattern}
+      AND ${searchNameSql(Prisma.sql`p.name`)} = ${input.fullQuery}
+      AND ${marketCatalogProductFiltersSql(input.exactNameLayers, input.now, 'p')})`;
 }
 
 function facetSql(layers: readonly CanonicalMarketFilters[]): Prisma.Sql {

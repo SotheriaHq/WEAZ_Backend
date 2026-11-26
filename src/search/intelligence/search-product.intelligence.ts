@@ -122,7 +122,11 @@ export class SearchProductIntelligence {
     const epochId =
       request.sort === 'popular' ? await this.readyEpochId() : null;
     const layers: CanonicalMarketFilters[] = [request.filters, parsed.filters];
-    if (page.brandId) layers.push({ brandIds: [page.brandId] });
+    const exactNameLayers: CanonicalMarketFilters[] = [request.filters];
+    if (page.brandId) {
+      layers.push({ brandIds: [page.brandId] });
+      exactNameLayers.push({ brandIds: [page.brandId] });
+    }
     const [row] = await this.prisma.$queryRaw<
       Array<{ total: number; items: SearchProductRow[]; facets: unknown }>
     >(
@@ -132,6 +136,7 @@ export class SearchProductIntelligence {
         residual: parsed.residual,
         residualGroups: parsed.residualGroups,
         fullQuery: parsed.normalizedQuery,
+        exactNameLayers,
         boosts: parsed.boosts,
         showLessBrandIds: [],
         sort: request.sort,

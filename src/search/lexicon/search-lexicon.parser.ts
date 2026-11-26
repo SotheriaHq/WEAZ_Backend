@@ -5,11 +5,7 @@ import type {
 } from '../../market/catalog/market-filters';
 import { SEARCH_GENERIC_COMMERCE_TERMS } from '../core/search-token.service';
 import type { SearchLexiconIndex } from './search-lexicon.index';
-import {
-  formKey,
-  normalizeLexiconText,
-  singularize,
-} from './search-lexicon.text';
+import { normalizeLexiconText, singularize } from './search-lexicon.text';
 import type { SearchLexiconEntry } from './search-lexicon.types';
 
 /** Query-understanding limits (search spec section 9). */
@@ -22,6 +18,11 @@ export const SEARCH_PARSE_LIMITS = Object.freeze({
   /** Literal spans a shopper asked to keep as plain words. */
   literals: 12,
 });
+
+/** Section 3.3: a residual word is auto-corrected only at this similarity. */
+const SEARCH_AUTOCORRECT_SIMILARITY = 0.7;
+/** Matches the product search statement's per-group alternative ceiling. */
+const RESIDUAL_ALTERNATIVES = 4;
 
 export type SearchAttributeType =
   | 'category'
@@ -654,7 +655,6 @@ export function parseSearchQuery(
           best.list,
           confidence,
           text(start, end),
-          index!,
         ),
     });
   };
@@ -807,7 +807,7 @@ export function parseSearchQuery(
   // 3. Price, parsed last; a number it claims is never searched as text.
   let minimum: number | undefined;
   let maximum: number | undefined;
-  let priceText: string[] = [];
+  const priceText: string[] = [];
   let priceConfidence = 1;
   const priceLabel = (amount: number) =>
     amount >= 1_000_000 && amount % 100_000 === 0
@@ -970,7 +970,6 @@ function buildLexicon(
   matches: ReturnType<SearchLexiconIndex['lookup']>,
   confidence: number,
   text: string,
-  index: SearchLexiconIndex,
 ): SearchParsedAttribute[] {
   const applied: SearchAttributeApplied =
     confidence >= SEARCH_PARSE_LIMITS.hard ? 'filter' : 'boost';
@@ -1124,6 +1123,7 @@ function assemble(input: {
   // Residual text: words no hard or implied attribute consumed.
   const groups: string[][] = [];
   const residualWords: string[] = [];
+  const corrections = [...input.corrections];
   const understood = attributes.length > 0;
   input.tokens.forEach((token, position) => {
     const kept = !token.used || input.softTokens.has(position);
@@ -1131,7 +1131,23 @@ function assemble(input: {
     if (understood && FILLER.has(token.word)) return;
     residualWords.push(token.word);
     const alternatives = [token.word, ...(index?.synonyms(token.key) ?? [])];
-    groups.push([...new Set(alternatives)]);
+    // Section 3.3 auto-correct: an unknown word also searches its one clear
+    // correction ("dashki" finds "dashiki"); the typed word is kept too.
+    const fixed =
+      index && !index.isKnown(token.key)
+        ? index.correct(token.key, SEARCH_AUTOCORRECT_SIMILARITY)
+        : null;
+    if (fixed && !fixed.ambiguous) {
+      alternatives.push(fixed.word);
+      if (!corrections.some((item) => item.from === token.word))
+        corrections.push({
+          from: token.word,
+          to: fixed.word,
+          similarity: fixed.similarity,
+          applied: false,
+        });
+    }
+    groups.push([...new Set(alternatives)].slice(0, RESIDUAL_ALTERNATIVES));
   });
   if (
     !residualWords.length &&
@@ -1169,7 +1185,7 @@ function assemble(input: {
       dimensions: dimensions(soft),
       price: price(soft),
     }),
-    corrections: Object.freeze(input.corrections),
+    corrections: Object.freeze(corrections),
     truncated: input.truncated,
     lexiconVersion: index?.version ?? null,
   });
