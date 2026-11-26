@@ -241,7 +241,8 @@ export class OrderService {
         brandId: realBrandId,
       },
       include: {
-        orderItems: true,
+        // Discovery attribution is buyer analytics, not order content.
+        orderItems: { omit: { sourceSection: true } },
         brand: {
           select: {
             id: true,
@@ -270,7 +271,8 @@ export class OrderService {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       include: {
-        orderItems: true,
+        // Discovery attribution is buyer analytics, not order content.
+        orderItems: { omit: { sourceSection: true } },
         brand: {
           select: {
             id: true,

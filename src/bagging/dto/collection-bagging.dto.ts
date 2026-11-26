@@ -9,6 +9,7 @@ import {
   Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { DiscoveryAttributionDto } from 'src/common/discovery-attribution';
 
 export class CollectionBagSelectionDto {
   @IsOptional()
@@ -33,7 +34,8 @@ export class CollectionBagAcknowledgementsDto {
   staleFittingsAccepted?: boolean;
 }
 
-export class BagCollectionAllDto {
+/** Optional sourceSection/sourcePosition: where in Market the collection was opened. */
+export class BagCollectionAllDto extends DiscoveryAttributionDto {
   @IsOptional()
   @IsObject()
   selections?: Record<string, CollectionBagSelectionDto>;
