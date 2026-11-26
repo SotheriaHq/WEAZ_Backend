@@ -424,7 +424,7 @@ describe('shared candidate pools at capture', () => {
         new Map(keys.map((key) => [key, [{ id: productId, score: 1 }]])),
     );
     const result = await capture(tx, cache);
-    expect(batchSql(tx).values).toContain(productId);
+    expect(batchSql(tx).values).toContainEqual([productId]);
     expect(result.cacheWrites).toEqual([]);
   });
   it('treats an empty cached pool as a miss so a first product appears at once', async () => {

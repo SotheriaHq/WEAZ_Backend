@@ -166,7 +166,7 @@ export function marketCatalogScopeSql(
   if (scope.productIds !== undefined)
     conditions.push(
       scope.productIds.length
-        ? Prisma.sql`${p}."_id" IN (${Prisma.join(scope.productIds.map((id) => Prisma.sql`${id}::uuid`))})`
+        ? Prisma.sql`${p}."_id"=ANY(${[...scope.productIds]}::uuid[])`
         : Prisma.sql`false`,
     );
   if (scope.collectionId)

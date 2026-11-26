@@ -9,6 +9,7 @@ const { PrismaPg } = require('@prisma/adapter-pg');
 require('dotenv').config({ quiet: true });
 require('ts-node').register({ transpileOnly: true });
 const { withUtcDatabaseUrl } = require('../src/prisma/database-connection');
+const { createMarketPlanNames } = require('../src/market/catalog/market-read-plans');
 const { runPipelineFixture } = require('./lib/market-pipeline-fixture.cjs');
 
 async function main() {
@@ -37,8 +38,9 @@ async function main() {
     // so only the pg connection sees every statement sent over the wire.
     pool=new Pool({connectionString:withUtcDatabaseUrl(target.toString())});
     const wireHeads=[];
-    pool.on('connect',client=>{const send=client.query.bind(client);client.query=(...args)=>{wireCount++;const text=typeof args[0]==='string'?args[0]:String(args[0]?.text??'');const entry={head:text.trimStart().replace(/\s+/g,' ').slice(0,160),ms:null};wireHeads.push(entry);const sent=performance.now();const result=send(...args);if(typeof result?.then==='function')result.then(()=>{entry.ms=performance.now()-sent;},()=>undefined);return result;};});
-    prisma=new PrismaClient({adapter:new PrismaPg(pool),log:[{level:'query',emit:'event'}]});
+    pool.on('connect',client=>{const send=client.query.bind(client);client.query=(...args)=>{wireCount++;const text=typeof args[0]==='string'?args[0]:String(args[0]?.text??'');const entry={head:text.trimStart().replace(/\s+/g,' ').slice(0,160),ms:null,text,values:(typeof args[0]==='string'?args[1]:args[0]?.values)??[]};wireHeads.push(entry);const sent=performance.now();const result=send(...args);if(typeof result?.then==='function')result.then(()=>{entry.ms=performance.now()-sent;},()=>undefined);return result;};});
+    // Plans are reused exactly as in production; MARKET_PLAN_REUSE=0 compares.
+    prisma=new PrismaClient({adapter:new PrismaPg(pool,process.env.MARKET_PLAN_REUSE==='0'?{}:{statementNameGenerator:createMarketPlanNames()}),log:[{level:'query',emit:'event'}]});
     let queryCount=0,controlCount=0;
     // Statement heads are kept so a failed query budget can name each statement.
     const statementHeads=[];

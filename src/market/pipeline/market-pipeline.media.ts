@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { MarketPublicMediaService } from '../catalog/market-public-media.service';
+import { isUnfilteredMarketRead } from '../catalog/market-read-plans';
 import {
   CapturedPipelinePage,
   currentPipelineSourcesSql,
@@ -69,6 +70,7 @@ export class MarketPipelineMediaResolver implements PipelineMediaResolver {
                 ? [row.fileId]
                 : [],
             ),
+            reusablePlan: isUnfilteredMarketRead(capture.context.filters),
             guard: current
               ? Prisma.sql`SELECT source."requestKey",source.candidate->>'entityType' AS "entityType",source.candidate->>'id' AS id,source."fileId" FROM (${current}) source`
               : null,

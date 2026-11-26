@@ -117,6 +117,52 @@ async function runMarketSourceKeysetAssertions({db,prisma,now,brand,owner,chosen
   if(catalogueMany.wire!==null){equal(catalogueMany.wire,catalogueOne.wire,'N+1: catalogue wire round trips do not grow with page size');}
   console.log('QUERY_BUDGET '+JSON.stringify({catalogue:{oneItem:catalogueOne.total,manyItems:catalogueMany.total,wireOneItem:catalogueOne.wire,wireManyItems:catalogueMany.wire,itemsServed:catalogueMany.result.items.length,controls:catalogueMany.controls,elapsedMs:catalogueMany.elapsedMs}}));
   for(const[label,measured]of [['Market page',fullShelf],['Catalogue page',catalogueMany]]){assert(measured.wire<=12,label+' stays within 12 wire round trips, got '+measured.wire);checks++;}
+  if(process.env.MARKET_QUERY_TRACE==='1'){
+    await db.query('ANALYZE');
+    for(const[label,work]of [['page',()=>shelf(8)],['catalogue',()=>cataloguePage(24)]]){
+      const times=[];let failed=0;
+      for(let run=0;run<40;run++){const started=performance.now();try{await work();times.push(performance.now()-started);}catch{failed++;}}
+      const warm=times.slice(-20).sort((a,b)=>a-b);
+      console.log(`WARM ${label} reuse=${process.env.MARKET_PLAN_REUSE!=='0'} median=${warm[10]?.toFixed(1)}ms p95=${warm[18]?.toFixed(1)}ms failed=${failed}`);
+    }
+  }
+  if(process.env.MARKET_QUERY_TRACE==='1')for(const row of await prisma.$queryRawUnsafe(`SELECT substring(statement from '/\\*market-plan:([a-z-]+)') AS label,generic_plans::int AS generic,custom_plans::int AS custom FROM pg_prepared_statements WHERE name LIKE 'market_%' ORDER BY 1`))console.log(`REUSED ${row.label} generic=${row.generic} custom=${row.custom}`);
+  // Planning and execution are reported separately: they need different fixes.
+  if(process.env.MARKET_QUERY_TRACE==='1')await db.query('ANALYZE');
+  const hotNodes=plan=>{
+    const nodes=[];
+    const walk=node=>{
+      const children=node.Plans??[];
+      const total=(node['Actual Total Time']??0)*(node['Actual Loops']??0);
+      const own=total-children.reduce((sum,child)=>sum+(child['Actual Total Time']??0)*(child['Actual Loops']??0),0);
+      nodes.push({own,text:`${node['Node Type']}${node['Relation Name']?' '+node['Relation Name']:''}${node['Subplan Name']?' ['+node['Subplan Name']+']':''}${node['Index Name']?' '+node['Index Name']:''} loops=${node['Actual Loops']} rows=${node['Actual Rows']}`});
+      children.forEach(walk);
+    };
+    walk(plan.Plan);
+    return nodes.sort((a,b)=>b.own-a.own).slice(0,5);
+  };
+  if(process.env.MARKET_QUERY_TRACE==='1')for(const[label,measured]of [['page',fullShelf],['catalogue',catalogueMany]])for(const[index,entry]of measured.wireStatements.entries()){
+    if(!/^(?:\/\*market-plan:[a-z-]+\*\/ )?(?:SELECT|WITH|\()/i.test(entry.head))continue;
+    const runs=[];
+    for(let run=0;run<5;run++){const plan=(await db.query({text:'EXPLAIN (ANALYZE, FORMAT JSON) '+entry.text,values:entry.values})).rows[0]['QUERY PLAN'][0];runs.push([plan['Planning Time'],plan['Execution Time'],plan.JIT?.Timing?.Total??0,plan.Plan['Total Cost'],plan]);}
+    runs.sort((a,b)=>a[0]+a[1]-b[0]-b[1]);
+    const[planning,execution,jit,cost]=runs[2];
+    console.log(`PLANTIME ${label} ${index+1} planning=${planning.toFixed(1)}ms execution=${execution.toFixed(1)}ms jit=${jit.toFixed(1)}ms cost=${Math.round(cost)} sqlBytes=${entry.text.length} params=${entry.values.length}`);
+    if(entry.values.length){
+      const median=async(mode,name)=>{
+        await db.query(`SET plan_cache_mode=${mode}`);
+        const times=[];
+        for(let run=0;run<20;run++){const started=performance.now();await db.query({...(name?{name}:{}),text:entry.text,values:entry.values});times.push(performance.now()-started);}
+        return times.slice(10).sort((a,b)=>a-b)[5];
+      };
+      const unnamed=await median('auto',null),auto=await median('auto',`trace_auto_${label}_${index}`),generic=await median('force_generic_plan',`trace_generic_${label}_${index}`);
+      await db.query('RESET plan_cache_mode');
+      const memory=(await db.query(`SELECT COALESCE(sum(total_bytes),0)::bigint AS bytes,count(*)::int AS contexts FROM pg_backend_memory_contexts WHERE name LIKE 'CachedPlan%'`)).rows[0];
+      console.log(`PLANMEMORY after ${label} ${index+1}: ${(Number(memory.bytes)/1024).toFixed(0)}KB in ${memory.contexts} contexts (two copies of each statement so far)`);
+      console.log(`PREPARED ${label} ${index+1} unnamed=${unnamed.toFixed(1)}ms named-auto=${auto.toFixed(1)}ms named-generic=${generic.toFixed(1)}ms`);
+    }
+    if(execution>5)for(const node of hotNodes(runs[2][4]))console.log(`HOT ${label} ${index+1} own=${node.own.toFixed(1)}ms ${node.text}`);
+  }
   if(process.env.MARKET_QUERY_TRACE==='1')for(const[label,measured]of[['page',fullShelf],['catalogue',catalogueMany]])measured.wireStatements.forEach(({head,ms},index)=>console.log(`WIRE ${label} ${index+1} ${ms===null?'?':ms.toFixed(1)}ms ${head}`));
   console.log(`PASS ${checks} complete product/nonproduct source-keyset proofs beyond preview capacity`);
   return{checks};

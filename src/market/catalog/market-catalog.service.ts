@@ -49,6 +49,7 @@ import { validateMarketDimensionLayers } from './market-filter-dictionary';
 import { MARKET_FEATURE_MAX_SOURCE_AGE_MS } from '../intelligence/market-intelligence.contracts';
 import { rememberReadResource } from '../../auth/access/read-resource-context';
 import { marketCatalogProductFiltersSql } from './market-filter.sql';
+import { isUnfilteredMarketRead } from './market-read-plans';
 
 interface CatalogRow extends MarketOrderedRow {
   score?: number;
@@ -204,9 +205,14 @@ export class MarketCatalogService {
           })),
           logos: logosOf(captured.cards),
           guardedFileIds: [],
+          reusablePlan: isUnfilteredMarketRead(
+            request.filters,
+            fixedFilters,
+            captured.scope,
+          ),
           guard: expectedMedia.length
             ? Prisma.sql`SELECT p."_id"::text AS id,array_agg(DISTINCT expected."fileId"::text) AS "fileIds"
-              FROM (VALUES ${Prisma.join(expectedMedia.map((media) => Prisma.sql`(${media.productId}::uuid,${media.file.id}::uuid,${media.file.assetVersion}::int,${media.isCover}::boolean)`))}) expected("productId","fileId","assetVersion","isCover")
+              FROM jsonb_to_recordset(${JSON.stringify(expectedMedia.map((media) => ({ productId: media.productId, fileId: media.file.id, assetVersion: media.file.assetVersion, isCover: media.isCover })))}::jsonb) AS expected("productId" uuid,"fileId" uuid,"assetVersion" int,"isCover" boolean)
               JOIN "Product" p ON p."_id"=expected."productId"
               JOIN "ProductMedia" media ON media."productId"=p."_id" AND media."fileUploadId"=expected."fileId" AND media."reviewStatus"='APPROVED'
               JOIN "FileUpload" file ON file."_id"=expected."fileId" AND file."assetVersion"=expected."assetVersion"

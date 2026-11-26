@@ -1,6 +1,6 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../../prisma/prisma.service';
+import { MarketReadPrismaService } from './market-read-prisma.service';
 
 /** A process-local bulkhead; fleet-wide admission belongs at the ingress. */
 export const MARKET_CATALOG_CONCURRENT_READS = 4;
@@ -56,7 +56,7 @@ export function databaseErrorCode(
 export class MarketCatalogReadService {
   private active = 0;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: MarketReadPrismaService) {}
 
   async run<T>(
     read: (tx: Prisma.TransactionClient) => Promise<T>,

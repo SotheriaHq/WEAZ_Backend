@@ -352,7 +352,9 @@ describe('bounded current-public media resolution', () => {
       }),
     );
     const sql = query.mock.calls[0][0] as Prisma.Sql;
-    expect(sql.values.filter((value) => value === first)).toHaveLength(1);
+    expect(sql.values.flat().filter((value) => value === first)).toHaveLength(
+      1,
+    );
   });
   it('propagates parent, database and grant failures and never signs partial authorization', async () => {
     const error = new Error('Authorization unavailable');

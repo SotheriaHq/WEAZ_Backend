@@ -200,7 +200,7 @@ describe('server-owned catalogue scope', () => {
       now,
     );
     const text = compact(sql);
-    expect(text).toContain('mp."_id" IN (');
+    expect(text).toContain('mp."_id"=ANY($1::uuid[])');
     expect(text).toContain('scope_link."productId"=mp."_id"');
     expect(text).toContain(
       "scope_collection.status='PUBLISHED' AND scope_collection.visibility='PUBLIC'",
@@ -208,7 +208,7 @@ describe('server-owned catalogue scope', () => {
     expect(text).toContain('scope_collection."deletedAt" IS NULL');
     expect(text).toContain('mp."firstPublishedAt">=');
     expect(sql.values).toEqual(
-      expect.arrayContaining([first, second, now.toISOString(), 3]),
+      expect.arrayContaining([[first], second, now.toISOString(), 3]),
     );
     expect(text).not.toContain(first);
     // Both stock branches remain underneath the tracking and checkout gates;
