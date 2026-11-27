@@ -115,3 +115,44 @@ describe('AdminPermissionGuard market governance behavior', () => {
     );
   });
 });
+
+describe('AdminMarketGovernanceController section lifecycle permissions', () => {
+  const getPermissions = (methodName: keyof AdminMarketGovernanceController) =>
+    Reflect.getMetadata(
+      ADMIN_PERMISSIONS_KEY,
+      AdminMarketGovernanceController.prototype[methodName],
+    );
+
+  it('reads, including preview, need only governance read', () => {
+    for (const methodName of [
+      'listSectionTemplates',
+      'getSectionLifecycle',
+      'previewSectionDraft',
+      'listSectionVersions',
+    ] as const) {
+      expect(getPermissions(methodName)).toEqual([
+        ADMIN_PERMISSIONS.MARKET_GOVERNANCE_READ,
+      ]);
+    }
+  });
+
+  it('saving a draft needs governance write; it does not change what shoppers see', () => {
+    expect(getPermissions('saveSectionDraft')).toEqual([
+      ADMIN_PERMISSIONS.MARKET_GOVERNANCE_WRITE,
+    ]);
+  });
+
+  it('every write that changes what shoppers see needs the separate release grant', () => {
+    for (const methodName of [
+      'publishSection',
+      'pauseSection',
+      'resumeSection',
+      'archiveSection',
+      'restoreSectionVersion',
+    ] as const) {
+      expect(getPermissions(methodName)).toEqual([
+        ADMIN_PERMISSIONS.MARKET_GOVERNANCE_RELEASE,
+      ]);
+    }
+  });
+});

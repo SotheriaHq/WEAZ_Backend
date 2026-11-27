@@ -3,8 +3,10 @@ import {
   Controller,
   Get,
   Param,
+  ParseIntPipe,
   Patch,
   Post,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -18,12 +20,16 @@ import { ADMIN_PERMISSIONS } from '../constants/permissions';
 import { RequirePermissions } from '../decorators/require-permissions.decorator';
 import { AdminPermissionGuard } from '../guards/admin-permission.guard';
 import { AdminMarketGovernanceService } from './admin-market-governance.service';
+import { AdminMarketSectionLifecycleService } from './admin-market-section-lifecycle.service';
 import {
   AdminMarketGovernanceAuditQueryDto,
   CreateMarketSectionConfigDto,
   CreateMarketSuggestionBlockConfigDto,
+  MarketSectionReasonDto,
   PatchMarketSectionConfigDto,
   PatchMarketSuggestionBlockConfigDto,
+  PublishMarketSectionDto,
+  SaveMarketSectionDraftDto,
 } from './dto/admin-market-governance.dto';
 
 type AdminRequest = Request & {
@@ -39,7 +45,10 @@ type AdminRequest = Request & {
 @UseGuards(JwtAuthGuard, RolesGuard, AdminPermissionGuard)
 @Roles(Role.SuperAdmin, Role.Admin)
 export class AdminMarketGovernanceController {
-  constructor(private readonly service: AdminMarketGovernanceService) {}
+  constructor(
+    private readonly service: AdminMarketGovernanceService,
+    private readonly lifecycle: AdminMarketSectionLifecycleService,
+  ) {}
 
   @Get('sections')
   @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_READ)
@@ -65,6 +74,115 @@ export class AdminMarketGovernanceController {
   ) {
     return this.service.patchSection(
       sectionKey,
+      dto,
+      this.getActorId(req),
+      req,
+    );
+  }
+
+  @Get('section-templates')
+  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_READ)
+  listSectionTemplates() {
+    return this.lifecycle.listTemplates();
+  }
+
+  @Get('sections/:sectionKey/lifecycle')
+  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_READ)
+  getSectionLifecycle(@Param('sectionKey') sectionKey: string) {
+    return this.lifecycle.getLifecycle(sectionKey);
+  }
+
+  @Put('sections/:sectionKey/draft')
+  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_WRITE)
+  saveSectionDraft(
+    @Param('sectionKey') sectionKey: string,
+    @Body() dto: SaveMarketSectionDraftDto,
+    @Req() req: AdminRequest,
+  ) {
+    return this.lifecycle.saveDraft(sectionKey, dto, this.getActorId(req), req);
+  }
+
+  @Post('sections/:sectionKey/preview')
+  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_READ)
+  previewSectionDraft(@Param('sectionKey') sectionKey: string) {
+    return this.lifecycle.preview(sectionKey);
+  }
+
+  @Post('sections/:sectionKey/publish')
+  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_RELEASE)
+  publishSection(
+    @Param('sectionKey') sectionKey: string,
+    @Body() dto: PublishMarketSectionDto,
+    @Req() req: AdminRequest,
+  ) {
+    return this.lifecycle.publish(sectionKey, dto, this.getActorId(req), req);
+  }
+
+  @Post('sections/:sectionKey/pause')
+  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_RELEASE)
+  pauseSection(
+    @Param('sectionKey') sectionKey: string,
+    @Body() dto: MarketSectionReasonDto,
+    @Req() req: AdminRequest,
+  ) {
+    return this.lifecycle.changeStatus(
+      sectionKey,
+      'pause',
+      dto,
+      this.getActorId(req),
+      req,
+    );
+  }
+
+  @Post('sections/:sectionKey/resume')
+  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_RELEASE)
+  resumeSection(
+    @Param('sectionKey') sectionKey: string,
+    @Body() dto: MarketSectionReasonDto,
+    @Req() req: AdminRequest,
+  ) {
+    return this.lifecycle.changeStatus(
+      sectionKey,
+      'resume',
+      dto,
+      this.getActorId(req),
+      req,
+    );
+  }
+
+  @Post('sections/:sectionKey/archive')
+  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_RELEASE)
+  archiveSection(
+    @Param('sectionKey') sectionKey: string,
+    @Body() dto: MarketSectionReasonDto,
+    @Req() req: AdminRequest,
+  ) {
+    return this.lifecycle.changeStatus(
+      sectionKey,
+      'archive',
+      dto,
+      this.getActorId(req),
+      req,
+    );
+  }
+
+  @Get('sections/:sectionKey/versions')
+  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_READ)
+  listSectionVersions(@Param('sectionKey') sectionKey: string) {
+    return this.lifecycle.listVersions(sectionKey);
+  }
+
+  @Post('sections/:sectionKey/restore/:version')
+  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_RELEASE)
+  restoreSectionVersion(
+    @Param('sectionKey') sectionKey: string,
+    @Param('version', ParseIntPipe) version: number,
+    @Body() dto: MarketSectionReasonDto,
+    @Req() req: AdminRequest,
+  ) {
+    return this.lifecycle.restore(
+      sectionKey,
+      version,
       dto,
       this.getActorId(req),
       req,

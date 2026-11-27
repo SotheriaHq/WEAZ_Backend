@@ -70,7 +70,8 @@
     "test:market-catalog": "jest src/market/catalog/ src/market/market-flags.service.spec.ts --runInBand",
     "test:search-lexicon-postgres": "node scripts/test-search-lexicon-postgres.cjs",
     "test:discovery-attribution-postgres": "node scripts/test-discovery-attribution-postgres.cjs",
-    "test:market-catalog-postgres": "node scripts/test-market-catalog-filters-postgres.cjs && node scripts/test-market-price-fence-postgres.cjs && node scripts/test-market-price-order-postgres.cjs"
+    "test:market-catalog-postgres": "node scripts/test-market-catalog-filters-postgres.cjs && node scripts/test-market-price-fence-postgres.cjs && node scripts/test-market-price-order-postgres.cjs",
+    "test:market-section-publish": "node scripts/verify-market-section-publish.cjs"
   },
   "_moduleAliases": {
     "src": "dist"

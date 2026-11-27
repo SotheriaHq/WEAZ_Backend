@@ -1,3 +1,4 @@
+import { PRODUCT_NAME } from 'src/common/branding/product-identity.constants';
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import {
@@ -133,7 +134,7 @@ export const MARKET_SECTION_CODE_DEFAULTS: MarketSectionConfigView[] = [
   {
     sectionKey: 'fresh-drops',
     title: 'Fresh Drops',
-    subtitle: 'New products from open WIEZ stores.',
+    subtitle: `New products from open ${PRODUCT_NAME} stores.`,
     enabled: true,
     status: 'ACTIVE',
     sourceType: 'PRODUCT',
@@ -266,7 +267,7 @@ export const MARKET_SECTION_CODE_DEFAULTS: MarketSectionConfigView[] = [
   {
     sectionKey: 'almost-gone',
     title: 'Almost Gone',
-    subtitle: 'Low-stock products from open WIEZ stores.',
+    subtitle: `Low-stock products from open ${PRODUCT_NAME} stores.`,
     enabled: true,
     status: 'ACTIVE',
     sourceType: 'PRODUCT',
@@ -488,7 +489,7 @@ export const MARKET_SUGGESTION_BLOCK_CODE_DEFAULTS: MarketSuggestionBlockConfigV
       context: MarketSuggestionContext.SEARCH_EMPTY,
       targetType: MarketSuggestionTargetType.QUERY,
       title: 'Fresh Drops',
-      subtitle: 'New arrivals from open WIEZ stores',
+      subtitle: `New arrivals from open ${PRODUCT_NAME} stores`,
       enabled: true,
       displayOrder: 30,
       sourceType: 'PRODUCT',
@@ -556,12 +557,15 @@ export class MarketGovernanceConfigService {
     }));
   }
 
-  async getSectionConfigsWithFallback(): Promise<{
+  /** Pass a transaction client to read inside a write that holds its locks. */
+  async getSectionConfigsWithFallback(
+    client: Pick<PrismaService, 'marketSectionConfig'> = this.prisma,
+  ): Promise<{
     items: MarketSectionConfigView[];
     configReadStatus: 'db' | 'code-defaults' | 'fallback-code-defaults';
   }> {
     try {
-      const rows = await this.prisma.marketSectionConfig.findMany({
+      const rows = await client.marketSectionConfig.findMany({
         orderBy: [{ displayOrder: 'asc' }, { sectionKey: 'asc' }],
       });
       if (rows.length === 0) {
