@@ -10,11 +10,13 @@ import {
   IsBoolean,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
+import { DiscoveryAttributionDto } from 'src/common/discovery-attribution';
 
 const normalizeSizingMode = ({ value }: { value: unknown }) =>
   value === 'RTW_PLUS_CUSTOM' ? 'RTW_PLUS_FITTINGS' : value;
 
-export class AddToCartDto {
+/** Optional sourceSection/sourcePosition: where in Market the add began. */
+export class AddToCartDto extends DiscoveryAttributionDto {
   @IsString()
   productId: string;
 

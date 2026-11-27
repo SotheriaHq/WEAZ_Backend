@@ -114,8 +114,18 @@ jobs:
           DATABASE_URL: postgresql://postgres:ci-disposable-only@localhost:5432/postgres
         run: npm run test:market-intelligence
 
+      - name: Market signal contribution and discovery attribution regressions
+        env:
+          DATABASE_URL: postgresql://postgres:ci-disposable-only@localhost:5432/postgres
+        run: npm run test:market-signals-postgres
+
+      - name: Search lexicon quality on the real migrations (150+ labelled queries)
+        env:
+          DATABASE_URL: postgresql://postgres:ci-disposable-only@localhost:5432/postgres
+        run: npm run test:search-lexicon-postgres
+
       - name: Runway ranking, privacy and workload regressions
-        run: npm test -- src/collections/runway-load.spec.ts src/collections/runway-feed.service.spec.ts src/collections/runway-ranking.util.spec.ts src/market/feed-category.service.spec.ts src/search/search-concurrency.spec.ts src/search/search.service.spec.ts src/search/core/search-core.service.spec.ts --runInBand
+        run: npm test -- src/collections/runway-load.spec.ts src/collections/runway-feed.service.spec.ts src/collections/runway-ranking.util.spec.ts src/market/feed-category.service.spec.ts src/search/search-concurrency.spec.ts src/search/search.service.spec.ts src/search/search-lexicon-wiring.spec.ts src/search/lexicon src/search/intelligence src/search/core/search-core.service.spec.ts --runInBand
       - name: Provider protocol and upload-content boundaries
         run: |
           node scripts/verify-image-quality.cjs

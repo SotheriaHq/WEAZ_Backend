@@ -318,4 +318,83 @@ describe('CollectionBaggingService', () => {
     ).rejects.toThrow('Brand accounts cannot bag items.');
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
+
+  it('records discovery attribution on lines it creates and never moves it on existing lines (first touch)', async () => {
+    eligibilityService.getCollectionBagStatus.mockResolvedValue(
+      status([productStatus('product_1'), productStatus('product_2')]),
+    );
+    prisma.product.findMany.mockResolvedValue([
+      productRow('product_1'),
+      productRow('product_2'),
+    ]);
+    const tx = {
+      $executeRaw: jest.fn().mockResolvedValue(0),
+      cartItem: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'line_2',
+            productId: 'product_2',
+            selectedSize: null,
+            selectedColor: null,
+            quantity: 1,
+            sourceSection: 'hot-right-now',
+            sourcePosition: 1,
+          },
+        ]),
+        createMany: jest.fn(async ({ data }: any) => ({ count: data.length })),
+        update: jest.fn(async ({ where, data }: any) => ({
+          id: where.id,
+          quantity: data.quantity,
+        })),
+      },
+    };
+    prisma.$transaction.mockImplementation(async (callback: any) =>
+      callback(tx),
+    );
+
+    await service.bagAll('collection_1', 'buyer_1', {
+      sourceSection: 'fresh-drops',
+      sourcePosition: 4,
+    });
+
+    expect(tx.cartItem.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          productId: 'product_1',
+          sourceSection: 'fresh-drops',
+          sourcePosition: 4,
+        }),
+      ],
+    });
+    const update = tx.cartItem.update.mock.calls[0][0];
+    expect(update.where).toEqual({ id: 'line_2' });
+    expect(update.data).not.toHaveProperty('sourceSection');
+    expect(update.data).not.toHaveProperty('sourcePosition');
+  });
+
+  it('bags without attribution for old clients', async () => {
+    eligibilityService.getCollectionBagStatus.mockResolvedValue(
+      status([productStatus('product_1')]),
+    );
+    prisma.product.findMany.mockResolvedValue([productRow('product_1')]);
+    let created: any[] = [];
+    prisma.$transaction.mockImplementation(async (callback: any) =>
+      callback({
+        $executeRaw: jest.fn().mockResolvedValue(0),
+        cartItem: {
+          findMany: jest.fn().mockResolvedValue([]),
+          createMany: jest.fn(async ({ data }: any) => {
+            created = data;
+            return { count: data.length };
+          }),
+          update: jest.fn(),
+        },
+      }),
+    );
+    await service.bagAll('collection_1', 'buyer_1');
+    expect(created[0]).toMatchObject({
+      sourceSection: null,
+      sourcePosition: null,
+    });
+  });
 });

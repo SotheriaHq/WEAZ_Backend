@@ -155,36 +155,40 @@ export class MarketSignalAggregationService {
       return { bucketsUpdated: 0, eventsAggregated: 0, mode: 'synchronous-db' };
     }
     return transaction
-      ? this.aggregateInTransaction(events, identity, observedAt, transaction)
-      : withMarketSignalTransaction(this.prisma, (tx) =>
-          this.aggregateInTransaction(events, identity, observedAt, tx),
-        );
+      ? this.aggregateInTransaction(events, observedAt, transaction)
+      : withMarketSignalTransaction(this.prisma, async (tx) => {
+          await this.lockActiveActor(identity, tx);
+          return this.aggregateInTransaction(events, observedAt, tx);
+        });
+  }
+
+  /**
+   * A caller that supplies its transaction already holds the account lock and
+   * has checked the account in it; only a standalone batch repeats that here.
+   */
+  private async lockActiveActor(
+    identity: MarketSignalAggregationIdentity,
+    client: Prisma.TransactionClient,
+  ) {
+    if (!identity.userId) return;
+    await lockSecurityAccount(client, identity.userId);
+    const actor = await client.user.findUnique({
+      where: { id: identity.userId },
+      select: { status: true, deactivatedAt: true },
+    });
+    if (!actor || actor.status !== 'ACTIVE' || actor.deactivatedAt !== null)
+      throw new ForbiddenException(
+        'Inactive accounts cannot contribute Market signals',
+      );
   }
 
   private async aggregateInTransaction(
     events: MarketSignalAggregationEvent[],
-    identity: MarketSignalAggregationIdentity,
     observedAt: Date,
     client: Prisma.TransactionClient,
   ): Promise<MarketSignalAggregationResult> {
-    if (events.length === 0) {
-      return { bucketsUpdated: 0, eventsAggregated: 0, mode: 'synchronous-db' };
-    }
-
     const bucketDate = this.toUtcBucketDate(observedAt);
     const buckets = new Map<string, AggregateBucket>();
-    if (identity.userId) {
-      await lockSecurityAccount(client, identity.userId);
-      const actor = await client.user.findUnique({
-        where: { id: identity.userId },
-        select: { status: true, deactivatedAt: true },
-      });
-      if (!actor || actor.status !== 'ACTIVE' || actor.deactivatedAt !== null)
-        throw new ForbiddenException(
-          'Inactive accounts cannot contribute Market signals',
-        );
-    }
-
     for (const event of events) {
       this.addEventToBuckets(buckets, event, bucketDate, observedAt);
     }

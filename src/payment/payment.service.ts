@@ -109,6 +109,7 @@ import {
 import { MonitoringService } from 'src/monitoring/monitoring.service';
 import { AlertCategory, AlertSeverity } from 'src/monitoring/monitoring.types';
 import { redactSensitiveLogValue } from 'src/common/utils/sensitive-log';
+import { resolveDiscoveryAttribution } from 'src/common/discovery-attribution';
 import {
   isEmptyPhone,
   normalizePhoneToE164,
@@ -238,6 +239,8 @@ type UnifiedCheckoutStandardLineDraft = {
   requiredMeasurementKeys: string[];
   sizeFitData: Record<string, any> | null;
   sizeRecommendationSnapshot: Record<string, any> | null;
+  /** Discovery attribution copied from the cart line; analytics only. */
+  sourceSection: string | null;
   variantId: string | null;
   reserveInventory: boolean;
   sourceProduct: {
@@ -743,6 +746,7 @@ export class PaymentService implements OnModuleInit {
                   requiredMeasurementKeys: line.requiredMeasurementKeys,
                   sizeFitData: line.sizeFitData,
                   sizeRecommendationSnapshot: line.sizeRecommendationSnapshot,
+                  sourceSection: line.sourceSection,
                 } as Prisma.InputJsonValue,
                 sizeRecommendationSnapshot:
                   line.sizeRecommendationSnapshot &&
@@ -7641,6 +7645,7 @@ export class PaymentService implements OnModuleInit {
           Object.keys(sizeRecommendationSnapshot).length > 0
             ? sizeRecommendationSnapshot
             : null,
+        sourceSection: resolveDiscoveryAttribution(item).sourceSection,
         variantId: selectedVariant?.id ?? null,
         reserveInventory,
         sourceProduct: {
@@ -8564,7 +8569,7 @@ export class PaymentService implements OnModuleInit {
           });
 
           if (orderItemsPayload.length > 0) {
-            const orderItemRows = orderItemsPayload.map((item) => ({
+            const orderItemRows = orderItemsPayload.map((item, index) => ({
               id: uuidv4(),
               orderId: order.id,
               productId: String(item.productId ?? ''),
@@ -8588,6 +8593,11 @@ export class PaymentService implements OnModuleInit {
                   : null,
               thumbnailAtPurchase: item.thumbnail,
               nameAtPurchase: item.name,
+              // Server snapshot from checkout; an unusable value is dropped,
+              // never allowed to fail a paid order.
+              sourceSection: resolveDiscoveryAttribution(
+                this.asObject(brandLines[index].itemSnapshotJson),
+              ).sourceSection,
             }));
 
             await tx.orderItem.createMany({

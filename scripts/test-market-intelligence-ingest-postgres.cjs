@@ -78,7 +78,8 @@ async function main() {
     const common =
       '"_id" uuid PRIMARY KEY,"userId" uuid,"anonymousSessionId" varchar(128),"clientEventId" varchar(128),"signalType" "MarketSignalType" NOT NULL,value double precision,surface "MarketSignalSurface","screenContext" varchar(120),"sessionId" varchar(128),"batchId" varchar(128),metadata jsonb,"createdAt" timestamp(3) NOT NULL DEFAULT now()';
     await db.query(`
-      CREATE TABLE "User"("_id" uuid PRIMARY KEY,status text NOT NULL DEFAULT 'ACTIVE',"deactivatedAt" timestamp(3));
+      CREATE TYPE "Role" AS ENUM ('SuperAdmin','Admin','User');
+      CREATE TABLE "User"("_id" uuid PRIMARY KEY,status text NOT NULL DEFAULT 'ACTIVE',"deactivatedAt" timestamp(3),role "Role" NOT NULL DEFAULT 'User');
       CREATE TABLE user_feed_signals(${common},"targetType" "MarketSignalTargetType" NOT NULL,"targetId" varchar(128) NOT NULL,"sectionKey" varchar(80),"suggestionBlockKey" varchar(80),position int);
       CREATE TABLE user_seen_items("_id" uuid PRIMARY KEY,"userId" uuid,"anonymousSessionId" varchar(128),"clientEventId" varchar(128),"targetType" "MarketSignalTargetType" NOT NULL,"targetId" varchar(128) NOT NULL,surface "MarketSignalSurface" NOT NULL,"sectionKey" varchar(80),"suggestionBlockKey" varchar(80),"sessionId" varchar(128),"batchId" varchar(128),"seenAt" timestamp(3) NOT NULL,"createdAt" timestamp(3) NOT NULL DEFAULT now());
       CREATE TABLE market_section_signals(${common},"sectionKey" varchar(80) NOT NULL);

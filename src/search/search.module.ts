@@ -7,6 +7,8 @@ import { SearchQueryNormalizer } from './core/search-query-normalizer';
 import { SearchRankingService } from './core/search-ranking.service';
 import { SearchTokenService } from './core/search-token.service';
 import { SearchVisibilityService } from './core/search-visibility.service';
+import { SearchProductIntelligence } from './intelligence/search-product.intelligence';
+import { SearchLexiconReader } from './lexicon/search-lexicon.reader';
 import { SearchController } from './search.controller';
 import { SearchService } from './search.service';
 
@@ -19,6 +21,8 @@ import { SearchService } from './search.service';
     SearchRankingService,
     SearchVisibilityService,
     SearchCoreService,
+    SearchLexiconReader,
+    SearchProductIntelligence,
     SearchService,
   ],
   exports: [SearchService, SearchCoreService],

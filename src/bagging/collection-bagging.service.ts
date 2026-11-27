@@ -9,6 +9,7 @@ import {
 import { NotificationType, SizingMode } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { resolveDiscoveryAttribution } from 'src/common/discovery-attribution';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { BagCountPresenter } from './bag-count.presenter';
 import { BagEligibilityService } from './bag-eligibility.service';
@@ -289,6 +290,8 @@ export class CollectionBaggingService {
       );
     }
 
+    // First touch: lines this bag creates record the source; existing lines keep theirs.
+    const attribution = resolveDiscoveryAttribution(dto);
     const added = await withCartTransaction(this.prisma, userId, async (tx) => {
       const currentRows = prepared.length ? await tx.cartItem.findMany({
         where: { userId, productId: { in: prepared.map((item) => item.productId) } },
@@ -337,6 +340,7 @@ export class CollectionBaggingService {
           sizingMode: item.sizingMode,
           requiredMeasurementKeys: item.requiredMeasurementKeys,
           sizeFitData: item.sizeFitData as any,
+          ...attribution,
         });
         rows.push({
           productId: item.productId,

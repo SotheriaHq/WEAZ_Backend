@@ -77,6 +77,7 @@ import {
 } from './working-hours.util';
 import { CreateProductDto, UpdateProductDto } from './dto/create-product.dto';
 import { AddToCartDto, UpdateCartItemDto } from './dto/cart.dto';
+import { resolveDiscoveryAttribution } from 'src/common/discovery-attribution';
 import type {
   BagDefaultAction,
   BagFittingState,
@@ -6738,6 +6739,7 @@ export class StoreService {
         if (dto.sizeFitData) {
           await this.syncMeasurementsToProfile(userId, dto.sizeFitData, tx);
         }
+        // First touch: only the add that creates a line records its source.
         if (existingItem) {
           await tx.cartItem.update({
             where: { id: existingItem.id },
@@ -6762,6 +6764,7 @@ export class StoreService {
               requiredMeasurementKeys: sizingPayload.requiredMeasurementKeys,
               sizeFitData: sizingPayload.sizeFitData,
               sizeRecommendationSnapshot: recommendationSnapshot,
+              ...resolveDiscoveryAttribution(dto),
             },
           });
         }

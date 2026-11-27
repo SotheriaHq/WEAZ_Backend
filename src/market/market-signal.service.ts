@@ -10,6 +10,7 @@ import {
   MarketSignalTargetType,
   MarketSignalType,
   Prisma,
+  Role,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import {
@@ -22,10 +23,35 @@ import {
   MarketSignalEventDto,
 } from './dto/market-signal.dto';
 import {
-  MarketSignalAggregationResult,
   MarketSignalAggregationService,
   withMarketSignalTransaction,
 } from './market-signal-aggregation.service';
+import {
+  buildContributionContextQuery,
+  contributionBudgetCrossed,
+  contributionContextRequired,
+  contributionVelocityCrossed,
+  decideMarketSignalContributions,
+  EMPTY_MARKET_SIGNAL_CONTRIBUTION_CONTEXT,
+  MARKET_SIGNAL_CONTRIBUTION_BUDGET,
+  MARKET_SIGNAL_VELOCITY_EVENTS,
+  MARKET_SIGNAL_VELOCITY_TARGETS,
+  MarketSignalContribution,
+  MarketSignalContributionActor,
+  MarketSignalContributionContext,
+  parseContributionContext,
+} from './market-signal-contribution';
+import {
+  buildMarketSignalEnrichment,
+  MARKET_SIGNAL_ENRICHMENT_FLAG,
+  MARKET_SIGNAL_SERVER_METADATA_KEY,
+  MarketSignalTelemetry,
+  MarketSignalTiming,
+  normalizeMarketSignalTelemetry,
+  parseMarketSignalInstant,
+  readMarketSignalEnrichmentFlag,
+  resolveMarketSignalTiming,
+} from './market-signal-telemetry';
 import { MonitoringService } from 'src/monitoring/monitoring.service';
 import { lockSecurityAccount } from '../auth/access/lock-security-account';
 import { lockForTransaction } from '../common/transaction-lock.util';
@@ -50,6 +76,12 @@ type NormalizedMarketSignalEvent = Omit<
   | 'sessionId'
   | 'value'
   | 'position'
+  | 'metadata'
+  | 'occurredAt'
+  | 'visibleMs'
+  | 'epoch'
+  | 'policyVersion'
+  | 'explore'
 > & {
   targetId: string;
   clientEventId: string;
@@ -59,6 +91,20 @@ type NormalizedMarketSignalEvent = Omit<
   sessionId: string | null;
   value: number | null;
   position: number | null;
+  metadata: Prisma.InputJsonObject | undefined;
+  telemetry: MarketSignalTelemetry;
+  timing: MarketSignalTiming | null;
+};
+
+type PreparedMarketSignalBatch = {
+  received: number;
+  events: NormalizedMarketSignalEvent[];
+  batchId: string | null;
+};
+
+type MarketSignalAlert = {
+  event: string;
+  metadata: Record<string, unknown>;
 };
 
 const SEEN_SIGNAL_TYPES = new Set<MarketSignalType>([
@@ -90,10 +136,23 @@ type MarketSignalCreateManyResult = {
   count?: number;
 };
 
+/** Console operators are not an audience; view counting applies the same rule. */
+const OPERATOR_ROLES: ReadonlySet<Role> = new Set([
+  Role.Admin,
+  Role.SuperAdmin,
+]);
+
+const MAX_POSTGRES_INTEGER = 2_147_483_647;
+
+/** JSON text PostgreSQL cannot store: an escaped NUL or an unpaired surrogate. */
+const UNSTORABLE_JSON_ESCAPE =
+  /(?<!\\)(?:\\\\)*\\u(?:0000|d[89a-f][0-9a-f]{2})/;
+
 @Injectable()
 export class MarketSignalService {
   private readonly logger = new Logger(MarketSignalService.name);
   private readonly duplicateReplayWindowMs = 24 * 60 * 60 * 1000;
+  private invalidEnrichmentFlagReported = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -145,36 +204,56 @@ export class MarketSignalService {
       'sessionId',
       MARKET_SIGNAL_MAX_TARGET_ID_LENGTH,
     );
-    return withMarketSignalTransaction(this.prisma, (client) =>
-      this.ingestInTransaction(
+    // Everything the client controls is rejected before a lock is taken.
+    const receivedAt = new Date();
+    const sentAt = parseMarketSignalInstant(dto.sentAt, 'sentAt');
+    const batch: PreparedMarketSignalBatch = {
+      received: events.length,
+      events: this.normalizeEventsForIdempotency(
         events,
-        { userId, anonymousSessionId },
-        batchId,
         defaultSessionId,
+        sentAt,
+        receivedAt,
+      ),
+      batchId,
+    };
+    const enrich = this.enrichmentEnabled();
+    const outcome = await withMarketSignalTransaction(this.prisma, (client) =>
+      this.ingestInTransaction(
+        batch,
+        { userId, anonymousSessionId },
+        enrich,
         client,
       ),
     );
+    // Reported only for committed activity, so a rolled-back batch is silent.
+    for (const alert of outcome.alerts) {
+      this.emitRankingAlert(alert.event, 'warning', alert.metadata);
+    }
+    return outcome.response;
   }
 
   private async ingestInTransaction(
-    events: MarketSignalEventDto[],
+    batch: PreparedMarketSignalBatch,
     identity: ResolvedMarketSignalIdentity,
-    batchId: string | null,
-    defaultSessionId: string | null,
+    enrich: boolean,
     client: Prisma.TransactionClient,
   ) {
     const { userId, anonymousSessionId } = identity;
+    const { batchId, received } = batch;
+    let operator = false;
     if (userId) {
       await lockSecurityAccount(client, userId);
 
       const actor = await client.user.findUnique({
         where: { id: userId },
-        select: { status: true, deactivatedAt: true },
+        select: { status: true, deactivatedAt: true, role: true },
       });
       if (!actor || actor.status !== 'ACTIVE' || actor.deactivatedAt !== null)
         throw new ForbiddenException(
           'Inactive accounts cannot submit Market signals',
         );
+      operator = OPERATOR_ROLES.has(actor.role);
     } else {
       // Serialize only this device identity so concurrent retries cannot claim
       // each other's same-millisecond canonical insert during reconciliation.
@@ -197,40 +276,66 @@ export class MarketSignalService {
     if (existingBatchReceipt) {
       this.emitRankingAlert('market_signal_duplicate_batch_replay', 'info', {
         batchId,
-        received: events.length,
+        received,
         actorType: userId ? 'USER' : 'ANONYMOUS',
       });
       return {
-        accepted: true,
-        duplicate: true,
-        batchId,
-        received: existingBatchReceipt.received,
-        persisted: this.toPersistedCounts(existingBatchReceipt.persisted),
-        deduplicated: events.length,
-        aggregation: {
-          mode: 'synchronous-db',
-          status: 'skipped-duplicate-batch',
-          eventsAggregated: 0,
-          bucketsUpdated: 0,
+        response: {
+          accepted: true,
+          duplicate: true,
+          batchId,
+          received: existingBatchReceipt.received,
+          persisted: this.toPersistedCounts(existingBatchReceipt.persisted),
+          deduplicated: received,
+          aggregation: {
+            mode: 'synchronous-db',
+            status: 'skipped-duplicate-batch',
+            eventsAggregated: 0,
+            bucketsUpdated: 0,
+          },
         },
+        alerts: [] as MarketSignalAlert[],
       };
     }
 
-    const normalizedEvents = this.normalizeEventsForIdempotency(
-      events,
-      defaultSessionId,
-    );
+    // An event delivered after its replay identity could have been purged may
+    // already have been counted once. It is acknowledged, never stored.
+    const deliverable = batch.events.filter((event) => !event.timing?.stale);
     const existingClientEventIds = await this.getExistingClientEventIds(
       client,
-      normalizedEvents
-        .map((event) => event.clientEventId)
-        .filter((value): value is string => Boolean(value)),
+      deliverable.map((event) => event.clientEventId),
       userId,
       anonymousSessionId,
       now,
     );
-    const acceptedEvents = normalizedEvents.filter(
+    const acceptedEvents = deliverable.filter(
       (event) => !existingClientEventIds.has(event.clientEventId),
+    );
+
+    // The identity lock makes this read and the inserts below one step, so a
+    // batch is judged against every earlier batch and never against itself.
+    const actor: MarketSignalContributionActor = {
+      kind: userId ? 'USER' : 'ANONYMOUS',
+      userId,
+      anonymousSessionId,
+      operator,
+    };
+    const context = await this.readContributionContext(
+      client,
+      acceptedEvents,
+      actor,
+      now,
+    );
+    const decisions = decideMarketSignalContributions(
+      acceptedEvents,
+      actor,
+      context,
+    );
+    const contributionByEventId = new Map(
+      acceptedEvents.map((event, index) => [
+        event.clientEventId,
+        decisions[index],
+      ]),
     );
 
     const canonical = await this.persistCanonicalEvents(
@@ -239,6 +344,7 @@ export class MarketSignalService {
       { userId, anonymousSessionId },
       batchId,
       now,
+      enrich ? contributionByEventId : null,
     );
     const projectionRows = this.buildProjectionRows(
       canonical.insertedEvents,
@@ -258,6 +364,7 @@ export class MarketSignalService {
 
     const aggregation = await this.aggregateAcceptedEvents(
       canonical.insertedEvents,
+      contributionByEventId,
       { userId, anonymousSessionId },
       now,
       client,
@@ -270,20 +377,116 @@ export class MarketSignalService {
         anonymousSessionId,
         batchId,
         {
-          received: events.length,
+          received,
           persisted,
         },
       );
     }
 
+    this.logContributionSummary(
+      batch,
+      deliverable.length,
+      canonical.insertedEvents,
+      contributionByEventId,
+      actor,
+    );
     return {
-      accepted: true,
-      batchId,
-      received: events.length,
-      persisted,
-      deduplicated: events.length - canonical.insertedEvents.length,
-      aggregation,
+      response: {
+        accepted: true,
+        batchId,
+        received,
+        persisted,
+        deduplicated: received - canonical.insertedEvents.length,
+        aggregation,
+      },
+      alerts: this.contributionAlerts(actor, context, canonical.insertedEvents),
     };
+  }
+
+  private async readContributionContext(
+    client: Prisma.TransactionClient,
+    events: NormalizedMarketSignalEvent[],
+    actor: MarketSignalContributionActor,
+    now: Date,
+  ): Promise<MarketSignalContributionContext> {
+    if (!contributionContextRequired(events, actor))
+      return EMPTY_MARKET_SIGNAL_CONTRIBUTION_CONTEXT;
+    return parseContributionContext(
+      await client.$queryRaw<Record<string, unknown>[]>(
+        buildContributionContextQuery({ actor, events, readAt: now }),
+      ),
+    );
+  }
+
+  /** Counts only: no account, device, item or brand identifier leaves here. */
+  private contributionAlerts(
+    actor: MarketSignalContributionActor,
+    context: MarketSignalContributionContext,
+    inserted: NormalizedMarketSignalEvent[],
+  ): MarketSignalAlert[] {
+    const alerts: MarketSignalAlert[] = [];
+    if (inserted.length === 0) return alerts;
+    if (contributionBudgetCrossed(actor, context, inserted.length)) {
+      alerts.push({
+        event: 'market_signal_contribution_budget_crossed',
+        metadata: {
+          actorType: actor.kind,
+          windowHours: 24,
+          budget: MARKET_SIGNAL_CONTRIBUTION_BUDGET[actor.kind],
+        },
+      });
+    }
+    const velocity = contributionVelocityCrossed(context, inserted);
+    if (velocity) {
+      alerts.push({
+        event: 'market_signal_velocity_anomaly',
+        metadata: {
+          actorType: actor.kind,
+          windowMinutes: 60,
+          events: velocity.events,
+          distinctItems: velocity.targets,
+          eventThreshold: MARKET_SIGNAL_VELOCITY_EVENTS,
+          itemThreshold: MARKET_SIGNAL_VELOCITY_TARGETS,
+        },
+      });
+    }
+    return alerts;
+  }
+
+  private logContributionSummary(
+    batch: PreparedMarketSignalBatch,
+    deliverable: number,
+    inserted: NormalizedMarketSignalEvent[],
+    contributionByEventId: ReadonlyMap<string, MarketSignalContribution>,
+    actor: MarketSignalContributionActor,
+  ) {
+    const contributions: Partial<Record<MarketSignalContribution, number>> = {};
+    for (const event of inserted) {
+      const decision = contributionByEventId.get(event.clientEventId);
+      if (decision)
+        contributions[decision] = (contributions[decision] ?? 0) + 1;
+    }
+    this.logger.debug(
+      JSON.stringify({
+        event: 'market-signal-batch',
+        actorType: actor.kind,
+        received: batch.received,
+        stale: batch.events.length - deliverable,
+        stored: inserted.length,
+        contributions,
+      }),
+    );
+  }
+
+  private enrichmentEnabled() {
+    const flag = readMarketSignalEnrichmentFlag();
+    if (flag.invalid && !this.invalidEnrichmentFlagReported) {
+      this.invalidEnrichmentFlagReported = true;
+      this.logger.warn(
+        `${MARKET_SIGNAL_ENRICHMENT_FLAG} must be exactly 'true' or 'false'; enrichment stays off`,
+      );
+    }
+    return flag.enabled;
   }
 
   private async persistCanonicalEvents(
@@ -292,6 +495,7 @@ export class MarketSignalService {
     identity: ResolvedMarketSignalIdentity,
     batchId: string | null,
     now: Date,
+    contributionByEventId: ReadonlyMap<string, MarketSignalContribution> | null,
   ) {
     if (events.length === 0) {
       return { insertedEvents: [], persistedCount: 0 };
@@ -299,6 +503,12 @@ export class MarketSignalService {
 
     const data = events.map((event) => ({
       ...this.buildCommonSignalInput(event, identity, batchId, now),
+      metadata: contributionByEventId
+        ? this.enrichMetadata(
+            event,
+            contributionByEventId.get(event.clientEventId),
+          )
+        : event.metadata,
       targetType: event.targetType,
       targetId: event.targetId,
       sectionKey: event.sectionKey,
@@ -460,13 +670,34 @@ export class MarketSignalService {
       surface: event.surface,
       screenContext: event.screenContext,
       sessionId: event.sessionId,
-      metadata: this.sanitizeMetadata(event.metadata),
+      metadata: event.metadata,
       createdAt: now,
     };
   }
 
+  private enrichMetadata(
+    event: NormalizedMarketSignalEvent,
+    contribution: MarketSignalContribution | undefined,
+  ): Prisma.InputJsonObject | undefined {
+    if (!contribution) return event.metadata;
+    return {
+      ...event.metadata,
+      [MARKET_SIGNAL_SERVER_METADATA_KEY]: buildMarketSignalEnrichment({
+        timing: event.timing,
+        telemetry: event.telemetry,
+        contribution,
+      }),
+    };
+  }
+
+  /**
+   * Only counted events reach the aggregates. The returned summary describes
+   * every stored event, as before, so a client cannot learn which of its events
+   * were excluded.
+   */
   private async aggregateAcceptedEvents(
     events: NormalizedMarketSignalEvent[],
+    contributionByEventId: ReadonlyMap<string, MarketSignalContribution>,
     identity: MarketSignalIdentity,
     now: Date,
     client: Prisma.TransactionClient,
@@ -489,10 +720,13 @@ export class MarketSignalService {
       };
     }
 
+    const counted = events.filter(
+      (event) => contributionByEventId.get(event.clientEventId) === 'counted',
+    );
     try {
-      const result: MarketSignalAggregationResult =
+      if (counted.length > 0) {
         await this.aggregationService.aggregateBatch(
-          events.map((event) => ({
+          counted.map((event) => ({
             targetType: event.targetType,
             targetId: event.targetId,
             signalType: event.signalType,
@@ -504,16 +738,29 @@ export class MarketSignalService {
           now,
           client,
         );
+      }
       return {
-        ...result,
+        mode: 'synchronous-db' as const,
         status: 'ok' as const,
+        eventsAggregated: events.length,
+        bucketsUpdated: new Set(
+          events.map((event) =>
+            JSON.stringify([
+              event.surface,
+              event.sectionKey,
+              event.suggestionBlockKey,
+              event.targetType,
+              event.targetId,
+            ]),
+          ),
+        ).size,
       };
     } catch (error) {
       this.logger.warn(
         'Signal aggregation failed; signal transaction will roll back',
       );
       this.emitRankingAlert('market_signal_aggregation_failed', 'error', {
-        eventCount: events.length,
+        eventCount: counted.length,
         actorType: identity.userId ? 'USER' : 'ANONYMOUS',
         errorName: error instanceof Error ? error.name : 'UnknownError',
       });
@@ -523,13 +770,20 @@ export class MarketSignalService {
 
   private normalizeEventsForIdempotency(
     events: MarketSignalEventDto[],
-    defaultSessionId?: string | null,
+    defaultSessionId: string | null,
+    sentAt: Date | null,
+    receivedAt: Date,
   ) {
     const seenKeys = new Set<string>();
     const normalizedEvents: NormalizedMarketSignalEvent[] = [];
 
     for (const event of events) {
-      const normalized = this.normalizeEvent(event, defaultSessionId);
+      const normalized = this.normalizeEvent(
+        event,
+        defaultSessionId,
+        sentAt,
+        receivedAt,
+      );
       const key = normalized.clientEventId;
       if (seenKeys.has(key)) continue;
       seenKeys.add(key);
@@ -541,7 +795,9 @@ export class MarketSignalService {
 
   private normalizeEvent(
     event: MarketSignalEventDto,
-    defaultSessionId?: string | null,
+    defaultSessionId: string | null,
+    sentAt: Date | null,
+    receivedAt: Date,
   ): NormalizedMarketSignalEvent {
     if (!this.enumIncludes(MarketSignalTargetType, event.targetType)) {
       throw new BadRequestException('Invalid signal targetType');
@@ -574,8 +830,10 @@ export class MarketSignalService {
     }
 
     return {
-      ...event,
+      targetType: event.targetType,
       targetId,
+      signalType: event.signalType,
+      surface: event.surface,
       clientEventId,
       sectionKey: this.cleanToken(
         event.sectionKey,
@@ -602,9 +860,18 @@ export class MarketSignalService {
         null,
       value: Number.isFinite(event.value) ? event.value : null,
       position:
-        typeof event.position === 'number' && Number.isFinite(event.position)
+        typeof event.position === 'number' &&
+        Number.isFinite(event.position) &&
+        event.position <= MAX_POSTGRES_INTEGER
           ? Math.max(0, Math.floor(event.position))
           : null,
+      metadata: this.sanitizeMetadata(event.metadata),
+      telemetry: normalizeMarketSignalTelemetry(event),
+      timing: resolveMarketSignalTiming(
+        parseMarketSignalInstant(event.occurredAt, 'occurredAt'),
+        sentAt,
+        receivedAt,
+      ),
     };
   }
 
@@ -763,12 +1030,14 @@ export class MarketSignalService {
 
   private sanitizeMetadata(
     metadata: Record<string, unknown> | undefined,
-  ): Prisma.InputJsonValue | undefined {
+  ): Prisma.InputJsonObject | undefined {
     if (!metadata) return undefined;
 
+    const clientMetadata = { ...metadata };
+    delete clientMetadata[MARKET_SIGNAL_SERVER_METADATA_KEY];
     let encoded: string;
     try {
-      encoded = JSON.stringify(metadata);
+      encoded = JSON.stringify(clientMetadata);
     } catch {
       throw new BadRequestException('metadata must be JSON serializable');
     }
@@ -778,7 +1047,10 @@ export class MarketSignalService {
         `metadata cannot exceed ${MARKET_SIGNAL_MAX_METADATA_BYTES} bytes`,
       );
     }
-    return metadata as Prisma.InputJsonObject;
+    if (UNSTORABLE_JSON_ESCAPE.test(encoded)) {
+      throw new BadRequestException('metadata contains unsupported characters');
+    }
+    return clientMetadata as Prisma.InputJsonObject;
   }
 
   private clean(value: unknown) {
@@ -795,7 +1067,7 @@ export class MarketSignalService {
         `${field} cannot exceed ${maxLength} characters`,
       );
     }
-    if (/[\u0000-\u001F\u007F]/.test(cleaned)) {
+    if (/[\u0000-\u001F\u007F\p{Surrogate}]/u.test(cleaned)) {
       throw new BadRequestException(`${field} contains unsupported characters`);
     }
     return cleaned;

@@ -27,6 +27,8 @@ export interface SearchItem {
   href: string;
   score: number;
   price?: number | null;
+  /** Lexicon search only: the price the shopper pays now. */
+  effectivePrice?: number | null;
   salePrice?: number | null;
   currency?: string | null;
   metadata?: Record<string, unknown>;
@@ -57,6 +59,20 @@ export interface SearchResponse {
     hasNextPage: boolean;
     paginationMode?: 'single' | 'mixed';
   };
+  /** Present only while SEARCH_LEXICON_V1 is on and products were searched. */
+  parsed?: {
+    attributes: Array<{
+      type: string;
+      value: string;
+      label: string;
+      confidence: number;
+      applied: string;
+    }>;
+    residual: string;
+    corrections: Array<{ from: string; to: string; applied: boolean }>;
+  };
+  facets?: unknown;
+  availableSorts?: readonly string[];
 }
 
 export interface SearchSuggestionSection {
