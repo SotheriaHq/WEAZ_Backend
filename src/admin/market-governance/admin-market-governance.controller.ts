@@ -21,11 +21,7 @@ import { AdminMarketGovernanceService } from './admin-market-governance.service'
 import {
   AdminMarketGovernanceAuditQueryDto,
   CreateMarketSectionConfigDto,
-  CreateMarketRankingFormulaDto,
-  CreateMarketRankingProfileDto,
   CreateMarketSuggestionBlockConfigDto,
-  MarketGovernanceRollbackDto,
-  PatchMarketRankingProfileDto,
   PatchMarketSectionConfigDto,
   PatchMarketSuggestionBlockConfigDto,
 } from './dto/admin-market-governance.dto';
@@ -75,60 +71,6 @@ export class AdminMarketGovernanceController {
     );
   }
 
-  @Get('ranking/profiles')
-  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_READ)
-  listRankingProfiles() {
-    return this.service.listRankingProfiles();
-  }
-
-  @Post('ranking/profiles')
-  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_WRITE)
-  createRankingProfile(
-    @Body() dto: CreateMarketRankingProfileDto,
-    @Req() req: AdminRequest,
-  ) {
-    return this.service.createRankingProfile(dto, this.getActorId(req), req);
-  }
-
-  @Patch('ranking/profiles/:profileKey')
-  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_WRITE)
-  patchRankingProfile(
-    @Param('profileKey') profileKey: string,
-    @Body() dto: PatchMarketRankingProfileDto,
-    @Req() req: AdminRequest,
-  ) {
-    return this.service.patchRankingProfile(
-      profileKey,
-      dto,
-      this.getActorId(req),
-      req,
-    );
-  }
-
-  @Get('ranking/formulas')
-  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_READ)
-  listRankingFormulas() {
-    return this.service.listRankingFormulas();
-  }
-
-  @Post('ranking/formulas')
-  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_RANKING_FORMULA_WRITE)
-  createRankingFormula(
-    @Body() dto: CreateMarketRankingFormulaDto,
-    @Req() req: AdminRequest,
-  ) {
-    return this.service.createRankingFormula(dto, this.getActorId(req), req);
-  }
-
-  @Post('ranking/rollback')
-  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_RANKING_ROLLBACK)
-  rollbackRanking(
-    @Body() dto: MarketGovernanceRollbackDto,
-    @Req() req: AdminRequest,
-  ) {
-    return this.service.rollbackRanking(dto, this.getActorId(req), req);
-  }
-
   @Get('suggestions/blocks')
   @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_READ)
   listSuggestionBlocks() {
@@ -169,12 +111,6 @@ export class AdminMarketGovernanceController {
   @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_READ)
   getReleaseStatus() {
     return this.service.getReleaseStatus();
-  }
-
-  @Post('rehearse-rollback')
-  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_RELEASE)
-  rehearseRollback() {
-    return this.service.rehearseRollback();
   }
 
   private getActorId(req: AdminRequest) {

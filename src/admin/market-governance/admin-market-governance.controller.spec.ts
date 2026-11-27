@@ -21,8 +21,6 @@ describe('AdminMarketGovernanceController', () => {
   it('requires read permission for read-only governance endpoints', () => {
     for (const methodName of [
       'listSections',
-      'listRankingProfiles',
-      'listRankingFormulas',
       'listSuggestionBlocks',
       'listAuditLogs',
       'getReleaseStatus',
@@ -37,15 +35,6 @@ describe('AdminMarketGovernanceController', () => {
     expect(getPermissions('patchSection')).toEqual([
       ADMIN_PERMISSIONS.MARKET_GOVERNANCE_WRITE,
     ]);
-    expect(getPermissions('createRankingProfile')).toEqual([
-      ADMIN_PERMISSIONS.MARKET_GOVERNANCE_WRITE,
-    ]);
-    expect(getPermissions('patchRankingProfile')).toEqual([
-      ADMIN_PERMISSIONS.MARKET_GOVERNANCE_WRITE,
-    ]);
-    expect(getPermissions('createRankingFormula')).toEqual([
-      ADMIN_PERMISSIONS.MARKET_RANKING_FORMULA_WRITE,
-    ]);
     expect(getPermissions('createSuggestionBlock')).toEqual([
       ADMIN_PERMISSIONS.MARKET_SUGGESTIONS_WRITE,
     ]);
@@ -54,13 +43,21 @@ describe('AdminMarketGovernanceController', () => {
     ]);
   });
 
-  it('requires explicit release permissions for rollback operations', () => {
-    expect(getPermissions('rollbackRanking')).toEqual([
-      ADMIN_PERMISSIONS.MARKET_RANKING_ROLLBACK,
-    ]);
-    expect(getPermissions('rehearseRollback')).toEqual([
-      ADMIN_PERMISSIONS.MARKET_GOVERNANCE_RELEASE,
-    ]);
+  it('no longer exposes ranking profile, formula or rollback routes', () => {
+    const methods = Object.getOwnPropertyNames(
+      AdminMarketGovernanceController.prototype,
+    );
+    for (const removed of [
+      'listRankingProfiles',
+      'createRankingProfile',
+      'patchRankingProfile',
+      'listRankingFormulas',
+      'createRankingFormula',
+      'rollbackRanking',
+      'rehearseRollback',
+    ]) {
+      expect(methods).not.toContain(removed);
+    }
   });
 });
 

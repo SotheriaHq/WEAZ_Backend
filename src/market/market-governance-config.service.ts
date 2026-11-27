@@ -40,24 +40,6 @@ export const SUPPORTED_SUGGESTION_SOURCE_TYPES = [
   'MIXED',
 ] as const;
 
-export const SUPPORTED_FORMULA_STATUSES = [
-  'DRAFT',
-  'ACTIVE',
-  'DEPRECATED',
-  'ROLLED_BACK',
-] as const;
-
-export const ALLOWED_FORMULA_WEIGHT_KEYS = [
-  'section',
-  'sectionRelevance',
-  'freshness',
-  'interaction',
-  'commerce',
-  'exploration',
-  'deterministic',
-  'brandDiversity',
-] as const;
-
 export const MARKET_GOVERNANCE_LIMITS = {
   sectionTitleMax: 120,
   sectionSubtitleMax: 240,

@@ -8,7 +8,12 @@ Phase 13B adds backend formula governance storage and guarded admin APIs. It
 does not change the active public scoring formula and does not enable ranking by
 default.
 
-Implemented backend controls:
+> **Removed (Phase 4 WP10, D-10).** The admin profile, formula and rollback
+> routes were removed: serving never read these tables (ranking reads its
+> configuration from the environment through `MarketRankingConfigService`).
+> The tables and their audit history are kept read-only.
+
+Formerly implemented backend controls:
 
 - `MarketRankingFormulaVersion` stores `versionKey`, `name`, `status`,
   bounded `weights`, optional `bounds`, notes, creator, and activation or

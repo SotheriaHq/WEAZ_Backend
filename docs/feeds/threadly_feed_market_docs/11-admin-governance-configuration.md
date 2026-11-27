@@ -358,8 +358,6 @@ Route prefix:
 Read endpoints:
 
 - `GET /admin/market-governance/sections`
-- `GET /admin/market-governance/ranking/profiles`
-- `GET /admin/market-governance/ranking/formulas`
 - `GET /admin/market-governance/suggestions/blocks`
 - `GET /admin/market-governance/audit-logs`
 - `GET /admin/market-governance/release-status`
@@ -367,19 +365,13 @@ Read endpoints:
 Write endpoints:
 
 - `PATCH /admin/market-governance/sections/:sectionKey`
-- `POST /admin/market-governance/ranking/profiles`
-- `PATCH /admin/market-governance/ranking/profiles/:profileKey`
-- `POST /admin/market-governance/ranking/formulas`
 - `POST /admin/market-governance/suggestions/blocks`
 - `PATCH /admin/market-governance/suggestions/blocks/:blockKey`
 
-Rollback and rehearsal endpoints:
-
-- `POST /admin/market-governance/ranking/rollback`
-- `POST /admin/market-governance/rehearse-rollback`
-
-The rollback rehearsal endpoint must be non-mutating unless a later phase
-explicitly approves safe QA-only mutation behavior.
+> **Removed (Phase 4 WP10, D-10).** The admin profile, formula and rollback
+> routes were removed: serving never read these tables (ranking reads its
+> configuration from the environment through `MarketRankingConfigService`).
+> The tables and their audit history are kept read-only.
 
 Permission rules:
 

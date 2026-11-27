@@ -45,23 +45,6 @@ describe('AdminMarketGovernanceService', () => {
           .fn()
           .mockResolvedValue(sectionRow({ sectionKey: 'runway-edit' })),
       },
-      marketRankingProfile: {
-        create: jest.fn().mockResolvedValue({
-          id: 'profile_1',
-          profileKey: 'phase13-shadow',
-        }),
-        update: jest.fn(),
-      },
-      marketRankingFormulaVersion: {
-        findMany: jest.fn().mockResolvedValue([]),
-        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
-        create: jest.fn().mockResolvedValue({
-          id: 'formula_1',
-          versionKey: 'aggregate-v1',
-          status: 'DRAFT',
-        }),
-        update: jest.fn(),
-      },
       marketSuggestionBlockConfig: {
         create: jest.fn().mockResolvedValue({
           id: 'block_1',
@@ -74,16 +57,6 @@ describe('AdminMarketGovernanceService', () => {
       marketSectionConfig: {
         findUnique: jest.fn().mockResolvedValue(null),
         findMany: jest.fn().mockResolvedValue([]),
-      },
-      marketRankingProfile: {
-        findMany: jest.fn().mockResolvedValue([]),
-        findUnique: jest.fn().mockResolvedValue(null),
-        findFirst: jest.fn().mockResolvedValue(null),
-      },
-      marketRankingFormulaVersion: {
-        findMany: jest.fn().mockResolvedValue([]),
-        findUnique: jest.fn().mockResolvedValue(null),
-        findFirst: jest.fn().mockResolvedValue(null),
       },
       marketSuggestionBlockConfig: {
         findUnique: jest.fn().mockResolvedValue(null),
@@ -287,91 +260,6 @@ describe('AdminMarketGovernanceService', () => {
     ).rejects.toThrow('audit failed');
   });
 
-  it('rejects ranking profiles that disable deterministic fallback', async () => {
-    const { service } = createHarness();
-
-    await expect(
-      service.createRankingProfile(
-        {
-          profileKey: 'phase13-shadow',
-          name: 'Phase 13 Shadow',
-          fallbackDeterministic: false,
-        },
-        actorId,
-        req,
-      ),
-    ).rejects.toThrow('Deterministic fallback cannot be disabled');
-  });
-
-  it('rejects ranking profiles that attempt rollout before Phase 14', async () => {
-    const { service } = createHarness();
-
-    await expect(
-      service.createRankingProfile(
-        {
-          profileKey: 'phase13-shadow',
-          name: 'Phase 13 Shadow',
-          rolloutPercent: 1,
-        },
-        actorId,
-        req,
-      ),
-    ).rejects.toThrow('Ranking rollout percent must remain 0 before Phase 14');
-  });
-
-  it('rejects unsupported formula weights', async () => {
-    const { service } = createHarness();
-
-    await expect(
-      service.createRankingFormula(
-        {
-          versionKey: 'aggregate-v1',
-          name: 'Aggregate V1',
-          weights: { rawClicks: 1 },
-        },
-        actorId,
-        req,
-      ),
-    ).rejects.toThrow('Unsupported formula weight');
-  });
-
-  it('activates one formula while preserving prior history', async () => {
-    const { audit, service, tx } = createHarness();
-    tx.marketRankingFormulaVersion.findMany.mockResolvedValue([
-      { id: 'old_formula', versionKey: 'aggregate-old' },
-    ]);
-    tx.marketRankingFormulaVersion.create.mockResolvedValue({
-      id: 'new_formula',
-      versionKey: 'aggregate-v2',
-      status: 'ACTIVE',
-    });
-
-    await service.createRankingFormula(
-      {
-        versionKey: 'aggregate-v2',
-        name: 'Aggregate V2',
-        status: 'ACTIVE',
-        weights: { freshness: 0.4, interaction: 0.4 },
-      },
-      actorId,
-      req,
-    );
-
-    expect(tx.marketRankingFormulaVersion.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { status: 'ACTIVE' },
-        data: expect.objectContaining({ status: 'DEPRECATED' }),
-      }),
-    );
-    expect(audit.logInTransaction).toHaveBeenCalledWith(
-      tx,
-      expect.objectContaining({
-        action: AdminAuditAction.ADMIN_MARKET_RANKING_FORMULA_ACTIVATE,
-      }),
-      req,
-    );
-  });
-
   it('rejects unsupported suggestion contexts', async () => {
     const { service } = createHarness();
 
@@ -393,7 +281,9 @@ describe('AdminMarketGovernanceService', () => {
   it('returns release status with production readiness disabled', async () => {
     const { service } = createHarness();
 
-    await expect(service.getReleaseStatus()).resolves.toEqual(
+    const status = await service.getReleaseStatus();
+
+    expect(status).toEqual(
       expect.objectContaining({
         rankingEnabled: false,
         rankingDefaultDisabled: true,
@@ -402,54 +292,11 @@ describe('AdminMarketGovernanceService', () => {
         phase14Required: true,
       }),
     );
-  });
-
-  it('returns controlled rollback failure when no prior formula exists', async () => {
-    const { service } = createHarness({
-      prisma: {
-        marketRankingFormulaVersion: {
-          findMany: jest.fn().mockResolvedValue([]),
-          findUnique: jest.fn().mockResolvedValue(null),
-          findFirst: jest
-            .fn()
-            .mockResolvedValueOnce({ id: 'active', versionKey: 'active-v1' })
-            .mockResolvedValueOnce(null),
-        },
-      },
-    });
-
-    await expect(
-      service.rollbackRanking({ reason: 'test' }, actorId, req),
-    ).rejects.toThrow('Ranking rollback requires an active formula');
-  });
-
-  it('rehearses rollback without mutating config', async () => {
-    const { prisma, service } = createHarness({
-      prisma: {
-        marketRankingFormulaVersion: {
-          findMany: jest.fn().mockResolvedValue([]),
-          findUnique: jest.fn().mockResolvedValue(null),
-          findFirst: jest
-            .fn()
-            .mockResolvedValueOnce({ id: 'active', versionKey: 'active-v1' })
-            .mockResolvedValueOnce({
-              id: 'prior',
-              versionKey: 'prior-v1',
-              status: 'DEPRECATED',
-            }),
-        },
-      },
-    });
-
-    await expect(service.rehearseRollback()).resolves.toEqual(
-      expect.objectContaining({
-        rehearsalOnly: true,
-        mutatesConfig: false,
-        deterministicFallbackAvailable: true,
-        canRollbackFormula: true,
-      }),
-    );
-    expect(prisma.$transaction).not.toHaveBeenCalled();
+    // Ranking profile and formula tables are no longer read (the harness has
+    // no mocks for them, so a read would throw).
+    expect(status).not.toHaveProperty('activeRankingProfile');
+    expect(status).not.toHaveProperty('activeFormulaVersion');
+    expect(status).not.toHaveProperty('lastRollback');
   });
 
   it('lists market governance audit logs without exposing unrelated actions', async () => {
