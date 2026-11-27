@@ -21,19 +21,16 @@ const occurrences = (text: string, fragment: string) =>
 describe('catalogue renderable cover predicate', () => {
   it('mirrors card capture: first usable image matched to an approved, ready product image', () => {
     const { text } = marketRenderableCoverSql('p');
-    // A direct probe of the product's own media (no correlated derived table).
-    expect(text).toContain(`SELECT 1 FROM ${cover}`);
-    expect(text).toContain('WHERE cover_media."productId" = p."_id"');
+    expect(text).toContain(
+      `JOIN ${cover} ON cover_media."productId" = p."_id"`,
+    );
     expect(text).toContain('cover_media."reviewStatus" = \'APPROVED\'');
     expect(text).toContain('cover_file."processingStatus" = \'READY\'');
     expect(text).toContain('cover_file."originalDeletedAt" IS NULL');
     expect(text).toContain(
       "cover_file.\"mimeType\" IN ('image/jpeg','image/png','image/webp','image/avif','image/gif')",
     );
-    expect(text).toMatch(
-      /^\(char_length\(COALESCE\(NULLIF\(btrim\(p\.thumbnail,/,
-    );
-    expect(text).toContain(')) <= 4096 AND EXISTS (');
+    expect(text).toContain('char_length(card_cover.url) <= 4096');
     // Thumbnail first, then the first non-blank image in array order, trimmed
     // with the same ECMAScript whitespace set as String.prototype.trim.
     expect(text).toMatch(/COALESCE\(NULLIF\(btrim\(p\.thumbnail,/);
@@ -41,14 +38,12 @@ describe('catalogue renderable cover predicate', () => {
     expect(text).toContain('ORDER BY cover_image.position LIMIT 1');
     // Original URL match (trimmed) or a variant of the file's current version.
     expect(text).toMatch(
-      /btrim\(cover_file\."s3Url",\$\d+\) = COALESCE\(NULLIF\(btrim\(p\.thumbnail,/,
+      /btrim\(cover_file\."s3Url",\$\d+\) = card_cover\.url/,
     );
     expect(text).toContain(
       'cover_variant."assetVersion" = cover_file."assetVersion"',
     );
-    expect(text).toMatch(
-      /cover_variant\."s3Url" = COALESCE\(NULLIF\(btrim\(p\.thumbnail,/,
-    );
+    expect(text).toContain('cover_variant."s3Url" = card_cover.url');
   });
   it('binds the selected product alias and refuses any other identifier', () => {
     expect(marketRenderableCoverSql('mp').text).toContain(
