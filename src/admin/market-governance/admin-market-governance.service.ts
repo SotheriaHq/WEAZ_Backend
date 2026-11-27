@@ -9,10 +9,8 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { AdminAuditService } from '../services/admin-audit.service';
 import { MarketRankingConfigService } from 'src/market/market-ranking-config.service';
 import {
-  ALLOWED_FORMULA_WEIGHT_KEYS,
   MarketGovernanceConfigService,
   MARKET_SECTION_CODE_DEFAULTS,
-  SUPPORTED_FORMULA_STATUSES,
   SUPPORTED_MARKET_SECTION_KEYS,
   SUPPORTED_SUGGESTION_CONTEXTS,
   SUPPORTED_SUGGESTION_SOURCE_TYPES,
@@ -22,11 +20,7 @@ import {
 import {
   AdminMarketGovernanceAuditQueryDto,
   CreateMarketSectionConfigDto,
-  CreateMarketRankingFormulaDto,
-  CreateMarketRankingProfileDto,
   CreateMarketSuggestionBlockConfigDto,
-  MarketGovernanceRollbackDto,
-  PatchMarketRankingProfileDto,
   PatchMarketSectionConfigDto,
   PatchMarketSuggestionBlockConfigDto,
 } from './dto/admin-market-governance.dto';
@@ -145,171 +139,6 @@ export class AdminMarketGovernanceService {
       );
 
       return updated;
-    });
-  }
-
-  listRankingProfiles() {
-    return this.prisma.marketRankingProfile.findMany({
-      orderBy: [{ updatedAt: 'desc' }, { profileKey: 'asc' }],
-      include: { formulaVersion: true },
-    });
-  }
-
-  async createRankingProfile(
-    dto: CreateMarketRankingProfileDto,
-    actorId: string,
-    req: Request,
-  ) {
-    await this.assertRankingProfileInput(dto);
-    const sectionKeys = this.normalizeSectionKeys(dto.sectionKeys);
-    const profileKey = this.normalizeSlug(dto.profileKey, 'profileKey');
-
-    return this.prisma.$transaction(async (tx) => {
-      const created = await tx.marketRankingProfile.create({
-        data: {
-          profileKey,
-          name: this.cleanRequiredText(dto.name, 'name'),
-          description: this.cleanOptionalText(dto.description),
-          enabled: dto.enabled ?? false,
-          shadowMode: dto.shadowMode ?? true,
-          sectionKeys: sectionKeys as Prisma.InputJsonValue,
-          formulaVersion: dto.formulaVersionId
-            ? { connect: { id: dto.formulaVersionId } }
-            : undefined,
-          explorationPercent: dto.explorationPercent ?? 10,
-          brandMaxShare: dto.brandMaxShare ?? 35,
-          aggregateTimeoutMs: dto.aggregateTimeoutMs ?? 150,
-          rolloutPercent: dto.rolloutPercent ?? 0,
-          fallbackDeterministic: dto.fallbackDeterministic ?? true,
-          metadata: jsonOrNull(dto.metadata),
-          createdById: actorId,
-          updatedById: actorId,
-        },
-      });
-
-      await this.auditService.logInTransaction(
-        tx,
-        {
-          actorUserId: actorId,
-          action: AdminAuditAction.ADMIN_MARKET_RANKING_PROFILE_CREATE,
-          targetType: 'MarketRankingProfile',
-          targetId: profileKey,
-          previousState: undefined,
-          newState: this.toPlain(created),
-          metadata: { reason: this.cleanReason(dto.reason) },
-        },
-        req,
-      );
-
-      return created;
-    });
-  }
-
-  async patchRankingProfile(
-    profileKey: string,
-    dto: PatchMarketRankingProfileDto,
-    actorId: string,
-    req: Request,
-  ) {
-    const normalizedKey = this.normalizeSlug(profileKey, 'profileKey');
-    const existing = await this.prisma.marketRankingProfile.findUnique({
-      where: { profileKey: normalizedKey },
-    });
-    if (!existing) {
-      throw new NotFoundException('Market ranking profile not found');
-    }
-
-    await this.assertRankingProfileInput(dto);
-    const updateData = this.buildRankingProfileUpdateData(dto, actorId);
-
-    return this.prisma.$transaction(async (tx) => {
-      const updated = await tx.marketRankingProfile.update({
-        where: { profileKey: normalizedKey },
-        data: updateData,
-      });
-
-      await this.auditService.logInTransaction(
-        tx,
-        {
-          actorUserId: actorId,
-          action: AdminAuditAction.ADMIN_MARKET_RANKING_PROFILE_UPDATE,
-          targetType: 'MarketRankingProfile',
-          targetId: normalizedKey,
-          previousState: this.toPlain(existing),
-          newState: this.toPlain(updated),
-          metadata: { reason: this.cleanReason(dto.reason) },
-        },
-        req,
-      );
-
-      return updated;
-    });
-  }
-
-  listRankingFormulas() {
-    return this.prisma.marketRankingFormulaVersion.findMany({
-      orderBy: [{ createdAt: 'desc' }, { versionKey: 'asc' }],
-    });
-  }
-
-  async createRankingFormula(
-    dto: CreateMarketRankingFormulaDto,
-    actorId: string,
-    req: Request,
-  ) {
-    const versionKey = this.normalizeSlug(dto.versionKey, 'versionKey');
-    const status = dto.status ?? 'DRAFT';
-    if (!SUPPORTED_FORMULA_STATUSES.includes(status as any)) {
-      throw new BadRequestException('Unsupported formula status');
-    }
-    const weights = this.validateFormulaWeights(dto.weights);
-    const bounds = dto.bounds ? this.validateFormulaBounds(dto.bounds) : null;
-    const now = new Date();
-
-    return this.prisma.$transaction(async (tx) => {
-      let previousActive: Array<{ id: string; versionKey: string }> = [];
-      if (status === 'ACTIVE') {
-        previousActive = await tx.marketRankingFormulaVersion.findMany({
-          where: { status: 'ACTIVE' },
-          select: { id: true, versionKey: true },
-        });
-        await tx.marketRankingFormulaVersion.updateMany({
-          where: { status: 'ACTIVE' },
-          data: { status: 'DEPRECATED', deprecatedAt: now },
-        });
-      }
-
-      const created = await tx.marketRankingFormulaVersion.create({
-        data: {
-          versionKey,
-          name: this.cleanRequiredText(dto.name, 'name'),
-          status,
-          weights: weights as Prisma.InputJsonValue,
-          bounds: bounds ? (bounds as Prisma.InputJsonValue) : Prisma.JsonNull,
-          notes: this.cleanOptionalText(dto.notes),
-          createdById: actorId,
-          activatedAt: status === 'ACTIVE' ? now : null,
-        },
-      });
-
-      await this.auditService.logInTransaction(
-        tx,
-        {
-          actorUserId: actorId,
-          action:
-            status === 'ACTIVE'
-              ? AdminAuditAction.ADMIN_MARKET_RANKING_FORMULA_ACTIVATE
-              : AdminAuditAction.ADMIN_MARKET_RANKING_FORMULA_CREATE,
-          targetType: 'MarketRankingFormulaVersion',
-          targetId: versionKey,
-          previousState: { previousActive },
-          newState: this.toPlain(created),
-          metadata: { reason: this.cleanReason(dto.reason) },
-        },
-        req,
-      );
-
-      return created;
     });
   }
 
@@ -440,140 +269,18 @@ export class AdminMarketGovernanceService {
 
   async getReleaseStatus() {
     const rankingConfig = this.rankingConfigService.getConfig();
-    const [
-      activeRankingProfile,
-      activeFormulaVersion,
-      lastRollback,
-      sectionStatus,
-    ] = await Promise.all([
-      this.prisma.marketRankingProfile.findFirst({
-        where: { enabled: true },
-        orderBy: [{ updatedAt: 'desc' }],
-        include: { formulaVersion: true },
-      }),
-      this.prisma.marketRankingFormulaVersion.findFirst({
-        where: { status: 'ACTIVE' },
-        orderBy: [{ activatedAt: 'desc' }, { createdAt: 'desc' }],
-      }),
-      this.prisma.adminAuditLog.findFirst({
-        where: { action: AdminAuditAction.ADMIN_MARKET_RANKING_ROLLBACK },
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.marketGovernanceConfig.getSectionConfigsWithFallback(),
-    ]);
+    const sectionStatus =
+      await this.marketGovernanceConfig.getSectionConfigsWithFallback();
 
     return {
       rankingEnabled: rankingConfig.enabled,
       rankingDefaultDisabled: true,
       deterministicFallbackEnabled: rankingConfig.fallbackDeterministic,
       shadowMode: rankingConfig.shadowMode,
-      activeRankingProfile,
-      activeFormulaVersion,
       configReadStatus: sectionStatus.configReadStatus,
-      lastRollback,
       productionReady: false,
       phase14Required: true,
     };
-  }
-
-  async rollbackRanking(
-    dto: MarketGovernanceRollbackDto,
-    actorId: string,
-    req: Request,
-  ) {
-    const active = await this.prisma.marketRankingFormulaVersion.findFirst({
-      where: { status: 'ACTIVE' },
-      orderBy: [{ activatedAt: 'desc' }, { createdAt: 'desc' }],
-    });
-    const previous = await this.prisma.marketRankingFormulaVersion.findFirst({
-      where: {
-        status: 'DEPRECATED',
-        ...(active ? { id: { not: active.id } } : {}),
-      },
-      orderBy: [{ deprecatedAt: 'desc' }, { createdAt: 'desc' }],
-    });
-
-    if (!active || !previous) {
-      throw new BadRequestException(
-        'Ranking rollback requires an active formula and a prior deprecated formula',
-      );
-    }
-
-    const now = new Date();
-    return this.prisma.$transaction(async (tx) => {
-      const rolledBack = await tx.marketRankingFormulaVersion.update({
-        where: { id: active.id },
-        data: { status: 'ROLLED_BACK', deprecatedAt: now },
-      });
-      const restored = await tx.marketRankingFormulaVersion.update({
-        where: { id: previous.id },
-        data: { status: 'ACTIVE', activatedAt: now, deprecatedAt: null },
-      });
-
-      await this.auditService.logInTransaction(
-        tx,
-        {
-          actorUserId: actorId,
-          action: AdminAuditAction.ADMIN_MARKET_RANKING_ROLLBACK,
-          targetType: 'MarketRankingFormulaVersion',
-          targetId: restored.versionKey,
-          previousState: {
-            activeFormulaVersion: this.toPlain(active),
-            priorFormulaVersion: this.toPlain(previous),
-          },
-          newState: {
-            restoredFormulaVersion: this.toPlain(restored),
-            rolledBackFormulaVersion: this.toPlain(rolledBack),
-            rankingProfileRollback: 'not-supported-without-profile-history',
-          },
-          metadata: { reason: this.cleanReason(dto.reason) },
-        },
-        req,
-      );
-
-      return {
-        rolledBack: true,
-        restoredFormulaVersion: restored,
-        rolledBackFormulaVersion: rolledBack,
-        rankingProfileRollback: 'not-supported-without-profile-history',
-        historyPreserved: true,
-      };
-    });
-  }
-
-  async rehearseRollback() {
-    const [active, previous] = await Promise.all([
-      this.prisma.marketRankingFormulaVersion.findFirst({
-        where: { status: 'ACTIVE' },
-        orderBy: [{ activatedAt: 'desc' }, { createdAt: 'desc' }],
-      }),
-      this.prisma.marketRankingFormulaVersion.findFirst({
-        where: { status: 'DEPRECATED' },
-        orderBy: [{ deprecatedAt: 'desc' }, { createdAt: 'desc' }],
-      }),
-    ]);
-
-    return {
-      rehearsalOnly: true,
-      mutatesConfig: false,
-      deterministicFallbackAvailable: true,
-      canRollbackFormula: Boolean(
-        active && previous && active.id !== previous.id,
-      ),
-      activeFormulaVersion: active,
-      candidatePriorFormulaVersion:
-        active && previous && active.id !== previous.id ? previous : null,
-      rankingProfileRollback: 'not-supported-without-profile-history',
-      wouldMutate: [],
-    };
-  }
-
-  private requireSupportedSectionKey(key: string): SupportedMarketSectionKey {
-    const normalized = this.normalizeSlug(key, 'sectionKey');
-    if (!SUPPORTED_MARKET_SECTION_KEYS.includes(normalized as any)) {
-      throw new BadRequestException('Unsupported market section key');
-    }
-    return normalized as SupportedMarketSectionKey;
   }
 
   private async requireKnownSectionKey(key: string): Promise<string> {
@@ -632,40 +339,6 @@ export class AdminMarketGovernanceService {
     }
   }
 
-  private async assertRankingProfileInput(
-    dto: CreateMarketRankingProfileDto | PatchMarketRankingProfileDto,
-  ) {
-    if (dto.fallbackDeterministic === false) {
-      throw new BadRequestException(
-        'Deterministic fallback cannot be disabled',
-      );
-    }
-    if ((dto.rolloutPercent ?? 0) > 0) {
-      throw new BadRequestException(
-        'Ranking rollout percent must remain 0 before Phase 14',
-      );
-    }
-    this.normalizeSectionKeys(dto.sectionKeys);
-    if (dto.formulaVersionId) {
-      const formula = await this.prisma.marketRankingFormulaVersion.findUnique({
-        where: { id: dto.formulaVersionId },
-        select: { id: true },
-      });
-      if (!formula) {
-        throw new BadRequestException('Formula version does not exist');
-      }
-    }
-  }
-
-  private normalizeSectionKeys(sectionKeys?: string[]) {
-    const seen = new Set<string>();
-    for (const key of sectionKeys ?? []) {
-      const normalized = this.requireSupportedSectionKey(key);
-      seen.add(normalized);
-    }
-    return Array.from(seen);
-  }
-
   private assertSuggestionInput(
     dto: Partial<
       CreateMarketSuggestionBlockConfigDto & PatchMarketSuggestionBlockConfigDto
@@ -698,39 +371,6 @@ export class AdminMarketGovernanceService {
         'Unsupported suggestion fallback source type',
       );
     }
-  }
-
-  private validateFormulaWeights(weights: Record<string, unknown>) {
-    if (!weights || typeof weights !== 'object' || Array.isArray(weights)) {
-      throw new BadRequestException('Formula weights must be an object');
-    }
-
-    const normalized: Record<string, number> = {};
-    for (const [key, value] of Object.entries(weights)) {
-      if (!ALLOWED_FORMULA_WEIGHT_KEYS.includes(key as any)) {
-        throw new BadRequestException(`Unsupported formula weight: ${key}`);
-      }
-      const numeric = Number(value);
-      if (!Number.isFinite(numeric) || numeric < 0 || numeric > 1) {
-        throw new BadRequestException(
-          `Formula weight ${key} must be between 0 and 1`,
-        );
-      }
-      normalized[key] = numeric;
-    }
-
-    if (Object.keys(normalized).length === 0) {
-      throw new BadRequestException('Formula weights cannot be empty');
-    }
-
-    return normalized;
-  }
-
-  private validateFormulaBounds(bounds: Record<string, unknown>) {
-    if (!bounds || typeof bounds !== 'object' || Array.isArray(bounds)) {
-      throw new BadRequestException('Formula bounds must be an object');
-    }
-    return bounds;
   }
 
   private buildSectionCreateData(
@@ -928,46 +568,6 @@ export class AdminMarketGovernanceService {
     if (dto.requiresAuth !== undefined) data.requiresAuth = dto.requiresAuth;
     if (dto.newBrandReservedRatio !== undefined) {
       data.newBrandReservedRatio = dto.newBrandReservedRatio;
-    }
-    if (dto.metadata !== undefined) data.metadata = jsonOrNull(dto.metadata);
-    return data;
-  }
-
-  private buildRankingProfileUpdateData(
-    dto: PatchMarketRankingProfileDto,
-    actorId: string,
-  ): Prisma.MarketRankingProfileUpdateInput {
-    const data: Prisma.MarketRankingProfileUpdateInput = {
-      updatedById: actorId,
-    };
-    if (dto.name !== undefined)
-      data.name = this.cleanRequiredText(dto.name, 'name');
-    if (dto.description !== undefined) {
-      data.description = this.cleanOptionalText(dto.description);
-    }
-    if (dto.enabled !== undefined) data.enabled = dto.enabled;
-    if (dto.shadowMode !== undefined) data.shadowMode = dto.shadowMode;
-    if (dto.sectionKeys !== undefined) {
-      data.sectionKeys = this.normalizeSectionKeys(
-        dto.sectionKeys,
-      ) as Prisma.InputJsonValue;
-    }
-    if ('formulaVersionId' in dto) {
-      data.formulaVersion = dto.formulaVersionId
-        ? { connect: { id: dto.formulaVersionId } }
-        : { disconnect: true };
-    }
-    if (dto.explorationPercent !== undefined) {
-      data.explorationPercent = dto.explorationPercent;
-    }
-    if (dto.brandMaxShare !== undefined) data.brandMaxShare = dto.brandMaxShare;
-    if (dto.aggregateTimeoutMs !== undefined) {
-      data.aggregateTimeoutMs = dto.aggregateTimeoutMs;
-    }
-    if (dto.rolloutPercent !== undefined)
-      data.rolloutPercent = dto.rolloutPercent;
-    if (dto.fallbackDeterministic !== undefined) {
-      data.fallbackDeterministic = dto.fallbackDeterministic;
     }
     if (dto.metadata !== undefined) data.metadata = jsonOrNull(dto.metadata);
     return data;
