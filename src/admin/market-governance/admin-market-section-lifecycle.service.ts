@@ -19,10 +19,11 @@ import { AdminAuditService } from '../services/admin-audit.service';
 import {
   carriedColumns,
   derivePresentation,
-  isClassicSectionKey,
+  lockClassicRails,
   MarketSectionDraftDefinition,
   mergeSectionSpecs,
   presentationColumns,
+  summarisePreview,
 } from './market-section-lifecycle';
 
 type Tx = Prisma.TransactionClient;
@@ -135,7 +136,11 @@ export class AdminMarketSectionLifecycleService {
       const row = await this.lockOrCreate(tx, key, actorId);
       if (row.draftRevision !== input.expectedRevision)
         conflict('STALE_DRAFT', 'Someone saved this section first. Reload it.');
-      const definition = await this.buildDefinition(tx, row, input.spec);
+      const definition = this.buildDefinition(
+        row,
+        input.spec,
+        await this.publishedSpecs(tx, key),
+      );
       const saved = await this.writeDraft(tx, row, definition, actorId);
       await this.log(tx, actorId, req, key, 'draft', input.reason, {
         draftRevision: saved.draftRevision,
@@ -174,7 +179,7 @@ export class AdminMarketSectionLifecycleService {
       sectionKey: key,
       draftRevision: row.draftRevision,
       viewer: 'guest',
-      result,
+      preview: summarisePreview(result),
     };
   }
 
@@ -187,6 +192,8 @@ export class AdminMarketSectionLifecycleService {
     const key = this.key(sectionKey);
     const reason = this.requiredReason(input.reason);
     return this.prisma.$transaction(async (tx) => {
+      // Rails first, then the row: the same lock order as the classic PATCH.
+      await lockClassicRails(tx);
       const row = await this.lock(tx, key);
       if (!row.draftDefinition)
         conflict('NO_DRAFT', 'Save a draft before publishing.');
@@ -208,6 +215,7 @@ export class AdminMarketSectionLifecycleService {
         draft,
         reason,
         actorId,
+        await this.publishedSpecs(tx, key),
       );
       await this.log(tx, actorId, req, key, 'publish', reason, {
         version: published.version,
@@ -228,6 +236,8 @@ export class AdminMarketSectionLifecycleService {
     const reason = this.requiredReason(input.reason);
     const rule = STATUS_CHANGES[change];
     return this.prisma.$transaction(async (tx) => {
+      // Rails first, then the row: the same lock order as the classic PATCH.
+      await lockClassicRails(tx);
       const row = await this.lockPublished(tx, key);
       const current = row.spec as unknown as PipelineSpec;
       if (!(rule.from as readonly string[]).includes(current.status))
@@ -280,6 +290,8 @@ export class AdminMarketSectionLifecycleService {
     const key = this.key(sectionKey);
     const reason = this.requiredReason(input.reason);
     return this.prisma.$transaction(async (tx) => {
+      // Rails first, then the row: the same lock order as the classic PATCH.
+      await lockClassicRails(tx);
       const row = await this.lockPublished(tx, key);
       const source = await tx.marketSectionConfigVersion.findUnique({
         where: { configId_version: { configId: row.id, version } },
@@ -310,10 +322,11 @@ export class AdminMarketSectionLifecycleService {
     req: Request,
     extra: Record<string, unknown> = {},
   ) {
-    const definition = await this.buildDefinition(
-      tx,
+    const others = await this.publishedSpecs(tx, row.sectionKey);
+    const definition = this.buildDefinition(
       row,
       spec as unknown as Record<string, unknown>,
+      others,
     );
     const saved = await this.writeDraft(tx, row, definition, actorId);
     const published = await this.publishDraft(
@@ -322,6 +335,7 @@ export class AdminMarketSectionLifecycleService {
       definition,
       reason,
       actorId,
+      others,
     );
     await this.log(tx, actorId, req, row.sectionKey, mode, reason, {
       version: published.version,
@@ -330,18 +344,18 @@ export class AdminMarketSectionLifecycleService {
     return published;
   }
 
-  private async buildDefinition(
-    tx: Tx,
+  private buildDefinition(
     row: MarketSectionConfig,
     input: Record<string, unknown>,
-  ): Promise<MarketSectionDraftDefinition> {
+    others: Prisma.JsonValue[],
+  ): MarketSectionDraftDefinition {
     const spec = parsePipelineSpec({
       ...input,
       key: row.sectionKey,
       version: row.specVersion + 1,
     });
     // Early feedback: the draft must fit the set serving would see.
-    mergeSectionSpecs(await this.publishedSpecs(tx, row.sectionKey), spec);
+    mergeSectionSpecs(others, spec);
     const definition = {
       spec,
       presentation: derivePresentation(
@@ -386,11 +400,12 @@ export class AdminMarketSectionLifecycleService {
     draft: MarketSectionDraftDefinition,
     reason: string,
     actorId: string,
+    others: Prisma.JsonValue[],
   ) {
     // Re-validate the stored draft against today's parser and the live set.
     const spec = parsePipelineSpec(draft.spec);
-    mergeSectionSpecs(await this.publishedSpecs(tx, row.sectionKey), spec);
-    await this.assertClassicRailRemains(row.sectionKey, draft);
+    mergeSectionSpecs(others, spec);
+    await this.assertClassicRailRemains(tx, row.sectionKey, draft);
     const version = await tx.marketSectionConfigVersion.create({
       data: {
         configId: row.id,
@@ -421,13 +436,18 @@ export class AdminMarketSectionLifecycleService {
     };
   }
 
-  /** Classic Market keeps at least one active rail, as the classic PATCH requires. */
+  /**
+   * Classic Market keeps at least one active rail, as the classic PATCH
+   * requires. Any key counts: a V2 spec published on a custom classic row
+   * hides it too. Reads inside the transaction, under `lockClassicRails`.
+   */
   private async assertClassicRailRemains(
+    tx: Tx,
     key: string,
     draft: MarketSectionDraftDefinition,
   ) {
-    if (!isClassicSectionKey(key) || draft.presentation.enabled) return;
-    const current = await this.governance.getSectionConfigsWithFallback();
+    if (draft.presentation.enabled) return;
+    const current = await this.governance.getSectionConfigsWithFallback(tx);
     const remaining = current.items.some(
       (config) =>
         config.sectionKey !== key &&

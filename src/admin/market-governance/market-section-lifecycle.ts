@@ -9,6 +9,16 @@ import {
   validatePipelineGraph,
 } from 'src/market/pipeline/market-pipeline.schema';
 import { PipelineSpec } from 'src/market/pipeline/market-pipeline.types';
+import { lockForTransaction } from 'src/common/transaction-lock.util';
+import { MarketSectionItemDto } from 'src/market/dto/market-section.dto';
+
+/**
+ * Serialises every write that can switch a classic Market rail off (classic
+ * PATCH and lifecycle publish), so "at least one rail stays live" is checked
+ * against committed state. Take it before any row lock to keep one lock order.
+ */
+export const lockClassicRails = (tx: Prisma.TransactionClient) =>
+  lockForTransaction(tx, 'market-classic-rails');
 
 /**
  * The exact JSON object `wiez_market_section_presentation(row)` builds in
@@ -175,4 +185,66 @@ export function mergeSectionSpecs(
   const specs = [...byKey.values()];
   validatePipelineGraph(specs);
   return specs;
+}
+
+const PREVIEW_ITEMS = 12;
+
+/** What the section editor shows for a preview: one shape for every source. */
+export interface MarketSectionPreviewSummary {
+  title: string;
+  subtitle: string | null;
+  template: string;
+  /** False for brand, category and collection sources, which list no products. */
+  productList: boolean;
+  fallbackUsed: boolean;
+  fallbackReason: string | null;
+  candidateCount: number;
+  minItems: number;
+  items: Array<{
+    id: string;
+    title: string;
+    entityType: MarketSectionItemDto['entityType'];
+    imageUrl: string | null;
+    fileId: string | null;
+    price: number | null;
+    currency: string | null;
+  }>;
+}
+
+export function summarisePreview(result: {
+  kind: string;
+  section: {
+    title: string;
+    subtitle: string | null;
+    template: string;
+    metadata: {
+      fallbackUsed: boolean;
+      fallbackReason: string | null;
+      candidateCount: number;
+      minItems: number;
+    };
+  };
+  data?: { items: readonly MarketSectionItemDto[] };
+}): MarketSectionPreviewSummary {
+  const { section } = result;
+  const items = result.kind === 'catalogue' ? (result.data?.items ?? []) : [];
+  return {
+    title: section.title,
+    subtitle: section.subtitle,
+    template: section.template,
+    productList: result.kind === 'catalogue',
+    fallbackUsed: section.metadata.fallbackUsed,
+    fallbackReason: section.metadata.fallbackReason,
+    candidateCount: section.metadata.candidateCount,
+    minItems: section.metadata.minItems,
+    items: items.slice(0, PREVIEW_ITEMS).map((item) => ({
+      id: item.id,
+      title: item.title,
+      entityType: item.entityType,
+      imageUrl: item.media?.thumbnailUrl ?? item.media?.url ?? null,
+      fileId: item.media?.fileId ?? null,
+      price: item.price?.effectiveAmount ?? null,
+      currency: item.price?.currency ?? null,
+    })),
+  };
 }

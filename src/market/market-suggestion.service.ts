@@ -1,3 +1,4 @@
+import { PRODUCT_NAME } from 'src/common/branding/product-identity.constants';
 import { resolveProductPrice } from 'src/common/pricing/product-price';
 import {
   eligibleProductWhere,
@@ -541,7 +542,7 @@ export class MarketSuggestionService {
         {
           blockKey: 'search-empty-fresh-drops',
           title: 'Fresh Drops',
-          subtitle: 'New arrivals from open WIEZ stores',
+          subtitle: `New arrivals from open ${PRODUCT_NAME} stores`,
           reason: 'fresh-fallback',
           sourceType: 'PRODUCT',
           strategy: 'search.fresh-drops',
@@ -628,7 +629,7 @@ export class MarketSuggestionService {
           }`,
           title: isCollectionSection ? 'Fresh Drops' : 'Shop the Look',
           subtitle: isCollectionSection
-            ? 'New products from open WIEZ stores'
+            ? `New products from open ${PRODUCT_NAME} stores`
             : 'Recent store edits and capsules',
           reason: isCollectionSection
             ? 'fresh-products-fallback'
@@ -688,7 +689,7 @@ export class MarketSuggestionService {
         {
           blockKey: 'wishlist-fresh-drops',
           title: 'Fresh Drops',
-          subtitle: 'New arrivals from open WIEZ stores',
+          subtitle: `New arrivals from open ${PRODUCT_NAME} stores`,
           reason: 'fresh-fallback',
           sourceType: 'PRODUCT',
           strategy: 'wishlist.fresh-drops',

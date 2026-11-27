@@ -8,6 +8,7 @@ import { AdminAuditAction, Prisma } from '@prisma/client';
 import { Request } from 'express';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { AdminAuditService } from '../services/admin-audit.service';
+import { lockClassicRails } from './market-section-lifecycle';
 import { MarketRankingConfigService } from 'src/market/market-ranking-config.service';
 import {
   MarketGovernanceConfigService,
@@ -102,7 +103,6 @@ export class AdminMarketGovernanceService {
     req: Request,
   ) {
     const normalizedKey = await this.requireKnownSectionKey(sectionKey);
-    await this.assertPrimarySectionRemainsEnabled(normalizedKey, dto);
 
     const existing = await this.prisma.marketSectionConfig.findUnique({
       where: { sectionKey: normalizedKey },
@@ -126,6 +126,7 @@ export class AdminMarketGovernanceService {
     const updateData = this.buildSectionUpdateData(dto, actorId);
 
     return this.prisma.$transaction(async (tx) => {
+      await this.assertPrimarySectionRemainsEnabled(tx, normalizedKey, dto);
       const updated = await tx.marketSectionConfig.upsert({
         where: { sectionKey: normalizedKey },
         create: nowData,
@@ -320,7 +321,9 @@ export class AdminMarketGovernanceService {
     );
   }
 
+  /** Runs inside the write, before the row lock, under the shared rails lock. */
   private async assertPrimarySectionRemainsEnabled(
+    tx: Prisma.TransactionClient,
     sectionKey: string,
     dto: PatchMarketSectionConfigDto,
   ) {
@@ -329,8 +332,9 @@ export class AdminMarketGovernanceService {
       dto.status === 'PAUSED' ||
       dto.status === 'ARCHIVED';
     if (!wouldDisable) return;
+    await lockClassicRails(tx);
     const current =
-      await this.marketGovernanceConfig.getSectionConfigsWithFallback();
+      await this.marketGovernanceConfig.getSectionConfigsWithFallback(tx);
     const next = current.items.map((config) =>
       config.sectionKey === sectionKey
         ? {

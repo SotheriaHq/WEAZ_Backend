@@ -8,6 +8,7 @@ import {
   derivePresentation,
   mergeSectionSpecs,
   presentationColumns,
+  summarisePreview,
 } from './market-section-lifecycle';
 
 describe('market section lifecycle helpers', () => {
@@ -75,6 +76,27 @@ describe('market section lifecycle helpers', () => {
     expect(columns.startsAt).toBeNull();
   });
 
+  it('summarises a brand or category source as having no product list', () => {
+    const summary = summarisePreview({
+      kind: 'legacy',
+      section: {
+        title: 'New designers to watch',
+        subtitle: null,
+        template: 'NEW_DESIGNERS',
+        metadata: {
+          fallbackUsed: true,
+          fallbackReason: 'too_few_candidates',
+          candidateCount: 0,
+          minItems: 2,
+        },
+      },
+    });
+
+    expect(summary.productList).toBe(false);
+    expect(summary.items).toEqual([]);
+    expect(summary.fallbackReason).toBe('too_few_candidates');
+  });
+
   it('overrides a default by key and rejects a broken fallback graph', () => {
     const override = parsePipelineSpec({
       key: 'fresh-drops',
@@ -120,7 +142,31 @@ describe('AdminMarketSectionLifecycleService', () => {
       },
     };
     const pipeline = {
-      getSection: jest.fn().mockResolvedValue({ kind: 'catalogue' }),
+      getSection: jest.fn().mockResolvedValue({
+        kind: 'catalogue',
+        section: {
+          title: 'Latest drops',
+          subtitle: null,
+          template: 'NEW_RELEASES',
+          metadata: {
+            fallbackUsed: false,
+            fallbackReason: null,
+            candidateCount: 1,
+            minItems: 2,
+          },
+        },
+        data: {
+          items: [
+            {
+              id: 'p1',
+              title: 'Adire wrap',
+              entityType: 'PRODUCT',
+              media: { url: 'u', thumbnailUrl: 't', fileId: 'f1' },
+              price: { effectiveAmount: 5000, currency: 'NGN' },
+            },
+          ],
+        },
+      }),
     };
     const service = new AdminMarketSectionLifecycleService(
       prisma as any,
@@ -142,6 +188,28 @@ describe('AdminMarketSectionLifecycleService', () => {
     expect(preview).toEqual(
       expect.objectContaining({ draftRevision: 4, viewer: 'guest' }),
     );
+    // The editor gets one stable summary, not the internal pipeline result.
+    expect(preview.preview).toEqual({
+      title: 'Latest drops',
+      subtitle: null,
+      template: 'NEW_RELEASES',
+      productList: true,
+      fallbackUsed: false,
+      fallbackReason: null,
+      candidateCount: 1,
+      minItems: 2,
+      items: [
+        {
+          id: 'p1',
+          title: 'Adire wrap',
+          entityType: 'PRODUCT',
+          imageUrl: 't',
+          fileId: 'f1',
+          price: 5000,
+          currency: 'NGN',
+        },
+      ],
+    });
     const call = pipeline.getSection.mock.calls[0][0];
     expect(call.key).toBe('fresh-drops');
     expect(call.viewer).toEqual({});

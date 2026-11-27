@@ -21,7 +21,7 @@ describe('AdminMarketGovernanceService', () => {
     id: 'section_config_1',
     sectionKey: 'fresh-drops',
     title: 'Fresh Drops',
-    subtitle: 'New products from open WIEZ stores.',
+    subtitle: 'New products from open ARU stores.',
     enabled: true,
     displayOrder: 10,
     previewItemLimit: 8,
@@ -69,6 +69,12 @@ describe('AdminMarketGovernanceService', () => {
       $transaction: jest.fn((callback) => callback(tx)),
       ...overrides.prisma,
     };
+    // The rail check reads through the transaction under an advisory lock.
+    Object.assign(tx, { $executeRaw: jest.fn().mockResolvedValue(1) });
+    Object.assign(tx.marketSectionConfig, {
+      findMany: (...args: unknown[]) =>
+        prisma.marketSectionConfig.findMany(...args),
+    });
     const audit = {
       logInTransaction: jest.fn().mockResolvedValue(undefined),
       ...overrides.audit,
@@ -113,7 +119,7 @@ describe('AdminMarketGovernanceService', () => {
         fallbackMode: config.fallbackMode,
       }),
     );
-    const { service } = createHarness({
+    const { service, tx } = createHarness({
       prisma: {
         marketSectionConfig: {
           findUnique: jest.fn().mockResolvedValue(existingRows[0]),
@@ -125,6 +131,9 @@ describe('AdminMarketGovernanceService', () => {
     await expect(
       service.patchSection('fresh-drops', { enabled: false }, actorId, req),
     ).rejects.toThrow('At least one active market section must remain enabled');
+    // Checked under the lock lifecycle publishes share, before any row write.
+    expect((tx as any).$executeRaw).toHaveBeenCalledTimes(1);
+    expect(tx.marketSectionConfig.upsert).not.toHaveBeenCalled();
   });
 
   it('creates custom market sections without behavior-specific wiring', async () => {

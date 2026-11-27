@@ -136,9 +136,14 @@ describe('AdminMarketGovernanceController section lifecycle permissions', () => 
     }
   });
 
-  it('every write that changes what shoppers see needs governance write', () => {
+  it('saving a draft needs governance write; it does not change what shoppers see', () => {
+    expect(getPermissions('saveSectionDraft')).toEqual([
+      ADMIN_PERMISSIONS.MARKET_GOVERNANCE_WRITE,
+    ]);
+  });
+
+  it('every write that changes what shoppers see needs the separate release grant', () => {
     for (const methodName of [
-      'saveSectionDraft',
       'publishSection',
       'pauseSection',
       'resumeSection',
@@ -146,7 +151,7 @@ describe('AdminMarketGovernanceController section lifecycle permissions', () => 
       'restoreSectionVersion',
     ] as const) {
       expect(getPermissions(methodName)).toEqual([
-        ADMIN_PERMISSIONS.MARKET_GOVERNANCE_WRITE,
+        ADMIN_PERMISSIONS.MARKET_GOVERNANCE_RELEASE,
       ]);
     }
   });

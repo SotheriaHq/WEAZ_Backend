@@ -109,7 +109,7 @@ export class AdminMarketGovernanceController {
   }
 
   @Post('sections/:sectionKey/publish')
-  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_WRITE)
+  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_RELEASE)
   publishSection(
     @Param('sectionKey') sectionKey: string,
     @Body() dto: PublishMarketSectionDto,
@@ -119,7 +119,7 @@ export class AdminMarketGovernanceController {
   }
 
   @Post('sections/:sectionKey/pause')
-  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_WRITE)
+  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_RELEASE)
   pauseSection(
     @Param('sectionKey') sectionKey: string,
     @Body() dto: MarketSectionReasonDto,
@@ -135,7 +135,7 @@ export class AdminMarketGovernanceController {
   }
 
   @Post('sections/:sectionKey/resume')
-  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_WRITE)
+  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_RELEASE)
   resumeSection(
     @Param('sectionKey') sectionKey: string,
     @Body() dto: MarketSectionReasonDto,
@@ -151,7 +151,7 @@ export class AdminMarketGovernanceController {
   }
 
   @Post('sections/:sectionKey/archive')
-  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_WRITE)
+  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_RELEASE)
   archiveSection(
     @Param('sectionKey') sectionKey: string,
     @Body() dto: MarketSectionReasonDto,
@@ -173,7 +173,7 @@ export class AdminMarketGovernanceController {
   }
 
   @Post('sections/:sectionKey/restore/:version')
-  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_WRITE)
+  @RequirePermissions(ADMIN_PERMISSIONS.MARKET_GOVERNANCE_RELEASE)
   restoreSectionVersion(
     @Param('sectionKey') sectionKey: string,
     @Param('version', ParseIntPipe) version: number,

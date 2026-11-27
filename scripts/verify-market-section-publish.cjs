@@ -246,6 +246,45 @@ async function main() {
       assert.deepEqual(modes, ['draft', 'draft', 'draft', 'draft', 'pause', 'publish', 'publish', 'publish', 'restore', 'resume']);
     });
 
+    await check('two concurrent pauses of the last two classic rails leave one live', async () => {
+      const last = ['shop-by-style', 'almost-gone'];
+      // Take fresh-drops off the classic Market through the lifecycle (it is published).
+      const fresh = await row('fresh-drops');
+      const pausedDraft = await service.saveDraft(
+        'fresh-drops',
+        { spec: { template: 'NEW_RELEASES', title: 'Latest drops', status: 'PAUSED' }, expectedRevision: fresh.draftRevision },
+        actorId,
+        req,
+      );
+      await service.publish('fresh-drops', { draftRevision: pausedDraft.draftRevision, reason: 'setup' }, actorId, req);
+      // Every other classic rail is switched off as an unpublished row.
+      const others = (await new MarketGovernanceConfigService(prisma).getSectionConfigsWithFallback()).items
+        .map((item) => item.sectionKey)
+        .filter((key) => !last.includes(key) && key !== 'fresh-drops');
+      await prisma.marketSectionConfig.createMany({
+        data: others.map((key) => service['unpublishedRow'](key, actorId)),
+        skipDuplicates: true,
+      });
+      await prisma.marketSectionConfig.updateMany({
+        where: { sectionKey: { in: others }, publishedVersionId: null },
+        data: { enabled: false },
+      });
+      for (const key of last) {
+        const saved = await service.saveDraft(key, { spec: { template: 'NEW_RELEASES', status: 'ACTIVE' }, expectedRevision: 0 }, actorId, req);
+        await service.publish(key, { draftRevision: saved.draftRevision, reason: 'setup' }, actorId, req);
+      }
+      const outcomes = await Promise.allSettled(
+        last.map((key) => service.changeStatus(key, 'pause', { reason: 'race' }, actorId, req)),
+      );
+      assert.equal(outcomes.filter((o) => o.status === 'fulfilled').length, 1, 'exactly one pause may win');
+      const refused = outcomes.find((o) => o.status === 'rejected');
+      assert.match(String(refused.reason?.message), /At least one active market section/);
+      const live = (await new MarketGovernanceConfigService(prisma).getSectionConfigsWithFallback()).items.filter(
+        (item) => item.enabled && item.status === 'ACTIVE',
+      );
+      assert.equal(live.length, 1);
+    });
+
     console.log(JSON.stringify({ passed: true, checks: results.length }));
   } finally {
     if (prisma) await prisma.$disconnect();
