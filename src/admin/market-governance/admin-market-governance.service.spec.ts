@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { NotFoundException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { AdminAuditAction } from '@prisma/client';
 import { AdminAuditService } from '../services/admin-audit.service';
 import { AdminMarketGovernanceService } from './admin-market-governance.service';
@@ -211,6 +211,19 @@ describe('AdminMarketGovernanceService', () => {
         }),
       }),
     );
+  });
+
+  it('refuses a classic patch once a section is published', async () => {
+    const { prisma, service } = createHarness();
+    prisma.marketSectionConfig.findUnique.mockResolvedValue({
+      sectionKey: 'fresh-drops',
+      publishedVersionId: 'version_1',
+    });
+
+    await expect(
+      service.patchSection('fresh-drops', { title: 'Drift' }, actorId, req),
+    ).rejects.toThrow(ConflictException);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('writes section config and audit in one transaction', async () => {

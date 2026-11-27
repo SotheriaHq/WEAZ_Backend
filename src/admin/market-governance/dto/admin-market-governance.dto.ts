@@ -341,3 +341,27 @@ export class AdminMarketGovernanceAuditQueryDto {
   @MaxLength(160)
   targetId?: string;
 }
+
+/** A section lifecycle write that changes what shoppers see needs a reason. */
+export class MarketSectionReasonDto {
+  @IsString()
+  @MaxLength(MARKET_GOVERNANCE_LIMITS.reasonMax)
+  @Matches(/\S/, { message: 'Give a reason for this change.' })
+  reason!: string;
+}
+
+export class SaveMarketSectionDraftDto extends AdminMarketGovernanceReasonDto {
+  /** Strictly parsed by parsePipelineSpec; unknown keys are rejected there. */
+  @IsObject()
+  spec!: Record<string, unknown>;
+
+  @IsInt()
+  @Min(0)
+  expectedRevision!: number;
+}
+
+export class PublishMarketSectionDto extends MarketSectionReasonDto {
+  @IsInt()
+  @Min(1)
+  draftRevision!: number;
+}

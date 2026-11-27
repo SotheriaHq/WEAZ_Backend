@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -106,6 +107,13 @@ export class AdminMarketGovernanceService {
     const existing = await this.prisma.marketSectionConfig.findUnique({
       where: { sectionKey: normalizedKey },
     });
+    if (existing?.publishedVersionId) {
+      // The served row must equal its published snapshot (database trigger).
+      throw new ConflictException({
+        code: 'SECTION_PUBLISHED',
+        message: 'Published sections change through draft and publish.',
+      });
+    }
     const defaultConfig = this.getSectionDefaultOrNull(normalizedKey);
     const nowData = defaultConfig
       ? this.buildSectionCreateData(normalizedKey, defaultConfig, dto, actorId)
