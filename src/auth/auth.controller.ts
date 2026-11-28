@@ -15,6 +15,7 @@ import {
   Req,
   Res,
   HttpCode,
+  ServiceUnavailableException,
   UnauthorizedException,
   UseGuards,
   Query,
@@ -431,20 +432,53 @@ export class AuthController {
     const refreshToken =
       req.cookies[this.refreshTokenCookieName] ?? bodyRefreshToken;
     if (!refreshToken) {
-      const cookieOptions = this.cookieOptionsFor(res);
-      res.clearCookie(this.refreshTokenCookieName, cookieOptions);
-      res.clearCookie(this.accessTokenCookieName, cookieOptions);
-      throw new UnauthorizedException('Refresh token not found');
+      this.clearSessionCookies(res);
+      throw new UnauthorizedException({
+        message: 'Refresh token not found',
+        code: 'AUTH_REFRESH_INVALID',
+      });
     }
 
     try {
       return await this.tokenService.refreshToken(refreshToken, req, res);
     } catch (error) {
-      const cookieOptions = this.cookieOptionsFor(res);
-      res.clearCookie(this.refreshTokenCookieName, cookieOptions);
-      res.clearCookie(this.accessTokenCookieName, cookieOptions);
+      // Only a confirmed rejection ends the browser session. A 503 (the
+      // session store was briefly unreachable) or a 409 REFRESH_ROTATED
+      // (another tab rotated first and has already set fresh cookies) must
+      // leave the cookies alone: clearing them made the next refresh a 401
+      // "Refresh token not found", signing people out over a temporary fault.
+      if (error instanceof UnauthorizedException) {
+        this.clearSessionCookies(res);
+        throw this.withRefreshCode(error);
+      }
+      if (error instanceof ServiceUnavailableException) {
+        res.setHeader('Retry-After', '5');
+        throw new ServiceUnavailableException({
+          message: 'Session could not be renewed. Please retry.',
+          code: 'SESSION_RENEWAL_UNAVAILABLE',
+        });
+      }
       throw error;
     }
+  }
+
+  private clearSessionCookies(res: Response) {
+    const cookieOptions = this.cookieOptionsFor(res);
+    res.clearCookie(this.refreshTokenCookieName, cookieOptions);
+    res.clearCookie(this.accessTokenCookieName, cookieOptions);
+  }
+
+  /** Adds the generic refresh code to a 401 that has none; message unchanged. */
+  private withRefreshCode(error: UnauthorizedException): UnauthorizedException {
+    const body = error.getResponse();
+    if (typeof body === 'object' && body && typeof (body as { code?: unknown }).code === 'string') {
+      return error;
+    }
+    const message =
+      typeof body === 'object' && body && 'message' in body
+        ? (body as { message: unknown }).message
+        : error.message;
+    return new UnauthorizedException({ message, code: 'AUTH_REFRESH_INVALID' });
   }
 
   @Post('studio-handoff')
