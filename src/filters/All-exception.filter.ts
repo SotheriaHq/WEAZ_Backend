@@ -14,6 +14,7 @@ import {
 import { MonitoringService } from 'src/monitoring/monitoring.service';
 import * as Sentry from '@sentry/nestjs';
 import { isSentryEnabled } from 'src/common/observability/sentry.instrument';
+import { diagnosticReference } from 'src/common/errors/diagnostic-reference';
 
 /**
  * A 428 security challenge is only useful if the client can act on it: the web
@@ -145,6 +146,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
     this.emitExceptionAlert(status, request, safePath, exception);
     this.captureSentryException(status, request, exception);
 
+    // Additive (WP-03 PR-A): the request id a person can quote to support.
+    // Only a short plain token is echoed; otherwise the key is left out.
+    const reference = diagnosticReference(request);
+
     // Response format
     const errorResponse = {
       statusCode: status,
@@ -152,6 +157,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       path: safePath,
       message,
       ...(code && { code }),
+      ...(reference && { reference }),
       ...(challenge ?? {}),
       ...(errors && { errors }),
     };
