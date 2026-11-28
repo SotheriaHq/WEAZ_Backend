@@ -15,7 +15,10 @@ import { SizeFitController } from './size-fit.controller';
 import { SizeFitService } from './size-fit.service';
 import { SizeFitReminderService } from './size-fit-reminder.service';
 import { SizingModule } from 'src/sizing/sizing.module';
-import { FeedPreferencesController } from './feed-preferences.controller';
+import {
+  FeedPreferencesController,
+  MarketPreferencesController,
+} from './feed-preferences.controller';
 import { FeedPreferencesService } from './feed-preferences.service';
 import { ProfilePhotoViewService } from './profile-photo-view.service';
 
@@ -29,6 +32,7 @@ import { ProfilePhotoViewService } from './profile-photo-view.service';
     PatchStatusBatchController,
     SizeFitController,
     FeedPreferencesController,
+    MarketPreferencesController,
   ],
   providers: [
     UserProfileService,

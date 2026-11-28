@@ -226,6 +226,8 @@ model FileUpload {
 model UserProfile {
   marketPersonalization Boolean @default(true)
   marketRegionalOptIn Boolean @default(false)
+  /// Set once when the shopper confirms they are 18 or over before Market personalisation (owner L5, 28 Nov 2026). Null = not confirmed = never personalised.
+  marketAdultConfirmedAt DateTime? @db.Timestamptz(3)
   id                    String            @id @default(uuid()) @map("_id") @db.Uuid
   userId                String            @unique @db.Uuid
   user                  User              @relation(fields: [userId], references: [id], onDelete: Cascade)
