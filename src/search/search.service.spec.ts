@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { CollectionStatus, TagStatus } from '@prisma/client';
 import { SearchController } from './search.controller';
-import { SearchService } from './search.service';
+import { RECENT_SEARCH_TTL_SECONDS, SearchService } from './search.service';
 
 describe('SearchController', () => {
   it('rejects invalid type values instead of broadening the query', async () => {
@@ -699,5 +699,28 @@ describe('SearchService', () => {
       'tag-1',
     );
     expect(upsertSuggestion).not.toHaveBeenCalled();
+  });
+});
+
+describe('SearchService recent searches', () => {
+  it("keeps a user's server-side recent searches for 30 days", async () => {
+    const pipeline = {
+      lRem: jest.fn(),
+      lPush: jest.fn(),
+      lTrim: jest.fn(),
+      expire: jest.fn(),
+      hIncrBy: jest.fn(),
+      exec: jest.fn().mockResolvedValue([]),
+    };
+    const service = new SearchService({} as any, {} as any);
+    (service as any).redis = { multi: () => pipeline };
+
+    await (service as any).recordSearch('user-1', 'Ankara dress');
+
+    expect(RECENT_SEARCH_TTL_SECONDS).toBe(30 * 24 * 60 * 60);
+    expect(pipeline.expire).toHaveBeenCalledWith(
+      'search:recent:user-1',
+      RECENT_SEARCH_TTL_SECONDS,
+    );
   });
 });
