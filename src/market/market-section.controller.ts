@@ -129,19 +129,19 @@ export class MarketSectionController {
     @Query('anonymousSessionId') anonymousSessionId?: string,
     @Req() req?: any,
   ) {
-    const known =
-      key === 'explore-market' ||
-      defaultPipelineSpecs().some((spec) => spec.key === key);
     const legacyCursor =
       !!cursor && (/^[0-9]+$/.test(cursor) || /^[a-f0-9-]{36}$/i.test(cursor));
     const canonicalCursor = !!cursor && cursor.includes('.');
-    if (
-      known &&
-      !legacyCursor &&
-      this.flags?.isEnabled('SEE_ALL') &&
-      this.pipeline &&
-      req?.originalUrl
-    ) {
+    const pipelineRoute =
+      !legacyCursor && !!this.flags?.isEnabled('SEE_ALL') && !!req?.originalUrl;
+    // Published sections are only looked up when the pipeline route is usable.
+    const known =
+      key === 'explore-market' ||
+      defaultPipelineSpecs().some((spec) => spec.key === key) ||
+      (pipelineRoute &&
+        !!this.pipeline &&
+        (await this.pipeline.isPublishedSection(key)));
+    if (known && pipelineRoute && this.pipeline) {
       const query = new URL(req.originalUrl, 'https://market.invalid')
         .searchParams;
       if (query.getAll('anonymousSessionId').length > 1)

@@ -127,4 +127,84 @@ describe('MarketSectionController', () => {
       anonymousSessionId: 'anon_1',
     });
   });
+
+  describe('published sections', () => {
+    function publishedFixture(published: boolean, seeAll = true) {
+      const legacy = {
+        getSectionDetail: jest.fn().mockResolvedValue({ section: null }),
+      };
+      const pipeline = {
+        isPublishedSection: jest.fn().mockResolvedValue(published),
+        getSection: jest.fn().mockResolvedValue({
+          kind: 'catalogue',
+          section: {
+            key: 'linen-edit',
+            title: 'Linen edit',
+            template: 'CATALOG_FILTER',
+            viewAll: {},
+          },
+          data: {
+            items: [],
+            pagination: { nextCursor: null },
+            meta: { asOf: '2026-11-27T00:00:00Z' },
+          },
+        }),
+      };
+      const controller = new MarketSectionController(
+        legacy as any,
+        pipeline as any,
+        { isEnabled: () => seeAll } as unknown as MarketFlagsService,
+      );
+      return { controller, legacy, pipeline };
+    }
+    const req = { originalUrl: '/market/sections/linen-edit' };
+    it('serves an ACTIVE published key through the pipeline', async () => {
+      const { controller, legacy, pipeline } = publishedFixture(true);
+      await controller.getSectionDetail(
+        'linen-edit',
+        undefined,
+        undefined,
+        undefined,
+        req,
+      );
+      expect(pipeline.isPublishedSection).toHaveBeenCalledWith('linen-edit');
+      expect(pipeline.getSection).toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'linen-edit' }),
+      );
+      expect(legacy.getSectionDetail).not.toHaveBeenCalled();
+    });
+    it('leaves an unpublished key on the retained reader', async () => {
+      const { controller, legacy, pipeline } = publishedFixture(false);
+      await controller.getSectionDetail(
+        'linen-edit',
+        undefined,
+        undefined,
+        undefined,
+        req,
+      );
+      expect(pipeline.getSection).not.toHaveBeenCalled();
+      expect(legacy.getSectionDetail).toHaveBeenCalled();
+    });
+    it('skips the published lookup when See All is off or the cursor is legacy', async () => {
+      const off = publishedFixture(true, false);
+      await off.controller.getSectionDetail(
+        'linen-edit',
+        undefined,
+        undefined,
+        undefined,
+        req,
+      );
+      expect(off.pipeline.isPublishedSection).not.toHaveBeenCalled();
+      const legacyCursor = publishedFixture(true);
+      await legacyCursor.controller.getSectionDetail(
+        'linen-edit',
+        '24',
+        undefined,
+        undefined,
+        req,
+      );
+      expect(legacyCursor.pipeline.isPublishedSection).not.toHaveBeenCalled();
+      expect(legacyCursor.legacy.getSectionDetail).toHaveBeenCalled();
+    });
+  });
 });

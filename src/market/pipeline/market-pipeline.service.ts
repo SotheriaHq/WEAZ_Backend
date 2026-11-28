@@ -26,7 +26,15 @@ import {
   parsePipelineSpec,
   validatePipelineGraph,
 } from './market-pipeline.schema';
-import { PipelineSource, PipelineSurface } from './market-pipeline.types';
+import {
+  PipelineSource,
+  PipelineSpec,
+  PipelineSurface,
+} from './market-pipeline.types';
+import {
+  MarketPublishedSpecsService,
+  servingPipelineSpecs,
+} from './market-published-specs';
 
 export const MARKET_PIPELINE_CACHE = Symbol('MARKET_PIPELINE_CACHE');
 
@@ -84,9 +92,40 @@ export class MarketPipelineService {
     @Inject(MARKET_PIPELINE_CACHE)
     private readonly cache?: PipelineCandidateCache,
     @Optional() private readonly config?: ConfigService,
+    @Optional() private readonly published?: MarketPublishedSpecsService,
   ) {}
 
+  /** Published specs for the served set; empty when the service is absent. */
+  private async publishedSpecs(): Promise<readonly PipelineSpec[]> {
+    return this.published ? this.published.list() : [];
+  }
+
+  /**
+   * Specs for one section. Callers' explicit specs win; otherwise the code
+   * defaults overlaid with published sections. The small-catalogue rail always
+   * resolves against the one-rail default set, as the page does.
+   */
+  private async sectionSpecs(
+    input: MarketPipelinePageInput & { readonly key: string },
+  ): Promise<readonly unknown[]> {
+    if (input.specs) return input.specs;
+    if (input.key === 'explore-market') return defaultPipelineSpecs(0);
+    return servingPipelineSpecs(
+      defaultPipelineSpecs(),
+      await this.publishedSpecs(),
+    );
+  }
+
+  /** True when an ACTIVE published section exists under this key. */
+  async isPublishedSection(key: string): Promise<boolean> {
+    return (await this.publishedSpecs()).some(
+      (spec) => spec.key === key && spec.status === 'ACTIVE',
+    );
+  }
+
   private async build(input: MarketPipelinePageInput) {
+    const published =
+      input.specs === undefined ? await this.publishedSpecs() : undefined;
     return buildMarketPipelinePage({
       read: this.reads,
       media: new MarketPipelineMediaResolver(this.media),
@@ -96,6 +135,7 @@ export class MarketPipelineService {
       productId: input.productId,
       specs: input.specs ?? defaultPipelineSpecs(),
       useDefaultSpecs: input.specs === undefined,
+      published,
       signal: input.signal,
       sectionLimit: input.sectionLimit,
       cache: this.cache,
@@ -115,9 +155,7 @@ export class MarketPipelineService {
   async getScope(input: MarketPipelinePageInput & { readonly key: string }) {
     const resolved = await resolvePipelineSectionSource({
       reads: this.reads,
-      specs:
-        input.specs ??
-        defaultPipelineSpecs(input.key === 'explore-market' ? 0 : undefined),
+      specs: await this.sectionSpecs(input),
       key: input.key,
       viewer: input.viewer,
       surface: input.surface,
@@ -228,7 +266,7 @@ export class MarketPipelineService {
           ? trusted.resolved
           : await resolvePipelineSectionSource({
               reads: this.reads,
-              specs: input.specs ?? defaultPipelineSpecs(),
+              specs: await this.sectionSpecs(input),
               key: input.key,
               viewer: input.viewer,
               surface: input.surface,
