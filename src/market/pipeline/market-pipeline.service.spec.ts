@@ -11,6 +11,7 @@ import { pipelineSource } from './market-pipeline.sources';
 import { PipelineContext } from './market-pipeline.types';
 import { ConfigService } from '@nestjs/config';
 import { resolvePipelineSectionSource } from './market-pipeline.section-source';
+import { MarketPublishedSpecsService } from './market-published-specs';
 import { readPipelineSourceSection } from './market-pipeline.section-reader';
 
 jest.mock('./market-pipeline.page', () => ({
@@ -46,8 +47,15 @@ function fixture() {
     items: [{ id }],
     viewAll: { availableSorts: ['newest', 'price_asc', 'price_desc'] },
     scope: {
-      source: { kind: 'catalog' as const, sort: 'newest' as const, firstPublishedAfter: null },
-      fixedFilterLayers: [{ tags: ['adire'] }, { fulfilment: 'READY_TO_WEAR' as const }],
+      source: {
+        kind: 'catalog' as const,
+        sort: 'newest' as const,
+        firstPublishedAfter: null,
+      },
+      fixedFilterLayers: [
+        { tags: ['adire'] },
+        { fulfilment: 'READY_TO_WEAR' as const },
+      ],
     },
   };
   build.mockResolvedValue({
@@ -63,18 +71,14 @@ function fixture() {
     fallbackReason: null,
     candidateCount: 1,
   };
-  jest
-    .mocked(resolvePipelineSectionSource)
-    .mockImplementation(async () => ({
-      ...resolved,
-      source: section.scope.source,
-    }));
-  jest
-    .mocked(readPipelineSourceSection)
-    .mockResolvedValue({
-      items: [],
-      pagination: { nextCursor: null },
-    } as never);
+  jest.mocked(resolvePipelineSectionSource).mockImplementation(async () => ({
+    ...resolved,
+    source: section.scope.source,
+  }));
+  jest.mocked(readPipelineSourceSection).mockResolvedValue({
+    items: [],
+    pagination: { nextCursor: null },
+  } as never);
   return { service, catalogue, section, resolved };
 }
 
@@ -152,5 +156,75 @@ describe('Market pipeline injectable facade', () => {
     expect(pipelineSource(releases, first)).toEqual(
       pipelineSource(releases, next),
     );
+  });
+});
+
+describe('Market pipeline published sections', () => {
+  beforeEach(() => jest.clearAllMocks());
+  const linen = parsePipelineSpec({
+    key: 'linen-edit',
+    template: 'CATALOG_FILTER',
+    status: 'ACTIVE',
+    title: 'Linen edit',
+    filters: { tags: ['linen'] },
+  });
+  const paused = parsePipelineSpec({
+    ...linen,
+    key: 'linen-paused',
+    status: 'PAUSED',
+  });
+  function withPublished() {
+    fixture();
+    const list = jest.fn().mockResolvedValue([linen, paused]);
+    const service = new MarketPipelineService(
+      {} as MarketCatalogReadService,
+      {} as MarketPublicMediaService,
+      {
+        getPage: jest.fn().mockResolvedValue({ items: [] }),
+      } as unknown as MarketCatalogService,
+      undefined,
+      {} as ConfigService,
+      { list } as unknown as MarketPublishedSpecsService,
+    );
+    return { service, list };
+  }
+  it('passes published specs to the default page and none for caller specs', async () => {
+    const { service } = withPublished();
+    await service.getPage({ viewer: {} });
+    expect(build.mock.calls[0][0]).toMatchObject({
+      useDefaultSpecs: true,
+      published: [linen, paused],
+    });
+    await service.getPage({ viewer: {}, specs: [spec] });
+    expect(build.mock.calls[1][0].published).toBeUndefined();
+  });
+  it('resolves a section against the defaults overlaid with published specs', async () => {
+    const { service } = withPublished();
+    await service.getScope({ key: 'linen-edit', viewer: {} });
+    const specs = jest.mocked(resolvePipelineSectionSource).mock.calls[0][0]
+      .specs as { key: string }[];
+    expect(specs.map((item) => item.key)).toEqual(
+      expect.arrayContaining(['linen-edit', 'fresh-drops']),
+    );
+  });
+  it('keeps the small-catalogue rail on its one-rail default set', async () => {
+    const { service, list } = withPublished();
+    await service.getScope({ key: 'explore-market', viewer: {} });
+    const specs = jest.mocked(resolvePipelineSectionSource).mock.calls[0][0]
+      .specs as { key: string }[];
+    expect(specs.map((item) => item.key)).toEqual(['explore-market']);
+    expect(list).not.toHaveBeenCalled();
+  });
+  it('treats only ACTIVE published sections as servable keys', async () => {
+    const { service } = withPublished();
+    await expect(service.isPublishedSection('linen-edit')).resolves.toBe(true);
+    await expect(service.isPublishedSection('linen-paused')).resolves.toBe(
+      false,
+    );
+    await expect(service.isPublishedSection('nope')).resolves.toBe(false);
+  });
+  it('serves only the defaults without a published-specs service', async () => {
+    const { service } = fixture();
+    await expect(service.isPublishedSection('linen-edit')).resolves.toBe(false);
   });
 });

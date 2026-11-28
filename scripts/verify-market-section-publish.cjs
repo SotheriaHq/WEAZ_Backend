@@ -18,6 +18,16 @@ const { AdminAuditService } = require('../src/admin/services/admin-audit.service
 const {
   MarketGovernanceConfigService,
 } = require('../src/market/market-governance-config.service');
+const {
+  MarketPublishedSpecsService,
+  servingPipelineSpecs,
+} = require('../src/market/pipeline/market-published-specs');
+const { MarketPipelineService } = require('../src/market/pipeline/market-pipeline.service');
+const { defaultPipelineSpecs } = require('../src/market/pipeline/market-pipeline.defaults');
+const { parsePipelineSpec } = require('../src/market/pipeline/market-pipeline.schema');
+const { mergeSectionSpecs } = require('../src/admin/market-governance/market-section-lifecycle');
+
+const byKey = (specs) => [...specs].sort((a, b) => a.key.localeCompare(b.key));
 
 const req = { headers: {}, ip: '127.0.0.1', socket: {} };
 
@@ -90,12 +100,16 @@ async function main() {
     await prisma.user.create({
       data: { id: actorId, username: 'section-proof-' + actorId.slice(0, 8), email: actorId + '@example.invalid' },
     });
+    const served = new MarketPublishedSpecsService(prisma);
     const service = new AdminMarketSectionLifecycleService(
       prisma,
       new AdminAuditService(prisma),
       new MarketGovernanceConfigService(prisma),
-      /* pipeline: preview is covered by unit tests */ null,
+      /* pipeline: page rendering is covered by unit tests */ null,
+      served,
     );
+    // Only the published-key lookup is exercised here; it needs no catalogue.
+    const pipeline = new MarketPipelineService(null, null, null, undefined, undefined, served);
     const row = (key) => prisma.marketSectionConfig.findUnique({ where: { sectionKey: key } });
     const versions = (configId) =>
       prisma.marketSectionConfigVersion.findMany({ where: { configId }, orderBy: { version: 'asc' } });
@@ -283,6 +297,37 @@ async function main() {
         (item) => item.enabled && item.status === 'ACTIVE',
       );
       assert.equal(live.length, 1);
+    });
+
+    await check('serving picks up a publish the moment it commits', async () => {
+      const before = await served.list();
+      assert.ok(!before.some((spec) => spec.key === 'linen-edit'));
+      const saved = await service.saveDraft(
+        'linen-edit',
+        { spec: { template: 'CATALOG_FILTER', title: 'Linen edit', status: 'ACTIVE', filters: { tags: ['linen'] }, placement: { order: 12 } }, expectedRevision: 0 },
+        actorId,
+        req,
+      );
+      await service.publish('linen-edit', { draftRevision: saved.draftRevision, reason: 'launch' }, actorId, req);
+      // Within the 30 s cache window: only invalidate() can make this visible.
+      const after = await served.list();
+      assert.equal(after.find((spec) => spec.key === 'linen-edit')?.title, 'Linen edit');
+      assert.equal(await pipeline.isPublishedSection('linen-edit'), true);
+    });
+
+    await check('the preview spec set equals the set shoppers are served', async () => {
+      const current = await row('linen-edit');
+      const candidate = parsePipelineSpec({ ...current.draftDefinition.spec, status: 'ACTIVE' });
+      const preview = mergeSectionSpecs(await service['publishedSpecs'](prisma, 'linen-edit'), candidate);
+      const serving = servingPipelineSpecs(defaultPipelineSpecs(), await served.list());
+      assert.notEqual(serving, defaultPipelineSpecs(), 'served set must include published sections');
+      assert.deepEqual(byKey(preview), byKey(serving));
+    });
+
+    await check('a paused published section stops being a servable key at once', async () => {
+      await service.changeStatus('linen-edit', 'pause', { reason: 'restock' }, actorId, req);
+      assert.equal(await pipeline.isPublishedSection('linen-edit'), false);
+      assert.equal((await served.list()).find((spec) => spec.key === 'linen-edit')?.status, 'PAUSED');
     });
 
     console.log(JSON.stringify({ passed: true, checks: results.length }));

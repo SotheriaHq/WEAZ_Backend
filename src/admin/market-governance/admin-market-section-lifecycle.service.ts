@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { AdminAuditAction, MarketSectionConfig, Prisma } from '@prisma/client';
 import { Request } from 'express';
@@ -15,6 +16,7 @@ import { PIPELINE_TEMPLATES } from 'src/market/pipeline/market-pipeline.registry
 import { parsePipelineSpec } from 'src/market/pipeline/market-pipeline.schema';
 import { MarketPipelineService } from 'src/market/pipeline/market-pipeline.service';
 import { PipelineSpec } from 'src/market/pipeline/market-pipeline.types';
+import { MarketPublishedSpecsService } from 'src/market/pipeline/market-published-specs';
 import { AdminAuditService } from '../services/admin-audit.service';
 import {
   carriedColumns,
@@ -65,7 +67,15 @@ export class AdminMarketSectionLifecycleService {
     private readonly audit: AdminAuditService,
     private readonly governance: MarketGovernanceConfigService,
     private readonly pipeline: MarketPipelineService,
+    @Optional() private readonly served?: MarketPublishedSpecsService,
   ) {}
+
+  /** Serving re-reads published specs once a live change commits. */
+  private async afterCommit<T>(work: Promise<T>): Promise<T> {
+    const result = await work;
+    this.served?.invalidate();
+    return result;
+  }
 
   listTemplates() {
     return Object.entries(PIPELINE_TEMPLATES).map(([template, definition]) => ({
@@ -191,38 +201,40 @@ export class AdminMarketSectionLifecycleService {
   ) {
     const key = this.key(sectionKey);
     const reason = this.requiredReason(input.reason);
-    return this.prisma.$transaction(async (tx) => {
-      // Rails first, then the row: the same lock order as the classic PATCH.
-      await lockClassicRails(tx);
-      const row = await this.lock(tx, key);
-      if (!row.draftDefinition)
-        conflict('NO_DRAFT', 'Save a draft before publishing.');
-      if (row.draftRevision !== input.draftRevision)
-        conflict(
-          'STALE_DRAFT',
-          'This draft changed after you previewed it. Review it again.',
+    return this.afterCommit(
+      this.prisma.$transaction(async (tx) => {
+        // Rails first, then the row: the same lock order as the classic PATCH.
+        await lockClassicRails(tx);
+        const row = await this.lock(tx, key);
+        if (!row.draftDefinition)
+          conflict('NO_DRAFT', 'Save a draft before publishing.');
+        if (row.draftRevision !== input.draftRevision)
+          conflict(
+            'STALE_DRAFT',
+            'This draft changed after you previewed it. Review it again.',
+          );
+        const draft =
+          row.draftDefinition as unknown as MarketSectionDraftDefinition;
+        if (draft.spec.version !== row.specVersion + 1)
+          conflict(
+            'DRAFT_OUTDATED',
+            'A newer version was published. Save the draft again.',
+          );
+        const published = await this.publishDraft(
+          tx,
+          row,
+          draft,
+          reason,
+          actorId,
+          await this.publishedSpecs(tx, key),
         );
-      const draft =
-        row.draftDefinition as unknown as MarketSectionDraftDefinition;
-      if (draft.spec.version !== row.specVersion + 1)
-        conflict(
-          'DRAFT_OUTDATED',
-          'A newer version was published. Save the draft again.',
-        );
-      const published = await this.publishDraft(
-        tx,
-        row,
-        draft,
-        reason,
-        actorId,
-        await this.publishedSpecs(tx, key),
-      );
-      await this.log(tx, actorId, req, key, 'publish', reason, {
-        version: published.version,
-        draftRevision: row.draftRevision,
-      });
-      return published;
-    });
+        await this.log(tx, actorId, req, key, 'publish', reason, {
+          version: published.version,
+          draftRevision: row.draftRevision,
+        });
+        return published;
+      }),
+    );
   }
 
   async changeStatus(
@@ -235,26 +247,28 @@ export class AdminMarketSectionLifecycleService {
     const key = this.key(sectionKey);
     const reason = this.requiredReason(input.reason);
     const rule = STATUS_CHANGES[change];
-    return this.prisma.$transaction(async (tx) => {
-      // Rails first, then the row: the same lock order as the classic PATCH.
-      await lockClassicRails(tx);
-      const row = await this.lockPublished(tx, key);
-      const current = row.spec as unknown as PipelineSpec;
-      if (!(rule.from as readonly string[]).includes(current.status))
-        conflict(
-          'INVALID_TRANSITION',
-          `A ${current.status.toLowerCase()} section cannot ${change}.`,
+    return this.afterCommit(
+      this.prisma.$transaction(async (tx) => {
+        // Rails first, then the row: the same lock order as the classic PATCH.
+        await lockClassicRails(tx);
+        const row = await this.lockPublished(tx, key);
+        const current = row.spec as unknown as PipelineSpec;
+        if (!(rule.from as readonly string[]).includes(current.status))
+          conflict(
+            'INVALID_TRANSITION',
+            `A ${current.status.toLowerCase()} section cannot ${change}.`,
+          );
+        return this.republish(
+          tx,
+          row,
+          { ...current, status: rule.to },
+          change,
+          reason,
+          actorId,
+          req,
         );
-      return this.republish(
-        tx,
-        row,
-        { ...current, status: rule.to },
-        change,
-        reason,
-        actorId,
-        req,
-      );
-    });
+      }),
+    );
   }
 
   async listVersions(sectionKey: string) {
@@ -289,26 +303,29 @@ export class AdminMarketSectionLifecycleService {
   ) {
     const key = this.key(sectionKey);
     const reason = this.requiredReason(input.reason);
-    return this.prisma.$transaction(async (tx) => {
-      // Rails first, then the row: the same lock order as the classic PATCH.
-      await lockClassicRails(tx);
-      const row = await this.lockPublished(tx, key);
-      const source = await tx.marketSectionConfigVersion.findUnique({
-        where: { configId_version: { configId: row.id, version } },
-        select: { spec: true },
-      });
-      if (!source) throw new NotFoundException('That version does not exist.');
-      return this.republish(
-        tx,
-        row,
-        source.spec as unknown as PipelineSpec,
-        'restore',
-        reason,
-        actorId,
-        req,
-        { restoredFrom: version },
-      );
-    });
+    return this.afterCommit(
+      this.prisma.$transaction(async (tx) => {
+        // Rails first, then the row: the same lock order as the classic PATCH.
+        await lockClassicRails(tx);
+        const row = await this.lockPublished(tx, key);
+        const source = await tx.marketSectionConfigVersion.findUnique({
+          where: { configId_version: { configId: row.id, version } },
+          select: { spec: true },
+        });
+        if (!source)
+          throw new NotFoundException('That version does not exist.');
+        return this.republish(
+          tx,
+          row,
+          source.spec as unknown as PipelineSpec,
+          'restore',
+          reason,
+          actorId,
+          req,
+          { restoredFrom: version },
+        );
+      }),
+    );
   }
 
   /** Publish a new version derived from an existing spec (status change or restore). */

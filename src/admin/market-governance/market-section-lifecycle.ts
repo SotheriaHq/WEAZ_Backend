@@ -3,11 +3,7 @@ import {
   MARKET_SECTION_CODE_DEFAULTS,
   SUPPORTED_MARKET_SECTION_KEYS,
 } from 'src/market/market-governance-config.service';
-import { defaultPipelineSpecs } from 'src/market/pipeline/market-pipeline.defaults';
-import {
-  parsePipelineSpec,
-  validatePipelineGraph,
-} from 'src/market/pipeline/market-pipeline.schema';
+import { mergePipelineSpecsStrict } from 'src/market/pipeline/market-published-specs';
 import { PipelineSpec } from 'src/market/pipeline/market-pipeline.types';
 import { lockForTransaction } from 'src/common/transaction-lock.util';
 import { MarketSectionItemDto } from 'src/market/dto/market-section.dto';
@@ -169,22 +165,14 @@ export function presentationColumns(presentation: MarketSectionPresentation) {
 /**
  * The set serving would see: code defaults, each overridden by its published
  * spec, plus an optional candidate. The graph check runs over the whole set so
- * a publish can never strand another section's fallback.
+ * a publish can never strand another section's fallback. Serving overlays the
+ * same way (`servingPipelineSpecs`), so a preview shows what shoppers get.
  */
 export function mergeSectionSpecs(
   published: readonly unknown[],
   candidate?: PipelineSpec,
 ): PipelineSpec[] {
-  const byKey = new Map<string, PipelineSpec>();
-  for (const spec of defaultPipelineSpecs()) byKey.set(spec.key, spec);
-  for (const raw of published) {
-    const spec = parsePipelineSpec(raw);
-    byKey.set(spec.key, spec);
-  }
-  if (candidate) byKey.set(candidate.key, candidate);
-  const specs = [...byKey.values()];
-  validatePipelineGraph(specs);
-  return specs;
+  return mergePipelineSpecsStrict(published, candidate);
 }
 
 const PREVIEW_ITEMS = 12;

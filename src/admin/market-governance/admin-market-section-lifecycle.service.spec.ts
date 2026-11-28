@@ -168,13 +168,15 @@ describe('AdminMarketSectionLifecycleService', () => {
         },
       }),
     };
+    const served = { invalidate: jest.fn() };
     const service = new AdminMarketSectionLifecycleService(
       prisma as any,
       {} as any,
       {} as any,
       pipeline as any,
+      served as any,
     );
-    return { service, pipeline, prisma };
+    return { service, pipeline, prisma, served };
   };
 
   it('previews the draft as a live guest would see it, whatever its status', async () => {
@@ -219,6 +221,65 @@ describe('AdminMarketSectionLifecycleService', () => {
     expect(candidate).toEqual(
       expect.objectContaining({ title: 'Latest drops', status: 'ACTIVE' }),
     );
+  });
+
+  it('tells serving to re-read published specs only after a live change commits', async () => {
+    const { service, served, prisma } = createService(undefined);
+    const tx = { marker: 'tx' };
+    (prisma as any).$transaction = jest.fn(
+      async (work: (tx: unknown) => unknown) => work(tx),
+    );
+    jest
+      .spyOn(service as any, 'lock')
+      .mockRejectedValue(new Error('row locked'));
+    jest
+      .spyOn(service as any, 'lockPublished')
+      .mockRejectedValue(new Error('row locked'));
+    const lockSql = jest.fn();
+    (tx as any).$executeRaw = lockSql;
+    await expect(
+      service.publish(
+        'fresh-drops',
+        { draftRevision: 1, reason: 'go' },
+        'admin',
+        {} as any,
+      ),
+    ).rejects.toThrow('row locked');
+    await expect(
+      service.changeStatus(
+        'fresh-drops',
+        'pause',
+        { reason: 'go' },
+        'admin',
+        {} as any,
+      ),
+    ).rejects.toThrow('row locked');
+    await expect(
+      service.restore('fresh-drops', 1, { reason: 'go' }, 'admin', {} as any),
+    ).rejects.toThrow('row locked');
+    expect(served.invalidate).not.toHaveBeenCalled();
+    (prisma as any).$transaction = jest.fn().mockResolvedValue({ version: 2 });
+    await service.publish(
+      'fresh-drops',
+      { draftRevision: 1, reason: 'go' },
+      'admin',
+      {} as any,
+    );
+    await service.changeStatus(
+      'fresh-drops',
+      'pause',
+      { reason: 'go' },
+      'admin',
+      {} as any,
+    );
+    await service.restore(
+      'fresh-drops',
+      1,
+      { reason: 'go' },
+      'admin',
+      {} as any,
+    );
+    expect(served.invalidate).toHaveBeenCalledTimes(3);
   });
 
   it('asks for a draft before previewing', async () => {

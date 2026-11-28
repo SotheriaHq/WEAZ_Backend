@@ -24,6 +24,7 @@ import { MarketCatalogController } from './catalog/market-catalog.controller';
 import { MarketPublicMediaService } from './catalog/market-public-media.service';
 import { MarketPageController } from './market-page.controller';
 import { MarketPipelineService } from './pipeline/market-pipeline.service';
+import { MarketPublishedSpecsService } from './pipeline/market-published-specs';
 import { MarketPipelineDeliveryService } from './market-pipeline-delivery.service';
 import { QueueModule } from '../queue/queue.module';
 import { marketPipelineCacheProvider } from './pipeline/market-pipeline-cache.provider';
@@ -42,6 +43,7 @@ import { marketPipelineCacheProvider } from './pipeline/market-pipeline-cache.pr
   providers: [
     MarketReadPrismaService,
     marketPipelineCacheProvider,
+    MarketPublishedSpecsService,
     MarketPipelineService,
     MarketPipelineDeliveryService,
     MarketPublicMediaService,
@@ -60,6 +62,7 @@ import { marketPipelineCacheProvider } from './pipeline/market-pipeline-cache.pr
     MarketSuppressionService,
   ],
   exports: [
+    MarketPublishedSpecsService,
     MarketPipelineService,
     MarketPublicMediaService,
     MarketCatalogService,

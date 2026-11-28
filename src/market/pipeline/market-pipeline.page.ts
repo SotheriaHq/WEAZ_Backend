@@ -23,9 +23,11 @@ import {
 } from './market-pipeline.delivery';
 import {
   PipelineContext,
+  PipelineSpec,
   PipelineSurface,
   PipelinePorts,
 } from './market-pipeline.types';
+import { servingPipelineSpecs } from './market-published-specs';
 import { PipelineMediaResolver } from './market-pipeline.media';
 
 /** Bounded best-effort shared-pool writes; never fails or delays a page beyond the wait. */
@@ -66,6 +68,8 @@ export async function buildMarketPipelinePage(input: {
   readonly media: PipelineMediaResolver;
   readonly specs: readonly unknown[];
   readonly useDefaultSpecs?: boolean;
+  /** Published overrides for the default set; ignored for the small-catalogue page. */
+  readonly published?: readonly PipelineSpec[];
   readonly viewer: MarketCatalogViewer;
   readonly surface: PipelineSurface;
   readonly filters: CanonicalMarketFilters;
@@ -119,7 +123,13 @@ export async function buildMarketPipelinePage(input: {
         tenure: new Map(),
       };
       const specs = input.useDefaultSpecs
-        ? defaultPipelineSpecs(epoch.eligibleProductCount)
+        ? servingPipelineSpecs(
+            defaultPipelineSpecs(epoch.eligibleProductCount),
+            // Under 8 products the page is one "Explore the Market" rail only.
+            (epoch.eligibleProductCount ?? 8) < 8
+              ? []
+              : (input.published ?? []),
+          )
         : input.specs;
       return captureMarketPipelinePage(tx, {
         specs,
