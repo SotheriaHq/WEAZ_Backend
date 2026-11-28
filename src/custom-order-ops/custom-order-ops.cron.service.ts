@@ -253,6 +253,7 @@ export class CustomOrderOpsCronService {
             hoursWaiting,
           },
           dedupeMs: 18 * 60 * 60 * 1000,
+          dedupeMatch: { customOrderId: order.id, status: order.status },
         });
 
         const ownerId = brandOwnerByBrandId.get(order.brandId);
@@ -269,6 +270,10 @@ export class CustomOrderOpsCronService {
               reason: 'STALE_OPERATIONAL_STATUS',
             },
             dedupeMs: 18 * 60 * 60 * 1000,
+            dedupeMatch: {
+              status: order.status,
+              reason: 'STALE_OPERATIONAL_STATUS',
+            },
           });
         }
 
@@ -286,6 +291,10 @@ export class CustomOrderOpsCronService {
               reason: 'STALE_OPERATIONAL_STATUS',
             },
             dedupeMs: 18 * 60 * 60 * 1000,
+            dedupeMatch: {
+              status: order.status,
+              reason: 'STALE_OPERATIONAL_STATUS',
+            },
           });
         }
       });
@@ -357,6 +366,7 @@ export class CustomOrderOpsCronService {
           target: this.customOrderTarget(order.id),
           payload: { customOrderId: order.id, hoursWaiting },
           dedupeMs: 18 * 60 * 60 * 1000,
+          dedupeMatch: { customOrderId: order.id },
         });
 
         await this.notifyBrandOwner(brandOwners.get(order.brandId), order.id, {
@@ -364,6 +374,7 @@ export class CustomOrderOpsCronService {
           payload: { customOrderId: order.id, hoursWaiting },
           target: this.customOrderTarget(order.id),
           dedupeMs: 18 * 60 * 60 * 1000,
+          dedupeMatch: { customOrderId: order.id },
         });
       }
 
@@ -526,6 +537,7 @@ export class CustomOrderOpsCronService {
           target: this.customOrderTarget(order.id),
           payload: { customOrderId: order.id, hoursRemaining },
           dedupeMs: 10 * 60 * 60 * 1000,
+          dedupeMatch: { customOrderId: order.id },
         });
       }
 
@@ -1053,6 +1065,7 @@ export class CustomOrderOpsCronService {
             generatedAt: now.toISOString(),
           },
           dedupeMs: 4 * 60 * 60 * 1000,
+          dedupeMatch: { reason: 'PAYOUT_RELEASE_ELIGIBLE' },
         });
 
         await this.prisma.customOrderTimelineEvent.create({
@@ -1512,6 +1525,7 @@ export class CustomOrderOpsCronService {
       payload: Record<string, unknown>;
       target: ReturnType<CustomOrderOpsCronService['customOrderTarget']>;
       dedupeMs?: number;
+      dedupeMatch?: Record<string, string | number | boolean>;
     },
     tx?: Prisma.TransactionClient,
   ): Promise<void> {
@@ -1526,6 +1540,7 @@ export class CustomOrderOpsCronService {
       payload: options.payload,
       target: options.target,
       dedupeMs: options.dedupeMs,
+      ...(options.dedupeMatch ? { dedupeMatch: options.dedupeMatch } : {}),
     };
     if (tx) await this.sideEffects.enqueueNotification(notification, tx);
     else await this.sideEffects.enqueueNotification(notification);
@@ -1721,6 +1736,7 @@ export class CustomOrderOpsCronService {
           // Once a day at most. A dispute that is genuinely stuck should be a
           // daily nag, not a six-hourly one.
           dedupeMs: 23 * 60 * 60 * 1000,
+          dedupeMatch: { disputeId: dispute.id },
         });
       }
 

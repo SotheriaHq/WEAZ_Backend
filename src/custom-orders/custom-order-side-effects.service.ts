@@ -6,6 +6,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { lockForTransaction } from 'src/common/transaction-lock.util';
 import { NotificationTarget } from 'src/notifications/notifications.types';
 import { NotificationsQueueService } from 'src/queue/notifications.queue.service';
 import {
@@ -22,6 +23,20 @@ type EnqueueCustomOrderNotificationParams = {
   payload?: Record<string, unknown>;
   target?: NotificationTarget;
   dedupeMs?: number;
+  /**
+   * Opt-in insert-time dedupe for repeating reminders.
+   *
+   * `dedupeMs` alone never deduplicated outbox notifications: the dispatcher
+   * hands each row to the notification service with a durable
+   * `notificationId`, and durable ids deliberately skip the semantic dedupe
+   * window, so every cron tick produced a fresh notification (WIEZ-P02-0001).
+   * When `dedupeMatch` is set together with `dedupeMs`, a recipient is skipped
+   * if an outbox row for the same order, type and recipient whose payload
+   * contains these stable fields was created inside the window. List only
+   * fields that identify the reminder (status, reason, dispute id), never
+   * counters such as hoursWaiting that change on every tick.
+   */
+  dedupeMatch?: Record<string, string | number | boolean>;
   availableAt?: Date;
 };
 
@@ -57,19 +72,72 @@ export class CustomOrderSideEffectsService {
       return;
     }
 
+    const windowMs = params.dedupeMs ?? 0;
+    if (params.dedupeMatch && windowMs > 0) {
+      if (tx) {
+        await this.insertDeduplicated(tx, params, recipientIds, windowMs);
+      } else {
+        await this.prisma.$transaction((client) =>
+          this.insertDeduplicated(client, params, recipientIds, windowMs),
+        );
+      }
+      return;
+    }
+
     const client = tx ?? this.prisma;
     await client.customOrderNotificationOutbox.createMany({
-      data: recipientIds.map((recipientId) => ({
-        customOrderId: params.customOrderId,
-        recipientId,
-        actorId: params.actorId ?? null,
-        notificationType: params.notificationType,
-        payloadJson: (params.payload ?? null) as Prisma.InputJsonValue,
-        targetJson: (params.target ?? null) as Prisma.InputJsonValue,
-        dedupeMs: params.dedupeMs,
-        availableAt: params.availableAt ?? new Date(),
-      })),
+      data: this.toOutboxRows(params, recipientIds),
     });
+  }
+
+  /**
+   * Serialises reminders for one order and type with a transaction-scoped
+   * advisory lock, so two concurrent runs cannot both see "nothing sent yet",
+   * then inserts only for recipients without a matching row in the window.
+   * Uses the existing (customOrderId, createdAt) index; no schema change.
+   */
+  private async insertDeduplicated(
+    client: Prisma.TransactionClient,
+    params: EnqueueCustomOrderNotificationParams,
+    recipientIds: string[],
+    windowMs: number,
+  ): Promise<void> {
+    await lockForTransaction(
+      client,
+      `custom-order-outbox-dedupe:${params.customOrderId}:${params.notificationType}`,
+    );
+    const since = new Date(Date.now() - windowMs);
+    const recent = await client.$queryRaw<Array<{ recipientId: string }>>`
+      SELECT DISTINCT "recipientId"::text AS "recipientId"
+      FROM "CustomOrderNotificationOutbox"
+      WHERE "customOrderId" = ${params.customOrderId}::uuid
+        AND "notificationType" = ${params.notificationType}::"NotificationType"
+        AND "recipientId" = ANY(${recipientIds}::uuid[])
+        AND "createdAt" >= ${since}::timestamp
+        AND "status" <> 'SKIPPED'
+        AND "payloadJson" @> ${JSON.stringify(params.dedupeMatch)}::jsonb`;
+    const alreadyNotified = new Set(recent.map((row) => row.recipientId));
+    const fresh = recipientIds.filter((id) => !alreadyNotified.has(id));
+    if (fresh.length === 0) return;
+    await client.customOrderNotificationOutbox.createMany({
+      data: this.toOutboxRows(params, fresh),
+    });
+  }
+
+  private toOutboxRows(
+    params: EnqueueCustomOrderNotificationParams,
+    recipientIds: string[],
+  ) {
+    return recipientIds.map((recipientId) => ({
+      customOrderId: params.customOrderId,
+      recipientId,
+      actorId: params.actorId ?? null,
+      notificationType: params.notificationType,
+      payloadJson: (params.payload ?? null) as Prisma.InputJsonValue,
+      targetJson: (params.target ?? null) as Prisma.InputJsonValue,
+      dedupeMs: params.dedupeMs,
+      availableAt: params.availableAt ?? new Date(),
+    }));
   }
 
   async recordAnalyticsEvent(
