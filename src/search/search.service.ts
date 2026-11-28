@@ -174,6 +174,8 @@ interface SearchPageResult {
 }
 
 const RECENT_LIMIT = 10;
+/** Server-side recent searches are kept 30 days (owner decision, 27 Nov 2026; disclosed in the privacy policy). */
+export const RECENT_SEARCH_TTL_SECONDS = 60 * 60 * 24 * 30;
 const TRENDING_LIMIT = 6;
 const PROFILE_SUGGEST_LIMIT = 3;
 const PRODUCT_SUGGEST_LIMIT = 3;
@@ -1376,7 +1378,7 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
           pipeline.lRem(`search:recent:${userId}`, 0, normalizedQuery);
           pipeline.lPush(`search:recent:${userId}`, normalizedQuery);
           pipeline.lTrim(`search:recent:${userId}`, 0, RECENT_LIMIT - 1);
-          pipeline.expire(`search:recent:${userId}`, 60 * 60 * 24 * 90);
+          pipeline.expire(`search:recent:${userId}`, RECENT_SEARCH_TTL_SECONDS);
         }
         pipeline.hIncrBy(bucketKey, normalizedQuery, 1);
         pipeline.expire(bucketKey, 60 * 60 * 27);
