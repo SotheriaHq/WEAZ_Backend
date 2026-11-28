@@ -205,6 +205,25 @@ export function marketSnapshotAdmissionReason(
   return null;
 }
 
+/** Hours of raw history personal templates need (AFFINITY, FOLLOWED_BRANDS). */
+export const MARKET_PERSONAL_REQUIRED_RETENTION_HOURS = 720;
+
+/**
+ * Whether WP11/WP12 surfaces may be offered to shoppers. Personal needs its
+ * flag AND the R2 retention window (raised only after the policy text is
+ * published); regional needs its own flag. Both default to off.
+ */
+export function marketActivationState(env: NodeJS.ProcessEnv = process.env) {
+  const retentionHours = Number(env.MARKET_RAW_SIGNAL_RETENTION_HOURS ?? 24);
+  return Object.freeze({
+    personal:
+      String(env.MARKET_PERSONAL_V1).toLowerCase() === 'true' &&
+      Number.isFinite(retentionHours) &&
+      retentionHours >= MARKET_PERSONAL_REQUIRED_RETENTION_HOURS,
+    regional: String(env.MARKET_REGIONAL_V1).toLowerCase() === 'true',
+  });
+}
+
 export function marketIntelligenceConfig(env: NodeJS.ProcessEnv = process.env) {
   // R2 is an activation gate, not an environment-only override in the R1 worker.
   const activationBlocked =
